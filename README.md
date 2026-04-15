@@ -177,6 +177,32 @@ Build the desktop app:
 npm run tauri build
 ```
 
+## GitHub Actions Windows Build
+
+The repository includes a Windows build workflow at:
+
+- `.github/workflows/build-windows-exe.yml`
+
+What it does:
+
+- runs on `windows-latest`
+- installs Node.js and Rust
+- runs frontend tests
+- builds the Tauri Windows app
+- uploads two artifacts:
+  - portable app executable: `shipflow-desktop-windows-portable`
+  - NSIS installer executable: `shipflow-desktop-windows-installer`
+
+Triggers:
+
+- manual run via `workflow_dispatch`
+- no automatic push trigger by default
+
+The uploaded Windows outputs are:
+
+- `src-tauri/target/release/shipflow3-tauri.exe`
+- `src-tauri/target/release/bundle/nsis/*.exe`
+
 ## Tests
 
 Run frontend tests:
