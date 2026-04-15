@@ -1,7 +1,5 @@
 import { TRACKING_COLUMN_PATH } from "./columns";
 import {
-  applyPresetToHiddenColumns,
-  buildFilterPreset,
   countActiveTextFilters,
   countActiveValueFilters,
   sanitizeTextFilters,
@@ -65,37 +63,5 @@ describe("sheet state utils", () => {
       a: ["B"],
     });
     expect(toggleValueFilterSelection({ a: ["A"] }, "a", "A")).toEqual({});
-  });
-
-  it("builds presets and unhides referenced columns", () => {
-    const preset = buildFilterPreset(
-      " Jakarta ",
-      {
-        a: "KCU",
-        c: "",
-      },
-      {
-        b: ["COD"],
-        d: ["x"],
-      },
-      new Set(["a", "b", "c"]),
-      () => "preset-1"
-    );
-
-    expect(preset).toEqual({
-      id: "preset-1",
-      name: "Jakarta",
-      textFilters: { a: "KCU" },
-      valueFilters: { b: ["COD"] },
-    });
-
-    expect(
-      applyPresetToHiddenColumns(["a", "b", "x"], {
-        id: "preset-1",
-        name: "Jakarta",
-        textFilters: { a: "KCU" },
-        valueFilters: { b: ["COD"] },
-      })
-    ).toEqual(["x"]);
   });
 });

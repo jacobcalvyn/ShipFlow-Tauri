@@ -11,7 +11,6 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import {
   COLUMNS,
-  FILTER_PRESETS_STORAGE_KEY,
   HIDDEN_COLUMNS_STORAGE_KEY,
   INITIAL_ROW_COUNT,
   MAX_CONCURRENT_BULK_REQUESTS,
@@ -21,12 +20,7 @@ import {
 } from "./features/sheet/columns";
 import { SheetActionBar } from "./features/sheet/components/SheetActionBar";
 import { SheetTable } from "./features/sheet/components/SheetTable";
-import {
-  FilterPreset,
-  SheetRow,
-  SortState,
-  TrackResponse,
-} from "./features/sheet/types";
+import { SheetRow, SortState, TrackResponse } from "./features/sheet/types";
 import {
   buildCsvValue,
   compareRows,
@@ -34,16 +28,14 @@ import {
   ensureRowCapacity,
   ensureTrailingEmptyRows,
   getEffectiveColumnWidth,
+  getColumnToneClass,
   formatColumnValue,
   getColumnValueOptions,
   getInitialColumnWidths,
   isBrowserReady,
-  loadStoredFilterPresets,
   loadStoredStringArray,
 } from "./features/sheet/utils";
 import {
-  applyPresetToHiddenColumns,
-  buildFilterPreset,
   countActiveTextFilters,
   countActiveValueFilters,
   sanitizeTextFilters,
@@ -52,13 +44,30 @@ import {
   togglePinnedColumnState,
   toggleValueFilterSelection,
 } from "./features/sheet/state";
+import { TrackingServerConfig } from "./types";
+
+const COLUMN_SHORTCUTS = [
+  { path: "status_akhir.status", label: "Status Akhir" },
+  { path: "detail.actors.pengirim.nama", label: "Nama Pengirim" },
+  { path: "detail.actors.penerima.nama", label: "Nama Penerima" },
+  { path: "detail.package_detail.jenis_layanan", label: "Jenis Layanan" },
+  { path: "detail.billing_detail.cod_info.is_cod", label: "Is COD" },
+] as const;
+
+type ActionNotice = {
+  tone: "success" | "error" | "info";
+  message: string;
+};
 
 function App() {
   const [rows, setRows] = useState<SheetRow[]>(() =>
     createEmptyRows(INITIAL_ROW_COUNT)
   );
   const [serverUrl, setServerUrl] = useState("");
+  const [serverAccessToken, setServerAccessToken] = useState("");
   const [serverError, setServerError] = useState("");
+  const [actionNotice, setActionNotice] = useState<ActionNotice | null>(null);
+  const [deleteAllArmed, setDeleteAllArmed] = useState(false);
   const [hoveredColumn, setHoveredColumn] = useState<number | null>(null);
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [valueFilters, setValueFilters] = useState<Record<string, string[]>>({});
@@ -67,6 +76,8 @@ function App() {
     direction: "asc",
   });
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
+  const [selectionFollowsVisibleRows, setSelectionFollowsVisibleRows] =
+    useState(false);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>(
     getInitialColumnWidths
   );
@@ -79,12 +90,10 @@ function App() {
       COLUMNS.filter((column) => column.sticky).map((column) => column.path)
     )
   );
-  const [filterPresets, setFilterPresets] = useState<FilterPreset[]>(
-    loadStoredFilterPresets
-  );
-  const [presetNameInput, setPresetNameInput] = useState("");
-  const [selectedPresetId, setSelectedPresetId] = useState("");
   const [openColumnMenuPath, setOpenColumnMenuPath] = useState<string | null>(
+    null
+  );
+  const [highlightedColumnPath, setHighlightedColumnPath] = useState<string | null>(
     null
   );
   const resizeStateRef = useRef<{
@@ -94,6 +103,12 @@ function App() {
   } | null>(null);
   const requestControllersRef = useRef(new Map<string, AbortController>());
   const columnMenuRefs = useRef(new Map<string, HTMLDivElement | null>());
+  const sheetScrollRef = useRef<HTMLDivElement>(null);
+  const highlightedColumnTimeoutRef = useRef<number | null>(null);
+  const actionNoticeTimeoutRef = useRef<number | null>(null);
+  const deleteAllTimeoutRef = useRef<number | null>(null);
+  const requestEpochRef = useRef(0);
+  const bulkRunEpochRef = useRef(0);
   const rowsRef = useRef(rows);
 
   useEffect(() => {
@@ -103,10 +118,11 @@ function App() {
   useEffect(() => {
     let isActive = true;
 
-    invoke<string>("get_tracking_server_url")
-      .then((url) => {
+    invoke<TrackingServerConfig>("get_tracking_server_config")
+      .then((config) => {
         if (isActive) {
-          setServerUrl(url);
+          setServerUrl(config.baseUrl);
+          setServerAccessToken(config.accessToken);
         }
       })
       .catch((error) => {
@@ -170,26 +186,92 @@ function App() {
   }, [pinnedColumnPaths]);
 
   useEffect(() => {
-    if (!isBrowserReady()) {
-      return;
-    }
-
-    window.localStorage.setItem(
-      FILTER_PRESETS_STORAGE_KEY,
-      JSON.stringify(filterPresets)
-    );
-  }, [filterPresets]);
-
-  useEffect(() => {
     return () => {
       requestControllersRef.current.forEach((controller) => controller.abort());
       requestControllersRef.current.clear();
     };
   }, []);
 
-  const loadedCount = useMemo(
-    () => rows.filter((row) => row.shipment !== null).length,
+  useEffect(() => {
+    return () => {
+      if (highlightedColumnTimeoutRef.current !== null) {
+        window.clearTimeout(highlightedColumnTimeoutRef.current);
+      }
+      if (actionNoticeTimeoutRef.current !== null) {
+        window.clearTimeout(actionNoticeTimeoutRef.current);
+      }
+      if (deleteAllTimeoutRef.current !== null) {
+        window.clearTimeout(deleteAllTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const armDeleteAll = useCallback(() => {
+    setSelectionFollowsVisibleRows(false);
+    setSelectedRowKeys([]);
+    setDeleteAllArmed(true);
+
+    if (deleteAllTimeoutRef.current !== null) {
+      window.clearTimeout(deleteAllTimeoutRef.current);
+    }
+
+    deleteAllTimeoutRef.current = window.setTimeout(() => {
+      setDeleteAllArmed(false);
+      deleteAllTimeoutRef.current = null;
+    }, 4000);
+  }, []);
+
+  const disarmDeleteAll = useCallback(() => {
+    setDeleteAllArmed(false);
+    if (deleteAllTimeoutRef.current !== null) {
+      window.clearTimeout(deleteAllTimeoutRef.current);
+      deleteAllTimeoutRef.current = null;
+    }
+  }, []);
+
+  const invalidatePendingTrackingWork = useCallback(() => {
+    requestEpochRef.current += 1;
+    bulkRunEpochRef.current += 1;
+    requestControllersRef.current.forEach((controller) => controller.abort());
+    requestControllersRef.current.clear();
+  }, []);
+
+  const showActionNotice = useCallback((notice: ActionNotice) => {
+    setActionNotice(notice);
+    if (actionNoticeTimeoutRef.current !== null) {
+      window.clearTimeout(actionNoticeTimeoutRef.current);
+    }
+    actionNoticeTimeoutRef.current = window.setTimeout(() => {
+      setActionNotice((current) =>
+        current?.message === notice.message ? null : current
+      );
+      actionNoticeTimeoutRef.current = null;
+    }, 2200);
+  }, []);
+
+  const focusFirstTrackingInput = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      const firstInput =
+        sheetScrollRef.current?.querySelector<HTMLInputElement>(
+          "tbody .tracking-cell .sheet-input"
+        ) ?? null;
+
+      firstInput?.focus();
+    });
+  }, []);
+
+  const nonEmptyRows = useMemo(
+    () =>
+      rows.filter((row) => row.trackingInput.trim() !== "" || row.shipment !== null),
     [rows]
+  );
+
+  const retrackableRows = useMemo(
+    () =>
+      nonEmptyRows
+        .filter((row) => row.trackingInput.trim() !== "")
+        .map((row) => ({ key: row.key, value: row.trackingInput.trim() })),
+    [nonEmptyRows]
   );
 
   const visibleColumns = useMemo(() => {
@@ -263,12 +345,19 @@ function App() {
   const valueOptionsByPath = useMemo(
     () =>
       Object.fromEntries(
-        visibleColumns.map((column) => [column.path, getColumnValueOptions(rows, column)])
+        visibleColumns.map((column) => [
+          column.path,
+          getColumnValueOptions(nonEmptyRows, column),
+        ])
       ),
-    [rows, visibleColumns]
+    [nonEmptyRows, visibleColumns]
   );
 
   const displayedRows = useMemo(() => {
+    if (nonEmptyRows.length === 0) {
+      return rows;
+    }
+
     const hasActiveFilters = activeFilterCount > 0;
     const hasSort = sortState.path !== null;
 
@@ -276,11 +365,7 @@ function App() {
       return rows;
     }
 
-    let workingRows = rows.filter((row) => {
-      if (!row.shipment && row.trackingInput.trim() === "") {
-        return false;
-      }
-
+    let workingRows = nonEmptyRows.filter((row) => {
       return visibleColumns.every((column) => {
         const filterValue = filters[column.path]?.trim().toLowerCase();
         const cellValue = formatColumnValue(row, column).toLowerCase();
@@ -313,7 +398,7 @@ function App() {
       .slice(0, 5);
 
     return [...workingRows, ...draftRows];
-  }, [activeFilterCount, filters, rows, sortState, valueFilters, visibleColumns]);
+  }, [activeFilterCount, filters, nonEmptyRows, rows, sortState, valueFilters, visibleColumns]);
 
   const visibleSelectableKeys = useMemo(
     () =>
@@ -323,17 +408,35 @@ function App() {
     [displayedRows]
   );
 
+  const visibleSelectableKeySet = useMemo(
+    () => new Set(visibleSelectableKeys),
+    [visibleSelectableKeys]
+  );
+
   const allVisibleSelected =
     visibleSelectableKeys.length > 0 &&
     visibleSelectableKeys.every((key) => selectedRowKeys.includes(key));
 
+  const selectedVisibleRowKeys = useMemo(
+    () => selectedRowKeys.filter((key) => visibleSelectableKeySet.has(key)),
+    [selectedRowKeys, visibleSelectableKeySet]
+  );
+
   const selectedTrackingIds = useMemo(
     () =>
       rows
-        .filter((row) => selectedRowKeys.includes(row.key))
+        .filter((row) => selectedVisibleRowKeys.includes(row.key))
         .map((row) => row.trackingInput.trim())
         .filter(Boolean),
-    [rows, selectedRowKeys]
+    [rows, selectedVisibleRowKeys]
+  );
+
+  const allTrackingIds = useMemo(
+    () =>
+      rows
+        .map((row) => row.trackingInput.trim())
+        .filter((value) => value !== ""),
+    [rows]
   );
 
   const selectedRowKeySet = useMemo(
@@ -342,10 +445,10 @@ function App() {
   );
 
   const exportableRows = useMemo(() => {
-    if (selectedRowKeys.length > 0) {
+    if (selectedVisibleRowKeys.length > 0) {
       return rows.filter(
         (row) =>
-          selectedRowKeys.includes(row.key) &&
+          selectedVisibleRowKeys.includes(row.key) &&
           (row.trackingInput.trim() !== "" || row.shipment !== null)
       );
     }
@@ -353,37 +456,58 @@ function App() {
     return displayedRows.filter(
       (row) => row.trackingInput.trim() !== "" || row.shipment !== null
     );
-  }, [displayedRows, rows, selectedRowKeys]);
+  }, [displayedRows, rows, selectedVisibleRowKeys]);
 
   const hiddenColumns = useMemo(
     () => COLUMNS.filter((column) => hiddenColumnPaths.includes(column.path)),
     [hiddenColumnPaths]
   );
 
+  const loadedCount = useMemo(
+    () => displayedRows.filter((row) => row.shipment !== null).length,
+    [displayedRows]
+  );
+
+  const columnShortcuts = useMemo(
+    () =>
+      COLUMN_SHORTCUTS.map((shortcut) => {
+        const column = COLUMNS.find((item) => item.path === shortcut.path);
+        return {
+          ...shortcut,
+          disabled: !visibleColumnPathSet.has(shortcut.path),
+          toneClass: column ? getColumnToneClass(column) : "",
+        };
+      }),
+    [visibleColumnPathSet]
+  );
+
   const handleTrackingInputChange = useCallback((rowKey: string, value: string) => {
+    disarmDeleteAll();
     requestControllersRef.current.get(rowKey)?.abort();
 
     setRows((current) =>
       ensureTrailingEmptyRows(
         current.map((row) =>
-          row.key === rowKey
-            ? {
-                ...row,
-                trackingInput: value,
-                shipment:
-                  value.trim() === row.trackingInput.trim() ? row.shipment : null,
-                loading: false,
-                error: value.trim() === row.trackingInput.trim() ? row.error : "",
-              }
-            : row
+              row.key === rowKey
+                ? {
+                    ...row,
+                    trackingInput: value,
+                    shipment:
+                      value.trim() === row.trackingInput.trim() ? row.shipment : null,
+                    loading: false,
+                    stale: false,
+                    error: value.trim() === row.trackingInput.trim() ? row.error : "",
+                  }
+                : row
         )
       )
     );
-  }, []);
+  }, [disarmDeleteAll]);
 
   const fetchShipmentIntoRow = useCallback(
     async (rowKey: string, shipmentId: string) => {
       const normalizedId = shipmentId.trim();
+      const requestEpoch = requestEpochRef.current;
       requestControllersRef.current.get(rowKey)?.abort();
 
       if (!normalizedId) {
@@ -395,6 +519,7 @@ function App() {
                   ...row,
                   shipment: null,
                   loading: false,
+                  stale: false,
                   error: "",
                 }
               : row
@@ -403,15 +528,16 @@ function App() {
         return;
       }
 
-      if (!serverUrl) {
+      if (!serverUrl || !serverAccessToken) {
         requestControllersRef.current.delete(rowKey);
         setRows((current) =>
           current.map((row) =>
             row.key === rowKey
               ? {
                   ...row,
-                  shipment: null,
+                  shipment: row.shipment,
                   loading: false,
+                  stale: row.shipment !== null,
                   error: serverError || "Tracking server is not ready yet.",
                 }
               : row
@@ -425,14 +551,15 @@ function App() {
 
       setRows((current) =>
         current.map((row) =>
-          row.key === rowKey
-            ? {
-                ...row,
-                trackingInput: normalizedId,
-                loading: true,
-                error: "",
-              }
-            : row
+            row.key === rowKey
+              ? {
+                  ...row,
+                  trackingInput: normalizedId,
+                  loading: true,
+                  stale: false,
+                  error: "",
+                }
+              : row
         )
       );
 
@@ -441,6 +568,9 @@ function App() {
           `${serverUrl}/track/${encodeURIComponent(normalizedId)}`,
           {
             signal: controller.signal,
+            headers: {
+              "x-shipflow-token": serverAccessToken,
+            },
           }
         );
 
@@ -454,7 +584,10 @@ function App() {
 
         const result = (await response.json()) as TrackResponse;
 
-        if (requestControllersRef.current.get(rowKey) !== controller) {
+        if (
+          requestControllersRef.current.get(rowKey) !== controller ||
+          requestEpochRef.current !== requestEpoch
+        ) {
           return;
         }
 
@@ -468,6 +601,7 @@ function App() {
                       result.detail.shipment_header.nomor_kiriman ?? normalizedId,
                     shipment: result,
                     loading: false,
+                    stale: false,
                     error: "",
                   }
                 : row
@@ -479,7 +613,10 @@ function App() {
           return;
         }
 
-        if (requestControllersRef.current.get(rowKey) !== controller) {
+        if (
+          requestControllersRef.current.get(rowKey) !== controller ||
+          requestEpochRef.current !== requestEpoch
+        ) {
           return;
         }
 
@@ -488,8 +625,9 @@ function App() {
             row.key === rowKey
               ? {
                   ...row,
-                  shipment: null,
+                  shipment: row.shipment,
                   loading: false,
+                  stale: row.shipment !== null,
                   error:
                     error instanceof Error
                       ? error.message
@@ -504,7 +642,7 @@ function App() {
         }
       }
     },
-    [serverError, serverUrl]
+    [serverAccessToken, serverError, serverUrl]
   );
 
   const fetchRow = useCallback(
@@ -544,13 +682,18 @@ function App() {
 
   const runBulkPasteFetches = useCallback(
     async (entries: Array<{ key: string; value: string }>) => {
+      const runEpoch = ++bulkRunEpochRef.current;
       const queue = [...entries];
       const workerCount = Math.min(MAX_CONCURRENT_BULK_REQUESTS, queue.length);
 
       const workers = Array.from({ length: workerCount }, async () => {
-        while (queue.length > 0) {
+        while (queue.length > 0 && bulkRunEpochRef.current === runEpoch) {
           const next = queue.shift();
           if (!next) {
+            return;
+          }
+
+          if (bulkRunEpochRef.current !== runEpoch) {
             return;
           }
 
@@ -565,6 +708,7 @@ function App() {
 
   const handleTrackingInputPaste = useCallback(
     (event: ClipboardEvent<HTMLInputElement>, rowKey: string) => {
+      disarmDeleteAll();
       const values = event.clipboardData
         .getData("text")
         .split(/\r?\n/)
@@ -594,6 +738,7 @@ function App() {
           trackingInput: values[offset],
           shipment: null,
           loading: false,
+          stale: false,
           error: "",
         };
       }
@@ -607,7 +752,7 @@ function App() {
         targetKeys.map((key, index) => ({ key, value: values[index] }))
       );
     },
-    [runBulkPasteFetches]
+    [disarmDeleteAll, runBulkPasteFetches]
   );
 
   const handleFilterChange = useCallback((path: string, value: string) => {
@@ -660,6 +805,7 @@ function App() {
   );
 
   const toggleRowSelection = useCallback((rowKey: string) => {
+    setSelectionFollowsVisibleRows(false);
     setSelectedRowKeys((current) =>
       current.includes(rowKey)
         ? current.filter((key) => key !== rowKey)
@@ -668,16 +814,32 @@ function App() {
   }, []);
 
   const toggleVisibleSelection = useCallback(() => {
+    setSelectionFollowsVisibleRows(!allVisibleSelected);
     setSelectedRowKeys((current) => {
       if (allVisibleSelected) {
         return current.filter((key) => !visibleSelectableKeys.includes(key));
       }
 
-      const next = new Set(current);
-      visibleSelectableKeys.forEach((key) => next.add(key));
-      return Array.from(next);
+      return visibleSelectableKeys;
     });
   }, [allVisibleSelected, visibleSelectableKeys]);
+
+  useEffect(() => {
+    if (!selectionFollowsVisibleRows) {
+      return;
+    }
+
+    setSelectedRowKeys((current) => {
+      if (
+        current.length === visibleSelectableKeys.length &&
+        current.every((key, index) => key === visibleSelectableKeys[index])
+      ) {
+        return current;
+      }
+
+      return visibleSelectableKeys;
+    });
+  }, [selectionFollowsVisibleRows, visibleSelectableKeys]);
 
   const handleResizeStart = useCallback(
     (event: ReactMouseEvent<HTMLSpanElement>, column: (typeof COLUMNS)[number]) => {
@@ -732,19 +894,51 @@ function App() {
       return;
     }
 
-    void navigator.clipboard.writeText(selectedTrackingIds.join("\n")).catch(() => {
-      /* no-op */
-    });
-  }, [selectedTrackingIds]);
+    void navigator.clipboard
+      .writeText(selectedTrackingIds.join("\n"))
+      .then(() =>
+        showActionNotice({
+          tone: "success",
+          message: `${selectedTrackingIds.length} ID kiriman berhasil disalin.`,
+        })
+      )
+      .catch(() =>
+        showActionNotice({
+          tone: "error",
+          message: "Gagal menyalin ID kiriman terselect.",
+        })
+      );
+  }, [selectedTrackingIds, showActionNotice]);
+
+  const copyAllTrackingIds = useCallback(() => {
+    if (allTrackingIds.length === 0) {
+      return;
+    }
+
+    void navigator.clipboard
+      .writeText(allTrackingIds.join("\n"))
+      .then(() =>
+        showActionNotice({
+          tone: "success",
+          message: `${allTrackingIds.length} ID kiriman berhasil disalin.`,
+        })
+      )
+      .catch(() =>
+        showActionNotice({
+          tone: "error",
+          message: "Gagal menyalin seluruh ID kiriman.",
+        })
+      );
+  }, [allTrackingIds, showActionNotice]);
 
   const clearSelection = useCallback(() => {
+    setSelectionFollowsVisibleRows(false);
     setSelectedRowKeys([]);
   }, []);
 
   const clearAllFilters = useCallback(() => {
     setFilters({});
     setValueFilters({});
-    setSelectedPresetId("");
   }, []);
 
   const clearHiddenFilters = useCallback(() => {
@@ -755,32 +949,75 @@ function App() {
   }, [visibleColumnPathSet]);
 
   const deleteSelectedRows = useCallback(() => {
-    if (selectedRowKeys.length === 0) {
+    if (selectedVisibleRowKeys.length === 0) {
       return;
     }
 
-    selectedRowKeys.forEach((rowKey) => {
-      requestControllersRef.current.get(rowKey)?.abort();
-      requestControllersRef.current.delete(rowKey);
-    });
+    setSelectionFollowsVisibleRows(false);
+
+    invalidatePendingTrackingWork();
 
     setRows((current) =>
       ensureTrailingEmptyRows(
         current.map((row) =>
-          selectedRowKeys.includes(row.key)
+          selectedVisibleRowKeys.includes(row.key)
             ? {
                 ...row,
                 trackingInput: "",
                 shipment: null,
                 loading: false,
+                stale: false,
                 error: "",
               }
             : row
         )
       )
     );
+    setSelectedRowKeys((current) =>
+      current.filter((key) => !selectedVisibleRowKeys.includes(key))
+    );
+    showActionNotice({
+      tone: "info",
+      message: `${selectedVisibleRowKeys.length} row terselect dihapus.`,
+    });
+  }, [invalidatePendingTrackingWork, selectedVisibleRowKeys, showActionNotice]);
+
+  const deleteAllRows = useCallback(() => {
+    if (allTrackingIds.length === 0) {
+      return;
+    }
+
+    if (!deleteAllArmed) {
+      armDeleteAll();
+      return;
+    }
+
+    disarmDeleteAll();
+    setSelectionFollowsVisibleRows(false);
+    invalidatePendingTrackingWork();
+
+    setRows(createEmptyRows(INITIAL_ROW_COUNT));
+    setFilters({});
+    setValueFilters({});
+    setSortState({
+      path: null,
+      direction: "asc",
+    });
     setSelectedRowKeys([]);
-  }, [selectedRowKeys]);
+    showActionNotice({
+      tone: "info",
+      message: `${allTrackingIds.length} ID kiriman dihapus.`,
+    });
+    focusFirstTrackingInput();
+  }, [
+    allTrackingIds.length,
+    armDeleteAll,
+    deleteAllArmed,
+    disarmDeleteAll,
+    focusFirstTrackingInput,
+    invalidatePendingTrackingWork,
+    showActionNotice,
+  ]);
 
   const exportCsv = useCallback(() => {
     if (exportableRows.length === 0) {
@@ -804,14 +1041,89 @@ function App() {
 
     link.href = objectUrl;
     link.download =
-      selectedRowKeys.length > 0
+      selectedVisibleRowKeys.length > 0
         ? `shipflow-selected-${dateSuffix}.csv`
         : `shipflow-view-${dateSuffix}.csv`;
     document.body.appendChild(link);
     link.click();
     link.remove();
     URL.revokeObjectURL(objectUrl);
-  }, [exportableRows, selectedRowKeys.length, visibleColumns]);
+    showActionNotice({
+      tone: "success",
+      message: `${exportableRows.length} row berhasil diexport ke CSV.`,
+    });
+  }, [exportableRows, selectedVisibleRowKeys.length, showActionNotice, visibleColumns]);
+
+  const retrackAllRows = useCallback(() => {
+    if (retrackableRows.length === 0) {
+      return;
+    }
+
+    const retrackableKeySet = new Set(retrackableRows.map((row) => row.key));
+
+    showActionNotice({
+      tone: "info",
+      message: `Lacak ulang dimulai untuk ${retrackableRows.length} kiriman.`,
+    });
+
+    void runBulkPasteFetches(retrackableRows).then(() => {
+      const refreshedRows = rowsRef.current.filter((row) =>
+        retrackableKeySet.has(row.key)
+      );
+      const failedCount = refreshedRows.filter((row) => row.error).length;
+      const successCount = refreshedRows.length - failedCount;
+
+      showActionNotice({
+        tone: failedCount > 0 ? "info" : "success",
+        message:
+          failedCount > 0
+            ? `Lacak ulang selesai. ${successCount} berhasil, ${failedCount} gagal.`
+            : `Lacak ulang selesai untuk ${retrackableRows.length} kiriman.`,
+      });
+    });
+  }, [retrackableRows, runBulkPasteFetches, showActionNotice]);
+
+  const scrollToColumn = useCallback(
+    (path: string) => {
+      const scrollContainer = sheetScrollRef.current;
+      if (!scrollContainer || !visibleColumnPathSet.has(path)) {
+        return;
+      }
+
+      const headerCells = Array.from(
+        scrollContainer.querySelectorAll<HTMLTableCellElement>(
+          'thead tr:first-child th[data-column-path]'
+        )
+      );
+      const targetCell = headerCells.find(
+        (cell) => cell.dataset.columnPath === path
+      );
+
+      if (!targetCell) {
+        return;
+      }
+
+      setHighlightedColumnPath(path);
+      if (highlightedColumnTimeoutRef.current !== null) {
+        window.clearTimeout(highlightedColumnTimeoutRef.current);
+      }
+      highlightedColumnTimeoutRef.current = window.setTimeout(() => {
+        setHighlightedColumnPath((current) => (current === path ? null : current));
+        highlightedColumnTimeoutRef.current = null;
+      }, 2000);
+
+      const stickyWidth = Array.from(pinnedColumnSet).reduce(
+        (total, columnPath) => total + (effectiveColumnWidths[columnPath] ?? 0),
+        SELECTOR_COLUMN_WIDTH
+      );
+
+      scrollContainer.scrollTo({
+        left: Math.max(targetCell.offsetLeft - stickyWidth - 12, 0),
+        behavior: "smooth",
+      });
+    },
+    [effectiveColumnWidths, pinnedColumnSet, visibleColumnPathSet]
+  );
 
   const toggleColumnVisibility = useCallback(
     (path: string) => {
@@ -853,53 +1165,6 @@ function App() {
     setPinnedColumnPaths((current) => togglePinnedColumnState(current, path));
   }, []);
 
-  const saveCurrentFilterPreset = useCallback(() => {
-    const nextPreset = buildFilterPreset(
-      presetNameInput,
-      filters,
-      valueFilters,
-      visibleColumnPathSet,
-      () => crypto.randomUUID()
-    );
-
-    if (!nextPreset) {
-      return;
-    }
-
-    setFilterPresets((current) => [...current, nextPreset]);
-    setSelectedPresetId(nextPreset.id);
-    setPresetNameInput("");
-  }, [filters, presetNameInput, valueFilters, visibleColumnPathSet]);
-
-  const applySelectedPreset = useCallback(() => {
-    if (!selectedPresetId) {
-      return;
-    }
-
-    const targetPreset = filterPresets.find(
-      (preset) => preset.id === selectedPresetId
-    );
-
-    if (!targetPreset) {
-      return;
-    }
-
-    setHiddenColumnPaths((current) => applyPresetToHiddenColumns(current, targetPreset));
-    setFilters(targetPreset.textFilters);
-    setValueFilters(targetPreset.valueFilters);
-  }, [filterPresets, selectedPresetId]);
-
-  const deleteSelectedPreset = useCallback(() => {
-    if (!selectedPresetId) {
-      return;
-    }
-
-    setFilterPresets((current) =>
-      current.filter((preset) => preset.id !== selectedPresetId)
-    );
-    setSelectedPresetId("");
-  }, [selectedPresetId]);
-
   const closeColumnMenu = useCallback(() => {
     setOpenColumnMenuPath(null);
   }, []);
@@ -917,7 +1182,7 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (selectedRowKeys.length === 0) {
+      if (selectedVisibleRowKeys.length === 0) {
         return;
       }
 
@@ -947,7 +1212,7 @@ function App() {
     };
 
     const handleCopy = (event: globalThis.ClipboardEvent) => {
-      if (selectedRowKeys.length === 0) {
+      if (selectedVisibleRowKeys.length === 0) {
         return;
       }
 
@@ -976,34 +1241,47 @@ function App() {
       window.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("copy", handleCopy);
     };
-  }, [copySelectedTrackingIds, deleteSelectedRows, selectedRowKeys, selectedTrackingIds]);
+  }, [
+    copySelectedTrackingIds,
+    deleteSelectedRows,
+    selectedTrackingIds,
+    selectedVisibleRowKeys.length,
+  ]);
 
   return (
     <main className="shell">
       {serverError ? <section className="error-box">{serverError}</section> : null}
 
       <section className="sheet-panel">
+        {actionNotice ? (
+          <div
+            className={`action-notice action-notice-${actionNotice.tone}`}
+            role="status"
+            aria-live="polite"
+          >
+            {actionNotice.message}
+          </div>
+        ) : null}
+
         <SheetActionBar
           loadedCount={loadedCount}
+          retrackableRowsCount={retrackableRows.length}
+          deleteAllArmed={deleteAllArmed}
           exportableRowsCount={exportableRows.length}
-          presetNameInput={presetNameInput}
           activeFilterCount={activeFilterCount}
-          selectedPresetId={selectedPresetId}
-          filterPresets={filterPresets}
-          selectedRowCount={selectedRowKeys.length}
+          selectedRowCount={selectedVisibleRowKeys.length}
           ignoredHiddenFilterCount={ignoredHiddenFilterCount}
-          sortLabel={sortState.path ? getSortLabel(sortState.path) : "Off"}
-          onPresetNameInputChange={setPresetNameInput}
-          onSelectedPresetChange={setSelectedPresetId}
+          columnShortcuts={columnShortcuts}
+          onRetrackAll={retrackAllRows}
           onExportCsv={exportCsv}
-          onSavePreset={saveCurrentFilterPreset}
-          onApplyPreset={applySelectedPreset}
-          onDeletePreset={deleteSelectedPreset}
+          onCopyAllIds={copyAllTrackingIds}
+          onDeleteAllRows={deleteAllRows}
           onClearSelection={clearSelection}
           onClearFilter={clearAllFilters}
           onCopySelectedIds={copySelectedTrackingIds}
           onDeleteSelectedRows={deleteSelectedRows}
           onClearHiddenFilters={clearHiddenFilters}
+          onScrollToColumn={scrollToColumn}
         />
 
         <SheetTable
@@ -1020,6 +1298,8 @@ function App() {
           valueFilters={valueFilters}
           valueOptionsByPath={valueOptionsByPath}
           openColumnMenuPath={openColumnMenuPath}
+          highlightedColumnPath={highlightedColumnPath}
+          scrollContainerRef={sheetScrollRef}
           sortDirectionForPath={getColumnSortDirection}
           onMouseLeaveTable={() => setHoveredColumn(null)}
           onHoverColumn={setHoveredColumn}

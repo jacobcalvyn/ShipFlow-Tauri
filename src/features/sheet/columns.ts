@@ -7,7 +7,6 @@ export const MAX_CONCURRENT_BULK_REQUESTS = 4;
 export const TRACKING_COLUMN_PATH = "detail.shipment_header.nomor_kiriman";
 export const HIDDEN_COLUMNS_STORAGE_KEY = "shipflow-hidden-columns";
 export const PINNED_COLUMNS_STORAGE_KEY = "shipflow-pinned-columns";
-export const FILTER_PRESETS_STORAGE_KEY = "shipflow-filter-presets";
 
 export const COLUMNS: ColumnDefinition[] = [
   {
@@ -17,6 +16,42 @@ export const COLUMNS: ColumnDefinition[] = [
     defaultWidth: 200,
     minWidth: 160,
     sticky: true,
+  },
+  {
+    path: "status_akhir.status",
+    label: "Status Akhir",
+    type: "text",
+    defaultWidth: 150,
+    minWidth: 130,
+    tone: "status",
+  },
+  {
+    path: "status_akhir.location",
+    label: "Lokasi Akhir",
+    type: "text",
+    defaultWidth: 220,
+    minWidth: 180,
+  },
+  {
+    path: "status_akhir.officer_name",
+    label: "Petugas Akhir",
+    type: "text",
+    defaultWidth: 180,
+    minWidth: 150,
+  },
+  {
+    path: "status_akhir.officer_id",
+    label: "ID Petugas Akhir",
+    type: "text",
+    defaultWidth: 150,
+    minWidth: 130,
+  },
+  {
+    path: "status_akhir.datetime",
+    label: "Waktu Status Akhir",
+    type: "text",
+    defaultWidth: 190,
+    minWidth: 160,
   },
   {
     path: "detail.actors.pengirim.nama",
@@ -131,6 +166,7 @@ export const COLUMNS: ColumnDefinition[] = [
     type: "text",
     defaultWidth: 150,
     minWidth: 130,
+    tone: "layanan",
   },
   {
     path: "detail.package_detail.kriteria_kiriman",
@@ -194,6 +230,7 @@ export const COLUMNS: ColumnDefinition[] = [
     type: "boolean",
     defaultWidth: 100,
     minWidth: 90,
+    tone: "cod",
   },
   {
     path: "detail.billing_detail.cod_info.virtual_account",

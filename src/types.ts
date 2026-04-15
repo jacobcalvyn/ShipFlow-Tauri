@@ -149,3 +149,8 @@ export type TrackResponse = {
   history: TrackHistoryEntry[];
   history_summary: HistorySummary;
 };
+
+export type TrackingServerConfig = {
+  baseUrl: string;
+  accessToken: string;
+};

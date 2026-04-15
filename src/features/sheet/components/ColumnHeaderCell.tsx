@@ -15,6 +15,7 @@ type ColumnHeaderCellProps = {
   selectedValueFilters: string[];
   availableValueOptions: string[];
   isMenuOpen: boolean;
+  isHighlighted: boolean;
   onHoverColumn: (columnIndex: number | null) => void;
   onToggleMenu: (path: string) => void;
   onResizeStart: (
@@ -42,6 +43,7 @@ export function ColumnHeaderCell({
   selectedValueFilters,
   availableValueOptions,
   isMenuOpen,
+  isHighlighted,
   onHoverColumn,
   onToggleMenu,
   onResizeStart,
@@ -57,6 +59,7 @@ export function ColumnHeaderCell({
 
   return (
     <th
+      data-column-path={column.path}
       title={column.path}
       style={{
         width,
@@ -67,6 +70,7 @@ export function ColumnHeaderCell({
       className={[
         isPinned ? "sticky-col" : "",
         isMenuOpen ? "has-open-menu" : "",
+        isHighlighted ? "is-shortcut-highlighted" : "",
         getColumnToneClass(column),
         getColumnTypeClass(column),
         hoveredColumn === columnIndex ? "column-hover" : "",

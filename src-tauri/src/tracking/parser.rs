@@ -57,17 +57,17 @@ pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackRespons
             "IDPELANGGAN KORPORAT" => header.id_pelanggan_korporat = Some(value),
             "TYPE PEMBAYARAN" => billing.type_pembayaran = Some(value),
             "JENIS LAYANAN" => package.jenis_layanan = Some(value),
-            "COD/NON COD" => billing.cod = parse_cod_non_cod(&value),
+            "COD/NON COD" => billing.cod = parse_cod_non_cod(&value)?,
             "ISI KIRIMAN" => package.isi_kiriman = Some(value),
             "BERAT KIRIMAN" => {
-                let (act, vol) = parse_weight(&value);
+                let (act, vol) = parse_weight(&value)?;
                 package.berat_actual = act;
                 package.berat_volumetric = vol;
             }
             "KRITERIA KIRIMAN" => package.kriteria_kiriman = Some(value),
-            "BEA DASAR" => billing.bea_dasar = parse_currency(&value),
-            "NILAI BARANG" => billing.nilai_barang = parse_currency(&value),
-            "HTNB" => billing.htnb = parse_currency(&value),
+            "BEA DASAR" => billing.bea_dasar = parse_currency(&value)?,
+            "NILAI BARANG" => billing.nilai_barang = parse_currency(&value)?,
+            "HTNB" => billing.htnb = parse_currency(&value)?,
             "PENGIRIM" => actors.pengirim = parse_pengirim(&value),
             "PENERIMA" => actors.penerima = parse_penerima(&value),
             "STATUS AKHIR" => {
@@ -288,18 +288,27 @@ fn normalize_label(input: &str) -> String {
     normalize_text(input).to_uppercase()
 }
 
-fn parse_currency(value: &str) -> f64 {
-    value
+fn parse_currency(value: &str) -> Result<f64, TrackingError> {
+    let normalized = value
         .replace("Rp", "")
         .replace("RP", "")
         .replace('.', "")
         .replace(',', ".")
         .trim()
-        .parse::<f64>()
-        .unwrap_or(0.0)
+        .to_string();
+
+    if normalized.is_empty() || normalized == "-" {
+        return Ok(0.0);
+    }
+
+    normalized.parse::<f64>().map_err(|_| {
+        TrackingError::Upstream(format!(
+            "Unable to parse currency value from upstream HTML: {value}"
+        ))
+    })
 }
 
-fn parse_weight(value: &str) -> (f64, f64) {
+fn parse_weight(value: &str) -> Result<(f64, f64), TrackingError> {
     let mut actual = 0.0;
     let mut volumetric = 0.0;
 
@@ -307,30 +316,48 @@ fn parse_weight(value: &str) -> (f64, f64) {
         let lower = part.to_lowercase();
         if lower.contains("aktual") {
             if let Some((_, raw)) = lower.split_once(':') {
-                actual = raw.replace("kg", "").trim().parse::<f64>().unwrap_or(0.0);
+                actual = parse_weight_value(raw)?;
             }
         } else if lower.contains("volumetrik") {
             if let Some((_, raw)) = lower.split_once(':') {
-                volumetric = raw.replace("kg", "").trim().parse::<f64>().unwrap_or(0.0);
+                volumetric = parse_weight_value(raw)?;
             }
         }
     }
 
-    (actual, volumetric)
+    Ok((actual, volumetric))
 }
 
-fn parse_cod_non_cod(raw: &str) -> TrackCodDetail {
+fn parse_weight_value(value: &str) -> Result<f64, TrackingError> {
+    let normalized = value
+        .replace("kg", "")
+        .replace("KG", "")
+        .trim()
+        .to_string();
+
+    if normalized.is_empty() || normalized == "-" {
+        return Ok(0.0);
+    }
+
+    normalized.parse::<f64>().map_err(|_| {
+        TrackingError::Upstream(format!(
+            "Unable to parse weight value from upstream HTML: {value}"
+        ))
+    })
+}
+
+fn parse_cod_non_cod(raw: &str) -> Result<TrackCodDetail, TrackingError> {
     let upper = raw.to_uppercase();
     let is_cod = upper.trim_start().starts_with("#COD") || upper.trim_start().starts_with("#CCOD");
 
     if !is_cod {
-        return TrackCodDetail {
+        return Ok(TrackCodDetail {
             is_cod: false,
             virtual_account: None,
             total_cod: 0.0,
             status: None,
             tanggal: None,
-        };
+        });
     }
 
     fn clean_segment(segment: &str) -> String {
@@ -388,7 +415,8 @@ fn parse_cod_non_cod(raw: &str) -> TrackCodDetail {
 
     let total_cod = extract_amount_prefix(&total_cod_raw)
         .map(|value| parse_currency(&value))
-        .unwrap_or_else(|| parse_currency(&total_cod_raw));
+        .transpose()?
+        .unwrap_or(parse_currency(&total_cod_raw)?);
 
     let status = if upper.contains("STATUS COD/CCOD") {
         if upper.contains("TANGGAL") {
@@ -410,13 +438,13 @@ fn parse_cod_non_cod(raw: &str) -> TrackCodDetail {
         None
     };
 
-    TrackCodDetail {
+    Ok(TrackCodDetail {
         is_cod: true,
         virtual_account,
         total_cod,
         status,
         tanggal,
-    }
+    })
 }
 
 fn parse_sla_from_nomor_kiriman(raw: &str) -> PerformanceDetail {

@@ -3,11 +3,15 @@ use serde::Serialize;
 #[derive(Clone)]
 pub struct TrackingServerState {
     pub client: reqwest::Client,
+    pub access_token: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct TrackingServerInfo {
+    #[serde(rename = "baseUrl")]
     pub base_url: String,
+    #[serde(rename = "accessToken")]
+    pub access_token: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

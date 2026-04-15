@@ -1,13 +1,13 @@
 mod tracking;
 
-use tracking::server::{get_tracking_server_url, start_tracking_server};
+use tracking::server::{get_tracking_server_config, start_tracking_server};
 
 pub fn run() {
     let tracking_server = start_tracking_server().expect("failed to start tracking server");
 
     tauri::Builder::default()
         .manage(tracking_server)
-        .invoke_handler(tauri::generate_handler![get_tracking_server_url])
+        .invoke_handler(tauri::generate_handler![get_tracking_server_config])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -69,5 +69,20 @@ mod tests {
             .expect_err("missing details should fail");
 
         assert!(matches!(error, TrackingError::NotFound(_)));
+    }
+
+    #[test]
+    fn parse_tracking_html_returns_upstream_error_for_invalid_numeric_fields() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2603310114291</td></tr>
+              <tr><td>Bea Dasar</td><td>Rp not-a-number</td></tr>
+            </table>
+        "#;
+
+        let error = parse_tracking_html("https://example.test", html)
+            .expect_err("invalid numeric values should fail loudly");
+
+        assert!(matches!(error, TrackingError::Upstream(_)));
     }
 }

@@ -1,3 +1,4 @@
+import { createRef } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { SheetTable } from "./SheetTable";
 import { COLUMNS } from "../columns";
@@ -14,6 +15,7 @@ function createRow(): SheetRow {
     trackingInput: "P2603310114291",
     shipment: null,
     loading: false,
+    stale: false,
     error: "",
   };
 }
@@ -55,6 +57,8 @@ describe("SheetTable", () => {
           [visibleColumns[1].path]: ["Alice"],
         }}
         openColumnMenuPath={visibleColumns[0].path}
+        highlightedColumnPath={visibleColumns[0].path}
+        scrollContainerRef={createRef<HTMLDivElement>()}
         sortDirectionForPath={() => null}
         onMouseLeaveTable={vi.fn()}
         onHoverColumn={vi.fn()}

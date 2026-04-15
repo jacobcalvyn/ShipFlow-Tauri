@@ -1,4 +1,9 @@
-import { ClipboardEvent, KeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
+import {
+  ClipboardEvent,
+  KeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  RefObject,
+} from "react";
 import { ColumnHeaderCell } from "./ColumnHeaderCell";
 import { SheetBodyRow } from "./SheetBodyRow";
 import { ColumnDefinition, SheetRow } from "../types";
@@ -18,6 +23,8 @@ type SheetTableProps = {
   valueFilters: Record<string, string[]>;
   valueOptionsByPath: Record<string, string[]>;
   openColumnMenuPath: string | null;
+  highlightedColumnPath: string | null;
+  scrollContainerRef: RefObject<HTMLDivElement>;
   sortDirectionForPath: (path: string) => "asc" | "desc" | null;
   onMouseLeaveTable: () => void;
   onHoverColumn: (columnIndex: number | null) => void;
@@ -62,6 +69,8 @@ export function SheetTable({
   valueFilters,
   valueOptionsByPath,
   openColumnMenuPath,
+  highlightedColumnPath,
+  scrollContainerRef,
   sortDirectionForPath,
   onMouseLeaveTable,
   onHoverColumn,
@@ -83,7 +92,11 @@ export function SheetTable({
   onColumnMenuRef,
 }: SheetTableProps) {
   return (
-    <div className="sheet-scroll" onMouseLeave={onMouseLeaveTable}>
+    <div
+      ref={scrollContainerRef}
+      className="sheet-scroll"
+      onMouseLeave={onMouseLeaveTable}
+    >
       <table className="sheet-table">
         <thead>
           <tr>
@@ -113,6 +126,7 @@ export function SheetTable({
                 selectedValueFilters={valueFilters[column.path] ?? []}
                 availableValueOptions={valueOptionsByPath[column.path] ?? []}
                 isMenuOpen={openColumnMenuPath === column.path}
+                isHighlighted={highlightedColumnPath === column.path}
                 onHoverColumn={onHoverColumn}
                 onToggleMenu={onToggleColumnMenu}
                 onResizeStart={onResizeStart}

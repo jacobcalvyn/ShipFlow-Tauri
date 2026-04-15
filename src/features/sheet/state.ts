@@ -1,5 +1,4 @@
 import { TRACKING_COLUMN_PATH } from "./columns";
-import { FilterPreset } from "./types";
 
 export function countActiveTextFilters(
   filters: Record<string, string>,
@@ -100,43 +99,4 @@ export function toggleValueFilterSelection(
     ...valueFilters,
     [path]: nextValues,
   };
-}
-
-export function buildFilterPreset(
-  name: string,
-  textFilters: Record<string, string>,
-  valueFilters: Record<string, string[]>,
-  visiblePaths: Set<string>,
-  createId: () => string
-): FilterPreset | null {
-  const normalizedName = name.trim();
-  const normalizedTextFilters = sanitizeTextFilters(textFilters, visiblePaths);
-  const normalizedValueFilters = sanitizeValueFilters(valueFilters, visiblePaths);
-
-  if (
-    !normalizedName ||
-    Object.keys(normalizedTextFilters).length === 0 &&
-      Object.keys(normalizedValueFilters).length === 0
-  ) {
-    return null;
-  }
-
-  return {
-    id: createId(),
-    name: normalizedName,
-    textFilters: normalizedTextFilters,
-    valueFilters: normalizedValueFilters,
-  };
-}
-
-export function applyPresetToHiddenColumns(
-  hiddenColumnPaths: string[],
-  preset: FilterPreset
-) {
-  const relevantPaths = new Set([
-    ...Object.keys(preset.textFilters),
-    ...Object.keys(preset.valueFilters),
-  ]);
-
-  return hiddenColumnPaths.filter((path) => !relevantPaths.has(path));
 }

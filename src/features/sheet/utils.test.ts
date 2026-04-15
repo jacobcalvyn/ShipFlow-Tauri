@@ -13,6 +13,7 @@ function createRow(partial: Partial<SheetRow> = {}): SheetRow {
     trackingInput: partial.trackingInput ?? "",
     shipment: partial.shipment ?? null,
     loading: partial.loading ?? false,
+    stale: partial.stale ?? false,
     error: partial.error ?? "",
   };
 }
@@ -94,6 +95,7 @@ describe("sheet utils", () => {
 
   it("returns row status in the expected priority order", () => {
     expect(getRowStatus(createRow({ loading: true, error: "x" }))).toBe("Loading");
+    expect(getRowStatus(createRow({ stale: true, error: "x" }))).toBe("Stale");
     expect(getRowStatus(createRow({ error: "x" }))).toBe("Error");
     expect(
       getRowStatus(

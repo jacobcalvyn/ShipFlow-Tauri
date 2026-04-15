@@ -2,16 +2,17 @@
 
 Desktop shipment tracking workspace built with Tauri, Rust, React, and Vite.
 
-The app is designed for spreadsheet-style operational analysis. Each row represents one shipment. The first data column accepts a shipment ID, then the app fetches POS Indonesia tracking details and fills the rest of the row.
+The app is optimized for spreadsheet-style operational analysis. Each row represents one shipment. The first data column accepts a shipment ID, then the app fetches POS Indonesia tracking details and fills the rest of the row.
 
 ## What The App Does
 
 - Runs as a desktop app with Tauri
 - Starts an internal Rust tracking server bundled with the app
 - Scrapes tracking details directly from POS Indonesia without login
-- Shows shipment detail fields in a wide spreadsheet-style table
-- Supports bulk paste, row selection, CSV export, column pin/hide, sorting, and filter presets
+- Shows shipment detail and `status_akhir` fields in a wide spreadsheet-style table
+- Supports bulk paste, row selection, CSV export, column pin/hide, sorting, and filtering
 - Supports both text filters and per-column multi-select value filters
+- Supports retracking all current shipments from the action bar
 
 ## Tracking Flow
 
@@ -68,8 +69,40 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
   - hide / unhide
   - filter by value
 - Filter row for free-text filtering
-- Saved filter presets
-- CSV export for selected rows or current filtered view
+- Action bar for:
+  - retrack all
+  - export CSV
+  - copy all shipment IDs
+  - clear filter
+  - delete all
+  - clear selection
+  - copy selected shipment IDs
+  - delete selected rows
+- Column shortcut buttons that horizontally scroll to key columns
+- Temporary header highlight when a shortcut scroll target is reached
+
+## Current Data Shown In The Table
+
+The main table currently focuses on:
+
+- `detail.shipment_header`
+- `status_akhir`
+- `detail.actors.pengirim`
+- `detail.actors.penerima`
+- `detail.origin_detail`
+- `detail.package_detail`
+- `detail.billing_detail`
+- `detail.performance_detail`
+
+The backend still returns `pod`, `history`, and `history_summary`, but those are not the main focus of the current spreadsheet view.
+
+## Stability And Safety Notes
+
+- The internal Rust server now uses a per-session access token. The frontend must send that token in `x-shipflow-token` on tracking requests.
+- CORS for the internal server is restricted to the local app/dev origins instead of being fully open.
+- Retrack failures do not wipe the last successful shipment data. Failed refreshes keep the old row data and mark the row as stale.
+- Numeric parsing in the Rust scraper is hardened: invalid upstream numeric fields now fail loudly instead of silently falling back to `0`.
+- `Delete All` resets rows, filters, value filters, sort state, and in-flight tracking work so the table returns to a clean input state.
 
 ## Project Structure
 
@@ -79,7 +112,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - [src/features/sheet/columns.ts](./src/features/sheet/columns.ts): spreadsheet column definitions
 - [src/features/sheet/types.ts](./src/features/sheet/types.ts): sheet-level UI types
 - [src/features/sheet/utils.ts](./src/features/sheet/utils.ts): formatting and table helpers
-- [src/features/sheet/state.ts](./src/features/sheet/state.ts): pure state helpers for filter/pin/hide/preset logic
+- [src/features/sheet/state.ts](./src/features/sheet/state.ts): pure state helpers for filter/pin/hide logic
 - [src/features/sheet/components](./src/features/sheet/components): table, header, row, and action bar components
 
 ### Backend
@@ -92,7 +125,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 
 ### Reference Only
 
-`EX-SCRAP/` is kept only as a reference. It is not part of the active app flow.
+`EX-SCRAP/` is kept only as a reference. It is not part of the active app flow and must not be modified for app changes.
 
 ## Run Locally
 
@@ -139,7 +172,7 @@ npm test
 Current frontend tests cover:
 
 - sheet utility functions
-- sheet state helpers for pin/hide/preset/filter logic
+- sheet state helpers for pin / hide / filter logic
 - `SheetTable` interaction smoke test
 - `SheetActionBar` interaction smoke test
 
@@ -148,6 +181,7 @@ Rust tests live in [src-tauri/src/lib.rs](./src-tauri/src/lib.rs) and cover:
 - Base64 + percent-encoded tracking URL generation
 - sample HTML parsing
 - not-found parser behavior
+- invalid numeric parser behavior
 
 Run Rust tests with:
 
@@ -159,4 +193,5 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 - The app depends on the current HTML structure of the POS Indonesia tracking page
 - If the upstream HTML changes, the Rust parser may need updates
-- Frontend filter presets are stored in browser/webview local storage
+- Hidden columns are stored in browser/webview local storage
+- Pinned columns are stored in browser/webview local storage

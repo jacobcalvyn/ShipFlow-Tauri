@@ -1,10 +1,9 @@
 import {
   COLUMNS,
-  FILTER_PRESETS_STORAGE_KEY,
   INITIAL_ROW_COUNT,
   MIN_EMPTY_TRAILING_ROWS,
 } from "./columns";
-import { ColumnDefinition, FilterPreset, SheetRow } from "./types";
+import { ColumnDefinition, SheetRow } from "./types";
 
 export function createEmptyRow(): SheetRow {
   return {
@@ -12,6 +11,7 @@ export function createEmptyRow(): SheetRow {
     trackingInput: "",
     shipment: null,
     loading: false,
+    stale: false,
     error: "",
   };
 }
@@ -62,6 +62,10 @@ export function getByPath(source: unknown, path: string): unknown {
 export function getRowStatus(row: SheetRow) {
   if (row.loading) {
     return "Loading";
+  }
+
+  if (row.stale) {
+    return "Stale";
   }
 
   if (row.error) {
@@ -179,6 +183,12 @@ export function getColumnToneClass(column: ColumnDefinition) {
       return "tone-pengirim";
     case "penerima":
       return "tone-penerima";
+    case "status":
+      return "tone-status";
+    case "layanan":
+      return "tone-layanan";
+    case "cod":
+      return "tone-cod";
     default:
       return "";
   }
@@ -201,6 +211,8 @@ export function getStatusToneClass(status: string) {
       return "status-ready";
     case "Loading":
       return "status-loading";
+    case "Stale":
+      return "status-stale";
     case "Error":
       return "status-error";
     case "Pending":
@@ -310,87 +322,6 @@ export function loadStoredStringArray(storageKey: string, fallback: string[]) {
     );
   } catch {
     return fallback;
-  }
-}
-
-export function loadStoredFilterPresets(): FilterPreset[] {
-  if (!isBrowserReady()) {
-    return [];
-  }
-
-  try {
-    const rawValue = window.localStorage.getItem(FILTER_PRESETS_STORAGE_KEY);
-    if (!rawValue) {
-      return [];
-    }
-
-    const validPaths = new Set(COLUMNS.map((column) => column.path));
-    const parsed = JSON.parse(rawValue);
-
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-
-    return parsed.flatMap((preset) => {
-      if (
-        !preset ||
-        typeof preset !== "object" ||
-        typeof preset.id !== "string" ||
-        typeof preset.name !== "string" ||
-        (
-          (!("textFilters" in preset) || typeof preset.textFilters !== "object") &&
-          (!("filters" in preset) || typeof preset.filters !== "object")
-        )
-      ) {
-        return [];
-      }
-
-      const normalizedTextFilters = Object.entries(
-        (
-          "textFilters" in preset && preset.textFilters
-            ? preset.textFilters
-            : preset.filters
-        ) as Record<string, unknown>
-      ).reduce<Record<string, string>>((result, [path, value]) => {
-        if (validPaths.has(path) && typeof value === "string") {
-          result[path] = value;
-        }
-
-        return result;
-      }, {});
-
-      const normalizedValueFilters =
-        "valueFilters" in preset && preset.valueFilters && typeof preset.valueFilters === "object"
-          ? Object.entries(preset.valueFilters as Record<string, unknown>).reduce<
-              Record<string, string[]>
-            >((result, [path, value]) => {
-              if (!validPaths.has(path) || !Array.isArray(value)) {
-                return result;
-              }
-
-              const normalizedValues = value.filter(
-                (item): item is string => typeof item === "string" && item.trim() !== ""
-              );
-
-              if (normalizedValues.length > 0) {
-                result[path] = normalizedValues;
-              }
-
-              return result;
-            }, {})
-          : {};
-
-      return [
-        {
-          id: preset.id,
-          name: preset.name,
-          textFilters: normalizedTextFilters,
-          valueFilters: normalizedValueFilters,
-        },
-      ];
-    });
-  } catch {
-    return [];
   }
 }
 
