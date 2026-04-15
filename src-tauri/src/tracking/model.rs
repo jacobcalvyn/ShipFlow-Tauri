@@ -1,17 +1,8 @@
 use serde::Serialize;
 
 #[derive(Clone)]
-pub struct TrackingServerState {
+pub struct TrackingClientState {
     pub client: reqwest::Client,
-    pub access_token: String,
-}
-
-#[derive(Clone, Serialize)]
-pub struct TrackingServerInfo {
-    #[serde(rename = "baseUrl")]
-    pub base_url: String,
-    #[serde(rename = "accessToken")]
-    pub access_token: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -54,16 +45,16 @@ pub struct PackageDetail {
     pub jenis_layanan: Option<String>,
     pub kriteria_kiriman: Option<String>,
     pub isi_kiriman: Option<String>,
-    pub berat_actual: f64,
-    pub berat_volumetric: f64,
+    pub berat_actual: Option<f64>,
+    pub berat_volumetric: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct BillingDetail {
     pub type_pembayaran: Option<String>,
-    pub bea_dasar: f64,
-    pub nilai_barang: f64,
-    pub htnb: f64,
+    pub bea_dasar: Option<f64>,
+    pub nilai_barang: Option<f64>,
+    pub htnb: Option<f64>,
     #[serde(rename = "cod_info")]
     pub cod: TrackCodDetail,
 }
@@ -87,7 +78,7 @@ pub struct PerformanceDetail {
 pub struct TrackCodDetail {
     pub is_cod: bool,
     pub virtual_account: Option<String>,
-    pub total_cod: f64,
+    pub total_cod: Option<f64>,
     pub status: Option<String>,
     pub tanggal: Option<String>,
 }
@@ -187,16 +178,6 @@ pub struct TrackResponse {
     pub pod: TrackPod,
     pub history: Vec<TrackHistoryEntry>,
     pub history_summary: HistorySummary,
-}
-
-#[derive(Serialize)]
-pub struct HealthResponse {
-    pub status: &'static str,
-}
-
-#[derive(Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
 }
 
 #[derive(Debug)]

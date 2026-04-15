@@ -13,6 +13,7 @@ use super::upstream::resolve_pos_href;
 
 pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackResponse, TrackingError> {
     let document = ScraperHtml::parse_document(html);
+    let document_text = normalize_text(&document.root_element().text().collect::<String>());
     let tr_selector = Selector::parse("tr").expect("valid selector");
     let cell_selector = Selector::parse("td, th").expect("valid selector");
     let table_selector = Selector::parse("table").expect("valid selector");
@@ -233,8 +234,19 @@ pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackRespons
     }
 
     if header.nomor_kiriman.is_none() && status_akhir.status.is_none() {
-        return Err(TrackingError::NotFound(
-            "Shipment was not found on POS tracking.".into(),
+        let lower = document_text.to_lowercase();
+        if lower.contains("tidak ditemukan")
+            || lower.contains("data tidak ditemukan")
+            || lower.contains("shipment was not found")
+            || lower.contains("not found")
+        {
+            return Err(TrackingError::NotFound(
+                "Shipment was not found on POS tracking.".into(),
+            ));
+        }
+
+        return Err(TrackingError::Upstream(
+            "Tracking HTML was returned, but expected shipment detail fields were missing.".into(),
         ));
     }
 
@@ -288,7 +300,7 @@ fn normalize_label(input: &str) -> String {
     normalize_text(input).to_uppercase()
 }
 
-fn parse_currency(value: &str) -> Result<f64, TrackingError> {
+fn parse_currency(value: &str) -> Result<Option<f64>, TrackingError> {
     let normalized = value
         .replace("Rp", "")
         .replace("RP", "")
@@ -298,19 +310,22 @@ fn parse_currency(value: &str) -> Result<f64, TrackingError> {
         .to_string();
 
     if normalized.is_empty() || normalized == "-" {
-        return Ok(0.0);
+        return Ok(None);
     }
 
-    normalized.parse::<f64>().map_err(|_| {
-        TrackingError::Upstream(format!(
-            "Unable to parse currency value from upstream HTML: {value}"
-        ))
-    })
+    normalized
+        .parse::<f64>()
+        .map(Some)
+        .map_err(|_| {
+            TrackingError::Upstream(format!(
+                "Unable to parse currency value from upstream HTML: {value}"
+            ))
+        })
 }
 
-fn parse_weight(value: &str) -> Result<(f64, f64), TrackingError> {
-    let mut actual = 0.0;
-    let mut volumetric = 0.0;
+fn parse_weight(value: &str) -> Result<(Option<f64>, Option<f64>), TrackingError> {
+    let mut actual = None;
+    let mut volumetric = None;
 
     for part in value.split(',') {
         let lower = part.to_lowercase();
@@ -328,7 +343,7 @@ fn parse_weight(value: &str) -> Result<(f64, f64), TrackingError> {
     Ok((actual, volumetric))
 }
 
-fn parse_weight_value(value: &str) -> Result<f64, TrackingError> {
+fn parse_weight_value(value: &str) -> Result<Option<f64>, TrackingError> {
     let normalized = value
         .replace("kg", "")
         .replace("KG", "")
@@ -336,14 +351,17 @@ fn parse_weight_value(value: &str) -> Result<f64, TrackingError> {
         .to_string();
 
     if normalized.is_empty() || normalized == "-" {
-        return Ok(0.0);
+        return Ok(None);
     }
 
-    normalized.parse::<f64>().map_err(|_| {
-        TrackingError::Upstream(format!(
-            "Unable to parse weight value from upstream HTML: {value}"
-        ))
-    })
+    normalized
+        .parse::<f64>()
+        .map(Some)
+        .map_err(|_| {
+            TrackingError::Upstream(format!(
+                "Unable to parse weight value from upstream HTML: {value}"
+            ))
+        })
 }
 
 fn parse_cod_non_cod(raw: &str) -> Result<TrackCodDetail, TrackingError> {
@@ -354,7 +372,7 @@ fn parse_cod_non_cod(raw: &str) -> Result<TrackCodDetail, TrackingError> {
         return Ok(TrackCodDetail {
             is_cod: false,
             virtual_account: None,
-            total_cod: 0.0,
+            total_cod: None,
             status: None,
             tanggal: None,
         });

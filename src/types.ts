@@ -24,23 +24,23 @@ export type PackageDetail = {
   jenis_layanan?: string;
   kriteria_kiriman?: string;
   isi_kiriman?: string;
-  berat_actual: number;
-  berat_volumetric: number;
+  berat_actual?: number | null;
+  berat_volumetric?: number | null;
 };
 
 export type TrackCodDetail = {
   is_cod: boolean;
   virtual_account?: string;
-  total_cod: number;
+  total_cod?: number | null;
   status?: string;
   tanggal?: string;
 };
 
 export type BillingDetail = {
   type_pembayaran?: string;
-  bea_dasar: number;
-  nilai_barang: number;
-  htnb: number;
+  bea_dasar?: number | null;
+  nilai_barang?: number | null;
+  htnb?: number | null;
   cod_info: TrackCodDetail;
 };
 
@@ -148,9 +148,4 @@ export type TrackResponse = {
   pod: TrackPod;
   history: TrackHistoryEntry[];
   history_summary: HistorySummary;
-};
-
-export type TrackingServerConfig = {
-  baseUrl: string;
-  accessToken: string;
 };

@@ -1,11 +1,15 @@
 import { COLUMNS, MIN_EMPTY_TRAILING_ROWS } from "./columns";
 import { SheetRow } from "./types";
 import {
+  assertValidSheetState,
   compareRows,
   ensureTrailingEmptyRows,
   formatColumnValue,
   getRowStatus,
+  sanitizeTrackingInput,
+  sanitizeTrackingPasteValues,
 } from "./utils";
+import { createDefaultSheetState } from "./default-state";
 
 function createRow(partial: Partial<SheetRow> = {}): SheetRow {
   return {
@@ -14,6 +18,7 @@ function createRow(partial: Partial<SheetRow> = {}): SheetRow {
     shipment: partial.shipment ?? null,
     loading: partial.loading ?? false,
     stale: partial.stale ?? false,
+    dirty: partial.dirty ?? false,
     error: partial.error ?? "",
   };
 }
@@ -95,6 +100,7 @@ describe("sheet utils", () => {
 
   it("returns row status in the expected priority order", () => {
     expect(getRowStatus(createRow({ loading: true, error: "x" }))).toBe("Loading");
+    expect(getRowStatus(createRow({ dirty: true, stale: true, error: "x" }))).toBe("Dirty");
     expect(getRowStatus(createRow({ stale: true, error: "x" }))).toBe("Stale");
     expect(getRowStatus(createRow({ error: "x" }))).toBe("Error");
     expect(
@@ -195,5 +201,27 @@ describe("sheet utils", () => {
 
     expect(compareRows(left, right, column, "asc")).toBeLessThan(0);
     expect(compareRows(left, right, column, "desc")).toBeGreaterThan(0);
+  });
+
+  it("sanitizes tracking input and bulk paste values aggressively", () => {
+    expect(sanitizeTrackingInput(" p2603 3101-14291 \u200B")).toBe("P26033101-14291");
+    expect(sanitizeTrackingPasteValues(" p2601 \nP 2602\n@@@\n")).toEqual([
+      "P2601",
+      "P2602",
+    ]);
+  });
+
+  it("asserts illegal row-state combinations", () => {
+    const sheetState = createDefaultSheetState();
+    sheetState.rows[0] = {
+      ...sheetState.rows[0],
+      trackingInput: "P2601",
+      shipment: null,
+      stale: true,
+    };
+
+    expect(() => assertValidSheetState(sheetState)).toThrow(
+      "cannot be stale without a last-known-good shipment"
+    );
   });
 });

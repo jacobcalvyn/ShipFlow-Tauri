@@ -1,24 +1,67 @@
 mod tracking;
 
-use tracking::server::{get_tracking_server_config, start_tracking_server};
+use std::time::Duration;
+
+use tracking::model::TrackingClientState;
+use tracking::upstream::scrape_pos_tracking;
+
+#[tauri::command]
+async fn track_shipment(
+    shipment_id: String,
+    sheet_id: Option<String>,
+    row_key: Option<String>,
+    client_state: tauri::State<'_, TrackingClientState>,
+) -> Result<tracking::model::TrackResponse, String> {
+    let context = format!(
+        "[sheetId={}, rowKey={}, shipmentId={}]",
+        sheet_id.as_deref().unwrap_or("-"),
+        row_key.as_deref().unwrap_or("-"),
+        shipment_id.trim()
+    );
+
+    scrape_pos_tracking(&client_state.client, shipment_id.trim())
+        .await
+        .map_err(|error| match error {
+            tracking::model::TrackingError::BadRequest(message)
+            | tracking::model::TrackingError::NotFound(message)
+            | tracking::model::TrackingError::Upstream(message) => {
+                eprintln!("[ShipFlowBackend] {context} {message}");
+                format!("{context} {message}")
+            }
+        })
+}
 
 pub fn run() {
-    let tracking_server = start_tracking_server().expect("failed to start tracking server");
+    let tracking_client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(6))
+        .read_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(25))
+        .user_agent("ShipFlow Desktop/0.1")
+        .build()
+        .expect("failed to create tracking client");
 
     tauri::Builder::default()
-        .manage(tracking_server)
-        .invoke_handler(tauri::generate_handler![get_tracking_server_config])
+        .manage(TrackingClientState {
+            client: tracking_client,
+        })
+        .invoke_handler(tauri::generate_handler![track_shipment])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::tracking::model::TrackingError;
     use super::tracking::parser::parse_tracking_html;
     use super::tracking::upstream::{build_tracking_url, POS_TRACKING_ENDPOINT};
 
     const SAMPLE_HTML: &str = include_str!("fixtures/pos_tracking_sample.html");
+    const NULLABLE_NUMERIC_HTML: &str =
+        include_str!("fixtures/pos_tracking_nullable_numeric.html");
+    const REORDERED_TABLES_HTML: &str =
+        include_str!("fixtures/pos_tracking_reordered_tables.html");
 
     #[test]
     fn build_tracking_url_percent_encodes_base64_payload() {
@@ -65,7 +108,15 @@ mod tests {
 
     #[test]
     fn parse_tracking_html_returns_not_found_when_shipment_header_missing() {
-        let error = parse_tracking_html("https://example.test", "<html></html>")
+        let html = r#"
+            <html>
+              <body>
+                <div>Data tidak ditemukan untuk kiriman ini.</div>
+              </body>
+            </html>
+        "#;
+
+        let error = parse_tracking_html("https://example.test", html)
             .expect_err("missing details should fail");
 
         assert!(matches!(error, TrackingError::NotFound(_)));
@@ -82,6 +133,76 @@ mod tests {
 
         let error = parse_tracking_html("https://example.test", html)
             .expect_err("invalid numeric values should fail loudly");
+
+        assert!(matches!(error, TrackingError::Upstream(_)));
+    }
+
+    #[test]
+    fn parse_tracking_html_keeps_nullable_numeric_fields_as_none() {
+        let response = parse_tracking_html("https://example.test", NULLABLE_NUMERIC_HTML)
+            .expect("nullable numeric sample should parse");
+
+        assert_eq!(response.detail.package.berat_actual, None);
+        assert_eq!(response.detail.package.berat_volumetric, None);
+        assert_eq!(response.detail.billing.bea_dasar, None);
+        assert_eq!(response.detail.billing.nilai_barang, None);
+        assert_eq!(response.detail.billing.htnb, None);
+        assert_eq!(response.detail.billing.cod.total_cod, None);
+    }
+
+    #[test]
+    fn parse_tracking_html_survives_reordered_tables() {
+        let response = parse_tracking_html("https://example.test", REORDERED_TABLES_HTML)
+            .expect("reordered tables sample should parse");
+
+        assert_eq!(
+            response.detail.header.nomor_kiriman.as_deref(),
+            Some("P2603310116000")
+        );
+        assert_eq!(response.history.len(), 2);
+        assert_eq!(
+            response.pod.photo1_url.as_deref(),
+            Some("https://apistorage.mile.app/v2-public/prod/pos/2026/04/14/sample-photo.jpg")
+        );
+    }
+
+    #[test]
+    fn parse_tracking_html_selected_fields_match_snapshot() {
+        let response = parse_tracking_html("https://example.test", SAMPLE_HTML)
+            .expect("sample should parse");
+
+        let snapshot = json!({
+            "nomor_kiriman": response.detail.header.nomor_kiriman,
+            "jenis_layanan": response.detail.package.jenis_layanan,
+            "status_akhir": response.status_akhir.status,
+            "history_count": response.history.len(),
+            "delivery_runsheet_count": response.history_summary.delivery_runsheet.len(),
+        });
+
+        assert_eq!(
+            snapshot,
+            json!({
+                "nomor_kiriman": "P2603310114291",
+                "jenis_layanan": "PKH",
+                "status_akhir": "INVEHICLE",
+                "history_count": 2,
+                "delivery_runsheet_count": 1
+            })
+        );
+    }
+
+    #[test]
+    fn parse_tracking_html_distinguishes_partial_upstream_from_not_found() {
+        let html = r#"
+            <html>
+              <body>
+                <div>Halaman tracking POS aktif tetapi struktur detail berubah total.</div>
+              </body>
+            </html>
+        "#;
+
+        let error = parse_tracking_html("https://example.test", html)
+            .expect_err("partial upstream html should not be treated as not found");
 
         assert!(matches!(error, TrackingError::Upstream(_)));
     }

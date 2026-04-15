@@ -60,8 +60,15 @@ pub async fn fetch_tracking_response(
             }
             Err(error) => {
                 if attempt == TRACKING_MAX_ATTEMPTS {
+                    let message = if error.is_connect() {
+                        format!("Tracking request failed during connection phase: {error}")
+                    } else if error.is_timeout() {
+                        format!("Tracking request timed out while waiting for POS response: {error}")
+                    } else {
+                        format!("Tracking request failed: {error}")
+                    };
                     return Err(TrackingError::Upstream(format!(
-                        "Tracking request failed: {error}"
+                        "{message}"
                     )));
                 }
             }

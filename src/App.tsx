@@ -1,7 +1,10 @@
 import {
   ClipboardEvent,
+  FocusEvent,
   KeyboardEvent,
+  MutableRefObject,
   MouseEvent as ReactMouseEvent,
+  UIEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -10,137 +13,294 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  COLUMNS,
   HIDDEN_COLUMNS_STORAGE_KEY,
-  INITIAL_ROW_COUNT,
   MAX_CONCURRENT_BULK_REQUESTS,
   PINNED_COLUMNS_STORAGE_KEY,
-  SELECTOR_COLUMN_WIDTH,
-  TRACKING_COLUMN_PATH,
 } from "./features/sheet/columns";
+import { COLUMNS, SELECTOR_COLUMN_WIDTH } from "./features/sheet/columns";
 import { SheetActionBar } from "./features/sheet/components/SheetActionBar";
 import { SheetTable } from "./features/sheet/components/SheetTable";
-import { SheetRow, SortState, TrackResponse } from "./features/sheet/types";
+import { ColumnShortcut, SheetState, TrackResponse } from "./features/sheet/types";
 import {
+  assertValidSheetState,
   buildCsvValue,
-  compareRows,
-  createEmptyRows,
-  ensureRowCapacity,
-  ensureTrailingEmptyRows,
-  getEffectiveColumnWidth,
-  getColumnToneClass,
   formatColumnValue,
-  getColumnValueOptions,
-  getInitialColumnWidths,
+  getTrackingInputValidationError,
   isBrowserReady,
-  loadStoredStringArray,
+  sanitizeTrackingInput,
+  sanitizeTrackingPasteValues,
 } from "./features/sheet/utils";
 import {
-  countActiveTextFilters,
-  countActiveValueFilters,
-  sanitizeTextFilters,
-  sanitizeValueFilters,
-  toggleColumnVisibilityState,
-  togglePinnedColumnState,
-  toggleValueFilterSelection,
-} from "./features/sheet/state";
-import { TrackingServerConfig } from "./types";
-
-const COLUMN_SHORTCUTS = [
-  { path: "status_akhir.status", label: "Status Akhir" },
-  { path: "detail.actors.pengirim.nama", label: "Nama Pengirim" },
-  { path: "detail.actors.penerima.nama", label: "Nama Penerima" },
-  { path: "detail.package_detail.jenis_layanan", label: "Jenis Layanan" },
-  { path: "detail.billing_detail.cod_info.is_cod", label: "Is COD" },
-] as const;
+  applyBulkPasteToSheet,
+  armDeleteAllInSheet,
+  clearAllDataInSheet,
+  clearFiltersInSheet,
+  clearHiddenFiltersInSheet,
+  clearRowInSheet,
+  clearSelectionInSheet,
+  clearValueFilterInSheet,
+  deleteRowsInSheet,
+  disarmDeleteAllInSheet,
+  getColumnSortDirection as getColumnSortDirectionFromSheet,
+  setColumnWidthInSheet,
+  setHighlightedColumnInSheet,
+  setOpenColumnMenuInSheet,
+  setRowErrorInSheet,
+  setRowLoadingInSheet,
+  setRowSuccessInSheet,
+  setSortInSheet,
+  setTextFilterInSheet,
+  setTrackingInputInSheet,
+  syncSelectionWithVisibleRowsInSheet,
+  toggleColumnVisibilityInSheet,
+  togglePinnedColumnInSheet,
+  toggleRowSelectionInSheet,
+  toggleValueFilterInSheet,
+  toggleVisibleSelectionInSheet,
+} from "./features/sheet/actions";
+import {
+  getActiveFilterCount,
+  getAllTrackingIds,
+  getColumnShortcuts,
+  getDisplayedRows,
+  getEffectiveColumnWidths,
+  getExportableRows,
+  getHiddenColumns,
+  getIgnoredHiddenFilterCount,
+  getLoadedCount,
+  getNonEmptyRows,
+  getPinnedColumnSet,
+  getPinnedLeftMap,
+  getSelectedTrackingIds,
+  getSelectedVisibleRowKeys,
+  getTotalShipmentCount,
+  getValueOptionsByPath,
+  getVisibleColumnPathSet,
+  getVisibleColumns,
+  getVisibleSelectableKeys,
+} from "./features/sheet/selectors";
+import { createDefaultWorkspaceState } from "./features/workspace/default-state";
+import {
+  createSheetInWorkspace,
+  deleteSheetInWorkspace,
+  renameSheetInWorkspace,
+  setActiveSheetInWorkspace,
+  updateActiveSheetInWorkspace,
+  updateSheetInWorkspace,
+} from "./features/workspace/actions";
+import {
+  getActiveSheet,
+  getWorkspaceTabs,
+} from "./features/workspace/selectors";
+import { SheetTabs } from "./features/workspace/components/SheetTabs";
 
 type ActionNotice = {
   tone: "success" | "error" | "info";
   message: string;
 };
 
+type TrackingTelemetryEvent = "start" | "success" | "fail" | "abort";
+type TrackingErrorClass =
+  | "timeout"
+  | "abort"
+  | "not_found"
+  | "parse_error"
+  | "invalid_response"
+  | "bad_request"
+  | "network"
+  | "unknown";
+
+type TrackingRequestMeta = {
+  requestId: string;
+  sheetId: string;
+  rowKey: string;
+  shipmentId: string;
+  startedAt: number;
+};
+
+function getSheetRequestKey(sheetId: string, rowKey: string) {
+  return `${sheetId}:${rowKey}`;
+}
+
+function emitTrackingTelemetry(
+  event: TrackingTelemetryEvent,
+  meta: TrackingRequestMeta,
+  extra?: Record<string, unknown>
+) {
+  const payload = {
+    event,
+    sheetId: meta.sheetId,
+    rowKey: meta.rowKey,
+    shipmentId: meta.shipmentId,
+    ...extra,
+  };
+
+  if (event === "fail") {
+    console.error("[ShipFlowTelemetry]", payload);
+    return;
+  }
+
+  console.info("[ShipFlowTelemetry]", payload);
+}
+
+function createRequestId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function classifyTrackingError(error: unknown): TrackingErrorClass {
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return "abort";
+  }
+
+  const message =
+    error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+
+  if (message.includes("timed out") || message.includes("timeout")) {
+    return "timeout";
+  }
+
+  if (message.includes("shipment was not found") || message.includes("not found")) {
+    return "not_found";
+  }
+
+  if (message.includes("unable to parse") || message.includes("upstream html")) {
+    return "parse_error";
+  }
+
+  if (message.includes("invalid tracking response shape")) {
+    return "invalid_response";
+  }
+
+  if (message.includes("shipment id is required") || message.includes("bad request")) {
+    return "bad_request";
+  }
+
+  if (message.includes("network") || message.includes("failed to fetch")) {
+    return "network";
+  }
+
+  return "unknown";
+}
+
+function shouldAssertSheetState() {
+  return import.meta.env.DEV || import.meta.env.MODE === "test";
+}
+
+function assertValidTrackResponse(
+  response: unknown,
+  meta: Pick<TrackingRequestMeta, "sheetId" | "rowKey" | "shipmentId">
+): asserts response is TrackResponse {
+  if (!response || typeof response !== "object") {
+    throw new Error(
+      `Invalid tracking response shape for sheet ${meta.sheetId}, row ${meta.rowKey}, shipment ${meta.shipmentId}: response is not an object.`
+    );
+  }
+
+  const candidate = response as Partial<TrackResponse>;
+  if (
+    typeof candidate.url !== "string" ||
+    !candidate.detail ||
+    typeof candidate.detail !== "object" ||
+    !candidate.status_akhir ||
+    typeof candidate.status_akhir !== "object" ||
+    !Array.isArray(candidate.history) ||
+    !candidate.history_summary ||
+    typeof candidate.history_summary !== "object"
+  ) {
+    throw new Error(
+      `Invalid tracking response shape for sheet ${meta.sheetId}, row ${meta.rowKey}, shipment ${meta.shipmentId}.`
+    );
+  }
+}
+
 function App() {
-  const [rows, setRows] = useState<SheetRow[]>(() =>
-    createEmptyRows(INITIAL_ROW_COUNT)
-  );
-  const [serverUrl, setServerUrl] = useState("");
-  const [serverAccessToken, setServerAccessToken] = useState("");
-  const [serverError, setServerError] = useState("");
-  const [actionNotice, setActionNotice] = useState<ActionNotice | null>(null);
-  const [deleteAllArmed, setDeleteAllArmed] = useState(false);
+  const [workspaceState, setWorkspaceState] = useState(createDefaultWorkspaceState);
+  const [actionNoticeBySheetId, setActionNoticeBySheetId] = useState<
+    Record<string, ActionNotice | null>
+  >({});
   const [hoveredColumn, setHoveredColumn] = useState<number | null>(null);
-  const [filters, setFilters] = useState<Record<string, string>>({});
-  const [valueFilters, setValueFilters] = useState<Record<string, string[]>>({});
-  const [sortState, setSortState] = useState<SortState>({
-    path: null,
-    direction: "asc",
-  });
-  const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
-  const [selectionFollowsVisibleRows, setSelectionFollowsVisibleRows] =
-    useState(false);
-  const [columnWidths, setColumnWidths] = useState<Record<string, number>>(
-    getInitialColumnWidths
-  );
-  const [hiddenColumnPaths, setHiddenColumnPaths] = useState<string[]>(() =>
-    loadStoredStringArray(HIDDEN_COLUMNS_STORAGE_KEY, [])
-  );
-  const [pinnedColumnPaths, setPinnedColumnPaths] = useState<string[]>(() =>
-    loadStoredStringArray(
-      PINNED_COLUMNS_STORAGE_KEY,
-      COLUMNS.filter((column) => column.sticky).map((column) => column.path)
-    )
-  );
-  const [openColumnMenuPath, setOpenColumnMenuPath] = useState<string | null>(
-    null
-  );
-  const [highlightedColumnPath, setHighlightedColumnPath] = useState<string | null>(
-    null
-  );
   const resizeStateRef = useRef<{
     path: string;
     startX: number;
     startWidth: number;
   } | null>(null);
   const requestControllersRef = useRef(new Map<string, AbortController>());
+  const requestMetaRef = useRef(new Map<string, TrackingRequestMeta>());
+  const requestEpochBySheetRef = useRef(new Map<string, number>());
+  const bulkRunEpochBySheetRef = useRef(new Map<string, number>());
   const columnMenuRefs = useRef(new Map<string, HTMLDivElement | null>());
   const sheetScrollRef = useRef<HTMLDivElement>(null);
+  const sheetScrollPositionsRef = useRef(
+    new Map<string, { left: number; top: number }>()
+  );
   const highlightedColumnTimeoutRef = useRef<number | null>(null);
-  const actionNoticeTimeoutRef = useRef<number | null>(null);
+  const highlightedColumnSheetIdRef = useRef<string | null>(null);
+  const actionNoticeTimeoutsRef = useRef(new Map<string, number>());
   const deleteAllTimeoutRef = useRef<number | null>(null);
-  const requestEpochRef = useRef(0);
-  const bulkRunEpochRef = useRef(0);
-  const rowsRef = useRef(rows);
+  const deleteAllArmedSheetIdRef = useRef<string | null>(null);
+  const activeSheet = useMemo(() => getActiveSheet(workspaceState), [workspaceState]);
+  const activeSheetId = workspaceState.activeSheetId;
+  const workspaceTabs = useMemo(
+    () => getWorkspaceTabs(workspaceState),
+    [workspaceState]
+  );
+  const activeActionNotice = actionNoticeBySheetId[activeSheetId] ?? null;
+  const workspaceRef = useRef(workspaceState);
+
+  const updateActiveSheet = useCallback(
+    (updater: (sheetState: SheetState) => SheetState) => {
+      setWorkspaceState((current) =>
+        updateActiveSheetInWorkspace(current, (sheetState) => {
+          const nextSheetState = updater(sheetState);
+          return shouldAssertSheetState()
+            ? assertValidSheetState(nextSheetState)
+            : nextSheetState;
+        })
+      );
+    },
+    []
+  );
+
+  const updateSheet = useCallback(
+    (sheetId: string, updater: (sheetState: SheetState) => SheetState) => {
+      setWorkspaceState((current) =>
+        updateSheetInWorkspace(current, sheetId, (sheetState) => {
+          const nextSheetState = updater(sheetState);
+          return shouldAssertSheetState()
+            ? assertValidSheetState(nextSheetState)
+            : nextSheetState;
+        })
+      );
+    },
+    []
+  );
 
   useEffect(() => {
-    rowsRef.current = rows;
-  }, [rows]);
+    workspaceRef.current = workspaceState;
+  }, [workspaceState]);
 
   useEffect(() => {
-    let isActive = true;
+    const scrollContainer = sheetScrollRef.current;
+    if (!scrollContainer) {
+      return;
+    }
 
-    invoke<TrackingServerConfig>("get_tracking_server_config")
-      .then((config) => {
-        if (isActive) {
-          setServerUrl(config.baseUrl);
-          setServerAccessToken(config.accessToken);
-        }
-      })
-      .catch((error) => {
-        if (isActive) {
-          setServerError(
-            error instanceof Error
-              ? error.message
-              : "Tracking server could not be started."
-          );
-        }
-      });
-
-    return () => {
-      isActive = false;
+    const nextPosition = sheetScrollPositionsRef.current.get(activeSheetId) ?? {
+      left: 0,
+      top: 0,
     };
-  }, []);
+
+    scrollContainer.scrollLeft = nextPosition.left;
+    scrollContainer.scrollTop = nextPosition.top;
+  }, [activeSheetId]);
 
   useEffect(() => {
+    const openColumnMenuPath = activeSheet.openColumnMenuPath;
+
     if (!openColumnMenuPath) {
       return;
     }
@@ -152,7 +312,7 @@ function App() {
       }
 
       if (!activeMenu.contains(event.target)) {
-        setOpenColumnMenuPath(null);
+        updateActiveSheet((current) => setOpenColumnMenuInSheet(current, null));
       }
     };
 
@@ -161,7 +321,7 @@ function App() {
     return () => {
       document.removeEventListener("mousedown", handlePointerDown);
     };
-  }, [openColumnMenuPath]);
+  }, [activeSheet.openColumnMenuPath, updateActiveSheet]);
 
   useEffect(() => {
     if (!isBrowserReady()) {
@@ -170,9 +330,9 @@ function App() {
 
     window.localStorage.setItem(
       HIDDEN_COLUMNS_STORAGE_KEY,
-      JSON.stringify(hiddenColumnPaths)
+      JSON.stringify(activeSheet.hiddenColumnPaths)
     );
-  }, [hiddenColumnPaths]);
+  }, [activeSheet.hiddenColumnPaths]);
 
   useEffect(() => {
     if (!isBrowserReady()) {
@@ -181,14 +341,15 @@ function App() {
 
     window.localStorage.setItem(
       PINNED_COLUMNS_STORAGE_KEY,
-      JSON.stringify(pinnedColumnPaths)
+      JSON.stringify(activeSheet.pinnedColumnPaths)
     );
-  }, [pinnedColumnPaths]);
+  }, [activeSheet.pinnedColumnPaths]);
 
   useEffect(() => {
     return () => {
       requestControllersRef.current.forEach((controller) => controller.abort());
       requestControllersRef.current.clear();
+      requestMetaRef.current.clear();
     };
   }, []);
 
@@ -197,9 +358,10 @@ function App() {
       if (highlightedColumnTimeoutRef.current !== null) {
         window.clearTimeout(highlightedColumnTimeoutRef.current);
       }
-      if (actionNoticeTimeoutRef.current !== null) {
-        window.clearTimeout(actionNoticeTimeoutRef.current);
-      }
+      actionNoticeTimeoutsRef.current.forEach((timeoutId) => {
+        window.clearTimeout(timeoutId);
+      });
+      actionNoticeTimeoutsRef.current.clear();
       if (deleteAllTimeoutRef.current !== null) {
         window.clearTimeout(deleteAllTimeoutRef.current);
       }
@@ -207,46 +369,98 @@ function App() {
   }, []);
 
   const armDeleteAll = useCallback(() => {
-    setSelectionFollowsVisibleRows(false);
-    setSelectedRowKeys([]);
-    setDeleteAllArmed(true);
+    const targetSheetId = activeSheetId;
+    updateSheet(targetSheetId, (current) => armDeleteAllInSheet(current));
+    deleteAllArmedSheetIdRef.current = targetSheetId;
 
     if (deleteAllTimeoutRef.current !== null) {
       window.clearTimeout(deleteAllTimeoutRef.current);
     }
 
     deleteAllTimeoutRef.current = window.setTimeout(() => {
-      setDeleteAllArmed(false);
+      const armedSheetId = deleteAllArmedSheetIdRef.current;
+      if (armedSheetId) {
+        updateSheet(armedSheetId, (current) => disarmDeleteAllInSheet(current));
+      }
       deleteAllTimeoutRef.current = null;
+      deleteAllArmedSheetIdRef.current = null;
     }, 4000);
-  }, []);
+  }, [activeSheetId, updateSheet]);
 
   const disarmDeleteAll = useCallback(() => {
-    setDeleteAllArmed(false);
+    const targetSheetId = deleteAllArmedSheetIdRef.current ?? activeSheetId;
+    updateSheet(targetSheetId, (current) => disarmDeleteAllInSheet(current));
     if (deleteAllTimeoutRef.current !== null) {
       window.clearTimeout(deleteAllTimeoutRef.current);
       deleteAllTimeoutRef.current = null;
     }
-  }, []);
+    deleteAllArmedSheetIdRef.current = null;
+  }, [activeSheetId, updateSheet]);
 
-  const invalidatePendingTrackingWork = useCallback(() => {
-    requestEpochRef.current += 1;
-    bulkRunEpochRef.current += 1;
-    requestControllersRef.current.forEach((controller) => controller.abort());
-    requestControllersRef.current.clear();
-  }, []);
+  const getSheetEpoch = useCallback(
+    (
+      epochMapRef: MutableRefObject<Map<string, number>>,
+      sheetId: string
+    ) => epochMapRef.current.get(sheetId) ?? 0,
+    []
+  );
 
-  const showActionNotice = useCallback((notice: ActionNotice) => {
-    setActionNotice(notice);
-    if (actionNoticeTimeoutRef.current !== null) {
-      window.clearTimeout(actionNoticeTimeoutRef.current);
+  const bumpSheetEpoch = useCallback(
+    (
+      epochMapRef: MutableRefObject<Map<string, number>>,
+      sheetId: string
+    ) => {
+      const nextEpoch = getSheetEpoch(epochMapRef, sheetId) + 1;
+      epochMapRef.current.set(sheetId, nextEpoch);
+      return nextEpoch;
+    },
+    [getSheetEpoch]
+  );
+
+  const invalidateSheetTrackingWork = useCallback((sheetId: string) => {
+    bumpSheetEpoch(requestEpochBySheetRef, sheetId);
+    bumpSheetEpoch(bulkRunEpochBySheetRef, sheetId);
+
+    requestControllersRef.current.forEach((controller, requestKey) => {
+      if (requestKey.startsWith(`${sheetId}:`)) {
+        const meta = requestMetaRef.current.get(requestKey);
+        if (meta) {
+          emitTrackingTelemetry("abort", meta, {
+            reason: "sheet_invalidation",
+          });
+        }
+        controller.abort();
+        requestControllersRef.current.delete(requestKey);
+        requestMetaRef.current.delete(requestKey);
+      }
+    });
+  }, [bumpSheetEpoch]);
+
+  const showActionNotice = useCallback((sheetId: string, notice: ActionNotice) => {
+    setActionNoticeBySheetId((current) => ({
+      ...current,
+      [sheetId]: notice,
+    }));
+
+    const previousTimeout = actionNoticeTimeoutsRef.current.get(sheetId);
+    if (previousTimeout !== undefined) {
+      window.clearTimeout(previousTimeout);
     }
-    actionNoticeTimeoutRef.current = window.setTimeout(() => {
-      setActionNotice((current) =>
-        current?.message === notice.message ? null : current
-      );
-      actionNoticeTimeoutRef.current = null;
+
+    const timeoutId = window.setTimeout(() => {
+      setActionNoticeBySheetId((current) => {
+        if (!current[sheetId] || current[sheetId]?.message !== notice.message) {
+          return current;
+        }
+
+        const next = { ...current };
+        delete next[sheetId];
+        return next;
+      });
+      actionNoticeTimeoutsRef.current.delete(sheetId);
     }, 2200);
+
+    actionNoticeTimeoutsRef.current.set(sheetId, timeoutId);
   }, []);
 
   const focusFirstTrackingInput = useCallback(() => {
@@ -260,11 +474,7 @@ function App() {
     });
   }, []);
 
-  const nonEmptyRows = useMemo(
-    () =>
-      rows.filter((row) => row.trackingInput.trim() !== "" || row.shipment !== null),
-    [rows]
-  );
+  const nonEmptyRows = useMemo(() => getNonEmptyRows(activeSheet.rows), [activeSheet.rows]);
 
   const retrackableRows = useMemo(
     () =>
@@ -274,137 +484,53 @@ function App() {
     [nonEmptyRows]
   );
 
-  const visibleColumns = useMemo(() => {
-    const hidden = new Set(hiddenColumnPaths);
-    const orderedVisibleColumns = COLUMNS.filter((column) => !hidden.has(column.path));
-    const pinnedColumns = pinnedColumnPaths
-      .map((path) =>
-        orderedVisibleColumns.find((column) => column.path === path) ?? null
-      )
-      .filter((column): column is (typeof COLUMNS)[number] => column !== null);
-    const pinnedPaths = new Set(pinnedColumns.map((column) => column.path));
+  const totalShipmentCount = useMemo(
+    () => getTotalShipmentCount(nonEmptyRows),
+    [nonEmptyRows]
+  );
 
-    return [
-      ...pinnedColumns,
-      ...orderedVisibleColumns.filter((column) => !pinnedPaths.has(column.path)),
-    ];
-  }, [hiddenColumnPaths, pinnedColumnPaths]);
+  const visibleColumns = useMemo(() => getVisibleColumns(activeSheet), [activeSheet]);
 
   const visibleColumnPathSet = useMemo(
-    () => new Set(visibleColumns.map((column) => column.path)),
+    () => getVisibleColumnPathSet(visibleColumns),
     [visibleColumns]
   );
 
   const pinnedColumnSet = useMemo(
-    () => new Set(pinnedColumnPaths),
-    [pinnedColumnPaths]
+    () => getPinnedColumnSet(activeSheet),
+    [activeSheet]
   );
 
   const effectiveColumnWidths = useMemo(
-    () =>
-      Object.fromEntries(
-        visibleColumns.map((column) => [
-          column.path,
-          getEffectiveColumnWidth(column, columnWidths),
-        ])
-      ),
-    [columnWidths, visibleColumns]
+    () => getEffectiveColumnWidths(visibleColumns, activeSheet.columnWidths),
+    [activeSheet.columnWidths, visibleColumns]
   );
 
   const pinnedLeftMap = useMemo(() => {
-    let currentLeft = SELECTOR_COLUMN_WIDTH;
-    const nextMap: Record<string, number> = {};
-
-    visibleColumns.forEach((column) => {
-      if (!pinnedColumnSet.has(column.path)) {
-        return;
-      }
-
-      nextMap[column.path] = currentLeft;
-      currentLeft += effectiveColumnWidths[column.path];
-    });
-
-    return nextMap;
+    return getPinnedLeftMap(visibleColumns, pinnedColumnSet, effectiveColumnWidths);
   }, [effectiveColumnWidths, pinnedColumnSet, visibleColumns]);
 
   const activeFilterCount = useMemo(
-    () =>
-      countActiveTextFilters(filters, visibleColumnPathSet) +
-      countActiveValueFilters(valueFilters, visibleColumnPathSet),
-    [filters, valueFilters, visibleColumnPathSet]
+    () => getActiveFilterCount(activeSheet, visibleColumnPathSet),
+    [activeSheet, visibleColumnPathSet]
   );
 
   const ignoredHiddenFilterCount = useMemo(
-    () =>
-      countActiveTextFilters(filters) +
-      countActiveValueFilters(valueFilters) -
-      activeFilterCount,
-    [activeFilterCount, filters, valueFilters]
+    () => getIgnoredHiddenFilterCount(activeSheet, activeFilterCount),
+    [activeFilterCount, activeSheet]
   );
 
   const valueOptionsByPath = useMemo(
-    () =>
-      Object.fromEntries(
-        visibleColumns.map((column) => [
-          column.path,
-          getColumnValueOptions(nonEmptyRows, column),
-        ])
-      ),
+    () => getValueOptionsByPath(nonEmptyRows, visibleColumns),
     [nonEmptyRows, visibleColumns]
   );
 
   const displayedRows = useMemo(() => {
-    if (nonEmptyRows.length === 0) {
-      return rows;
-    }
-
-    const hasActiveFilters = activeFilterCount > 0;
-    const hasSort = sortState.path !== null;
-
-    if (!hasActiveFilters && !hasSort) {
-      return rows;
-    }
-
-    let workingRows = nonEmptyRows.filter((row) => {
-      return visibleColumns.every((column) => {
-        const filterValue = filters[column.path]?.trim().toLowerCase();
-        const cellValue = formatColumnValue(row, column).toLowerCase();
-        const selectedValues = valueFilters[column.path] ?? [];
-
-        if (filterValue && !cellValue.includes(filterValue)) {
-          return false;
-        }
-
-        if (selectedValues.length > 0) {
-          return selectedValues.includes(formatColumnValue(row, column));
-        }
-
-        return true;
-      });
-    });
-
-    if (sortState.path) {
-      const sortColumn = COLUMNS.find((column) => column.path === sortState.path);
-
-      if (sortColumn) {
-        workingRows = [...workingRows].sort((left, right) =>
-          compareRows(left, right, sortColumn, sortState.direction)
-        );
-      }
-    }
-
-    const draftRows = rows
-      .filter((row) => row.shipment === null && row.trackingInput.trim() === "")
-      .slice(0, 5);
-
-    return [...workingRows, ...draftRows];
-  }, [activeFilterCount, filters, nonEmptyRows, rows, sortState, valueFilters, visibleColumns]);
+    return getDisplayedRows(activeSheet, nonEmptyRows, visibleColumns, activeFilterCount);
+  }, [activeFilterCount, nonEmptyRows, activeSheet, visibleColumns]);
 
   const visibleSelectableKeys = useMemo(
-    () =>
-      displayedRows
-        .filter((row) => row.trackingInput.trim() !== "" || row.shipment !== null)
-        .map((row) => row.key),
+    () => getVisibleSelectableKeys(displayedRows),
     [displayedRows]
   );
 
@@ -415,265 +541,254 @@ function App() {
 
   const allVisibleSelected =
     visibleSelectableKeys.length > 0 &&
-    visibleSelectableKeys.every((key) => selectedRowKeys.includes(key));
+    visibleSelectableKeys.every((key) => activeSheet.selectedRowKeys.includes(key));
 
   const selectedVisibleRowKeys = useMemo(
-    () => selectedRowKeys.filter((key) => visibleSelectableKeySet.has(key)),
-    [selectedRowKeys, visibleSelectableKeySet]
+    () => getSelectedVisibleRowKeys(activeSheet.selectedRowKeys, visibleSelectableKeys),
+    [activeSheet.selectedRowKeys, visibleSelectableKeys]
   );
 
   const selectedTrackingIds = useMemo(
-    () =>
-      rows
-        .filter((row) => selectedVisibleRowKeys.includes(row.key))
-        .map((row) => row.trackingInput.trim())
-        .filter(Boolean),
-    [rows, selectedVisibleRowKeys]
+    () => getSelectedTrackingIds(activeSheet.rows, selectedVisibleRowKeys),
+    [activeSheet.rows, selectedVisibleRowKeys]
   );
 
   const allTrackingIds = useMemo(
-    () =>
-      rows
-        .map((row) => row.trackingInput.trim())
-        .filter((value) => value !== ""),
-    [rows]
+    () => getAllTrackingIds(activeSheet.rows),
+    [activeSheet.rows]
   );
 
   const selectedRowKeySet = useMemo(
-    () => new Set(selectedRowKeys),
-    [selectedRowKeys]
+    () => new Set(activeSheet.selectedRowKeys),
+    [activeSheet.selectedRowKeys]
   );
 
   const exportableRows = useMemo(() => {
-    if (selectedVisibleRowKeys.length > 0) {
-      return rows.filter(
-        (row) =>
-          selectedVisibleRowKeys.includes(row.key) &&
-          (row.trackingInput.trim() !== "" || row.shipment !== null)
-      );
-    }
-
-    return displayedRows.filter(
-      (row) => row.trackingInput.trim() !== "" || row.shipment !== null
-    );
-  }, [displayedRows, rows, selectedVisibleRowKeys]);
+    return getExportableRows(activeSheet.rows, displayedRows, selectedVisibleRowKeys);
+  }, [displayedRows, activeSheet.rows, selectedVisibleRowKeys]);
 
   const hiddenColumns = useMemo(
-    () => COLUMNS.filter((column) => hiddenColumnPaths.includes(column.path)),
-    [hiddenColumnPaths]
+    () => getHiddenColumns(activeSheet),
+    [activeSheet]
   );
 
   const loadedCount = useMemo(
-    () => displayedRows.filter((row) => row.shipment !== null).length,
+    () => getLoadedCount(displayedRows),
     [displayedRows]
   );
 
-  const columnShortcuts = useMemo(
-    () =>
-      COLUMN_SHORTCUTS.map((shortcut) => {
-        const column = COLUMNS.find((item) => item.path === shortcut.path);
-        return {
-          ...shortcut,
-          disabled: !visibleColumnPathSet.has(shortcut.path),
-          toneClass: column ? getColumnToneClass(column) : "",
-        };
-      }),
+  const columnShortcuts = useMemo<ColumnShortcut[]>(
+    () => getColumnShortcuts(visibleColumnPathSet),
     [visibleColumnPathSet]
   );
 
-  const handleTrackingInputChange = useCallback((rowKey: string, value: string) => {
+  const handleTrackingInputChange = useCallback((sheetId: string, rowKey: string, value: string) => {
     disarmDeleteAll();
-    requestControllersRef.current.get(rowKey)?.abort();
+    const sanitizedValue = sanitizeTrackingInput(value);
+    const validationError = getTrackingInputValidationError(sanitizedValue);
+    const requestKey = getSheetRequestKey(sheetId, rowKey);
+    const activeController = requestControllersRef.current.get(requestKey);
+    if (activeController) {
+      const meta = requestMetaRef.current.get(requestKey);
+      if (meta) {
+        emitTrackingTelemetry("abort", meta, {
+          reason: "input_changed",
+        });
+      }
+      activeController.abort();
+      requestControllersRef.current.delete(requestKey);
+      requestMetaRef.current.delete(requestKey);
+    }
 
-    setRows((current) =>
-      ensureTrailingEmptyRows(
-        current.map((row) =>
-              row.key === rowKey
-                ? {
-                    ...row,
-                    trackingInput: value,
-                    shipment:
-                      value.trim() === row.trackingInput.trim() ? row.shipment : null,
-                    loading: false,
-                    stale: false,
-                    error: value.trim() === row.trackingInput.trim() ? row.error : "",
-                  }
-                : row
-        )
-      )
-    );
-  }, [disarmDeleteAll]);
+    updateSheet(sheetId, (current) => {
+      const nextState = setTrackingInputInSheet(current, rowKey, sanitizedValue);
+      return validationError
+        ? setRowErrorInSheet(nextState, rowKey, validationError)
+        : nextState;
+    });
+  }, [disarmDeleteAll, updateSheet]);
 
   const fetchShipmentIntoRow = useCallback(
-    async (rowKey: string, shipmentId: string) => {
-      const normalizedId = shipmentId.trim();
-      const requestEpoch = requestEpochRef.current;
-      requestControllersRef.current.get(rowKey)?.abort();
+    async (sheetId: string, rowKey: string, shipmentId: string) => {
+      const normalizedId = sanitizeTrackingInput(shipmentId);
+      const requestKey = getSheetRequestKey(sheetId, rowKey);
+      const requestEpoch = getSheetEpoch(requestEpochBySheetRef, sheetId);
+      const validationError = getTrackingInputValidationError(normalizedId);
+      const activeRequestMeta = requestMetaRef.current.get(requestKey);
+      const activeController = requestControllersRef.current.get(requestKey);
 
-      if (!normalizedId) {
-        requestControllersRef.current.delete(rowKey);
-        setRows((current) =>
-          current.map((row) =>
-            row.key === rowKey
-              ? {
-                  ...row,
-                  shipment: null,
-                  loading: false,
-                  stale: false,
-                  error: "",
-                }
-              : row
-          )
-        );
+      if (
+        activeController &&
+        activeRequestMeta &&
+        activeRequestMeta.shipmentId === normalizedId
+      ) {
         return;
       }
 
-      if (!serverUrl || !serverAccessToken) {
-        requestControllersRef.current.delete(rowKey);
-        setRows((current) =>
-          current.map((row) =>
-            row.key === rowKey
-              ? {
-                  ...row,
-                  shipment: row.shipment,
-                  loading: false,
-                  stale: row.shipment !== null,
-                  error: serverError || "Tracking server is not ready yet.",
-                }
-              : row
+      activeController?.abort();
+
+      if (!normalizedId) {
+        requestControllersRef.current.delete(requestKey);
+        requestMetaRef.current.delete(requestKey);
+        updateSheet(sheetId, (current) => clearRowInSheet(current, rowKey));
+        return;
+      }
+
+      if (validationError) {
+        requestControllersRef.current.delete(requestKey);
+        requestMetaRef.current.delete(requestKey);
+        updateSheet(sheetId, (current) =>
+          setRowErrorInSheet(
+            setTrackingInputInSheet(current, rowKey, normalizedId),
+            rowKey,
+            validationError
           )
         );
         return;
       }
 
       const controller = new AbortController();
-      requestControllersRef.current.set(rowKey, controller);
+      requestControllersRef.current.set(requestKey, controller);
+      const requestMeta = {
+        requestId: createRequestId(),
+        sheetId,
+        rowKey,
+        shipmentId: normalizedId,
+        startedAt: performance.now(),
+      };
+      requestMetaRef.current.set(requestKey, requestMeta);
+      emitTrackingTelemetry("start", requestMeta);
 
-      setRows((current) =>
-        current.map((row) =>
-            row.key === rowKey
-              ? {
-                  ...row,
-                  trackingInput: normalizedId,
-                  loading: true,
-                  stale: false,
-                  error: "",
-                }
-              : row
-        )
+      updateSheet(sheetId, (current) =>
+        setRowLoadingInSheet(current, rowKey, normalizedId)
       );
 
       try {
-        const response = await fetch(
-          `${serverUrl}/track/${encodeURIComponent(normalizedId)}`,
-          {
-            signal: controller.signal,
-            headers: {
-              "x-shipflow-token": serverAccessToken,
-            },
-          }
-        );
-
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => null)) as
-            | { error?: string }
-            | null;
-
-          throw new Error(payload?.error ?? "Tracking request failed.");
-        }
-
-        const result = (await response.json()) as TrackResponse;
+        const abortPromise = new Promise<never>((_, reject) => {
+          controller.signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true }
+          );
+        });
+        const result = (await Promise.race([
+          invoke<TrackResponse>("track_shipment", {
+            shipmentId: normalizedId,
+            sheetId,
+            rowKey,
+          }),
+          abortPromise,
+        ])) as TrackResponse;
+        assertValidTrackResponse(result, requestMeta);
+        const targetSheet = workspaceRef.current.sheetsById[sheetId];
 
         if (
-          requestControllersRef.current.get(rowKey) !== controller ||
-          requestEpochRef.current !== requestEpoch
+          requestControllersRef.current.get(requestKey) !== controller ||
+          getSheetEpoch(requestEpochBySheetRef, sheetId) !== requestEpoch ||
+          !targetSheet ||
+          !targetSheet.rows.some((row) => row.key === rowKey)
         ) {
           return;
         }
 
-        setRows((current) =>
-          ensureTrailingEmptyRows(
-            current.map((row) =>
-              row.key === rowKey
-                ? {
-                    ...row,
-                    trackingInput:
-                      result.detail.shipment_header.nomor_kiriman ?? normalizedId,
-                    shipment: result,
-                    loading: false,
-                    stale: false,
-                    error: "",
-                  }
-                : row
-            )
+        updateSheet(sheetId, (current) =>
+          setRowSuccessInSheet(
+            current,
+            rowKey,
+            result.detail.shipment_header.nomor_kiriman ?? normalizedId,
+            result
           )
         );
+        emitTrackingTelemetry("success", requestMeta, {
+          resolvedShipmentId:
+            result.detail.shipment_header.nomor_kiriman ?? normalizedId,
+          durationMs: Math.round(performance.now() - requestMeta.startedAt),
+        });
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") {
+          if (requestMetaRef.current.get(requestKey) === requestMeta) {
+            emitTrackingTelemetry("abort", requestMeta, {
+              reason: "abort_signal",
+              classification: "abort",
+              durationMs: Math.round(performance.now() - requestMeta.startedAt),
+            });
+          }
           return;
         }
 
+        const targetSheet = workspaceRef.current.sheetsById[sheetId];
         if (
-          requestControllersRef.current.get(rowKey) !== controller ||
-          requestEpochRef.current !== requestEpoch
+          requestControllersRef.current.get(requestKey) !== controller ||
+          getSheetEpoch(requestEpochBySheetRef, sheetId) !== requestEpoch ||
+          !targetSheet ||
+          !targetSheet.rows.some((row) => row.key === rowKey)
         ) {
           return;
         }
 
-        setRows((current) =>
-          current.map((row) =>
-            row.key === rowKey
-              ? {
-                  ...row,
-                  shipment: row.shipment,
-                  loading: false,
-                  stale: row.shipment !== null,
-                  error:
-                    error instanceof Error
-                      ? error.message
-                      : "Tracking request failed.",
-                }
-              : row
+        updateSheet(sheetId, (current) =>
+          setRowErrorInSheet(
+            current,
+            rowKey,
+            error instanceof Error ? error.message : "Tracking request failed."
           )
         );
+        const classification = classifyTrackingError(error);
+        emitTrackingTelemetry("fail", requestMeta, {
+          classification,
+          error:
+            error instanceof Error ? error.message : "Tracking request failed.",
+          durationMs: Math.round(performance.now() - requestMeta.startedAt),
+        });
       } finally {
-        if (requestControllersRef.current.get(rowKey) === controller) {
-          requestControllersRef.current.delete(rowKey);
+        if (requestControllersRef.current.get(requestKey) === controller) {
+          requestControllersRef.current.delete(requestKey);
+        }
+        if (requestMetaRef.current.get(requestKey) === requestMeta) {
+          requestMetaRef.current.delete(requestKey);
         }
       }
     },
-    [serverAccessToken, serverError, serverUrl]
+    [
+      getSheetEpoch,
+      updateSheet,
+    ]
   );
 
   const fetchRow = useCallback(
-    async (rowKey: string) => {
-      const targetRow = rowsRef.current.find((row) => row.key === rowKey);
-      if (!targetRow) {
-        return;
-      }
+    async (sheetId: string, rowKey: string, shipmentIdOverride?: string) => {
+      const shipmentId =
+        sanitizeTrackingInput(shipmentIdOverride ?? "") ||
+        (workspaceRef.current.sheetsById[sheetId]?.rows
+          .find((row) => row.key === rowKey)
+          ?.trackingInput ??
+          "");
 
-      const shipmentId = targetRow.trackingInput.trim();
       if (!shipmentId) {
         return;
       }
 
-      await fetchShipmentIntoRow(rowKey, shipmentId);
+      await fetchShipmentIntoRow(sheetId, rowKey, shipmentId);
     },
     [fetchShipmentIntoRow]
   );
 
   const handleTrackingInputBlur = useCallback(
-    (rowKey: string) => {
-      void fetchRow(rowKey);
+    (
+      event: FocusEvent<HTMLInputElement>,
+      sheetId: string,
+      rowKey: string
+    ) => {
+      void fetchRow(sheetId, rowKey, event.currentTarget.value);
     },
     [fetchRow]
   );
 
   const handleTrackingInputKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLInputElement>, rowKey: string) => {
+    (event: KeyboardEvent<HTMLInputElement>, sheetId: string, rowKey: string) => {
       if (event.key === "Enter") {
         event.preventDefault();
-        void fetchRow(rowKey);
+        void fetchRow(sheetId, rowKey, event.currentTarget.value);
         (event.currentTarget as HTMLInputElement).blur();
       }
     },
@@ -681,39 +796,38 @@ function App() {
   );
 
   const runBulkPasteFetches = useCallback(
-    async (entries: Array<{ key: string; value: string }>) => {
-      const runEpoch = ++bulkRunEpochRef.current;
+    async (sheetId: string, entries: Array<{ key: string; value: string }>) => {
+      const runEpoch = bumpSheetEpoch(bulkRunEpochBySheetRef, sheetId);
       const queue = [...entries];
       const workerCount = Math.min(MAX_CONCURRENT_BULK_REQUESTS, queue.length);
 
       const workers = Array.from({ length: workerCount }, async () => {
-        while (queue.length > 0 && bulkRunEpochRef.current === runEpoch) {
+        while (
+          queue.length > 0 &&
+          getSheetEpoch(bulkRunEpochBySheetRef, sheetId) === runEpoch
+        ) {
           const next = queue.shift();
           if (!next) {
             return;
           }
 
-          if (bulkRunEpochRef.current !== runEpoch) {
+          if (getSheetEpoch(bulkRunEpochBySheetRef, sheetId) !== runEpoch) {
             return;
           }
 
-          await fetchShipmentIntoRow(next.key, next.value);
+          await fetchShipmentIntoRow(sheetId, next.key, next.value);
         }
       });
 
       await Promise.allSettled(workers);
     },
-    [fetchShipmentIntoRow]
+    [bumpSheetEpoch, fetchShipmentIntoRow, getSheetEpoch]
   );
 
   const handleTrackingInputPaste = useCallback(
-    (event: ClipboardEvent<HTMLInputElement>, rowKey: string) => {
+    (event: ClipboardEvent<HTMLInputElement>, sheetId: string, rowKey: string) => {
       disarmDeleteAll();
-      const values = event.clipboardData
-        .getData("text")
-        .split(/\r?\n/)
-        .map((value) => value.trim())
-        .filter(Boolean);
+      const values = sanitizeTrackingPasteValues(event.clipboardData.getData("text"));
 
       if (values.length <= 1) {
         return;
@@ -721,125 +835,88 @@ function App() {
 
       event.preventDefault();
 
-      const startIndex = rowsRef.current.findIndex((row) => row.key === rowKey);
+      const currentSheet = workspaceRef.current.sheetsById[sheetId];
+      if (!currentSheet) {
+        return;
+      }
+
+      const startIndex = currentSheet.rows.findIndex((row) => row.key === rowKey);
       if (startIndex === -1) {
         return;
       }
 
-      const requiredLength = startIndex + values.length;
-      const expandedRows = ensureRowCapacity([...rowsRef.current], requiredLength);
-      const targetKeys: string[] = [];
+      const result = applyBulkPasteToSheet(currentSheet, startIndex, values);
+      const targetKeys = result.targetKeys;
 
-      for (let offset = 0; offset < values.length; offset += 1) {
-        const row = expandedRows[startIndex + offset];
-        targetKeys.push(row.key);
-        expandedRows[startIndex + offset] = {
-          ...row,
-          trackingInput: values[offset],
-          shipment: null,
-          loading: false,
-          stale: false,
-          error: "",
-        };
+      updateSheet(sheetId, () => result.sheetState);
+
+      if (targetKeys.length === 0) {
+        return;
       }
 
-      setRows(ensureTrailingEmptyRows(expandedRows));
-      setSelectedRowKeys((current) =>
-        Array.from(new Set([...current, ...targetKeys]))
-      );
+      targetKeys.forEach((key, index) => {
+        const value = values[index];
+        const validationError = getTrackingInputValidationError(value);
+        if (!validationError) {
+          return;
+        }
+
+        updateSheet(sheetId, (current) => setRowErrorInSheet(current, key, validationError));
+      });
 
       void runBulkPasteFetches(
-        targetKeys.map((key, index) => ({ key, value: values[index] }))
+        sheetId,
+        targetKeys
+          .map((key, index) => ({ key, value: values[index] }))
+          .filter(({ value }) => !getTrackingInputValidationError(value))
       );
     },
-    [disarmDeleteAll, runBulkPasteFetches]
+    [disarmDeleteAll, runBulkPasteFetches, updateSheet]
   );
 
   const handleFilterChange = useCallback((path: string, value: string) => {
-    setFilters((current) => ({
-      ...current,
-      [path]: value,
-    }));
-  }, []);
+    updateActiveSheet((current) => setTextFilterInSheet(current, path, value));
+  }, [updateActiveSheet]);
 
   const toggleColumnValueFilter = useCallback((path: string, value: string) => {
-    setValueFilters((current) => toggleValueFilterSelection(current, path, value));
-  }, []);
+    updateActiveSheet((current) => toggleValueFilterInSheet(current, path, value));
+  }, [updateActiveSheet]);
 
   const clearColumnValueFilter = useCallback((path: string) => {
-    setValueFilters((current) => {
-      if (!(path in current)) {
-        return current;
-      }
-
-      const next = { ...current };
-      delete next[path];
-      return next;
-    });
-  }, []);
+    updateActiveSheet((current) => clearValueFilterInSheet(current, path));
+  }, [updateActiveSheet]);
 
   const setColumnSort = useCallback(
     (path: string, direction: "asc" | "desc" | null) => {
-      setSortState({
-        path: direction ? path : null,
-        direction: direction ?? "asc",
-      });
+      updateActiveSheet((current) => setSortInSheet(current, path, direction));
     },
-    []
-  );
-
-  const getSortLabel = useCallback(
-    (path: string) => {
-      if (sortState.path !== path) {
-        return "↕";
-      }
-
-      return sortState.direction === "asc" ? "↑" : "↓";
-    },
-    [sortState]
+    [updateActiveSheet]
   );
 
   const getColumnSortDirection = useCallback(
-    (path: string) => (sortState.path === path ? sortState.direction : null),
-    [sortState]
+    (path: string) => getColumnSortDirectionFromSheet(activeSheet, path),
+    [activeSheet]
   );
 
   const toggleRowSelection = useCallback((rowKey: string) => {
-    setSelectionFollowsVisibleRows(false);
-    setSelectedRowKeys((current) =>
-      current.includes(rowKey)
-        ? current.filter((key) => key !== rowKey)
-        : [...current, rowKey]
-    );
-  }, []);
+    updateActiveSheet((current) => toggleRowSelectionInSheet(current, rowKey));
+  }, [updateActiveSheet]);
 
   const toggleVisibleSelection = useCallback(() => {
-    setSelectionFollowsVisibleRows(!allVisibleSelected);
-    setSelectedRowKeys((current) => {
-      if (allVisibleSelected) {
-        return current.filter((key) => !visibleSelectableKeys.includes(key));
-      }
-
-      return visibleSelectableKeys;
-    });
-  }, [allVisibleSelected, visibleSelectableKeys]);
+    updateActiveSheet((current) =>
+      toggleVisibleSelectionInSheet(current, allVisibleSelected, visibleSelectableKeys)
+    );
+  }, [allVisibleSelected, updateActiveSheet, visibleSelectableKeys]);
 
   useEffect(() => {
-    if (!selectionFollowsVisibleRows) {
+    if (!activeSheet.selectionFollowsVisibleRows) {
       return;
     }
 
-    setSelectedRowKeys((current) => {
-      if (
-        current.length === visibleSelectableKeys.length &&
-        current.every((key, index) => key === visibleSelectableKeys[index])
-      ) {
-        return current;
-      }
-
-      return visibleSelectableKeys;
-    });
-  }, [selectionFollowsVisibleRows, visibleSelectableKeys]);
+    updateActiveSheet((current) =>
+      syncSelectionWithVisibleRowsInSheet(current, visibleSelectableKeys)
+    );
+  }, [activeSheet.selectionFollowsVisibleRows, updateActiveSheet, visibleSelectableKeys]);
 
   const handleResizeStart = useCallback(
     (event: ReactMouseEvent<HTMLSpanElement>, column: (typeof COLUMNS)[number]) => {
@@ -849,7 +926,7 @@ function App() {
       resizeStateRef.current = {
         path: column.path,
         startX: event.clientX,
-        startWidth: columnWidths[column.path],
+        startWidth: activeSheet.columnWidths[column.path],
       };
 
       const handlePointerMove = (moveEvent: MouseEvent) => {
@@ -863,13 +940,8 @@ function App() {
           activeResize.startWidth + moveEvent.clientX - activeResize.startX
         );
 
-        setColumnWidths((current) =>
-          current[activeResize.path] === nextWidth
-            ? current
-            : {
-                ...current,
-                [activeResize.path]: nextWidth,
-              }
+        updateActiveSheet((current) =>
+          setColumnWidthInSheet(current, activeResize.path, nextWidth)
         );
       };
 
@@ -886,7 +958,7 @@ function App() {
       document.addEventListener("mousemove", handlePointerMove);
       document.addEventListener("mouseup", handlePointerUp);
     },
-    [columnWidths]
+    [activeSheet.columnWidths, updateActiveSheet]
   );
 
   const copySelectedTrackingIds = useCallback(() => {
@@ -897,18 +969,18 @@ function App() {
     void navigator.clipboard
       .writeText(selectedTrackingIds.join("\n"))
       .then(() =>
-        showActionNotice({
+        showActionNotice(activeSheetId, {
           tone: "success",
           message: `${selectedTrackingIds.length} ID kiriman berhasil disalin.`,
         })
       )
       .catch(() =>
-        showActionNotice({
+        showActionNotice(activeSheetId, {
           tone: "error",
           message: "Gagal menyalin ID kiriman terselect.",
         })
       );
-  }, [selectedTrackingIds, showActionNotice]);
+  }, [activeSheetId, selectedTrackingIds, showActionNotice]);
 
   const copyAllTrackingIds = useCallback(() => {
     if (allTrackingIds.length === 0) {
@@ -918,93 +990,68 @@ function App() {
     void navigator.clipboard
       .writeText(allTrackingIds.join("\n"))
       .then(() =>
-        showActionNotice({
+        showActionNotice(activeSheetId, {
           tone: "success",
           message: `${allTrackingIds.length} ID kiriman berhasil disalin.`,
         })
       )
       .catch(() =>
-        showActionNotice({
+        showActionNotice(activeSheetId, {
           tone: "error",
           message: "Gagal menyalin seluruh ID kiriman.",
         })
       );
-  }, [allTrackingIds, showActionNotice]);
+  }, [activeSheetId, allTrackingIds, showActionNotice]);
 
   const clearSelection = useCallback(() => {
-    setSelectionFollowsVisibleRows(false);
-    setSelectedRowKeys([]);
-  }, []);
+    updateActiveSheet((current) => clearSelectionInSheet(current));
+  }, [updateActiveSheet]);
 
   const clearAllFilters = useCallback(() => {
-    setFilters({});
-    setValueFilters({});
-  }, []);
+    updateActiveSheet((current) => clearFiltersInSheet(current));
+  }, [updateActiveSheet]);
 
   const clearHiddenFilters = useCallback(() => {
-    setFilters((current) =>
-      sanitizeTextFilters(current, visibleColumnPathSet)
+    updateActiveSheet((current) =>
+      clearHiddenFiltersInSheet(current, visibleColumnPathSet)
     );
-    setValueFilters((current) => sanitizeValueFilters(current, visibleColumnPathSet));
-  }, [visibleColumnPathSet]);
+  }, [updateActiveSheet, visibleColumnPathSet]);
 
   const deleteSelectedRows = useCallback(() => {
     if (selectedVisibleRowKeys.length === 0) {
       return;
     }
 
-    setSelectionFollowsVisibleRows(false);
+    invalidateSheetTrackingWork(activeSheetId);
 
-    invalidatePendingTrackingWork();
-
-    setRows((current) =>
-      ensureTrailingEmptyRows(
-        current.map((row) =>
-          selectedVisibleRowKeys.includes(row.key)
-            ? {
-                ...row,
-                trackingInput: "",
-                shipment: null,
-                loading: false,
-                stale: false,
-                error: "",
-              }
-            : row
-        )
-      )
-    );
-    setSelectedRowKeys((current) =>
-      current.filter((key) => !selectedVisibleRowKeys.includes(key))
-    );
-    showActionNotice({
+    updateActiveSheet((current) => deleteRowsInSheet(current, selectedVisibleRowKeys));
+    showActionNotice(activeSheetId, {
       tone: "info",
       message: `${selectedVisibleRowKeys.length} row terselect dihapus.`,
     });
-  }, [invalidatePendingTrackingWork, selectedVisibleRowKeys, showActionNotice]);
+  }, [
+    activeSheetId,
+    invalidateSheetTrackingWork,
+    selectedVisibleRowKeys,
+    showActionNotice,
+    updateActiveSheet,
+  ]);
 
   const deleteAllRows = useCallback(() => {
     if (allTrackingIds.length === 0) {
       return;
     }
 
-    if (!deleteAllArmed) {
+    if (!activeSheet.deleteAllArmed) {
       armDeleteAll();
       return;
     }
 
     disarmDeleteAll();
-    setSelectionFollowsVisibleRows(false);
-    invalidatePendingTrackingWork();
+    invalidateSheetTrackingWork(activeSheetId);
 
-    setRows(createEmptyRows(INITIAL_ROW_COUNT));
-    setFilters({});
-    setValueFilters({});
-    setSortState({
-      path: null,
-      direction: "asc",
-    });
-    setSelectedRowKeys([]);
-    showActionNotice({
+    updateActiveSheet((current) => clearAllDataInSheet(current));
+    showActionNotice(activeSheetId, {
       tone: "info",
       message: `${allTrackingIds.length} ID kiriman dihapus.`,
     });
@@ -1012,11 +1059,13 @@ function App() {
   }, [
     allTrackingIds.length,
     armDeleteAll,
-    deleteAllArmed,
+    activeSheet.deleteAllArmed,
     disarmDeleteAll,
     focusFirstTrackingInput,
-    invalidatePendingTrackingWork,
+    invalidateSheetTrackingWork,
     showActionNotice,
+    updateActiveSheet,
+    activeSheetId,
   ]);
 
   const exportCsv = useCallback(() => {
@@ -1048,32 +1097,34 @@ function App() {
     link.click();
     link.remove();
     URL.revokeObjectURL(objectUrl);
-    showActionNotice({
+    showActionNotice(activeSheetId, {
       tone: "success",
       message: `${exportableRows.length} row berhasil diexport ke CSV.`,
     });
-  }, [exportableRows, selectedVisibleRowKeys.length, showActionNotice, visibleColumns]);
+  }, [activeSheetId, exportableRows, selectedVisibleRowKeys.length, showActionNotice, visibleColumns]);
 
   const retrackAllRows = useCallback(() => {
     if (retrackableRows.length === 0) {
       return;
     }
 
+    const targetSheetId = activeSheetId;
     const retrackableKeySet = new Set(retrackableRows.map((row) => row.key));
 
-    showActionNotice({
+    showActionNotice(targetSheetId, {
       tone: "info",
       message: `Lacak ulang dimulai untuk ${retrackableRows.length} kiriman.`,
     });
 
-    void runBulkPasteFetches(retrackableRows).then(() => {
-      const refreshedRows = rowsRef.current.filter((row) =>
-        retrackableKeySet.has(row.key)
-      );
+    void runBulkPasteFetches(targetSheetId, retrackableRows).then(() => {
+      const refreshedRows =
+        workspaceRef.current.sheetsById[targetSheetId]?.rows.filter((row) =>
+          retrackableKeySet.has(row.key)
+        ) ?? [];
       const failedCount = refreshedRows.filter((row) => row.error).length;
       const successCount = refreshedRows.length - failedCount;
 
-      showActionNotice({
+      showActionNotice(targetSheetId, {
         tone: failedCount > 0 ? "info" : "success",
         message:
           failedCount > 0
@@ -1081,7 +1132,106 @@ function App() {
             : `Lacak ulang selesai untuk ${retrackableRows.length} kiriman.`,
       });
     });
-  }, [retrackableRows, runBulkPasteFetches, showActionNotice]);
+  }, [activeSheetId, retrackableRows, runBulkPasteFetches, showActionNotice]);
+
+  const activateSheet = useCallback((sheetId: string) => {
+    disarmDeleteAll();
+    if (highlightedColumnTimeoutRef.current !== null) {
+      window.clearTimeout(highlightedColumnTimeoutRef.current);
+      highlightedColumnTimeoutRef.current = null;
+      highlightedColumnSheetIdRef.current = null;
+    }
+    setHoveredColumn(null);
+    setWorkspaceState((current) => setActiveSheetInWorkspace(current, sheetId));
+  }, [disarmDeleteAll]);
+
+  const createSheet = useCallback(() => {
+    disarmDeleteAll();
+    setHoveredColumn(null);
+    setWorkspaceState((current) => createSheetInWorkspace(current));
+  }, [disarmDeleteAll]);
+
+  const duplicateActiveSheet = useCallback(() => {
+    disarmDeleteAll();
+    setHoveredColumn(null);
+    setWorkspaceState((current) =>
+      createSheetInWorkspace(current, {
+        sourceSheetId: activeSheetId,
+      })
+    );
+  }, [activeSheetId, disarmDeleteAll]);
+
+  const renameActiveSheet = useCallback(
+    (sheetId: string, name: string) => {
+      const normalizedName = name.trim();
+      if (!normalizedName) {
+        showActionNotice(sheetId, {
+          tone: "error",
+          message: "Nama sheet tidak boleh kosong.",
+        });
+        return;
+      }
+
+      setWorkspaceState((current) => renameSheetInWorkspace(current, sheetId, name));
+      showActionNotice(sheetId, {
+        tone: "success",
+        message: "Nama sheet berhasil diperbarui.",
+      });
+    },
+    [showActionNotice]
+  );
+
+  const deleteActiveSheet = useCallback(
+    (sheetId: string) => {
+      invalidateSheetTrackingWork(sheetId);
+      requestEpochBySheetRef.current.delete(sheetId);
+      bulkRunEpochBySheetRef.current.delete(sheetId);
+      sheetScrollPositionsRef.current.delete(sheetId);
+      if (highlightedColumnSheetIdRef.current === sheetId) {
+        if (highlightedColumnTimeoutRef.current !== null) {
+          window.clearTimeout(highlightedColumnTimeoutRef.current);
+          highlightedColumnTimeoutRef.current = null;
+        }
+        highlightedColumnSheetIdRef.current = null;
+      }
+      if (deleteAllArmedSheetIdRef.current === sheetId) {
+        if (deleteAllTimeoutRef.current !== null) {
+          window.clearTimeout(deleteAllTimeoutRef.current);
+          deleteAllTimeoutRef.current = null;
+        }
+        deleteAllArmedSheetIdRef.current = null;
+      }
+      const currentWorkspace = workspaceRef.current;
+      const currentIndex = currentWorkspace.sheetOrder.indexOf(sheetId);
+      const nextSheetId =
+        currentWorkspace.activeSheetId === sheetId
+          ? currentWorkspace.sheetOrder.filter((currentSheetId) => currentSheetId !== sheetId)[
+              Math.max(currentIndex - 1, 0)
+            ] ??
+            currentWorkspace.sheetOrder.find((currentSheetId) => currentSheetId !== sheetId) ??
+            null
+          : currentWorkspace.activeSheetId;
+      const existingNoticeTimeout = actionNoticeTimeoutsRef.current.get(sheetId);
+      if (existingNoticeTimeout !== undefined) {
+        window.clearTimeout(existingNoticeTimeout);
+        actionNoticeTimeoutsRef.current.delete(sheetId);
+      }
+      setActionNoticeBySheetId((current) => {
+        const next = { ...current };
+        delete next[sheetId];
+        return next;
+      });
+      setHoveredColumn(null);
+      setWorkspaceState((current) => deleteSheetInWorkspace(current, sheetId));
+      if (nextSheetId) {
+        showActionNotice(nextSheetId, {
+          tone: "info",
+          message: "Sheet berhasil dihapus.",
+        });
+      }
+    },
+    [invalidateSheetTrackingWork, showActionNotice]
+  );
 
   const scrollToColumn = useCallback(
     (path: string) => {
@@ -1103,13 +1253,28 @@ function App() {
         return;
       }
 
-      setHighlightedColumnPath(path);
+      const targetSheetId = activeSheetId;
+      updateSheet(targetSheetId, (current) =>
+        setHighlightedColumnInSheet(current, path)
+      );
+      highlightedColumnSheetIdRef.current = targetSheetId;
       if (highlightedColumnTimeoutRef.current !== null) {
         window.clearTimeout(highlightedColumnTimeoutRef.current);
       }
       highlightedColumnTimeoutRef.current = window.setTimeout(() => {
-        setHighlightedColumnPath((current) => (current === path ? null : current));
+        const highlightedSheetId = highlightedColumnSheetIdRef.current;
+        if (highlightedSheetId) {
+          updateSheet(highlightedSheetId, (current) =>
+            setHighlightedColumnInSheet(
+              current,
+              current.highlightedColumnPath === path
+                ? null
+                : current.highlightedColumnPath
+            )
+          );
+        }
         highlightedColumnTimeoutRef.current = null;
+        highlightedColumnSheetIdRef.current = null;
       }, 2000);
 
       const stickyWidth = Array.from(pinnedColumnSet).reduce(
@@ -1122,52 +1287,23 @@ function App() {
         behavior: "smooth",
       });
     },
-    [effectiveColumnWidths, pinnedColumnSet, visibleColumnPathSet]
+    [activeSheetId, effectiveColumnWidths, pinnedColumnSet, updateSheet, visibleColumnPathSet]
   );
 
   const toggleColumnVisibility = useCallback(
     (path: string) => {
-      if (path === TRACKING_COLUMN_PATH) {
-        return;
-      }
-
-      if (!hiddenColumnPaths.includes(path)) {
-        setFilters((current) => {
-          if (!current[path]) {
-            return current;
-          }
-
-          const next = { ...current };
-          delete next[path];
-          return next;
-        });
-        setValueFilters((current) => {
-          if (!(path in current)) {
-            return current;
-          }
-
-          const next = { ...current };
-          delete next[path];
-          return next;
-        });
-
-        setSortState((current) =>
-          current.path === path ? { path: null, direction: "asc" } : current
-        );
-      }
-
-      setHiddenColumnPaths((current) => toggleColumnVisibilityState(current, path));
+      updateActiveSheet((current) => toggleColumnVisibilityInSheet(current, path));
     },
-    [hiddenColumnPaths]
+    [updateActiveSheet]
   );
 
   const togglePinnedColumn = useCallback((path: string) => {
-    setPinnedColumnPaths((current) => togglePinnedColumnState(current, path));
-  }, []);
+    updateActiveSheet((current) => togglePinnedColumnInSheet(current, path));
+  }, [updateActiveSheet]);
 
   const closeColumnMenu = useCallback(() => {
-    setOpenColumnMenuPath(null);
-  }, []);
+    updateActiveSheet((current) => setOpenColumnMenuInSheet(current, null));
+  }, [updateActiveSheet]);
 
   const handleColumnMenuRef = useCallback(
     (path: string, element: HTMLDivElement | null) => {
@@ -1176,9 +1312,24 @@ function App() {
     []
   );
 
+  const handleSheetScroll = useCallback(
+    (event: UIEvent<HTMLDivElement>) => {
+      sheetScrollPositionsRef.current.set(activeSheetId, {
+        left: event.currentTarget.scrollLeft,
+        top: event.currentTarget.scrollTop,
+      });
+    },
+    [activeSheetId]
+  );
+
   const toggleColumnMenu = useCallback((path: string) => {
-    setOpenColumnMenuPath((current) => (current === path ? null : path));
-  }, []);
+    updateActiveSheet((current) =>
+      setOpenColumnMenuInSheet(
+        current,
+        current.openColumnMenuPath === path ? null : path
+      )
+    );
+  }, [updateActiveSheet]);
 
   useEffect(() => {
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -1250,23 +1401,32 @@ function App() {
 
   return (
     <main className="shell">
-      {serverError ? <section className="error-box">{serverError}</section> : null}
+      <SheetTabs
+        tabs={workspaceTabs}
+        activeSheetId={activeSheetId}
+        onActivateSheet={activateSheet}
+        onCreateSheet={createSheet}
+        onDuplicateActiveSheet={duplicateActiveSheet}
+        onRenameSheet={renameActiveSheet}
+        onDeleteSheet={deleteActiveSheet}
+      />
 
       <section className="sheet-panel">
-        {actionNotice ? (
+        {activeActionNotice ? (
           <div
-            className={`action-notice action-notice-${actionNotice.tone}`}
+            className={`action-notice action-notice-${activeActionNotice.tone}`}
             role="status"
             aria-live="polite"
           >
-            {actionNotice.message}
+            {activeActionNotice.message}
           </div>
         ) : null}
 
         <SheetActionBar
           loadedCount={loadedCount}
+          totalShipmentCount={totalShipmentCount}
           retrackableRowsCount={retrackableRows.length}
-          deleteAllArmed={deleteAllArmed}
+          deleteAllArmed={activeSheet.deleteAllArmed}
           exportableRowsCount={exportableRows.length}
           activeFilterCount={activeFilterCount}
           selectedRowCount={selectedVisibleRowKeys.length}
@@ -1284,8 +1444,9 @@ function App() {
           onScrollToColumn={scrollToColumn}
         />
 
-        <SheetTable
-          displayedRows={displayedRows}
+      <SheetTable
+        sheetId={activeSheetId}
+        displayedRows={displayedRows}
           visibleColumns={visibleColumns}
           hiddenColumns={hiddenColumns}
           columnWidths={effectiveColumnWidths}
@@ -1294,12 +1455,13 @@ function App() {
           hoveredColumn={hoveredColumn}
           allVisibleSelected={allVisibleSelected}
           selectedRowKeySet={selectedRowKeySet}
-          filters={filters}
-          valueFilters={valueFilters}
+          filters={activeSheet.filters}
+          valueFilters={activeSheet.valueFilters}
           valueOptionsByPath={valueOptionsByPath}
-          openColumnMenuPath={openColumnMenuPath}
-          highlightedColumnPath={highlightedColumnPath}
+          openColumnMenuPath={activeSheet.openColumnMenuPath}
+          highlightedColumnPath={activeSheet.highlightedColumnPath}
           scrollContainerRef={sheetScrollRef}
+          onScrollContainer={handleSheetScroll}
           sortDirectionForPath={getColumnSortDirection}
           onMouseLeaveTable={() => setHoveredColumn(null)}
           onHoverColumn={setHoveredColumn}

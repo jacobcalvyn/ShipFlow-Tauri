@@ -6,6 +6,7 @@ export type SheetRow = {
   shipment: TrackResponse | null;
   loading: boolean;
   stale: boolean;
+  dirty: boolean;
   error: string;
 };
 
@@ -30,6 +31,28 @@ export type ColumnDefinition = {
 export type SortState = {
   path: string | null;
   direction: "asc" | "desc";
+};
+
+export type SheetState = {
+  rows: SheetRow[];
+  filters: Record<string, string>;
+  valueFilters: Record<string, string[]>;
+  sortState: SortState;
+  selectedRowKeys: string[];
+  selectionFollowsVisibleRows: boolean;
+  columnWidths: Record<string, number>;
+  hiddenColumnPaths: string[];
+  pinnedColumnPaths: string[];
+  openColumnMenuPath: string | null;
+  highlightedColumnPath: string | null;
+  deleteAllArmed: boolean;
+};
+
+export type ColumnShortcut = {
+  path: string;
+  label: string;
+  disabled: boolean;
+  toneClass: string;
 };
 
 export type { TrackResponse };

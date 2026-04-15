@@ -17,6 +17,7 @@ describe("SheetActionBar", () => {
     render(
       <SheetActionBar
         loadedCount={12}
+        totalShipmentCount={16}
         retrackableRowsCount={12}
         deleteAllArmed={false}
         exportableRowsCount={12}
@@ -44,7 +45,7 @@ describe("SheetActionBar", () => {
       />
     );
 
-    expect(screen.getByText("12 kiriman dimuat")).toBeInTheDocument();
+    expect(screen.getByText("12/16 kiriman dimuat")).toBeInTheDocument();
     expect(screen.getByText("3 row dipilih")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Lacak Ulang Semua"));

@@ -16,6 +16,7 @@ function createRow(): SheetRow {
     shipment: null,
     loading: false,
     stale: false,
+    dirty: false,
     error: "",
   };
 }
@@ -41,6 +42,7 @@ describe("SheetTable", () => {
 
     render(
       <SheetTable
+        sheetId="sheet-1"
         displayedRows={[createRow()]}
         visibleColumns={visibleColumns}
         hiddenColumns={[]}
@@ -59,6 +61,7 @@ describe("SheetTable", () => {
         openColumnMenuPath={visibleColumns[0].path}
         highlightedColumnPath={visibleColumns[0].path}
         scrollContainerRef={createRef<HTMLDivElement>()}
+        onScrollContainer={vi.fn()}
         sortDirectionForPath={() => null}
         onMouseLeaveTable={vi.fn()}
         onHoverColumn={vi.fn()}
@@ -90,7 +93,7 @@ describe("SheetTable", () => {
     fireEvent.change(screen.getByPlaceholderText("Masukkan ID"), {
       target: { value: "P999" },
     });
-    expect(onTrackingInputChange).toHaveBeenCalledWith("row-1", "P999");
+    expect(onTrackingInputChange).toHaveBeenCalledWith("sheet-1", "row-1", "P999");
 
     fireEvent.change(screen.getAllByPlaceholderText("Filter")[0], {
       target: { value: "P2603" },

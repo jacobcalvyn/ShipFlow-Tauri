@@ -1,0 +1,103 @@
+import { INITIAL_ROW_COUNT } from "./columns";
+import { createDefaultSheetState } from "./default-state";
+import {
+  armDeleteAllInSheet,
+  clearAllDataInSheet,
+  setRowErrorInSheet,
+  setRowLoadingInSheet,
+  setRowSuccessInSheet,
+  setTrackingInputInSheet,
+  toggleRowSelectionInSheet,
+} from "./actions";
+import { assertValidSheetState } from "./utils";
+
+describe("sheet actions", () => {
+  it("updates tracking input without affecting unrelated rows", () => {
+    const initial = createDefaultSheetState();
+    const targetRow = initial.rows[0];
+    const untouchedRow = initial.rows[1];
+
+    const next = setTrackingInputInSheet(initial, targetRow.key, "P2603310114291");
+
+    expect(next.rows[0].trackingInput).toBe("P2603310114291");
+    expect(next.rows[1].key).toBe(untouchedRow.key);
+    expect(next.rows[1].trackingInput).toBe("");
+  });
+
+  it("arms delete-all and clears selection state", () => {
+    const initial = {
+      ...createDefaultSheetState(),
+      selectedRowKeys: ["row-1", "row-2"],
+      selectionFollowsVisibleRows: true,
+    };
+
+    const next = armDeleteAllInSheet(initial);
+
+    expect(next.deleteAllArmed).toBe(true);
+    expect(next.selectedRowKeys).toEqual([]);
+    expect(next.selectionFollowsVisibleRows).toBe(false);
+  });
+
+  it("clears all sheet data but preserves sheet view preferences", () => {
+    const initial = createDefaultSheetState();
+    const rowKey = initial.rows[0].key;
+    const changed = {
+      ...toggleRowSelectionInSheet(
+        setTrackingInputInSheet(initial, rowKey, "P2603310114291"),
+        rowKey
+      ),
+      filters: { "status_akhir.status": "INVEHICLE" },
+      hiddenColumnPaths: ["detail.origin_detail.id_kantor"],
+      pinnedColumnPaths: ["detail.shipment_header.nomor_kiriman"],
+      deleteAllArmed: true,
+    };
+
+    const next = clearAllDataInSheet(changed);
+
+    expect(next.rows).toHaveLength(INITIAL_ROW_COUNT);
+    expect(next.rows.every((row) => row.trackingInput === "" && row.shipment === null)).toBe(
+      true
+    );
+    expect(next.filters).toEqual({});
+    expect(next.selectedRowKeys).toEqual([]);
+    expect(next.deleteAllArmed).toBe(false);
+    expect(next.hiddenColumnPaths).toEqual(changed.hiddenColumnPaths);
+    expect(next.pinnedColumnPaths).toEqual(changed.pinnedColumnPaths);
+  });
+
+  it("keeps row state transitions internally valid", () => {
+    const initial = createDefaultSheetState();
+    const rowKey = initial.rows[0].key;
+
+    const dirtyState = setTrackingInputInSheet(initial, rowKey, "P2603310114291");
+    expect(() => assertValidSheetState(dirtyState)).not.toThrow();
+
+    const loadingState = setRowLoadingInSheet(dirtyState, rowKey, "P2603310114291");
+    expect(() => assertValidSheetState(loadingState)).not.toThrow();
+
+    const errorState = setRowErrorInSheet(loadingState, rowKey, "timeout");
+    expect(() => assertValidSheetState(errorState)).not.toThrow();
+
+    const successState = setRowSuccessInSheet(errorState, rowKey, "P2603310114291", {
+      url: "https://example.test",
+      detail: {
+        shipment_header: { nomor_kiriman: "P2603310114291" },
+        origin_detail: {},
+        package_detail: {},
+        billing_detail: { cod_info: { is_cod: false } },
+        actors: { pengirim: {}, penerima: {} },
+        performance_detail: {},
+      },
+      status_akhir: {},
+      pod: {},
+      history: [],
+      history_summary: {
+        irregularity: [],
+        bagging_unbagging: [],
+        manifest_r7: [],
+        delivery_runsheet: [],
+      },
+    });
+    expect(() => assertValidSheetState(successState)).not.toThrow();
+  });
+});

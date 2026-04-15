@@ -1,4 +1,4 @@
-import { ClipboardEvent, KeyboardEvent, memo } from "react";
+import { ClipboardEvent, FocusEvent, KeyboardEvent, memo } from "react";
 import { TRACKING_COLUMN_PATH } from "../columns";
 import { ColumnDefinition, SheetRow } from "../types";
 import {
@@ -10,6 +10,7 @@ import {
 } from "../utils";
 
 type SheetBodyRowProps = {
+  sheetId: string;
   row: SheetRow;
   visibleColumns: ColumnDefinition[];
   columnWidths: Record<string, number>;
@@ -19,19 +20,26 @@ type SheetBodyRowProps = {
   isSelected: boolean;
   onToggleSelection: (rowKey: string) => void;
   onHoverColumn: (columnIndex: number | null) => void;
-  onTrackingInputChange: (rowKey: string, value: string) => void;
-  onTrackingInputBlur: (rowKey: string) => void;
+  onTrackingInputChange: (sheetId: string, rowKey: string, value: string) => void;
+  onTrackingInputBlur: (
+    event: FocusEvent<HTMLInputElement>,
+    sheetId: string,
+    rowKey: string
+  ) => void;
   onTrackingInputKeyDown: (
     event: KeyboardEvent<HTMLInputElement>,
+    sheetId: string,
     rowKey: string
   ) => void;
   onTrackingInputPaste: (
     event: ClipboardEvent<HTMLInputElement>,
+    sheetId: string,
     rowKey: string
   ) => void;
 };
 
 export const SheetBodyRow = memo(function SheetBodyRow({
+  sheetId,
   row,
   visibleColumns,
   columnWidths,
@@ -89,11 +97,11 @@ export const SheetBodyRow = memo(function SheetBodyRow({
                   className="sheet-input"
                   value={row.trackingInput}
                   onChange={(event) =>
-                    onTrackingInputChange(row.key, event.target.value)
+                    onTrackingInputChange(sheetId, row.key, event.target.value)
                   }
-                  onBlur={() => onTrackingInputBlur(row.key)}
-                  onKeyDown={(event) => onTrackingInputKeyDown(event, row.key)}
-                  onPaste={(event) => onTrackingInputPaste(event, row.key)}
+                  onBlur={(event) => onTrackingInputBlur(event, sheetId, row.key)}
+                  onKeyDown={(event) => onTrackingInputKeyDown(event, sheetId, row.key)}
+                  onPaste={(event) => onTrackingInputPaste(event, sheetId, row.key)}
                   placeholder="Masukkan ID"
                 />
                 <span

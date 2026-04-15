@@ -1,8 +1,10 @@
 import {
   ClipboardEvent,
+  FocusEvent,
   KeyboardEvent,
   MouseEvent as ReactMouseEvent,
   RefObject,
+  UIEvent,
 } from "react";
 import { ColumnHeaderCell } from "./ColumnHeaderCell";
 import { SheetBodyRow } from "./SheetBodyRow";
@@ -10,6 +12,7 @@ import { ColumnDefinition, SheetRow } from "../types";
 import { getColumnToneClass } from "../utils";
 
 type SheetTableProps = {
+  sheetId: string;
   displayedRows: SheetRow[];
   visibleColumns: ColumnDefinition[];
   hiddenColumns: ColumnDefinition[];
@@ -25,19 +28,26 @@ type SheetTableProps = {
   openColumnMenuPath: string | null;
   highlightedColumnPath: string | null;
   scrollContainerRef: RefObject<HTMLDivElement>;
+  onScrollContainer: (event: UIEvent<HTMLDivElement>) => void;
   sortDirectionForPath: (path: string) => "asc" | "desc" | null;
   onMouseLeaveTable: () => void;
   onHoverColumn: (columnIndex: number | null) => void;
   onToggleVisibleSelection: () => void;
   onToggleRowSelection: (rowKey: string) => void;
-  onTrackingInputChange: (rowKey: string, value: string) => void;
-  onTrackingInputBlur: (rowKey: string) => void;
+  onTrackingInputChange: (sheetId: string, rowKey: string, value: string) => void;
+  onTrackingInputBlur: (
+    event: FocusEvent<HTMLInputElement>,
+    sheetId: string,
+    rowKey: string
+  ) => void;
   onTrackingInputKeyDown: (
     event: KeyboardEvent<HTMLInputElement>,
+    sheetId: string,
     rowKey: string
   ) => void;
   onTrackingInputPaste: (
     event: ClipboardEvent<HTMLInputElement>,
+    sheetId: string,
     rowKey: string
   ) => void;
   onFilterChange: (path: string, value: string) => void;
@@ -56,6 +66,7 @@ type SheetTableProps = {
 };
 
 export function SheetTable({
+  sheetId,
   displayedRows,
   visibleColumns,
   hiddenColumns,
@@ -71,6 +82,7 @@ export function SheetTable({
   openColumnMenuPath,
   highlightedColumnPath,
   scrollContainerRef,
+  onScrollContainer,
   sortDirectionForPath,
   onMouseLeaveTable,
   onHoverColumn,
@@ -96,6 +108,7 @@ export function SheetTable({
       ref={scrollContainerRef}
       className="sheet-scroll"
       onMouseLeave={onMouseLeaveTable}
+      onScroll={onScrollContainer}
     >
       <table className="sheet-table">
         <thead>
@@ -181,6 +194,7 @@ export function SheetTable({
           {displayedRows.map((row) => (
             <SheetBodyRow
               key={row.key}
+              sheetId={sheetId}
               row={row}
               visibleColumns={visibleColumns}
               columnWidths={columnWidths}

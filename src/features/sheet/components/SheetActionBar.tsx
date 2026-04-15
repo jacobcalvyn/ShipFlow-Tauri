@@ -1,5 +1,6 @@
 type SheetActionBarProps = {
   loadedCount: number;
+  totalShipmentCount: number;
   retrackableRowsCount: number;
   deleteAllArmed: boolean;
   exportableRowsCount: number;
@@ -26,6 +27,7 @@ type SheetActionBarProps = {
 
 export function SheetActionBar({
   loadedCount,
+  totalShipmentCount,
   retrackableRowsCount,
   deleteAllArmed,
   exportableRowsCount,
@@ -50,7 +52,9 @@ export function SheetActionBar({
   return (
     <>
       <div className="selection-actions">
-        <span className="selection-count">{loadedCount} kiriman dimuat</span>
+        <span className="selection-count">
+          {loadedCount}/{totalShipmentCount} kiriman dimuat
+        </span>
         <span className="action-divider" aria-hidden="true" />
         <button
           type="button"

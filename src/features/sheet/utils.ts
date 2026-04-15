@@ -3,7 +3,11 @@ import {
   INITIAL_ROW_COUNT,
   MIN_EMPTY_TRAILING_ROWS,
 } from "./columns";
-import { ColumnDefinition, SheetRow } from "./types";
+import { ColumnDefinition, SheetRow, SheetState } from "./types";
+
+const ZERO_WIDTH_CHARACTERS_REGEX = /[\u200B-\u200D\uFEFF]/g;
+const NON_TRACKING_CHARACTERS_REGEX = /[^A-Z0-9-]/g;
+export const MAX_TRACKING_INPUT_LENGTH = 64;
 
 export function createEmptyRow(): SheetRow {
   return {
@@ -12,12 +16,41 @@ export function createEmptyRow(): SheetRow {
     shipment: null,
     loading: false,
     stale: false,
+    dirty: false,
     error: "",
   };
 }
 
 export function createEmptyRows(count: number) {
   return Array.from({ length: count }, () => createEmptyRow());
+}
+
+export function sanitizeTrackingInput(value: string) {
+  return value
+    .normalize("NFKC")
+    .replace(ZERO_WIDTH_CHARACTERS_REGEX, "")
+    .toUpperCase()
+    .replace(/\s+/g, "")
+    .replace(NON_TRACKING_CHARACTERS_REGEX, "");
+}
+
+export function sanitizeTrackingPasteValues(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((item) => sanitizeTrackingInput(item))
+    .filter(Boolean);
+}
+
+export function getTrackingInputValidationError(value: string) {
+  if (!value) {
+    return null;
+  }
+
+  if (value.length > MAX_TRACKING_INPUT_LENGTH) {
+    return `Shipment ID exceeds ${MAX_TRACKING_INPUT_LENGTH} characters.`;
+  }
+
+  return null;
 }
 
 export function ensureTrailingEmptyRows(rows: SheetRow[]) {
@@ -62,6 +95,10 @@ export function getByPath(source: unknown, path: string): unknown {
 export function getRowStatus(row: SheetRow) {
   if (row.loading) {
     return "Loading";
+  }
+
+  if (row.dirty) {
+    return "Dirty";
   }
 
   if (row.stale) {
@@ -211,6 +248,8 @@ export function getStatusToneClass(status: string) {
       return "status-ready";
     case "Loading":
       return "status-loading";
+    case "Dirty":
+      return "status-dirty";
     case "Stale":
       return "status-stale";
     case "Error":
@@ -297,6 +336,43 @@ export function getInitialColumnWidths() {
 
 export function isBrowserReady() {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+}
+
+export function assertValidSheetState(sheetState: SheetState) {
+  const rowKeySet = new Set<string>();
+
+  for (const row of sheetState.rows) {
+    if (rowKeySet.has(row.key)) {
+      throw new Error(`Duplicate row key detected: ${row.key}`);
+    }
+    rowKeySet.add(row.key);
+
+    if (row.loading && row.error) {
+      throw new Error(`Row ${row.key} cannot be loading and errored at the same time.`);
+    }
+
+    if (row.stale && row.shipment === null) {
+      throw new Error(`Row ${row.key} cannot be stale without a last-known-good shipment.`);
+    }
+
+    if (row.dirty && row.shipment === null) {
+      throw new Error(`Row ${row.key} cannot be dirty without a last-known-good shipment.`);
+    }
+
+    if (row.trackingInput.trim() === "") {
+      if (row.shipment !== null || row.loading || row.stale || row.dirty || row.error) {
+        throw new Error(`Row ${row.key} is empty but still carries tracking state.`);
+      }
+    }
+  }
+
+  for (const selectedRowKey of sheetState.selectedRowKeys) {
+    if (!rowKeySet.has(selectedRowKey)) {
+      throw new Error(`Selected row key ${selectedRowKey} does not exist in sheet state.`);
+    }
+  }
+
+  return sheetState;
 }
 
 export function loadStoredStringArray(storageKey: string, fallback: string[]) {
