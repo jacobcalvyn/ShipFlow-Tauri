@@ -37,6 +37,7 @@ import {
   clearFiltersInSheet,
   clearHiddenFiltersInSheet,
   clearRowInSheet,
+  clearTrackingCellInSheet,
   clearSelectionInSheet,
   clearValueFilterInSheet,
   deleteRowsInSheet,
@@ -474,6 +475,34 @@ function App() {
     });
   }, []);
 
+  const focusTrackingInputRelative = useCallback(
+    (currentInput: HTMLInputElement, offset: number) => {
+      const trackingInputs = Array.from(
+        sheetScrollRef.current?.querySelectorAll<HTMLInputElement>(
+          "tbody .tracking-cell .sheet-input"
+        ) ?? []
+      );
+
+      if (trackingInputs.length === 0) {
+        return false;
+      }
+
+      const currentIndex = trackingInputs.indexOf(currentInput);
+      if (currentIndex === -1) {
+        return false;
+      }
+
+      const nextIndex = currentIndex + offset;
+      if (nextIndex < 0 || nextIndex >= trackingInputs.length) {
+        return false;
+      }
+
+      trackingInputs[nextIndex]?.focus();
+      return true;
+    },
+    []
+  );
+
   const nonEmptyRows = useMemo(() => getNonEmptyRows(activeSheet.rows), [activeSheet.rows]);
 
   const retrackableRows = useMemo(
@@ -784,15 +813,60 @@ function App() {
     [fetchRow]
   );
 
+  const clearTrackingCell = useCallback(
+    (sheetId: string, rowKey: string) => {
+      const requestKey = getSheetRequestKey(sheetId, rowKey);
+      const activeController = requestControllersRef.current.get(requestKey);
+
+      if (activeController) {
+        const meta = requestMetaRef.current.get(requestKey);
+        if (meta) {
+          emitTrackingTelemetry("abort", meta, {
+            reason: "cell_cleared",
+          });
+        }
+        activeController.abort();
+      }
+
+      requestControllersRef.current.delete(requestKey);
+      requestMetaRef.current.delete(requestKey);
+      updateSheet(sheetId, (current) => clearTrackingCellInSheet(current, rowKey));
+    },
+    [updateSheet]
+  );
+
   const handleTrackingInputKeyDown = useCallback(
     (event: KeyboardEvent<HTMLInputElement>, sheetId: string, rowKey: string) => {
+      const currentInput = event.currentTarget;
+
+      if (event.key === "Delete" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        clearTrackingCell(sheetId, rowKey);
+        return;
+      }
+
       if (event.key === "Enter") {
         event.preventDefault();
-        void fetchRow(sheetId, rowKey, event.currentTarget.value);
-        (event.currentTarget as HTMLInputElement).blur();
+        const moved = focusTrackingInputRelative(currentInput, 1);
+        if (!moved) {
+          void fetchRow(sheetId, rowKey, currentInput.value);
+          currentInput.blur();
+        }
+        return;
+      }
+
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        focusTrackingInputRelative(currentInput, 1);
+        return;
+      }
+
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        focusTrackingInputRelative(currentInput, -1);
       }
     },
-    [fetchRow]
+    [clearTrackingCell, fetchRow, focusTrackingInputRelative]
   );
 
   const runBulkPasteFetches = useCallback(
@@ -1467,6 +1541,7 @@ function App() {
           onHoverColumn={setHoveredColumn}
           onToggleVisibleSelection={toggleVisibleSelection}
           onToggleRowSelection={toggleRowSelection}
+          onClearTrackingCell={clearTrackingCell}
           onTrackingInputChange={handleTrackingInputChange}
           onTrackingInputBlur={handleTrackingInputBlur}
           onTrackingInputKeyDown={handleTrackingInputKeyDown}

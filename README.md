@@ -64,6 +64,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - Spreadsheet-style table with `50` initial rows
 - Multi-sheet workspace with create / rename / duplicate / delete sheet
 - Sticky selector column and sticky `Nomor Kiriman`
+- Keyboard row navigation in `Nomor Kiriman` with `Enter`, `ArrowUp`, and `ArrowDown`
 - Row checkbox selection for copy/delete actions
 - Column context menu for:
   - sort
@@ -83,6 +84,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - Column shortcut buttons that horizontally scroll to key columns
 - Temporary header highlight when a shortcut scroll target is reached
 - Sheet-specific scroll position, request state, and notices
+- `POD Photo 1` and `POD Photo 2` render as image thumbnails with hover preview
 
 ## Current Data Shown In The Table
 
@@ -96,8 +98,14 @@ The main table currently focuses on:
 - `detail.package_detail`
 - `detail.billing_detail`
 - `detail.performance_detail`
+- `pod.photo1_url`
+- `pod.photo2_url`
+- `history_summary.irregularity`
+- `history_summary.bagging_unbagging`
+- `history_summary.manifest_r7`
+- `history_summary.delivery_runsheet`
 
-The backend still returns `pod`, `history`, and `history_summary`, but those are not the main focus of the current spreadsheet view.
+`history` is still returned by the backend but is not expanded as a full table module yet.
 
 ## Stability And Safety Notes
 

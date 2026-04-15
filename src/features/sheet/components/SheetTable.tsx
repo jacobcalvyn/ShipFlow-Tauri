@@ -11,6 +11,24 @@ import { SheetBodyRow } from "./SheetBodyRow";
 import { ColumnDefinition, SheetRow } from "../types";
 import { getColumnToneClass } from "../utils";
 
+function isShortcutHighlighted(
+  columnPath: string,
+  highlightedColumnPath: string | null
+) {
+  if (highlightedColumnPath === columnPath) {
+    return true;
+  }
+
+  if (
+    highlightedColumnPath === "pod.photo1_url" &&
+    columnPath === "pod.photo2_url"
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 type SheetTableProps = {
   sheetId: string;
   displayedRows: SheetRow[];
@@ -34,6 +52,7 @@ type SheetTableProps = {
   onHoverColumn: (columnIndex: number | null) => void;
   onToggleVisibleSelection: () => void;
   onToggleRowSelection: (rowKey: string) => void;
+  onClearTrackingCell: (sheetId: string, rowKey: string) => void;
   onTrackingInputChange: (sheetId: string, rowKey: string, value: string) => void;
   onTrackingInputBlur: (
     event: FocusEvent<HTMLInputElement>,
@@ -88,6 +107,7 @@ export function SheetTable({
   onHoverColumn,
   onToggleVisibleSelection,
   onToggleRowSelection,
+  onClearTrackingCell,
   onTrackingInputChange,
   onTrackingInputBlur,
   onTrackingInputKeyDown,
@@ -139,7 +159,7 @@ export function SheetTable({
                 selectedValueFilters={valueFilters[column.path] ?? []}
                 availableValueOptions={valueOptionsByPath[column.path] ?? []}
                 isMenuOpen={openColumnMenuPath === column.path}
-                isHighlighted={highlightedColumnPath === column.path}
+                isHighlighted={isShortcutHighlighted(column.path, highlightedColumnPath)}
                 onHoverColumn={onHoverColumn}
                 onToggleMenu={onToggleColumnMenu}
                 onResizeStart={onResizeStart}
@@ -203,6 +223,7 @@ export function SheetTable({
               hoveredColumn={hoveredColumn}
               isSelected={selectedRowKeySet.has(row.key)}
               onToggleSelection={onToggleRowSelection}
+              onClearTrackingCell={onClearTrackingCell}
               onHoverColumn={onHoverColumn}
               onTrackingInputChange={onTrackingInputChange}
               onTrackingInputBlur={onTrackingInputBlur}

@@ -2,8 +2,12 @@ mod tracking;
 
 use std::time::Duration;
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
+use reqwest::header::CONTENT_TYPE;
+use scraper::{Html as ScraperHtml, Selector};
 use tracking::model::TrackingClientState;
-use tracking::upstream::scrape_pos_tracking;
+use tracking::upstream::{resolve_pos_href, scrape_pos_tracking};
 
 #[tauri::command]
 async fn track_shipment(
@@ -31,6 +35,184 @@ async fn track_shipment(
         })
 }
 
+#[tauri::command]
+async fn resolve_pod_image(
+    image_source: String,
+    client_state: tauri::State<'_, TrackingClientState>,
+) -> Result<String, String> {
+    resolve_pod_image_source(&client_state.client, image_source.trim(), 0).await
+}
+
+async fn resolve_pod_image_source(
+    client: &reqwest::Client,
+    image_source: &str,
+    depth: u8,
+) -> Result<String, String> {
+    if depth > 3 {
+        return Err("POD image source redirected too many times.".into());
+    }
+
+    let trimmed = image_source.trim();
+    if trimmed.is_empty() {
+        return Err("Image source is required.".into());
+    }
+
+    if trimmed.starts_with("data:image/") {
+        return Ok(trimmed.to_string());
+    }
+
+    if let Some(normalized) = normalize_base64_image(trimmed) {
+        return Ok(base64_to_data_url(&normalized));
+    }
+
+    let response = client
+        .get(trimmed)
+        .send()
+        .await
+        .map_err(|error| format!("Unable to fetch POD image source: {error}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "POD image source returned HTTP {}.",
+            response.status()
+        ));
+    }
+
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("Unable to read POD image source response: {error}"))?;
+
+    if let Some(content_type) = content_type {
+        if content_type.starts_with("image/") {
+            return Ok(format!(
+                "data:{content_type};base64,{}",
+                STANDARD.encode(&bytes)
+            ));
+        }
+    }
+
+    let body_text = String::from_utf8_lossy(&bytes).trim().to_string();
+    if body_text.starts_with("data:image/") {
+        return Ok(body_text);
+    }
+
+    if let Some(data_image) = extract_data_image_from_text(&body_text) {
+        return Ok(data_image);
+    }
+
+    if let Some(normalized) = normalize_base64_image(&body_text) {
+        return Ok(base64_to_data_url(&normalized));
+    }
+
+    if let Some(next_source) = extract_image_source_from_html(&body_text) {
+        let resolved_source = if next_source.starts_with("http://")
+            || next_source.starts_with("https://")
+            || next_source.starts_with("data:image/")
+        {
+            next_source
+        } else {
+            resolve_pos_href(&next_source)
+        };
+
+        return Box::pin(resolve_pod_image_source(client, &resolved_source, depth + 1)).await;
+    }
+
+    Err("POD image source did not resolve to a valid image payload.".into())
+}
+
+fn extract_image_source_from_html(html: &str) -> Option<String> {
+    let document = ScraperHtml::parse_document(html);
+    let img_selector = Selector::parse("img").expect("valid selector");
+
+    document.select(&img_selector).find_map(|img| {
+        img.value()
+            .attr("src")
+            .or_else(|| img.value().attr("data-src"))
+            .or_else(|| img.value().attr("data-original"))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn extract_data_image_from_text(value: &str) -> Option<String> {
+    let start = value.find("data:image/")?;
+    let remainder = &value[start..];
+    let end = remainder
+        .find(|ch: char| ch == '"' || ch == '\'' || ch.is_whitespace())
+        .unwrap_or(remainder.len());
+    let candidate = remainder[..end].trim().trim_end_matches(',').to_string();
+    if candidate.starts_with("data:image/") {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+fn normalize_base64_image(value: &str) -> Option<String> {
+    let mut normalized = value.trim().to_string();
+
+    if normalized.len() > 3 && normalized.starts_with("b\"") && normalized.ends_with('"') {
+        normalized = normalized[2..normalized.len() - 1].to_string();
+    } else if normalized.len() > 3 && normalized.starts_with("b'") && normalized.ends_with('\'') {
+        normalized = normalized[2..normalized.len() - 1].to_string();
+    }
+
+    normalized = normalized
+        .replace(['\r', '\n', '\t', ' '], "")
+        .replace("base64,", "");
+
+    if let Some((_, rest)) = normalized.split_once("data:image/") {
+        if let Some((_, payload)) = rest.split_once(',') {
+            normalized = payload.to_string();
+        }
+    }
+
+    normalized = normalized.replace('-', "+").replace('_', "/");
+    normalized = normalized.trim_matches('"').trim_matches('\'').to_string();
+
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if !normalized
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '='))
+    {
+        return None;
+    }
+
+    let padding_length = normalized.len() % 4;
+    if padding_length != 0 {
+        normalized.push_str(&"=".repeat(4 - padding_length));
+    }
+
+    Some(normalized)
+}
+
+fn base64_to_data_url(normalized: &str) -> String {
+    let mime_type = if normalized.starts_with("iVBOR") {
+        "image/png"
+    } else if normalized.starts_with("R0lGOD") {
+        "image/gif"
+    } else if normalized.starts_with("UklGR") {
+        "image/webp"
+    } else if normalized.starts_with("PHN2Zy") {
+        "image/svg+xml"
+    } else {
+        "image/jpeg"
+    };
+
+    format!("data:{mime_type};base64,{normalized}")
+}
+
 pub fn run() {
     let tracking_client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(6))
@@ -44,7 +226,7 @@ pub fn run() {
         .manage(TrackingClientState {
             client: tracking_client,
         })
-        .invoke_handler(tauri::generate_handler![track_shipment])
+        .invoke_handler(tauri::generate_handler![track_shipment, resolve_pod_image])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -53,6 +235,7 @@ pub fn run() {
 mod tests {
     use serde_json::json;
 
+    use super::{base64_to_data_url, normalize_base64_image};
     use super::tracking::model::TrackingError;
     use super::tracking::parser::parse_tracking_html;
     use super::tracking::upstream::{build_tracking_url, POS_TRACKING_ENDPOINT};
@@ -205,5 +388,55 @@ mod tests {
             .expect_err("partial upstream html should not be treated as not found");
 
         assert!(matches!(error, TrackingError::Upstream(_)));
+    }
+
+    #[test]
+    fn parse_tracking_html_keeps_data_image_pod_src_as_is() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2603310114291</td></tr>
+              <tr><td>Status Akhir</td><td>DELIVERED - DC JAYAPURA [Kurir/9910bkurir] [2026-04-15 11:51:34]</td></tr>
+            </table>
+            <table>
+              <tr>
+                <th>POD</th>
+                <th>Photo</th>
+                <th>Photo2</th>
+                <th>signature</th>
+                <th>coordinate</th>
+              </tr>
+              <tr>
+                <td></td>
+                <td><img src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD" /></td>
+                <td><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB" /></td>
+                <td></td>
+                <td>-2.5,140.7</td>
+              </tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("data image pod sample should parse");
+
+        assert_eq!(
+            response.pod.photo1_url.as_deref(),
+            Some("data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD")
+        );
+        assert_eq!(
+            response.pod.photo2_url.as_deref(),
+            Some("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB")
+        );
+    }
+
+    #[test]
+    fn resolve_pod_base64_into_data_url() {
+        let base64_png =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z1xQAAAAASUVORK5CYII=";
+
+        assert_eq!(
+            base64_to_data_url(base64_png),
+            format!("data:image/png;base64,{base64_png}")
+        );
+        assert_eq!(normalize_base64_image(base64_png), Some(base64_png.to_string()));
     }
 }

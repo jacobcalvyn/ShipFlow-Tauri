@@ -134,6 +134,27 @@ export function setRowSuccessInSheet(
   };
 }
 
+export function clearTrackingCellInSheet(sheetState: SheetState, rowKey: string) {
+  return {
+    ...sheetState,
+    rows: ensureTrailingEmptyRows(
+      sheetState.rows.map((row) =>
+        row.key === rowKey
+          ? {
+              ...row,
+              trackingInput: "",
+              shipment: null,
+              loading: false,
+              stale: false,
+              dirty: false,
+              error: "",
+            }
+          : row
+      )
+    ),
+  };
+}
+
 export function setRowErrorInSheet(
   sheetState: SheetState,
   rowKey: string,

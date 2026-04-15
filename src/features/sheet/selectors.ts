@@ -15,6 +15,7 @@ const COLUMN_SHORTCUTS = [
   { path: "detail.actors.penerima.nama", label: "Nama Penerima" },
   { path: "detail.package_detail.jenis_layanan", label: "Jenis Layanan" },
   { path: "detail.billing_detail.cod_info.is_cod", label: "Is COD" },
+  { path: "pod.photo1_url", label: "POD Photo" },
 ] as const;
 
 export function getNonEmptyRows(rows: SheetRow[]) {

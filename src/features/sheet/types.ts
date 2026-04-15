@@ -16,6 +16,7 @@ export type ColumnType =
   | "weight"
   | "number"
   | "boolean"
+  | "json"
   | "date";
 
 export type ColumnDefinition = {

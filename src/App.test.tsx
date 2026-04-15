@@ -6,8 +6,13 @@ const { mockedInvoke } = vi.hoisted(() => ({
   mockedInvoke: vi.fn<
     (
       command: string,
-      args?: { shipmentId?: string; sheetId?: string; rowKey?: string }
-    ) => Promise<TrackResponse>
+      args?: {
+        shipmentId?: string;
+        sheetId?: string;
+        rowKey?: string;
+        imageSource?: string;
+      }
+    ) => Promise<TrackResponse | string>
   >(),
 }));
 
@@ -96,6 +101,10 @@ describe("App workspace isolation", () => {
     infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     mockedInvoke.mockImplementation((command, args) => {
+      if (command === "resolve_pod_image") {
+        return Promise.resolve(typeof args?.imageSource === "string" ? args.imageSource : "");
+      }
+
       if (command !== "track_shipment" || !args?.shipmentId) {
         throw new Error(`Unexpected invoke: ${command}`);
       }
@@ -218,6 +227,61 @@ describe("App workspace isolation", () => {
     );
     expect(screen.getByText("0/0 kiriman dimuat")).toBeInTheDocument();
     expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("");
+  });
+
+  it("moves focus to the next tracking row when Enter is pressed", () => {
+    render(<App />);
+
+    const [firstInput, secondInput] = screen.getAllByPlaceholderText("Masukkan ID");
+    firstInput.focus();
+
+    fireEvent.keyDown(firstInput, { key: "Enter" });
+
+    expect(document.activeElement).toBe(secondInput);
+    expect(mockedInvoke).not.toHaveBeenCalled();
+  });
+
+  it("moves focus between tracking rows with ArrowDown and ArrowUp", () => {
+    render(<App />);
+
+    const [firstInput, secondInput, thirdInput] =
+      screen.getAllByPlaceholderText("Masukkan ID");
+
+    firstInput.focus();
+    fireEvent.keyDown(firstInput, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(secondInput);
+
+    fireEvent.keyDown(secondInput, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(thirdInput);
+
+    fireEvent.keyDown(thirdInput, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(secondInput);
+  });
+
+  it("clears the active tracking cell when Delete is pressed in the input", () => {
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
+    fireEvent.change(firstInput, { target: { value: "P2603310114291" } });
+
+    fireEvent.keyDown(firstInput, { key: "Delete" });
+
+    expect(firstInput).toHaveValue("");
+    expect(mockedInvoke).not.toHaveBeenCalled();
+  });
+
+  it("clears the row tracking cell when Delete is pressed on the row checkbox", () => {
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
+    fireEvent.change(firstInput, { target: { value: "P2603310114291" } });
+
+    const firstRowCheckbox = screen.getAllByRole("checkbox")[1];
+    firstRowCheckbox.focus();
+    fireEvent.keyDown(firstRowCheckbox, { key: "Delete" });
+
+    expect(firstInput).toHaveValue("");
+    expect(mockedInvoke).not.toHaveBeenCalled();
   });
 
   it("can start a fresh tracking request in a new sheet while another sheet is still loading", async () => {

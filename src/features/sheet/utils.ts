@@ -178,6 +178,8 @@ export function formatColumnValue(row: SheetRow, column: ColumnDefinition) {
       return rawValue ? "Ya" : "Tidak";
     case "date":
       return formatDateValue(String(rawValue));
+    case "json":
+      return JSON.stringify(rawValue);
     default:
       return String(rawValue);
   }
@@ -275,6 +277,8 @@ export function getComparableValue(row: SheetRow, column: ColumnDefinition) {
       return Number(rawValue);
     case "boolean":
       return rawValue ? 1 : 0;
+    case "json":
+      return JSON.stringify(rawValue);
     case "date": {
       const normalized = formatDateValue(String(rawValue));
       const parts = normalized.split(/[/-]/);

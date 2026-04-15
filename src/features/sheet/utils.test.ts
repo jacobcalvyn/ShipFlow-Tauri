@@ -76,10 +76,12 @@ describe("sheet utils", () => {
           performance_detail: {},
         },
         status_akhir: {},
-        pod: {},
+        pod: {
+          photo1_url: "https://example.test/photo-1.jpg",
+        },
         history: [],
         history_summary: {
-          irregularity: [],
+          irregularity: [{ status: "FAILED" }],
           bagging_unbagging: [],
           manifest_r7: [],
           delivery_runsheet: [],
@@ -93,9 +95,17 @@ describe("sheet utils", () => {
     const codColumn = COLUMNS.find(
       (column) => column.path === "detail.billing_detail.cod_info.is_cod"
     )!;
+    const podColumn = COLUMNS.find((column) => column.path === "pod.photo1_url")!;
+    const historySummaryColumn = COLUMNS.find(
+      (column) => column.path === "history_summary.irregularity"
+    )!;
 
     expect(formatColumnValue(row, beratColumn)).toBe("1,25 Kg");
     expect(formatColumnValue(row, codColumn)).toBe("Ya");
+    expect(formatColumnValue(row, podColumn)).toBe("https://example.test/photo-1.jpg");
+    expect(formatColumnValue(row, historySummaryColumn)).toBe(
+      '[{"status":"FAILED"}]'
+    );
   });
 
   it("returns row status in the expected priority order", () => {

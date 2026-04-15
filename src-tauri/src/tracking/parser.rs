@@ -160,6 +160,10 @@ pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackRespons
                         if let Some(src) =
                             get_valid_src("src").or_else(|| get_valid_src("data-src"))
                         {
+                            if src.starts_with("data:image/") {
+                                return Some(src);
+                            }
+
                             return Some(resolve_pos_href(&src));
                         }
                     }
