@@ -439,6 +439,29 @@ function App() {
     });
   }, [bumpSheetEpoch]);
 
+  const abortRowTrackingWork = useCallback(
+    (
+      sheetId: string,
+      rowKeys: string[],
+      reason: "selected_rows_deleted" | "sheet_invalidation" | "cell_cleared"
+    ) => {
+      rowKeys.forEach((rowKey) => {
+        const requestKey = getSheetRequestKey(sheetId, rowKey);
+        const controller = requestControllersRef.current.get(requestKey);
+        const meta = requestMetaRef.current.get(requestKey);
+
+        if (meta) {
+          emitTrackingTelemetry("abort", meta, { reason });
+        }
+
+        controller?.abort();
+        requestControllersRef.current.delete(requestKey);
+        requestMetaRef.current.delete(requestKey);
+      });
+    },
+    []
+  );
+
   const showActionNotice = useCallback((sheetId: string, notice: ActionNotice) => {
     const noticeId = notice.id || createRequestId();
 
@@ -846,24 +869,10 @@ function App() {
 
   const clearTrackingCell = useCallback(
     (sheetId: string, rowKey: string) => {
-      const requestKey = getSheetRequestKey(sheetId, rowKey);
-      const activeController = requestControllersRef.current.get(requestKey);
-
-      if (activeController) {
-        const meta = requestMetaRef.current.get(requestKey);
-        if (meta) {
-          emitTrackingTelemetry("abort", meta, {
-            reason: "cell_cleared",
-          });
-        }
-        activeController.abort();
-      }
-
-      requestControllersRef.current.delete(requestKey);
-      requestMetaRef.current.delete(requestKey);
+      abortRowTrackingWork(sheetId, [rowKey], "cell_cleared");
       updateSheet(sheetId, (current) => clearTrackingCellInSheet(current, rowKey));
     },
-    [updateSheet]
+    [abortRowTrackingWork, updateSheet]
   );
 
   const handleTrackingInputKeyDown = useCallback(
@@ -1181,16 +1190,18 @@ function App() {
       return;
     }
 
-    invalidateSheetTrackingWork(activeSheetId);
+    abortRowTrackingWork(activeSheetId, selectedVisibleRowKeys, "selected_rows_deleted");
 
-    updateActiveSheet((current) => deleteRowsInSheet(current, selectedVisibleRowKeys));
+    updateActiveSheet((current) =>
+      clearSelectionInSheet(deleteRowsInSheet(current, selectedVisibleRowKeys))
+    );
     showActionNotice(activeSheetId, {
       tone: "info",
       message: `${selectedVisibleRowKeys.length} row terselect dihapus.`,
     });
   }, [
     activeSheetId,
-    invalidateSheetTrackingWork,
+    abortRowTrackingWork,
     selectedVisibleRowKeys,
     showActionNotice,
     updateActiveSheet,

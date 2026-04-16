@@ -747,6 +747,11 @@ button {
   gap: 4px;
 }
 
+.column-menu-body-wide-filter {
+  min-width: 360px;
+  max-width: 520px;
+}
+
 .column-menu-item {
   width: 100%;
   border: 0;
@@ -823,6 +828,10 @@ button {
   border-radius: 8px;
   color: #334155;
   font-size: 0.8rem;
+}
+
+.column-menu-body-wide-filter .column-menu-checkbox span {
+  word-break: break-word;
 }
 
 .column-menu-checkbox:hover {
@@ -948,7 +957,6 @@ button {
 .tracking-qr-hover-preview {
   position: fixed;
   z-index: 140;
-  width: 280px;
   border: 2px solid #cbd5e1;
   border-radius: 18px;
   background: #ffffff;
@@ -974,10 +982,23 @@ button {
 
 .tracking-qr-image {
   display: block;
-  width: 240px;
-  height: 240px;
+  width: min(240px, 100%);
+  height: auto;
   border-radius: 12px;
   background: #ffffff;
+}
+
+.tracking-qr-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: min(240px, 100%);
+  min-height: 180px;
+  border-radius: 12px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 0.82rem;
+  font-weight: 600;
 }
 
 .tracking-qr-value {
@@ -1067,7 +1088,6 @@ button {
 
 .pod-photo-hover-preview {
   position: fixed;
-  width: 440px;
   padding: 8px;
   border: 2px solid #94a3b8;
   border-radius: 14px;
@@ -1084,7 +1104,7 @@ button {
 .pod-photo-preview-image {
   display: block;
   width: 100%;
-  max-height: 480px;
+  max-height: calc(100vh - 96px);
   object-fit: contain;
   border-radius: 10px;
   background: #ffffff;
@@ -1107,9 +1127,6 @@ button {
 
 .history-summary-hover-preview {
   position: fixed;
-  width: 520px;
-  max-width: min(520px, calc(100vw - 32px));
-  max-height: min(420px, calc(100vh - 32px));
   border: 2px solid #94a3b8;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.98);
@@ -1121,7 +1138,7 @@ button {
 .history-summary-hover-body {
   display: flex;
   flex-direction: column;
-  max-height: min(420px, calc(100vh - 32px));
+  max-height: inherit;
 }
 
 .history-summary-hover-title {

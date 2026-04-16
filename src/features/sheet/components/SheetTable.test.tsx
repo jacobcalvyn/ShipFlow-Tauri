@@ -1,6 +1,7 @@
 import { createRef } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { SheetTable } from "./SheetTable";
+import { getPreviewPortalLayout } from "./SheetBodyRow";
 import { COLUMNS } from "../columns";
 import { SheetRow } from "../types";
 
@@ -115,5 +116,25 @@ describe("SheetTable", () => {
     fireEvent.click(screen.getByText("Sort Asc"));
     expect(onSetColumnSort).toHaveBeenCalledWith(visibleColumns[0].path, "asc");
     expect(onCloseColumnMenu).toHaveBeenCalled();
+  });
+
+  it("clamps preview layout to the viewport on small screens", () => {
+    const layout = getPreviewPortalLayout(
+      {
+        top: 40,
+        left: 80,
+        right: 140,
+        height: 36,
+      } as DOMRect,
+      320,
+      280,
+      520,
+      420
+    );
+
+    expect(layout.width).toBeLessThanOrEqual(288);
+    expect(layout.height).toBeLessThanOrEqual(248);
+    expect(layout.left).toBeGreaterThanOrEqual(16);
+    expect(layout.top).toBeGreaterThanOrEqual(16);
   });
 });

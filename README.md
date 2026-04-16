@@ -88,8 +88,10 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - Sheet-specific scroll position, request state, and notices
 - Toast notifications are shown as a fixed top-center queue and do not shift the sheet layout
 - `Nomor Kiriman` rows include per-row QR preview, copy ID, and source-link actions
+- QR previews are generated locally in-app and do not rely on an external QR image service
 - `POD Photo 1` and `POD Photo 2` render as image thumbnails with hover preview
 - `history_summary` cells open scrollable popup details inside the app
+- Value-filter popups for sender/recipient name and address columns use a wider panel for long values
 - `history_summary.delivery_runsheet` now keeps the latest delivery result as one update with:
   - `status` as the final delivery status
   - `keterangan_status` as the delivery failure/detail reason when available

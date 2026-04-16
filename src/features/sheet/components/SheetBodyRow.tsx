@@ -11,6 +11,7 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
+import QRCode from "qrcode";
 import { TRACKING_COLUMN_PATH } from "../columns";
 import { ColumnDefinition, SheetRow } from "../types";
 import { MAX_TRACKING_INPUT_LENGTH } from "../utils";
@@ -28,6 +29,34 @@ import {
 const POD_PHOTO_COLUMN_PATHS = new Set(["pod.photo1_url", "pod.photo2_url"]);
 const podImageCache = new Map<string, string>();
 
+export function getPreviewPortalLayout(
+  rect: Pick<DOMRect, "top" | "left" | "right" | "height">,
+  viewportWidth: number,
+  viewportHeight: number,
+  preferredWidth: number,
+  preferredHeight: number
+) {
+  const gap = 12;
+  const width = Math.max(220, Math.min(preferredWidth, viewportWidth - 32));
+  const height = Math.max(220, Math.min(preferredHeight, viewportHeight - 32));
+  const maxTop = Math.max(16, viewportHeight - height - 16);
+
+  let left = rect.right + gap;
+  if (left + width > viewportWidth - 16) {
+    left = rect.left - gap - width;
+  }
+  if (left < 16) {
+    left = 16;
+  }
+
+  const top = Math.min(
+    Math.max(16, rect.top + rect.height / 2 - height / 2),
+    maxTop
+  );
+
+  return { top, left, width, height };
+}
+
 function HoverPreviewPortal({
   anchorRef,
   isVisible,
@@ -43,7 +72,12 @@ function HoverPreviewPortal({
   height: number;
   children: ReactNode;
 }) {
-  const [previewPosition, setPreviewPosition] = useState({ top: 0, left: 0 });
+  const [previewLayout, setPreviewLayout] = useState({
+    top: 0,
+    left: 0,
+    width,
+    height,
+  });
 
   useEffect(() => {
     if (!isVisible) {
@@ -56,25 +90,15 @@ function HoverPreviewPortal({
         return;
       }
 
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
-      const gap = 12;
-      const maxTop = Math.max(16, viewportHeight - height - 16);
-
-      let left = rect.right + gap;
-      if (left + width > viewportWidth - 16) {
-        left = rect.left - gap - width;
-      }
-      if (left < 16) {
-        left = 16;
-      }
-
-      const top = Math.min(
-        Math.max(16, rect.top + rect.height / 2 - height / 2),
-        maxTop
+      setPreviewLayout(
+        getPreviewPortalLayout(
+          rect,
+          window.innerWidth,
+          window.innerHeight,
+          width,
+          height
+        )
       );
-
-      setPreviewPosition({ top, left });
     };
 
     updatePosition();
@@ -95,8 +119,10 @@ function HoverPreviewPortal({
     <div
       className={className}
       style={{
-        top: `${previewPosition.top}px`,
-        left: `${previewPosition.left}px`,
+        top: `${previewLayout.top}px`,
+        left: `${previewLayout.left}px`,
+        width: `${previewLayout.width}px`,
+        maxHeight: `${previewLayout.height}px`,
       }}
     >
       {children}
@@ -185,9 +211,35 @@ function TrackingQrPreview({
 }) {
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const [isHovered, setIsHovered] = useState(false);
-  const qrSource = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&data=${encodeURIComponent(
-    value
-  )}`;
+  const [qrSource, setQrSource] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void QRCode.toDataURL(value, {
+      errorCorrectionLevel: "M",
+      margin: 1,
+      width: 240,
+      color: {
+        dark: "#0f172a",
+        light: "#ffffff",
+      },
+    })
+      .then((nextQrSource) => {
+        if (!cancelled) {
+          setQrSource(nextQrSource);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setQrSource("");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [value]);
 
   return (
     <>
@@ -239,12 +291,16 @@ function TrackingQrPreview({
       >
         <div className="tracking-qr-hover-body">
           <div className="tracking-qr-hover-title">QR Code</div>
-          <img
-            className="tracking-qr-image"
-            src={qrSource}
-            alt={`QR code ${value}`}
-            loading="lazy"
-          />
+          {qrSource ? (
+            <img
+              className="tracking-qr-image"
+              src={qrSource}
+              alt={`QR code ${value}`}
+              loading="lazy"
+            />
+          ) : (
+            <div className="tracking-qr-fallback">QR tidak tersedia</div>
+          )}
           <div className="tracking-qr-value">{value}</div>
         </div>
       </HoverPreviewPortal>

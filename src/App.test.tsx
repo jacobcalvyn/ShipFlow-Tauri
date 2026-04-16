@@ -556,6 +556,73 @@ describe("App workspace isolation", () => {
     });
   });
 
+  it("deletes only selected rows without aborting other in-flight rows", async () => {
+    render(<App />);
+
+    const [firstInput, secondInput] = screen.getAllByPlaceholderText("Masukkan ID");
+    fireEvent.change(firstInput, { target: { value: "P700" } });
+    fireEvent.blur(firstInput);
+    fireEvent.change(secondInput, { target: { value: "P701" } });
+    fireEvent.blur(secondInput);
+
+    await waitFor(() => {
+      expect(mockedInvoke).toHaveBeenCalledTimes(2);
+    });
+
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    fireEvent.click(screen.getByRole("button", { name: "Hapus Terselect" }));
+
+    await waitFor(() => {
+      expect(screen.queryByDisplayValue("P700")).not.toBeInTheDocument();
+      expect(screen.getAllByDisplayValue("P701")[0]).toBeInTheDocument();
+      expectInfoTelemetry("abort", "P700");
+      expect(findTelemetryPayload(infoSpy, "abort", "P701")).toBeNull();
+    });
+
+    resolveRequest("P701");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+    });
+  });
+
+  it("clears hidden selections after deleting visible selected rows", async () => {
+    render(<App />);
+
+    const [firstInput, secondInput] = screen.getAllByPlaceholderText("Masukkan ID");
+    fireEvent.change(firstInput, { target: { value: "P800" } });
+    fireEvent.blur(firstInput);
+    fireEvent.change(secondInput, { target: { value: "P801" } });
+    fireEvent.blur(secondInput);
+
+    await waitFor(() => {
+      expect(mockedInvoke).toHaveBeenCalledTimes(2);
+    });
+
+    resolveRequest("P800");
+    resolveRequest("P801");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    fireEvent.click(screen.getAllByRole("checkbox")[2]);
+
+    fireEvent.change(screen.getAllByPlaceholderText("Filter")[0], {
+      target: { value: "P800" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Hapus Terselect" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear Filter" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByDisplayValue("P801")[0]).toBeInTheDocument();
+      expect(screen.queryByText(/row dipilih/i)).not.toBeInTheDocument();
+    });
+  });
+
   it("rejects malformed tracking responses before marking a row as success", async () => {
     render(<App />);
 

@@ -3,6 +3,13 @@ import { TRACKING_COLUMN_PATH } from "../columns";
 import { ColumnDefinition } from "../types";
 import { getColumnToneClass, getColumnTypeClass } from "../utils";
 
+const WIDE_FILTER_MENU_PATHS = new Set([
+  "detail.actors.pengirim.nama",
+  "detail.actors.pengirim.alamat",
+  "detail.actors.penerima.nama",
+  "detail.actors.penerima.alamat",
+]);
+
 type ColumnHeaderCellProps = {
   column: ColumnDefinition;
   columnIndex: number;
@@ -56,6 +63,7 @@ export function ColumnHeaderCell({
   onMenuRef,
 }: ColumnHeaderCellProps) {
   const isTrackingColumn = column.path === TRACKING_COLUMN_PATH;
+  const hasWideFilterMenu = WIDE_FILTER_MENU_PATHS.has(column.path);
 
   return (
     <th
@@ -103,7 +111,14 @@ export function ColumnHeaderCell({
             ⋮
           </button>
           {isMenuOpen ? (
-            <div className="column-menu-body">
+            <div
+              className={[
+                "column-menu-body",
+                hasWideFilterMenu ? "column-menu-body-wide-filter" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+            >
               <button
                 type="button"
                 className="column-menu-item"
