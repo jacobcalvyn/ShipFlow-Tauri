@@ -83,6 +83,7 @@ import {
 import { createDefaultWorkspaceState } from "./features/workspace/default-state";
 import {
   createSheetInWorkspace,
+  createSheetWithTrackingIdsInWorkspace,
   deleteSheetInWorkspace,
   renameSheetInWorkspace,
   setActiveSheetInWorkspace,
@@ -474,6 +475,21 @@ function App() {
       firstInput?.focus();
     });
   }, []);
+
+  const openSourceLink = useCallback(
+    async (url: string) => {
+      try {
+        await invoke("open_external_url", { url });
+      } catch (error) {
+        showActionNotice(activeSheetId, {
+          tone: "error",
+          message: "Gagal membuka sumber scrap.",
+        });
+        console.error("[ShipFlow] Unable to open source link.", error);
+      }
+    },
+    [activeSheetId, showActionNotice]
+  );
 
   const focusTrackingInputRelative = useCallback(
     (currentInput: HTMLInputElement, offset: number) => {
@@ -1081,6 +1097,35 @@ function App() {
     updateActiveSheet((current) => clearSelectionInSheet(current));
   }, [updateActiveSheet]);
 
+  const createSheetFromSelectedIds = useCallback(() => {
+    if (selectedTrackingIds.length === 0) {
+      return;
+    }
+
+    disarmDeleteAll();
+    setHoveredColumn(null);
+
+    const currentWorkspace = workspaceRef.current;
+    const result = createSheetWithTrackingIdsInWorkspace(
+      currentWorkspace,
+      selectedTrackingIds
+    );
+
+    setWorkspaceState(result.workspaceState);
+
+    if (result.targetKeys.length === 0) {
+      return;
+    }
+
+    void runBulkPasteFetches(
+      result.sheetId,
+      result.targetKeys.map((key, index) => ({
+        key,
+        value: selectedTrackingIds[index],
+      }))
+    );
+  }, [disarmDeleteAll, runBulkPasteFetches, selectedTrackingIds]);
+
   const clearAllFilters = useCallback(() => {
     updateActiveSheet((current) => clearFiltersInSheet(current));
   }, [updateActiveSheet]);
@@ -1511,6 +1556,7 @@ function App() {
           onCopyAllIds={copyAllTrackingIds}
           onDeleteAllRows={deleteAllRows}
           onClearSelection={clearSelection}
+          onCreateSheetFromSelectedIds={createSheetFromSelectedIds}
           onClearFilter={clearAllFilters}
           onCopySelectedIds={copySelectedTrackingIds}
           onDeleteSelectedRows={deleteSelectedRows}
@@ -1541,6 +1587,7 @@ function App() {
           onHoverColumn={setHoveredColumn}
           onToggleVisibleSelection={toggleVisibleSelection}
           onToggleRowSelection={toggleRowSelection}
+          onOpenSourceLink={openSourceLink}
           onClearTrackingCell={clearTrackingCell}
           onTrackingInputChange={handleTrackingInputChange}
           onTrackingInputBlur={handleTrackingInputBlur}

@@ -11,6 +11,13 @@ use super::model::{
 };
 use super::upstream::resolve_pos_href;
 
+#[derive(Default)]
+struct ProsesAntaranDetail {
+    petugas: Option<String>,
+    status: Option<String>,
+    keterangan_status: Option<String>,
+}
+
 pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackResponse, TrackingError> {
     let document = ScraperHtml::parse_document(html);
     let document_text = normalize_text(&document.root_element().text().collect::<String>());
@@ -850,11 +857,13 @@ fn build_history_summary(
         }
 
         if lower.contains("proses antaran") {
-            let (petugas, status) = parse_proses_antaran_status(&entry.detail_history);
+            let antaran_detail = parse_proses_antaran_status(&entry.detail_history);
+            let inferred_status = infer_delivery_update_status(status_akhir, &antaran_detail);
             let koordinat = extract_coordinate(&entry.detail_history);
             let update = DeliveryRunsheetUpdate {
-                petugas,
-                status,
+                petugas: antaran_detail.petugas,
+                status: antaran_detail.status.or(inferred_status),
+                keterangan_status: antaran_detail.keterangan_status,
                 tanggal: tanggal.clone(),
                 waktu: waktu.clone(),
                 koordinat,
@@ -882,6 +891,7 @@ fn build_history_summary(
             let update = DeliveryRunsheetUpdate {
                 petugas: None,
                 status: Some(normalize_text(&entry.detail_history)),
+                keterangan_status: None,
                 tanggal: tanggal.clone(),
                 waktu: waktu.clone(),
                 koordinat: extract_coordinate(&entry.detail_history),
@@ -903,7 +913,7 @@ fn build_history_summary(
     }
 
     if let Some(final_status) = &status_akhir.status {
-        if final_status.to_lowercase().contains("delivered") {
+        if final_status.eq_ignore_ascii_case("DELIVERED") {
             if let Some(last_sheet) = delivery_runsheet.last_mut() {
                 let has_delivered = last_sheet.updates.iter().any(|update| {
                     update
@@ -926,6 +936,7 @@ fn build_history_summary(
                     last_sheet.updates.push(DeliveryRunsheetUpdate {
                         petugas,
                         status: Some(final_status.clone()),
+                        keterangan_status: None,
                         tanggal,
                         waktu,
                         koordinat: pod.coordinate.clone(),
@@ -1190,7 +1201,22 @@ fn parse_manifest_r7_detail(
     (nomor_r7, petugas, lokasi, tujuan)
 }
 
-fn parse_proses_antaran_status(raw: &str) -> (Option<String>, Option<String>) {
+fn infer_delivery_update_status(
+    status_akhir: &TrackStatusAkhir,
+    antaran_detail: &ProsesAntaranDetail,
+) -> Option<String> {
+    if antaran_detail.status.is_some() {
+        return None;
+    }
+
+    if antaran_detail.keterangan_status.is_some() {
+        return status_akhir.status.clone();
+    }
+
+    None
+}
+
+fn parse_proses_antaran_status(raw: &str) -> ProsesAntaranDetail {
     let text = raw.trim();
     let lower = text.to_lowercase();
 
@@ -1220,7 +1246,11 @@ fn parse_proses_antaran_status(raw: &str) -> (Option<String>, Option<String>) {
         if let Some(end_rel) = text[start..].find(')') {
             let value = text[start..start + end_rel].trim();
             if !value.is_empty() {
-                return (petugas, Some(value.to_string()));
+                return ProsesAntaranDetail {
+                    petugas,
+                    status: None,
+                    keterangan_status: Some(value.to_string()),
+                };
             }
         }
     }
@@ -1238,9 +1268,17 @@ fn parse_proses_antaran_status(raw: &str) -> (Option<String>, Option<String>) {
         }
         let value = rest[..end].trim();
         if !value.is_empty() {
-            return (petugas, Some(value.to_string()));
+            return ProsesAntaranDetail {
+                petugas,
+                status: Some(value.to_string()),
+                keterangan_status: None,
+            };
         }
     }
 
-    (petugas, None)
+    ProsesAntaranDetail {
+        petugas,
+        status: None,
+        keterangan_status: None,
+    }
 }

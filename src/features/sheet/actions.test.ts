@@ -3,6 +3,7 @@ import { createDefaultSheetState } from "./default-state";
 import {
   armDeleteAllInSheet,
   clearAllDataInSheet,
+  deleteRowsInSheet,
   setRowErrorInSheet,
   setRowLoadingInSheet,
   setRowSuccessInSheet,
@@ -63,6 +64,35 @@ describe("sheet actions", () => {
     expect(next.deleteAllArmed).toBe(false);
     expect(next.hiddenColumnPaths).toEqual(changed.hiddenColumnPaths);
     expect(next.pinnedColumnPaths).toEqual(changed.pinnedColumnPaths);
+  });
+
+  it("removes selected rows and compacts remaining data upward", () => {
+    const initial = createDefaultSheetState();
+    const rowKeys = initial.rows.slice(0, 3).map((row) => row.key);
+
+    const populated = setTrackingInputInSheet(
+      setTrackingInputInSheet(
+        setTrackingInputInSheet(
+          setTrackingInputInSheet(initial, rowKeys[0], "P2603310114291"),
+          rowKeys[1],
+          "P2603310114292"
+        ),
+        rowKeys[2],
+        "P2603310114293"
+      ),
+      initial.rows[3].key,
+      "P2603310114294"
+    );
+
+    const next = deleteRowsInSheet(populated, [rowKeys[1], rowKeys[2]]);
+
+    expect(next.rows[0].trackingInput).toBe("P2603310114291");
+    expect(next.rows[1].trackingInput).toBe("P2603310114294");
+    expect(
+      next.rows
+        .slice(0, 2)
+        .every((row) => row.trackingInput.trim() !== "" || row.shipment !== null)
+    ).toBe(true);
   });
 
   it("keeps row state transitions internally valid", () => {

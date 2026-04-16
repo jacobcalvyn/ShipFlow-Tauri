@@ -81,10 +81,50 @@ describe("sheet utils", () => {
         },
         history: [],
         history_summary: {
-          irregularity: [{ status: "FAILED" }],
-          bagging_unbagging: [],
-          manifest_r7: [],
-          delivery_runsheet: [],
+          irregularity: [
+            {
+              status: "FAILED",
+              lokasi: "DC JAYAPURA 9910A",
+              tanggal: "2026-04-15",
+              waktu: "16:17:07",
+            },
+          ],
+          bagging_unbagging: [
+            {
+              nomor_kantung: "PID95084242",
+              bagging: {
+                lokasi: "DC JAYAPURA 9910A",
+                tanggal: "2026-04-15",
+                waktu: "16:33:20",
+              },
+            },
+          ],
+          manifest_r7: [
+            {
+              nomor_r7: "P20260310064942110",
+              tujuan: "DC JAYAPURA 9910A",
+              tanggal: "2026-03-10",
+              waktu: "08:46:26",
+            },
+          ],
+          delivery_runsheet: [
+            {
+              petugas_mandor: "Akbar",
+              petugas_kurir: "Gabriel Erick Taurui (560000529)",
+              lokasi: "DC JAYAPURA 9910A",
+              tanggal: "2026-04-15",
+              waktu: "11:40:47",
+              updates: [
+                {
+                  petugas: "Gabriel Erick Taurui (560000529)",
+                  status: "FAILEDTODELIVERED",
+                  keterangan_status: "RUMAH/ALAMAT TIDAK DITEMUKAN",
+                  tanggal: "2026-04-15",
+                  waktu: "14:50:02",
+                },
+              ],
+            },
+          ],
         },
       },
     });
@@ -96,15 +136,33 @@ describe("sheet utils", () => {
       (column) => column.path === "detail.billing_detail.cod_info.is_cod"
     )!;
     const podColumn = COLUMNS.find((column) => column.path === "pod.photo1_url")!;
-    const historySummaryColumn = COLUMNS.find(
+    const irregularityColumn = COLUMNS.find(
       (column) => column.path === "history_summary.irregularity"
+    )!;
+    const baggingColumn = COLUMNS.find(
+      (column) => column.path === "history_summary.bagging_unbagging"
+    )!;
+    const manifestColumn = COLUMNS.find(
+      (column) => column.path === "history_summary.manifest_r7"
+    )!;
+    const deliveryColumn = COLUMNS.find(
+      (column) => column.path === "history_summary.delivery_runsheet"
     )!;
 
     expect(formatColumnValue(row, beratColumn)).toBe("1,25 Kg");
     expect(formatColumnValue(row, codColumn)).toBe("Ya");
     expect(formatColumnValue(row, podColumn)).toBe("https://example.test/photo-1.jpg");
-    expect(formatColumnValue(row, historySummaryColumn)).toBe(
-      '[{"status":"FAILED"}]'
+    expect(formatColumnValue(row, irregularityColumn)).toBe(
+      "FAILED | DC JAYAPURA 9910A | 2026-04-15 16:17:07"
+    );
+    expect(formatColumnValue(row, baggingColumn)).toBe(
+      "Bagging PID95084242 | DC JAYAPURA 9910A | 2026-04-15 16:33:20"
+    );
+    expect(formatColumnValue(row, manifestColumn)).toBe(
+      "P20260310064942110 | DC JAYAPURA 9910A | 2026-03-10 08:46:26"
+    );
+    expect(formatColumnValue(row, deliveryColumn)).toBe(
+      "FAILEDTODELIVERED (RUMAH/ALAMAT TIDAK DITEMUKAN) | Gabriel Erick Taurui (560000529) | 2026-04-15 14:50:02"
     );
   });
 

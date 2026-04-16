@@ -14,6 +14,7 @@ const COLUMN_SHORTCUTS = [
   { path: "detail.actors.pengirim.nama", label: "Nama Pengirim" },
   { path: "detail.actors.penerima.nama", label: "Nama Penerima" },
   { path: "detail.package_detail.jenis_layanan", label: "Jenis Layanan" },
+  { path: "detail.package_detail.isi_kiriman", label: "Isi Kiriman" },
   { path: "detail.billing_detail.cod_info.is_cod", label: "Is COD" },
   { path: "pod.photo1_url", label: "POD Photo" },
 ] as const;

@@ -229,6 +229,43 @@ describe("App workspace isolation", () => {
     expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("");
   });
 
+  it("creates a new sheet from selected ids and starts tracking them immediately", async () => {
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
+    fireEvent.change(firstInput, { target: { value: "PSEL1" } });
+    fireEvent.blur(firstInput);
+
+    await waitFor(() => {
+      expect(mockedInvoke).toHaveBeenCalledTimes(1);
+    });
+
+    resolveRequest("PSEL1");
+
+    await waitFor(() => {
+      expect(screen.getByText("1/1 kiriman dimuat")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    fireEvent.click(screen.getByRole("button", { name: "ID Terselect ke Sheet Baru" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "Sheet 2" })).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+      expect(mockedInvoke).toHaveBeenCalledTimes(2);
+      expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("PSEL1");
+      expect(screen.getByText("0/1 kiriman dimuat")).toBeInTheDocument();
+    });
+
+    resolveRequest("PSEL1");
+
+    await waitFor(() => {
+      expect(screen.getByText("1/1 kiriman dimuat")).toBeInTheDocument();
+    });
+  });
+
   it("moves focus to the next tracking row when Enter is pressed", () => {
     render(<App />);
 

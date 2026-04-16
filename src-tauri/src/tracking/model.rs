@@ -154,6 +154,7 @@ pub struct ManifestR7Summary {
 pub struct DeliveryRunsheetUpdate {
     pub petugas: Option<String>,
     pub status: Option<String>,
+    pub keterangan_status: Option<String>,
     pub tanggal: Option<String>,
     pub waktu: Option<String>,
     pub koordinat: Option<String>,

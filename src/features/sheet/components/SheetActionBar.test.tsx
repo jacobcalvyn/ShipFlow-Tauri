@@ -8,6 +8,7 @@ describe("SheetActionBar", () => {
     const onCopyAllIds = vi.fn();
     const onDeleteAllRows = vi.fn();
     const onClearSelection = vi.fn();
+    const onCreateSheetFromSelectedIds = vi.fn();
     const onClearFilter = vi.fn();
     const onCopySelectedIds = vi.fn();
     const onDeleteSelectedRows = vi.fn();
@@ -37,6 +38,7 @@ describe("SheetActionBar", () => {
         onCopyAllIds={onCopyAllIds}
         onDeleteAllRows={onDeleteAllRows}
         onClearSelection={onClearSelection}
+        onCreateSheetFromSelectedIds={onCreateSheetFromSelectedIds}
         onClearFilter={onClearFilter}
         onCopySelectedIds={onCopySelectedIds}
         onDeleteSelectedRows={onDeleteSelectedRows}
@@ -65,6 +67,9 @@ describe("SheetActionBar", () => {
 
     fireEvent.click(screen.getByText("Clear Selection"));
     expect(onClearSelection).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByText("ID Terselect ke Sheet Baru"));
+    expect(onCreateSheetFromSelectedIds).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByText("Clear Filter"));
     expect(onClearFilter).toHaveBeenCalledTimes(1);

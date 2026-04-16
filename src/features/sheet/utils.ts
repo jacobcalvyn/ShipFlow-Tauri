@@ -8,6 +8,12 @@ import { ColumnDefinition, SheetRow, SheetState } from "./types";
 const ZERO_WIDTH_CHARACTERS_REGEX = /[\u200B-\u200D\uFEFF]/g;
 const NON_TRACKING_CHARACTERS_REGEX = /[^A-Z0-9-]/g;
 export const MAX_TRACKING_INPUT_LENGTH = 64;
+const HISTORY_SUMMARY_PATHS = new Set([
+  "history_summary.irregularity",
+  "history_summary.bagging_unbagging",
+  "history_summary.manifest_r7",
+  "history_summary.delivery_runsheet",
+]);
 
 export function createEmptyRow(): SheetRow {
   return {
@@ -132,6 +138,10 @@ export function getRawColumnValue(row: SheetRow, column: ColumnDefinition): unkn
   return getByPath(row.shipment, column.path);
 }
 
+export function isHistorySummaryPath(path: string) {
+  return HISTORY_SUMMARY_PATHS.has(path);
+}
+
 export function formatNumber(value: number) {
   return new Intl.NumberFormat("id-ID", {
     minimumFractionDigits: Number.isInteger(value) ? 0 : 0,
@@ -160,6 +170,160 @@ export function formatDateValue(value: string) {
   return trimmed;
 }
 
+function formatDateTimeParts(date?: string, time?: string) {
+  const parts = [date, time].filter(Boolean);
+  return parts.length > 0 ? parts.join(" ") : "-";
+}
+
+function getRecordValue(
+  source: Record<string, unknown>,
+  key: string
+): string | undefined {
+  const value = source[key];
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+function getHistorySummaryLatestText(rawValue: unknown, path: string) {
+  if (!Array.isArray(rawValue) || rawValue.length === 0) {
+    return "-";
+  }
+
+  if (path === "history_summary.irregularity") {
+    const latest = rawValue[rawValue.length - 1];
+    if (!latest || typeof latest !== "object") {
+      return "-";
+    }
+
+    const record = latest as Record<string, unknown>;
+    return [
+      getRecordValue(record, "status") ?? "Irregularity",
+      getRecordValue(record, "lokasi") ?? getRecordValue(record, "petugas") ?? "-",
+      formatDateTimeParts(
+        getRecordValue(record, "tanggal"),
+        getRecordValue(record, "waktu")
+      ),
+    ].join(" | ");
+  }
+
+  if (path === "history_summary.bagging_unbagging") {
+    let latestEvent:
+      | {
+          label: string;
+          lokasi?: string;
+          petugas?: string;
+          tanggal?: string;
+          waktu?: string;
+        }
+      | null = null;
+
+    for (const item of rawValue) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+
+      const record = item as Record<string, unknown>;
+      const nomorKantung = getRecordValue(record, "nomor_kantung") ?? "-";
+
+      for (const [eventType, label] of [
+        ["bagging", "Bagging"],
+        ["unbagging", "Unbagging"],
+      ] as const) {
+        const event = record[eventType];
+        if (!event || typeof event !== "object") {
+          continue;
+        }
+
+        const eventRecord = event as Record<string, unknown>;
+        latestEvent = {
+          label: `${label} ${nomorKantung}`,
+          lokasi: getRecordValue(eventRecord, "lokasi"),
+          petugas: getRecordValue(eventRecord, "petugas"),
+          tanggal: getRecordValue(eventRecord, "tanggal"),
+          waktu: getRecordValue(eventRecord, "waktu"),
+        };
+      }
+    }
+
+    if (!latestEvent) {
+      return "-";
+    }
+
+    return [
+      latestEvent.label,
+      latestEvent.lokasi ?? latestEvent.petugas ?? "-",
+      formatDateTimeParts(latestEvent.tanggal, latestEvent.waktu),
+    ].join(" | ");
+  }
+
+  if (path === "history_summary.manifest_r7") {
+    const latest = rawValue[rawValue.length - 1];
+    if (!latest || typeof latest !== "object") {
+      return "-";
+    }
+
+    const record = latest as Record<string, unknown>;
+    return [
+      getRecordValue(record, "nomor_r7") ?? "Manifest R7",
+      getRecordValue(record, "tujuan") ?? getRecordValue(record, "lokasi") ?? "-",
+      formatDateTimeParts(
+        getRecordValue(record, "tanggal"),
+        getRecordValue(record, "waktu")
+      ),
+    ].join(" | ");
+  }
+
+  if (path === "history_summary.delivery_runsheet") {
+    const latest = rawValue[rawValue.length - 1];
+    if (!latest || typeof latest !== "object") {
+      return "-";
+    }
+
+    const record = latest as Record<string, unknown>;
+    const updates = Array.isArray(record.updates) ? record.updates : [];
+    const latestUpdate =
+      updates.length > 0 && typeof updates[updates.length - 1] === "object"
+        ? (updates[updates.length - 1] as Record<string, unknown>)
+        : null;
+    const latestStatus = latestUpdate
+      ? getRecordValue(latestUpdate, "status") ?? "Delivery Update"
+      : "Delivery Runsheet";
+    const latestKeterangan = latestUpdate
+      ? getRecordValue(latestUpdate, "keterangan_status")
+      : null;
+
+    return [
+      latestKeterangan
+        ? `${latestStatus} (${latestKeterangan})`
+        : latestStatus,
+      latestUpdate
+        ? getRecordValue(latestUpdate, "petugas")
+        : getRecordValue(record, "petugas_kurir") ??
+          getRecordValue(record, "petugas_mandor") ??
+          getRecordValue(record, "lokasi") ??
+          "-",
+      latestUpdate
+        ? formatDateTimeParts(
+            getRecordValue(latestUpdate, "tanggal"),
+            getRecordValue(latestUpdate, "waktu")
+          )
+        : formatDateTimeParts(
+            getRecordValue(record, "tanggal"),
+            getRecordValue(record, "waktu")
+          ),
+    ].join(" | ");
+  }
+
+  return JSON.stringify(rawValue);
+}
+
+export function formatHistorySummaryPreview(rawValue: unknown) {
+  if (rawValue === undefined || rawValue === null || rawValue === "") {
+    return "-";
+  }
+
+  return JSON.stringify(rawValue, null, 2);
+}
+
 export function formatColumnValue(row: SheetRow, column: ColumnDefinition) {
   const rawValue = getRawColumnValue(row, column);
 
@@ -179,6 +343,9 @@ export function formatColumnValue(row: SheetRow, column: ColumnDefinition) {
     case "date":
       return formatDateValue(String(rawValue));
     case "json":
+      if (isHistorySummaryPath(column.path)) {
+        return getHistorySummaryLatestText(rawValue, column.path);
+      }
       return JSON.stringify(rawValue);
     default:
       return String(rawValue);
@@ -278,6 +445,9 @@ export function getComparableValue(row: SheetRow, column: ColumnDefinition) {
     case "boolean":
       return rawValue ? 1 : 0;
     case "json":
+      if (isHistorySummaryPath(column.path)) {
+        return getHistorySummaryLatestText(rawValue, column.path).toLowerCase();
+      }
       return JSON.stringify(rawValue);
     case "date": {
       const normalized = formatDateValue(String(rawValue));

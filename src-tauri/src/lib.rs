@@ -1,5 +1,6 @@
 mod tracking;
 
+use std::process::Command;
 use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD;
@@ -41,6 +42,45 @@ async fn resolve_pod_image(
     client_state: tauri::State<'_, TrackingClientState>,
 ) -> Result<String, String> {
     resolve_pod_image_source(&client_state.client, image_source.trim(), 0).await
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("External URL is required.".into());
+    }
+
+    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+        return Err("Only HTTP(S) URLs can be opened.".into());
+    }
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(trimmed);
+        command
+    };
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", "", trimmed]);
+        command
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(trimmed);
+        command
+    };
+
+    command
+        .spawn()
+        .map_err(|error| format!("Unable to open external URL: {error}"))?;
+
+    Ok(())
 }
 
 async fn resolve_pod_image_source(
@@ -226,7 +266,11 @@ pub fn run() {
         .manage(TrackingClientState {
             client: tracking_client,
         })
-        .invoke_handler(tauri::generate_handler![track_shipment, resolve_pod_image])
+        .invoke_handler(tauri::generate_handler![
+            track_shipment,
+            resolve_pod_image,
+            open_external_url
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -245,6 +289,8 @@ mod tests {
         include_str!("fixtures/pos_tracking_nullable_numeric.html");
     const REORDERED_TABLES_HTML: &str =
         include_str!("fixtures/pos_tracking_reordered_tables.html");
+    const RUNSHEET_FAILEDTODELIVERED_HTML: &str =
+        include_str!("fixtures/pos_tracking_runsheet_failedtoddelivered.html");
 
     #[test]
     fn build_tracking_url_percent_encodes_base64_payload() {
@@ -388,6 +434,48 @@ mod tests {
             .expect_err("partial upstream html should not be treated as not found");
 
         assert!(matches!(error, TrackingError::Upstream(_)));
+    }
+
+    #[test]
+    fn parse_tracking_html_maps_failedtoddelivered_as_single_runsheet_update() {
+        let response = parse_tracking_html("https://example.test", RUNSHEET_FAILEDTODELIVERED_HTML)
+            .expect("failedtoddelivered runsheet sample should parse");
+
+        let runsheet = &response.history_summary.delivery_runsheet[0];
+        assert_eq!(runsheet.updates.len(), 1);
+        assert_eq!(
+            runsheet.updates[0].status.as_deref(),
+            Some("FAILEDTODELIVERED")
+        );
+        assert_eq!(
+            runsheet.updates[0].keterangan_status.as_deref(),
+            Some("YANG BERSANGKUTAN TIDAK DITEMPAT")
+        );
+    }
+
+    #[test]
+    fn parse_tracking_html_keeps_synthetic_delivered_for_exact_delivered_status() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2603310999999</td></tr>
+              <tr><td>Status Akhir</td><td>DELIVERED di DC JAYAPURA 9910A [Kurir/9910bkurir] [2026-04-15 11:51:34]</td></tr>
+            </table>
+            <table>
+              <tr><td>TANGGAL UPDATE</td><td>DETAIL HISTORY</td></tr>
+              <tr>
+                <td>2026-04-15 11:40:47</td>
+                <td>Barang P2603310999999 anda telah melewati proses DeliveryRunsheet oleh Akbar di DC JAYAPURA 9910A diterima oleh Kurir</td>
+              </tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("synthetic delivered sample should parse");
+
+        let runsheet = &response.history_summary.delivery_runsheet[0];
+        assert_eq!(runsheet.updates.len(), 1);
+        assert_eq!(runsheet.updates[0].status.as_deref(), Some("DELIVERED"));
+        assert_eq!(runsheet.updates[0].keterangan_status, None);
     }
 
     #[test]

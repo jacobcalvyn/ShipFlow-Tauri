@@ -523,6 +523,10 @@ button {
   overflow: visible;
 }
 
+.sheet-table td.has-history-summary {
+  overflow: visible;
+}
+
 .sheet-table .filter-row th {
   top: var(--sheet-header-row-height);
   z-index: 2;
@@ -847,6 +851,31 @@ button {
   min-width: 0;
 }
 
+.tracking-source-link {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #2563eb;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.tracking-source-link svg {
+  width: 16px;
+  height: 16px;
+}
+
+.tracking-source-link:hover {
+  color: #1d4ed8;
+}
+
 .row-status-dot {
   flex: 0 0 auto;
   width: 8px;
@@ -928,7 +957,7 @@ button {
   position: fixed;
   width: 440px;
   padding: 8px;
-  border: 1px solid #d6e0ea;
+  border: 2px solid #94a3b8;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.98);
   box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
@@ -947,6 +976,62 @@ button {
   object-fit: contain;
   border-radius: 10px;
   background: #ffffff;
+}
+
+.history-summary-cell {
+  width: 100%;
+}
+
+.history-summary-trigger {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-summary-hover-preview {
+  position: fixed;
+  width: 520px;
+  max-width: min(520px, calc(100vw - 32px));
+  max-height: min(420px, calc(100vh - 32px));
+  border: 2px solid #94a3b8;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+  z-index: 205;
+  overflow: hidden;
+}
+
+.history-summary-hover-body {
+  display: flex;
+  flex-direction: column;
+  max-height: min(420px, calc(100vh - 32px));
+}
+
+.history-summary-hover-title {
+  padding: 12px 14px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fbff;
+  color: #334155;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.history-summary-hover-pre {
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  color: #0f172a;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .status-ready {

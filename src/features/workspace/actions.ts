@@ -1,3 +1,4 @@
+import { seedTrackingIdsInSheet } from "../sheet/actions";
 import { createDefaultSheetState } from "../sheet/default-state";
 import { SheetState } from "../sheet/types";
 import {
@@ -175,6 +176,43 @@ export function createSheetInWorkspace(
     sheetsById: {
       ...workspaceState.sheetsById,
       [nextSheetId]: nextSheet,
+    },
+  };
+}
+
+export function createSheetWithTrackingIdsInWorkspace(
+  workspaceState: WorkspaceState,
+  trackingIds: string[],
+  options?: {
+    activate?: boolean;
+    name?: string;
+  }
+) {
+  const nextSheetId = createWorkspaceSheetId();
+  const seededSheet = seedTrackingIdsInSheet(createDefaultSheetState(), trackingIds);
+  const nextName = getUniqueSheetName(
+    workspaceState,
+    options?.name ?? getNextDefaultSheetName(workspaceState)
+  );
+
+  return {
+    sheetId: nextSheetId,
+    targetKeys: seededSheet.targetKeys,
+    workspaceState: {
+      ...workspaceState,
+      activeSheetId:
+        options?.activate === false ? workspaceState.activeSheetId : nextSheetId,
+      sheetOrder: [...workspaceState.sheetOrder, nextSheetId],
+      sheetMetaById: {
+        ...workspaceState.sheetMetaById,
+        [nextSheetId]: {
+          name: nextName,
+        },
+      },
+      sheetsById: {
+        ...workspaceState.sheetsById,
+        [nextSheetId]: seededSheet.sheetState,
+      },
     },
   };
 }

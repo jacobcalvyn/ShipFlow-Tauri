@@ -1,6 +1,7 @@
 import { createDefaultWorkspaceState } from "./default-state";
 import {
   createSheetInWorkspace,
+  createSheetWithTrackingIdsInWorkspace,
   deleteSheetInWorkspace,
   renameSheetInWorkspace,
   setActiveSheetInWorkspace,
@@ -123,5 +124,21 @@ describe("workspace state", () => {
       "Sheet 3",
       "Sheet 4",
     ]);
+  });
+
+  it("creates a clean sheet seeded only with tracking ids", () => {
+    const workspace = createDefaultWorkspaceState();
+    const result = createSheetWithTrackingIdsInWorkspace(workspace, [
+      "P2603001",
+      "P2603002",
+    ]);
+    const seededSheet = result.workspaceState.sheetsById[result.sheetId];
+
+    expect(result.workspaceState.activeSheetId).toBe(result.sheetId);
+    expect(seededSheet.rows[0].trackingInput).toBe("P2603001");
+    expect(seededSheet.rows[1].trackingInput).toBe("P2603002");
+    expect(seededSheet.rows[0].shipment).toBeNull();
+    expect(seededSheet.selectedRowKeys).toEqual([]);
+    expect(result.targetKeys).toHaveLength(2);
   });
 });

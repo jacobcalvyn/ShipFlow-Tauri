@@ -14,6 +14,7 @@ The app is optimized for spreadsheet-style operational analysis. Each row repres
 - Supports both text filters and per-column multi-select value filters
 - Supports retracking all current shipments from the action bar
 - Supports multiple sheets, where each sheet is an isolated tracking workspace
+- Supports creating a new sheet from selected shipment IDs only
 
 ## Tracking Flow
 
@@ -79,12 +80,16 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
   - clear filter
   - delete all
   - clear selection
+  - create a new sheet from selected shipment IDs
   - copy selected shipment IDs
   - delete selected rows
 - Column shortcut buttons that horizontally scroll to key columns
 - Temporary header highlight when a shortcut scroll target is reached
 - Sheet-specific scroll position, request state, and notices
 - `POD Photo 1` and `POD Photo 2` render as image thumbnails with hover preview
+- `history_summary.delivery_runsheet` now keeps the latest delivery result as one update with:
+  - `status` as the final delivery status
+  - `keterangan_status` as the delivery failure/detail reason when available
 
 ## Current Data Shown In The Table
 
@@ -118,6 +123,7 @@ The main table currently focuses on:
 - Active, dirty, and loading rows remain visible even while filters are active.
 - Request telemetry is emitted for `start`, `success`, `fail`, and `abort` with `sheetId`, `rowKey`, and `shipmentId`.
 - `Delete All` resets rows, filters, value filters, sort state, and in-flight tracking work so the table returns to a clean input state.
+- Delivery-runsheet parsing is hardened so `FAILEDTODELIVERED` cases are not incorrectly split into two updates on the latest runsheet.
 
 ## Project Structure
 
@@ -230,6 +236,7 @@ Rust tests live in [src-tauri/src/lib.rs](./src-tauri/src/lib.rs) and cover:
 - reordered-table parsing
 - selected-field parser snapshots
 - partial-upstream vs true not-found heuristics
+- latest-runsheet `FAILEDTODELIVERED` parsing with `keterangan_status`
 
 Run Rust tests with:
 

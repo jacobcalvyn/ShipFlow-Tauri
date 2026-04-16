@@ -52,6 +52,7 @@ type SheetTableProps = {
   onHoverColumn: (columnIndex: number | null) => void;
   onToggleVisibleSelection: () => void;
   onToggleRowSelection: (rowKey: string) => void;
+  onOpenSourceLink: (url: string) => void;
   onClearTrackingCell: (sheetId: string, rowKey: string) => void;
   onTrackingInputChange: (sheetId: string, rowKey: string, value: string) => void;
   onTrackingInputBlur: (
@@ -107,6 +108,7 @@ export function SheetTable({
   onHoverColumn,
   onToggleVisibleSelection,
   onToggleRowSelection,
+  onOpenSourceLink,
   onClearTrackingCell,
   onTrackingInputChange,
   onTrackingInputBlur,
@@ -223,6 +225,7 @@ export function SheetTable({
               hoveredColumn={hoveredColumn}
               isSelected={selectedRowKeySet.has(row.key)}
               onToggleSelection={onToggleRowSelection}
+              onOpenSourceLink={onOpenSourceLink}
               onClearTrackingCell={onClearTrackingCell}
               onHoverColumn={onHoverColumn}
               onTrackingInputChange={onTrackingInputChange}

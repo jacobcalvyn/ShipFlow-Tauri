@@ -119,6 +119,7 @@ export type ManifestR7Summary = {
 export type DeliveryRunsheetUpdate = {
   petugas?: string;
   status?: string;
+  keterangan_status?: string;
   tanggal?: string;
   waktu?: string;
   koordinat?: string;

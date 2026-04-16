@@ -18,6 +18,7 @@ type SheetActionBarProps = {
   onCopyAllIds: () => void;
   onDeleteAllRows: () => void;
   onClearSelection: () => void;
+  onCreateSheetFromSelectedIds: () => void;
   onClearFilter: () => void;
   onCopySelectedIds: () => void;
   onDeleteSelectedRows: () => void;
@@ -40,6 +41,7 @@ export function SheetActionBar({
   onCopyAllIds,
   onDeleteAllRows,
   onClearSelection,
+  onCreateSheetFromSelectedIds,
   onClearFilter,
   onCopySelectedIds,
   onDeleteSelectedRows,
@@ -107,6 +109,13 @@ export function SheetActionBar({
               onClick={onClearSelection}
             >
               Clear Selection
+            </button>
+            <button
+              type="button"
+              className="action-button"
+              onClick={onCreateSheetFromSelectedIds}
+            >
+              ID Terselect ke Sheet Baru
             </button>
             <button
               type="button"

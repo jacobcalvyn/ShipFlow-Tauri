@@ -210,6 +210,36 @@ export function applyBulkPasteToSheet(
   };
 }
 
+export function seedTrackingIdsInSheet(sheetState: SheetState, values: string[]) {
+  const requiredLength = values.length;
+  const expandedRows = ensureRowCapacity([...sheetState.rows], requiredLength);
+  const targetKeys: string[] = [];
+
+  for (let index = 0; index < values.length; index += 1) {
+    const row = expandedRows[index];
+    targetKeys.push(row.key);
+    expandedRows[index] = {
+      ...row,
+      trackingInput: values[index],
+      shipment: null,
+      loading: false,
+      stale: false,
+      dirty: false,
+      error: "",
+    };
+  }
+
+  return {
+    sheetState: {
+      ...sheetState,
+      rows: ensureTrailingEmptyRows(expandedRows),
+      selectedRowKeys: [],
+      selectionFollowsVisibleRows: false,
+    },
+    targetKeys,
+  };
+}
+
 export function setTextFilterInSheet(
   sheetState: SheetState,
   path: string,
@@ -349,23 +379,17 @@ export function deleteRowsInSheet(
   sheetState: SheetState,
   rowKeys: string[]
 ) {
+  const remainingRows = sheetState.rows.filter((row) => !rowKeys.includes(row.key));
+  const filledRows = remainingRows.filter(
+    (row) => row.trackingInput.trim() !== "" || row.shipment !== null
+  );
+  const emptyRows = remainingRows.filter(
+    (row) => row.trackingInput.trim() === "" && row.shipment === null
+  );
+
   return {
     ...sheetState,
-    rows: ensureTrailingEmptyRows(
-      sheetState.rows.map((row) =>
-        rowKeys.includes(row.key)
-          ? {
-              ...row,
-              trackingInput: "",
-              shipment: null,
-              loading: false,
-              stale: false,
-              dirty: false,
-              error: "",
-            }
-          : row
-      )
-    ),
+    rows: [...filledRows, ...emptyRows, ...createEmptyRows(rowKeys.length)],
     selectedRowKeys: sheetState.selectedRowKeys.filter((key) => !rowKeys.includes(key)),
     selectionFollowsVisibleRows: false,
   };
