@@ -83,6 +83,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
   - create a new sheet from selected shipment IDs
   - copy selected shipment IDs
   - delete selected rows
+- The action bar keeps a dedicated second row for selection actions and disables those buttons when nothing is selected, so the layout stays stable
 - Column shortcut buttons that horizontally scroll to key columns
 - Temporary header highlight when a shortcut scroll target is reached
 - Sheet-specific scroll position, request state, and notices
@@ -92,6 +93,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - `POD Photo 1` and `POD Photo 2` render as image thumbnails with hover preview
 - `history_summary` cells open scrollable popup details inside the app
 - Value-filter popups for sender/recipient name and address columns use a wider panel for long values
+- The workspace layout is tuned to be more compact so tabs, actions, shortcuts, and the sheet grid fit more comfortably in one screen
 - `history_summary.delivery_runsheet` now keeps the latest delivery result as one update with:
   - `status` as the final delivery status
   - `keterangan_status` as the delivery failure/detail reason when available

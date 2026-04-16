@@ -51,13 +51,13 @@ describe("SheetActionBar", () => {
     expect(screen.getByText("12/16 kiriman dimuat")).toBeInTheDocument();
     expect(screen.getByText("3 row dipilih")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("Lacak Ulang"));
+    fireEvent.click(screen.getByRole("button", { name: "Lacak Ulang" }));
     expect(onRetrackAll).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByText("Export CSV"));
+    fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
     expect(onExportCsv).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByText("Copy ID Kiriman"));
+    fireEvent.click(screen.getByRole("button", { name: "Copy ID Kiriman" }));
     expect(onCopyAllIds).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByText("Hapus Semua"));
@@ -66,7 +66,7 @@ describe("SheetActionBar", () => {
     fireEvent.click(screen.getByText("Status Akhir"));
     expect(onScrollToColumn).toHaveBeenCalledWith("status_akhir.status");
 
-    fireEvent.click(screen.getByText("Clear Selection"));
+    fireEvent.click(screen.getByRole("button", { name: "Clear Selection" }));
     expect(onClearSelection).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByText("ID Terselect ke Sheet Baru"));
@@ -83,5 +83,39 @@ describe("SheetActionBar", () => {
 
     fireEvent.click(screen.getByText("Filter tersembunyi diabaikan: 1"));
     expect(onClearHiddenFilters).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps selection row visible and disabled when nothing is selected", () => {
+    render(
+      <SheetActionBar
+        loadedCount={0}
+        totalShipmentCount={0}
+        loadingCount={0}
+        retrackableRowsCount={0}
+        deleteAllArmed={false}
+        exportableRowsCount={0}
+        activeFilterCount={0}
+        selectedRowCount={0}
+        ignoredHiddenFilterCount={0}
+        columnShortcuts={[]}
+        onRetrackAll={vi.fn()}
+        onExportCsv={vi.fn()}
+        onCopyAllIds={vi.fn()}
+        onDeleteAllRows={vi.fn()}
+        onClearSelection={vi.fn()}
+        onCreateSheetFromSelectedIds={vi.fn()}
+        onClearFilter={vi.fn()}
+        onCopySelectedIds={vi.fn()}
+        onDeleteSelectedRows={vi.fn()}
+        onClearHiddenFilters={vi.fn()}
+        onScrollToColumn={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("0 row dipilih")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clear Selection" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "ID Terselect ke Sheet Baru" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Copy ID Kiriman Terselect" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Hapus Terselect" })).toBeDisabled();
   });
 });

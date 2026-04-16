@@ -1,7 +1,7 @@
 :root {
   --selector-column-width: 52px;
-  --sheet-header-row-height: 48px;
-  --sheet-filter-row-height: 42px;
+  --sheet-header-row-height: 38px;
+  --sheet-filter-row-height: 32px;
   color: #1f2937;
   background:
     radial-gradient(circle at top left, rgba(96, 165, 250, 0.14), transparent 24%),
@@ -39,11 +39,11 @@ button {
 .shell {
   width: calc(100vw - 24px);
   margin: 0 auto;
-  padding: 12px 0;
+  padding: 8px 0;
   height: 100vh;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   overflow: hidden;
 }
 
@@ -51,10 +51,10 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  padding: 12px 16px;
+  gap: 10px;
+  padding: 8px 12px;
   border: 1px solid #d8e1ea;
-  border-radius: 20px;
+  border-radius: 16px;
   background: rgba(255, 255, 255, 0.9);
   backdrop-filter: blur(10px);
   box-shadow: 0 14px 32px rgba(15, 23, 42, 0.06);
@@ -63,7 +63,7 @@ button {
 .sheet-tabs-list {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
   min-width: 0;
   overflow-x: auto;
   padding-bottom: 2px;
@@ -81,15 +81,15 @@ button {
   border: 1px solid #d6e0ea;
   background: #ffffff;
   color: #334155;
-  border-radius: 12px;
-  font-size: 0.86rem;
+  border-radius: 9px;
+  font-size: 0.78rem;
   font-weight: 600;
 }
 
 .sheet-tab-button {
-  min-width: 120px;
+  min-width: 96px;
   max-width: 220px;
-  padding: 9px 14px;
+  padding: 6px 10px;
   text-align: left;
   white-space: nowrap;
   overflow: hidden;
@@ -108,7 +108,7 @@ button {
 
 .sheet-tab-input {
   width: 180px;
-  padding: 8px 12px;
+  padding: 6px 9px;
   outline: none;
 }
 
@@ -120,13 +120,13 @@ button {
 .sheet-tabs-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
 
 .sheet-tab-action {
-  padding: 8px 12px;
+  padding: 6px 9px;
 }
 
 .sheet-tab-action:disabled {
@@ -150,14 +150,14 @@ button {
 
 .sheet-panel,
 .error-box {
-  border-radius: 28px;
-  padding: 24px;
+  border-radius: 20px;
+  padding: 14px;
 }
 
 .sheet-panel {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 12px;
   flex: 1;
   min-height: 0;
 }
@@ -165,38 +165,39 @@ button {
 .muted-label {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
   text-transform: uppercase;
   letter-spacing: 0.18em;
-  font-size: 0.75rem;
+  font-size: 0.66rem;
   color: #2563eb;
 }
 
 .sheet-head {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
+  gap: 10px;
   align-items: flex-start;
 }
 
 .sheet-head h2 {
-  margin: 8px 0 0;
+  margin: 4px 0 0;
+  font-size: 1.45rem;
 }
 
 .sheet-meta {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 6px;
 }
 
 .sheet-chip {
-  padding: 8px 12px;
+  padding: 5px 9px;
   border-radius: 999px;
   border: 1px solid #d5dfeb;
   background: #f8fbff;
   color: #475569;
-  font-size: 0.82rem;
+  font-size: 0.75rem;
 }
 
 .chip-button {
@@ -205,13 +206,24 @@ button {
 
 .selection-actions {
   display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid #d6e0ea;
+  border-radius: 12px;
+  background: #f7fbf8;
+}
+
+.selection-actions-row {
+  display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid #d6e0ea;
-  border-radius: 16px;
-  background: #f7fbf8;
+  gap: 6px;
+}
+
+.selection-actions-row-secondary {
+  padding-top: 6px;
+  border-top: 1px solid #d6e0ea;
 }
 
 .action-toast-stack {
@@ -261,7 +273,7 @@ button {
 
 .selection-count {
   color: #334155;
-  font-size: 0.9rem;
+  font-size: 0.8rem;
   font-weight: 600;
 }
 
@@ -276,16 +288,16 @@ button {
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
 .column-shortcuts {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
   flex-wrap: wrap;
-  padding: 0 6px;
+  padding: 0 2px;
 }
 
 .column-shortcut-button {
@@ -293,8 +305,8 @@ button {
   background: #ffffff;
   color: #334155;
   border-radius: 999px;
-  padding: 6px 12px;
-  font-size: 0.82rem;
+  padding: 4px 9px;
+  font-size: 0.74rem;
   font-weight: 600;
 }
 
@@ -332,13 +344,21 @@ button {
 }
 
 .action-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   border: 1px solid #cbd5e1;
   background: #ffffff;
   color: #0f172a;
-  border-radius: 10px;
-  padding: 8px 12px;
-  font-size: 0.85rem;
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 0.78rem;
   font-weight: 600;
+  line-height: 1.2;
+}
+
+.action-button-label {
+  display: inline;
 }
 
 .action-button:disabled {
@@ -350,6 +370,21 @@ button {
   border-color: #fecaca;
   color: #b91c1c;
   background: #fff7f7;
+}
+
+.action-button-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+}
+
+.action-button-icon svg {
+  width: 13px;
+  height: 13px;
+  overflow: visible;
 }
 
 .table-tools {
@@ -466,7 +501,7 @@ button {
   overflow: auto;
   flex: 1;
   min-height: 0;
-  border-radius: 18px;
+  border-radius: 14px;
   border: 1px solid #d3dce6;
   background: #ffffff;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
@@ -483,7 +518,7 @@ button {
   width: var(--selector-column-width);
   min-width: var(--selector-column-width);
   max-width: var(--selector-column-width);
-  padding: 8px;
+  padding: 5px;
   text-align: center;
   vertical-align: middle;
   background: #f8fbff;
@@ -498,7 +533,7 @@ button {
 
 .sheet-table th,
 .sheet-table td {
-  padding: 10px 12px;
+  padding: 7px 9px;
   border-right: 1px solid #dbe3ec;
   border-bottom: 1px solid #dbe3ec;
   text-align: left;
@@ -512,7 +547,7 @@ button {
   z-index: 3;
   background: #f4f7fb;
   color: #334155;
-  font-size: 0.72rem;
+  font-size: 0.64rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.03em;
@@ -547,7 +582,7 @@ button {
   top: var(--sheet-header-row-height);
   z-index: 2;
   background: #f8fbff;
-  padding: 8px 10px;
+  padding: 5px 7px;
   height: var(--sheet-filter-row-height);
 }
 
@@ -558,7 +593,7 @@ button {
 .sheet-table td {
   background: #ffffff;
   color: #0f172a;
-  font-size: 0.88rem;
+  font-size: 0.8rem;
   transition: background-color 120ms ease;
 }
 
@@ -675,14 +710,14 @@ button {
   width: calc(100% - 10px);
   display: flex;
   justify-content: space-between;
-  gap: 6px;
+  gap: 4px;
   align-items: flex-start;
 }
 
 .header-label-group {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
   flex: 1 1 auto;
 }
@@ -693,7 +728,7 @@ button {
 
 .sort-indicator {
   color: #64748b;
-  font-size: 0.78rem;
+  font-size: 0.68rem;
   line-height: 1;
   flex: 0 0 auto;
 }
@@ -712,10 +747,10 @@ button {
 }
 
 .column-menu-trigger {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   border: 1px solid #cbd5e1;
-  border-radius: 6px;
+  border-radius: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
