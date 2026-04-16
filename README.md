@@ -86,7 +86,10 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - Column shortcut buttons that horizontally scroll to key columns
 - Temporary header highlight when a shortcut scroll target is reached
 - Sheet-specific scroll position, request state, and notices
+- Toast notifications are shown as a fixed top-center queue and do not shift the sheet layout
+- `Nomor Kiriman` rows include per-row QR preview, copy ID, and source-link actions
 - `POD Photo 1` and `POD Photo 2` render as image thumbnails with hover preview
+- `history_summary` cells open scrollable popup details inside the app
 - `history_summary.delivery_runsheet` now keeps the latest delivery result as one update with:
   - `status` as the final delivery status
   - `keterangan_status` as the delivery failure/detail reason when available

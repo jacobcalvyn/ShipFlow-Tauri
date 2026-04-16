@@ -1,6 +1,7 @@
 type SheetActionBarProps = {
   loadedCount: number;
   totalShipmentCount: number;
+  loadingCount: number;
   retrackableRowsCount: number;
   deleteAllArmed: boolean;
   exportableRowsCount: number;
@@ -29,6 +30,7 @@ type SheetActionBarProps = {
 export function SheetActionBar({
   loadedCount,
   totalShipmentCount,
+  loadingCount,
   retrackableRowsCount,
   deleteAllArmed,
   exportableRowsCount,
@@ -50,21 +52,25 @@ export function SheetActionBar({
 }: SheetActionBarProps) {
   const hasSelection = selectedRowCount > 0;
   const hasFilterState = activeFilterCount > 0 || ignoredHiddenFilterCount > 0;
+  const progressLabel =
+    loadingCount > 0
+      ? `${loadedCount}/${totalShipmentCount} kiriman dimuat`
+      : `Total ${totalShipmentCount} kiriman`;
 
   return (
     <>
       <div className="selection-actions">
-        <span className="selection-count">
-          {loadedCount}/{totalShipmentCount} kiriman dimuat
-        </span>
-        <span className="action-divider" aria-hidden="true" />
+        <>
+          <span className="selection-count">{progressLabel}</span>
+          <span className="action-divider" aria-hidden="true" />
+        </>
         <button
           type="button"
           className="action-button"
           onClick={onRetrackAll}
           disabled={retrackableRowsCount === 0}
         >
-          Lacak Ulang Semua
+          Lacak Ulang
         </button>
         <button
           type="button"
@@ -80,7 +86,7 @@ export function SheetActionBar({
           onClick={onCopyAllIds}
           disabled={retrackableRowsCount === 0}
         >
-          Copy ID Kiriman Semua
+          Copy ID Kiriman
         </button>
         <button
           type="button"

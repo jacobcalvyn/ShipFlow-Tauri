@@ -97,6 +97,7 @@ import {
 import { SheetTabs } from "./features/workspace/components/SheetTabs";
 
 type ActionNotice = {
+  id?: string;
   tone: "success" | "error" | "info";
   message: string;
 };
@@ -222,7 +223,7 @@ function assertValidTrackResponse(
 function App() {
   const [workspaceState, setWorkspaceState] = useState(createDefaultWorkspaceState);
   const [actionNoticeBySheetId, setActionNoticeBySheetId] = useState<
-    Record<string, ActionNotice | null>
+    Record<string, ActionNotice[]>
   >({});
   const [hoveredColumn, setHoveredColumn] = useState<number | null>(null);
   const resizeStateRef = useRef<{
@@ -250,7 +251,7 @@ function App() {
     () => getWorkspaceTabs(workspaceState),
     [workspaceState]
   );
-  const activeActionNotice = actionNoticeBySheetId[activeSheetId] ?? null;
+  const activeActionNotices = actionNoticeBySheetId[activeSheetId] ?? [];
   const workspaceRef = useRef(workspaceState);
 
   const updateActiveSheet = useCallback(
@@ -439,30 +440,35 @@ function App() {
   }, [bumpSheetEpoch]);
 
   const showActionNotice = useCallback((sheetId: string, notice: ActionNotice) => {
+    const noticeId = notice.id || createRequestId();
+
     setActionNoticeBySheetId((current) => ({
       ...current,
-      [sheetId]: notice,
+      [sheetId]: [...(current[sheetId] ?? []), { ...notice, id: noticeId }].slice(-5),
     }));
-
-    const previousTimeout = actionNoticeTimeoutsRef.current.get(sheetId);
-    if (previousTimeout !== undefined) {
-      window.clearTimeout(previousTimeout);
-    }
 
     const timeoutId = window.setTimeout(() => {
       setActionNoticeBySheetId((current) => {
-        if (!current[sheetId] || current[sheetId]?.message !== notice.message) {
+        const currentNotices = current[sheetId] ?? [];
+        if (currentNotices.length === 0) {
           return current;
         }
 
+        const nextSheetNotices = currentNotices.filter(
+          (currentNotice) => currentNotice.id !== noticeId
+        );
         const next = { ...current };
-        delete next[sheetId];
+        if (nextSheetNotices.length > 0) {
+          next[sheetId] = nextSheetNotices;
+        } else {
+          delete next[sheetId];
+        }
         return next;
       });
-      actionNoticeTimeoutsRef.current.delete(sheetId);
+      actionNoticeTimeoutsRef.current.delete(noticeId);
     }, 2200);
 
-    actionNoticeTimeoutsRef.current.set(sheetId, timeoutId);
+    actionNoticeTimeoutsRef.current.set(noticeId, timeoutId);
   }, []);
 
   const focusFirstTrackingInput = useCallback(() => {
@@ -547,8 +553,13 @@ function App() {
   );
 
   const effectiveColumnWidths = useMemo(
-    () => getEffectiveColumnWidths(visibleColumns, activeSheet.columnWidths),
-    [activeSheet.columnWidths, visibleColumns]
+    () =>
+      getEffectiveColumnWidths(
+        visibleColumns,
+        activeSheet.columnWidths,
+        activeSheet.rows
+      ),
+    [activeSheet.columnWidths, activeSheet.rows, visibleColumns]
   );
 
   const pinnedLeftMap = useMemo(() => {
@@ -619,6 +630,10 @@ function App() {
 
   const loadedCount = useMemo(
     () => getLoadedCount(displayedRows),
+    [displayedRows]
+  );
+  const loadingCount = useMemo(
+    () => displayedRows.filter((row) => row.loading).length,
     [displayedRows]
   );
 
@@ -1093,6 +1108,31 @@ function App() {
       );
   }, [activeSheetId, allTrackingIds, showActionNotice]);
 
+  const copyTrackingId = useCallback(
+    (value: string) => {
+      const trackingId = value.trim();
+      if (!trackingId) {
+        return;
+      }
+
+      void navigator.clipboard
+        .writeText(trackingId)
+        .then(() =>
+          showActionNotice(activeSheetId, {
+            tone: "success",
+            message: "ID kiriman berhasil disalin.",
+          })
+        )
+        .catch(() =>
+          showActionNotice(activeSheetId, {
+            tone: "error",
+            message: "Gagal menyalin ID kiriman.",
+          })
+        );
+    },
+    [activeSheetId, showActionNotice]
+  );
+
   const clearSelection = useCallback(() => {
     updateActiveSheet((current) => clearSelectionInSheet(current));
   }, [updateActiveSheet]);
@@ -1330,12 +1370,18 @@ function App() {
             currentWorkspace.sheetOrder.find((currentSheetId) => currentSheetId !== sheetId) ??
             null
           : currentWorkspace.activeSheetId;
-      const existingNoticeTimeout = actionNoticeTimeoutsRef.current.get(sheetId);
-      if (existingNoticeTimeout !== undefined) {
-        window.clearTimeout(existingNoticeTimeout);
-        actionNoticeTimeoutsRef.current.delete(sheetId);
-      }
       setActionNoticeBySheetId((current) => {
+        const sheetNotices = current[sheetId] ?? [];
+        sheetNotices.forEach((notice) => {
+          if (!notice.id) {
+            return;
+          }
+          const timeoutId = actionNoticeTimeoutsRef.current.get(notice.id);
+          if (timeoutId !== undefined) {
+            window.clearTimeout(timeoutId);
+            actionNoticeTimeoutsRef.current.delete(notice.id);
+          }
+        });
         const next = { ...current };
         delete next[sheetId];
         return next;
@@ -1519,93 +1565,99 @@ function App() {
   ]);
 
   return (
-    <main className="shell">
-      <SheetTabs
-        tabs={workspaceTabs}
-        activeSheetId={activeSheetId}
-        onActivateSheet={activateSheet}
-        onCreateSheet={createSheet}
-        onDuplicateActiveSheet={duplicateActiveSheet}
-        onRenameSheet={renameActiveSheet}
-        onDeleteSheet={deleteActiveSheet}
-      />
-
-      <section className="sheet-panel">
-        {activeActionNotice ? (
-          <div
-            className={`action-notice action-notice-${activeActionNotice.tone}`}
-            role="status"
-            aria-live="polite"
-          >
-            {activeActionNotice.message}
-          </div>
-        ) : null}
-
-        <SheetActionBar
-          loadedCount={loadedCount}
-          totalShipmentCount={totalShipmentCount}
-          retrackableRowsCount={retrackableRows.length}
-          deleteAllArmed={activeSheet.deleteAllArmed}
-          exportableRowsCount={exportableRows.length}
-          activeFilterCount={activeFilterCount}
-          selectedRowCount={selectedVisibleRowKeys.length}
-          ignoredHiddenFilterCount={ignoredHiddenFilterCount}
-          columnShortcuts={columnShortcuts}
-          onRetrackAll={retrackAllRows}
-          onExportCsv={exportCsv}
-          onCopyAllIds={copyAllTrackingIds}
-          onDeleteAllRows={deleteAllRows}
-          onClearSelection={clearSelection}
-          onCreateSheetFromSelectedIds={createSheetFromSelectedIds}
-          onClearFilter={clearAllFilters}
-          onCopySelectedIds={copySelectedTrackingIds}
-          onDeleteSelectedRows={deleteSelectedRows}
-          onClearHiddenFilters={clearHiddenFilters}
-          onScrollToColumn={scrollToColumn}
+    <>
+      {activeActionNotices.length > 0 ? (
+        <div className="action-toast-stack" aria-live="polite">
+          {activeActionNotices.map((notice) => (
+            <div
+              key={notice.id ?? notice.message}
+              className={`action-notice action-notice-${notice.tone}`}
+              role="status"
+            >
+              {notice.message}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <main className="shell">
+        <SheetTabs
+          tabs={workspaceTabs}
+          activeSheetId={activeSheetId}
+          onActivateSheet={activateSheet}
+          onCreateSheet={createSheet}
+          onDuplicateActiveSheet={duplicateActiveSheet}
+          onRenameSheet={renameActiveSheet}
+          onDeleteSheet={deleteActiveSheet}
         />
+        <section className="sheet-panel">
+          <SheetActionBar
+            loadedCount={loadedCount}
+            totalShipmentCount={totalShipmentCount}
+            loadingCount={loadingCount}
+            retrackableRowsCount={retrackableRows.length}
+            deleteAllArmed={activeSheet.deleteAllArmed}
+            exportableRowsCount={exportableRows.length}
+            activeFilterCount={activeFilterCount}
+            selectedRowCount={selectedVisibleRowKeys.length}
+            ignoredHiddenFilterCount={ignoredHiddenFilterCount}
+            columnShortcuts={columnShortcuts}
+            onRetrackAll={retrackAllRows}
+            onExportCsv={exportCsv}
+            onCopyAllIds={copyAllTrackingIds}
+            onDeleteAllRows={deleteAllRows}
+            onClearSelection={clearSelection}
+            onCreateSheetFromSelectedIds={createSheetFromSelectedIds}
+            onClearFilter={clearAllFilters}
+            onCopySelectedIds={copySelectedTrackingIds}
+            onDeleteSelectedRows={deleteSelectedRows}
+            onClearHiddenFilters={clearHiddenFilters}
+            onScrollToColumn={scrollToColumn}
+          />
 
-      <SheetTable
-        sheetId={activeSheetId}
-        displayedRows={displayedRows}
-          visibleColumns={visibleColumns}
-          hiddenColumns={hiddenColumns}
-          columnWidths={effectiveColumnWidths}
-          pinnedColumnSet={pinnedColumnSet}
-          pinnedLeftMap={pinnedLeftMap}
-          hoveredColumn={hoveredColumn}
-          allVisibleSelected={allVisibleSelected}
-          selectedRowKeySet={selectedRowKeySet}
-          filters={activeSheet.filters}
-          valueFilters={activeSheet.valueFilters}
-          valueOptionsByPath={valueOptionsByPath}
-          openColumnMenuPath={activeSheet.openColumnMenuPath}
-          highlightedColumnPath={activeSheet.highlightedColumnPath}
-          scrollContainerRef={sheetScrollRef}
-          onScrollContainer={handleSheetScroll}
-          sortDirectionForPath={getColumnSortDirection}
-          onMouseLeaveTable={() => setHoveredColumn(null)}
-          onHoverColumn={setHoveredColumn}
-          onToggleVisibleSelection={toggleVisibleSelection}
-          onToggleRowSelection={toggleRowSelection}
-          onOpenSourceLink={openSourceLink}
-          onClearTrackingCell={clearTrackingCell}
-          onTrackingInputChange={handleTrackingInputChange}
-          onTrackingInputBlur={handleTrackingInputBlur}
-          onTrackingInputKeyDown={handleTrackingInputKeyDown}
-          onTrackingInputPaste={handleTrackingInputPaste}
-          onFilterChange={handleFilterChange}
-          onResizeStart={handleResizeStart}
-          onToggleColumnMenu={toggleColumnMenu}
-          onSetColumnSort={setColumnSort}
-          onTogglePinnedColumn={togglePinnedColumn}
-          onToggleColumnVisibility={toggleColumnVisibility}
-          onToggleValueFilter={toggleColumnValueFilter}
-          onClearValueFilter={clearColumnValueFilter}
-          onCloseColumnMenu={closeColumnMenu}
-          onColumnMenuRef={handleColumnMenuRef}
-        />
-      </section>
-    </main>
+          <SheetTable
+            sheetId={activeSheetId}
+            displayedRows={displayedRows}
+            visibleColumns={visibleColumns}
+            hiddenColumns={hiddenColumns}
+            columnWidths={effectiveColumnWidths}
+            pinnedColumnSet={pinnedColumnSet}
+            pinnedLeftMap={pinnedLeftMap}
+            hoveredColumn={hoveredColumn}
+            allVisibleSelected={allVisibleSelected}
+            selectedRowKeySet={selectedRowKeySet}
+            filters={activeSheet.filters}
+            valueFilters={activeSheet.valueFilters}
+            valueOptionsByPath={valueOptionsByPath}
+            openColumnMenuPath={activeSheet.openColumnMenuPath}
+            highlightedColumnPath={activeSheet.highlightedColumnPath}
+            scrollContainerRef={sheetScrollRef}
+            onScrollContainer={handleSheetScroll}
+            sortDirectionForPath={getColumnSortDirection}
+            onMouseLeaveTable={() => setHoveredColumn(null)}
+            onHoverColumn={setHoveredColumn}
+            onToggleVisibleSelection={toggleVisibleSelection}
+            onToggleRowSelection={toggleRowSelection}
+            onOpenSourceLink={openSourceLink}
+            onCopyTrackingId={copyTrackingId}
+            onClearTrackingCell={clearTrackingCell}
+            onTrackingInputChange={handleTrackingInputChange}
+            onTrackingInputBlur={handleTrackingInputBlur}
+            onTrackingInputKeyDown={handleTrackingInputKeyDown}
+            onTrackingInputPaste={handleTrackingInputPaste}
+            onFilterChange={handleFilterChange}
+            onResizeStart={handleResizeStart}
+            onToggleColumnMenu={toggleColumnMenu}
+            onSetColumnSort={setColumnSort}
+            onTogglePinnedColumn={togglePinnedColumn}
+            onToggleColumnVisibility={toggleColumnVisibility}
+            onToggleValueFilter={toggleColumnValueFilter}
+            onClearValueFilter={clearColumnValueFilter}
+            onCloseColumnMenu={closeColumnMenu}
+            onColumnMenuRef={handleColumnMenuRef}
+          />
+        </section>
+      </main>
+    </>
   );
 }
 

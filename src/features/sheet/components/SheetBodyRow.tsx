@@ -13,6 +13,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import { TRACKING_COLUMN_PATH } from "../columns";
 import { ColumnDefinition, SheetRow } from "../types";
+import { MAX_TRACKING_INPUT_LENGTH } from "../utils";
 import {
   formatHistorySummaryPreview,
   formatColumnValue,
@@ -177,6 +178,80 @@ function PodPhotoPreview({
   );
 }
 
+function TrackingQrPreview({
+  value,
+}: {
+  value: string;
+}) {
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const [isHovered, setIsHovered] = useState(false);
+  const qrSource = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&data=${encodeURIComponent(
+    value
+  )}`;
+
+  return (
+    <>
+      <div
+        ref={anchorRef}
+        className="tracking-qr-cell"
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+      >
+        <button
+          type="button"
+          className="tracking-qr-trigger"
+          title="Lihat QR code"
+          aria-label={`Lihat QR code untuk ${value}`}
+        >
+          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path
+              d="M4 4.75A.75.75 0 0 1 4.75 4h3.5a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-.75.75h-3.5A.75.75 0 0 1 4 8.25v-3.5Z"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            />
+            <path
+              d="M11 4.75A.75.75 0 0 1 11.75 4h3.5a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-.75.75h-3.5a.75.75 0 0 1-.75-.75v-3.5Z"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            />
+            <path
+              d="M4 11.75A.75.75 0 0 1 4.75 11h3.5a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-.75.75h-3.5a.75.75 0 0 1-.75-.75v-3.5Z"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            />
+            <path
+              d="M11.5 11H13v1.5h1.5V14H13v1.5h-1.5V14H10v-1.5h1.5V11Z"
+              fill="currentColor"
+            />
+            <path
+              d="M15.5 15.5h-1.75V13.75H15.5V15.5Z"
+              fill="currentColor"
+            />
+          </svg>
+        </button>
+      </div>
+      <HoverPreviewPortal
+        anchorRef={anchorRef}
+        isVisible={isHovered}
+        className="tracking-qr-hover-preview"
+        width={280}
+        height={320}
+      >
+        <div className="tracking-qr-hover-body">
+          <div className="tracking-qr-hover-title">QR Code</div>
+          <img
+            className="tracking-qr-image"
+            src={qrSource}
+            alt={`QR code ${value}`}
+            loading="lazy"
+          />
+          <div className="tracking-qr-value">{value}</div>
+        </div>
+      </HoverPreviewPortal>
+    </>
+  );
+}
+
 function HistorySummaryPreview({
   rawValue,
   summary,
@@ -265,6 +340,7 @@ type SheetBodyRowProps = {
   isSelected: boolean;
   onToggleSelection: (rowKey: string) => void;
   onOpenSourceLink: (url: string) => void;
+  onCopyTrackingId: (value: string) => void;
   onClearTrackingCell: (sheetId: string, rowKey: string) => void;
   onHoverColumn: (columnIndex: number | null) => void;
   onTrackingInputChange: (sheetId: string, rowKey: string, value: string) => void;
@@ -296,6 +372,7 @@ export const SheetBodyRow = memo(function SheetBodyRow({
   isSelected,
   onToggleSelection,
   onOpenSourceLink,
+  onCopyTrackingId,
   onClearTrackingCell,
   onHoverColumn,
   onTrackingInputChange,
@@ -356,6 +433,7 @@ export const SheetBodyRow = memo(function SheetBodyRow({
               <div className="tracking-cell">
                 <input
                   className="sheet-input"
+                  maxLength={MAX_TRACKING_INPUT_LENGTH}
                   value={row.trackingInput}
                   onChange={(event) =>
                     onTrackingInputChange(sheetId, row.key, event.target.value)
@@ -365,6 +443,36 @@ export const SheetBodyRow = memo(function SheetBodyRow({
                   onPaste={(event) => onTrackingInputPaste(event, sheetId, row.key)}
                   placeholder="Masukkan ID"
                 />
+                {row.trackingInput.trim() ? (
+                  <TrackingQrPreview value={row.trackingInput.trim()} />
+                ) : null}
+                {row.trackingInput.trim() ? (
+                  <button
+                    type="button"
+                    className="tracking-copy-link"
+                    title="Salin ID kiriman"
+                    aria-label={`Salin ID kiriman ${row.trackingInput.trim()}`}
+                    onClick={() => onCopyTrackingId(row.trackingInput.trim())}
+                  >
+                    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                      <rect
+                        x="7"
+                        y="4"
+                        width="9"
+                        height="11"
+                        rx="2"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                      />
+                      <path
+                        d="M5.5 12.5H5A2 2 0 0 1 3 10.5v-6A2 2 0 0 1 5 2.5h5A2 2 0 0 1 12 4.5V5"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                  </button>
+                ) : null}
                 {sourceUrl ? (
                   <button
                     type="button"

@@ -19,6 +19,7 @@ describe("SheetActionBar", () => {
       <SheetActionBar
         loadedCount={12}
         totalShipmentCount={16}
+        loadingCount={4}
         retrackableRowsCount={12}
         deleteAllArmed={false}
         exportableRowsCount={12}
@@ -50,13 +51,13 @@ describe("SheetActionBar", () => {
     expect(screen.getByText("12/16 kiriman dimuat")).toBeInTheDocument();
     expect(screen.getByText("3 row dipilih")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("Lacak Ulang Semua"));
+    fireEvent.click(screen.getByText("Lacak Ulang"));
     expect(onRetrackAll).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByText("Export CSV"));
     expect(onExportCsv).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByText("Copy ID Kiriman Semua"));
+    fireEvent.click(screen.getByText("Copy ID Kiriman"));
     expect(onCopyAllIds).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByText("Hapus Semua"));

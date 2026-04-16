@@ -3,6 +3,7 @@ import { setSortInSheet, setTextFilterInSheet, setTrackingInputInSheet } from ".
 import {
   getActiveFilterCount,
   getDisplayedRows,
+  getEffectiveColumnWidths,
   getLoadedCount,
   getNonEmptyRows,
   getVisibleColumns,
@@ -121,5 +122,29 @@ describe("sheet selectors", () => {
 
     expect(getLoadedCount(displayedRows)).toBe(1);
     expect(displayedRows[0].shipment?.detail.shipment_header.nomor_kiriman).toBe("P1");
+  });
+
+  it("sizes the tracking column from the longest valid tracking value only", () => {
+    let next = createDefaultSheetState();
+    next = setTrackingInputInSheet(
+      next,
+      next.rows[0].key,
+      "SHPE26040250CE10034572-LONG-VALUE-123456"
+    );
+    next = setTrackingInputInSheet(
+      next,
+      next.rows[1].key,
+      "X".repeat(200)
+    );
+
+    const visibleColumns = getVisibleColumns(next);
+    const widths = getEffectiveColumnWidths(
+      visibleColumns,
+      next.columnWidths,
+      next.rows
+    );
+
+    expect(widths["detail.shipment_header.nomor_kiriman"]).toBeGreaterThan(200);
+    expect(widths["detail.shipment_header.nomor_kiriman"]).toBeLessThan(800);
   });
 });

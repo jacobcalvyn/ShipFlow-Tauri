@@ -1,6 +1,11 @@
-import { COLUMNS, SELECTOR_COLUMN_WIDTH } from "./columns";
+import {
+  COLUMNS,
+  SELECTOR_COLUMN_WIDTH,
+  TRACKING_COLUMN_PATH,
+} from "./columns";
 import { SheetRow, SheetState } from "./types";
 import {
+  MAX_TRACKING_INPUT_LENGTH,
   compareRows,
   formatColumnValue,
   getColumnToneClass,
@@ -17,6 +22,10 @@ const COLUMN_SHORTCUTS = [
   { path: "detail.package_detail.isi_kiriman", label: "Isi Kiriman" },
   { path: "detail.billing_detail.cod_info.is_cod", label: "Is COD" },
   { path: "pod.photo1_url", label: "POD Photo" },
+  {
+    path: "history_summary.bagging_unbagging",
+    label: "History Summary",
+  },
 ] as const;
 
 export function getNonEmptyRows(rows: SheetRow[]) {
@@ -51,14 +60,40 @@ export function getPinnedColumnSet(sheetState: SheetState) {
 
 export function getEffectiveColumnWidths(
   visibleColumns: ReturnType<typeof getVisibleColumns>,
-  columnWidths: SheetState["columnWidths"]
+  columnWidths: SheetState["columnWidths"],
+  rows: SheetState["rows"]
 ) {
+  const trackingColumnWidth = getTrackingColumnAutoWidth(rows);
+
   return Object.fromEntries(
     visibleColumns.map((column) => [
       column.path,
-      getEffectiveColumnWidth(column, columnWidths),
+      Math.max(
+        getEffectiveColumnWidth(column, columnWidths),
+        column.path === TRACKING_COLUMN_PATH ? trackingColumnWidth : 0
+      ),
     ])
   );
+}
+
+function getTrackingColumnAutoWidth(rows: SheetState["rows"]) {
+  const longestTrackingValue = rows.reduce((longest, row) => {
+    const candidate =
+      row.trackingInput.trim() ||
+      row.shipment?.detail?.shipment_header?.nomor_kiriman ||
+      "";
+    const boundedCandidate = candidate.slice(0, MAX_TRACKING_INPUT_LENGTH);
+
+    return boundedCandidate.length > longest.length ? boundedCandidate : longest;
+  }, "");
+
+  if (!longestTrackingValue) {
+    return 0;
+  }
+
+  const estimatedTextWidth = longestTrackingValue.length * 8.7;
+  const trackingCellChromeWidth = 118;
+  return Math.ceil(estimatedTextWidth + trackingCellChromeWidth);
 }
 
 export function getPinnedLeftMap(

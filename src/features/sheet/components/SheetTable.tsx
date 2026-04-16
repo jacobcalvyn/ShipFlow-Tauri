@@ -26,6 +26,16 @@ function isShortcutHighlighted(
     return true;
   }
 
+  if (
+    highlightedColumnPath === "history_summary.bagging_unbagging" &&
+    [
+      "history_summary.manifest_r7",
+      "history_summary.delivery_runsheet",
+    ].includes(columnPath)
+  ) {
+    return true;
+  }
+
   return false;
 }
 
@@ -53,6 +63,7 @@ type SheetTableProps = {
   onToggleVisibleSelection: () => void;
   onToggleRowSelection: (rowKey: string) => void;
   onOpenSourceLink: (url: string) => void;
+  onCopyTrackingId: (value: string) => void;
   onClearTrackingCell: (sheetId: string, rowKey: string) => void;
   onTrackingInputChange: (sheetId: string, rowKey: string, value: string) => void;
   onTrackingInputBlur: (
@@ -109,6 +120,7 @@ export function SheetTable({
   onToggleVisibleSelection,
   onToggleRowSelection,
   onOpenSourceLink,
+  onCopyTrackingId,
   onClearTrackingCell,
   onTrackingInputChange,
   onTrackingInputBlur,
@@ -226,6 +238,7 @@ export function SheetTable({
               isSelected={selectedRowKeySet.has(row.key)}
               onToggleSelection={onToggleRowSelection}
               onOpenSourceLink={onOpenSourceLink}
+              onCopyTrackingId={onCopyTrackingId}
               onClearTrackingCell={onClearTrackingCell}
               onHoverColumn={onHoverColumn}
               onTrackingInputChange={onTrackingInputChange}

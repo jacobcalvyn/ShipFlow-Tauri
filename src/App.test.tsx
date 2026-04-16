@@ -163,18 +163,18 @@ describe("App workspace isolation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Duplikat Sheet Aktif" }));
 
-    expect(screen.getByText("0/1 kiriman dimuat")).toBeInTheDocument();
+    expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
 
     resolveRequest("P1");
 
     await waitFor(() => {
-      expect(screen.getByText("0/1 kiriman dimuat")).toBeInTheDocument();
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
 
     await waitFor(() => {
-      expect(screen.getByText("1/1 kiriman dimuat")).toBeInTheDocument();
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
     });
   });
 
@@ -198,13 +198,13 @@ describe("App workspace isolation", () => {
 
     await waitFor(() => {
       expect(screen.queryByRole("tab", { name: "Sheet 2" })).not.toBeInTheDocument();
-      expect(screen.getByText("0/0 kiriman dimuat")).toBeInTheDocument();
+      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
     });
 
     resolveRequest("P2");
 
     await waitFor(() => {
-      expect(screen.getByText("0/0 kiriman dimuat")).toBeInTheDocument();
+      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
     });
   });
 
@@ -225,7 +225,7 @@ describe("App workspace isolation", () => {
       "aria-selected",
       "true"
     );
-    expect(screen.getByText("0/0 kiriman dimuat")).toBeInTheDocument();
+    expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
     expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("");
   });
 
@@ -243,7 +243,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PSEL1");
 
     await waitFor(() => {
-      expect(screen.getByText("1/1 kiriman dimuat")).toBeInTheDocument();
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
@@ -262,7 +262,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PSEL1");
 
     await waitFor(() => {
-      expect(screen.getByText("1/1 kiriman dimuat")).toBeInTheDocument();
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
     });
   });
 
@@ -345,7 +345,7 @@ describe("App workspace isolation", () => {
     resolveRequest("P7");
 
     await waitFor(() => {
-      expect(screen.getByText("1/1 kiriman dimuat")).toBeInTheDocument();
+      expect(screen.queryByText("1/1 kiriman dimuat")).not.toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
@@ -403,13 +403,13 @@ describe("App workspace isolation", () => {
     resolveRequest("P4");
 
     await waitFor(() => {
-      expect(screen.getByText("0/0 kiriman dimuat")).toBeInTheDocument();
+      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
 
     await waitFor(() => {
-      expect(screen.getByText("2/2 kiriman dimuat")).toBeInTheDocument();
+      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
     });
   });
 
@@ -484,7 +484,7 @@ describe("App workspace isolation", () => {
       expect(mockedInvoke).toHaveBeenCalledTimes(0);
     });
 
-    expect(screen.getByText("0/1 kiriman dimuat")).toBeInTheDocument();
+    expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
   });
 
   it("dedupes duplicate in-flight requests for the same row", async () => {
@@ -522,7 +522,7 @@ describe("App workspace isolation", () => {
     resolveRequest("P400");
 
     await waitFor(() => {
-      expect(screen.getByText("0/0 kiriman dimuat")).toBeInTheDocument();
+      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
     });
   });
 
@@ -540,7 +540,7 @@ describe("App workspace isolation", () => {
     resolveRequest("P500");
 
     await waitFor(() => {
-      expect(screen.getByText("1/1 kiriman dimuat")).toBeInTheDocument();
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.change(screen.getAllByPlaceholderText("Filter")[1], {
@@ -574,7 +574,7 @@ describe("App workspace isolation", () => {
       );
     });
 
-    expect(screen.getByText("0/1 kiriman dimuat")).toBeInTheDocument();
+    expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
   });
 
   it("keeps three sheets isolated under concurrent tracking pressure", async () => {
@@ -610,7 +610,7 @@ describe("App workspace isolation", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 3" }));
     await waitFor(() => {
-      expect(screen.getByText("1/1 kiriman dimuat")).toBeInTheDocument();
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }));
@@ -622,12 +622,12 @@ describe("App workspace isolation", () => {
     resolveRequest("P204");
 
     await waitFor(() => {
-      expect(screen.getByText("3/3 kiriman dimuat")).toBeInTheDocument();
+      expect(screen.getByText("Total 3 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
     await waitFor(() => {
-      expect(screen.getByText("1/1 kiriman dimuat")).toBeInTheDocument();
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
     });
   });
 });
