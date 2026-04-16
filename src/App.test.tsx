@@ -1,6 +1,6 @@
 import { createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
-import { TrackResponse } from "./types";
+import { ServiceConfig, TrackResponse } from "./types";
 
 const { mockedInvoke } = vi.hoisted(() => ({
   mockedInvoke: vi.fn<
@@ -11,6 +11,7 @@ const { mockedInvoke } = vi.hoisted(() => ({
         sheetId?: string;
         rowKey?: string;
         imageSource?: string;
+        config?: ServiceConfig;
       }
     ) => Promise<TrackResponse | string>
   >(),
@@ -82,6 +83,14 @@ function createTrackingResponse(shipmentId: string): TrackResponse {
   };
 }
 
+function getInvokeCalls(command: string) {
+  return mockedInvoke.mock.calls.filter(([name]) => name === command);
+}
+
+function expectInvokeCount(command: string, count: number) {
+  expect(getInvokeCalls(command)).toHaveLength(count);
+}
+
 describe("App workspace isolation", () => {
   const pendingRequests = new Map<string, Deferred<TrackResponse>>();
   let infoSpy: ReturnType<typeof vi.spyOn>;
@@ -102,6 +111,34 @@ describe("App workspace isolation", () => {
     infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     mockedInvoke.mockImplementation((command, args) => {
+      if (command === "configure_api_service") {
+        const config = args?.config ?? {
+          enabled: false,
+          mode: "local",
+          port: 18422,
+        };
+
+        return Promise.resolve({
+          status: config.enabled ? "running" : "stopped",
+          enabled: config.enabled,
+          mode: config.mode,
+          bindAddress: config.mode === "lan" ? "0.0.0.0" : "127.0.0.1",
+          port: config.port,
+          errorMessage: null,
+        } as unknown as TrackResponse);
+      }
+
+      if (command === "get_api_service_status") {
+        return Promise.resolve({
+          status: "stopped",
+          enabled: false,
+          mode: "local",
+          bindAddress: "127.0.0.1",
+          port: 18422,
+          errorMessage: null,
+        } as unknown as TrackResponse);
+      }
+
       if (command === "resolve_pod_image") {
         return Promise.resolve(typeof args?.imageSource === "string" ? args.imageSource : "");
       }
@@ -159,7 +196,7 @@ describe("App workspace isolation", () => {
     fireEvent.blur(firstInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(1);
+      expectInvokeCount("track_shipment", 1);
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Duplikat Sheet Aktif" }));
@@ -189,7 +226,7 @@ describe("App workspace isolation", () => {
     fireEvent.blur(firstInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(1);
+      expectInvokeCount("track_shipment", 1);
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Hapus Sheet Aktif" }));
@@ -217,7 +254,7 @@ describe("App workspace isolation", () => {
     fireEvent.blur(firstInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(1);
+      expectInvokeCount("track_shipment", 1);
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
@@ -238,7 +275,7 @@ describe("App workspace isolation", () => {
     fireEvent.blur(firstInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(1);
+      expectInvokeCount("track_shipment", 1);
     });
 
     resolveRequest("PSEL1");
@@ -255,7 +292,7 @@ describe("App workspace isolation", () => {
         "aria-selected",
         "true"
       );
-      expect(mockedInvoke).toHaveBeenCalledTimes(2);
+      expectInvokeCount("track_shipment", 2);
       expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("PSEL1");
       expect(screen.getByText("0/1 kiriman dimuat")).toBeInTheDocument();
     });
@@ -276,7 +313,7 @@ describe("App workspace isolation", () => {
     fireEvent.keyDown(firstInput, { key: "Enter" });
 
     expect(document.activeElement).toBe(secondInput);
-    expect(mockedInvoke).not.toHaveBeenCalled();
+    expectInvokeCount("track_shipment", 0);
   });
 
   it("moves focus between tracking rows with ArrowDown and ArrowUp", () => {
@@ -305,7 +342,7 @@ describe("App workspace isolation", () => {
     fireEvent.keyDown(firstInput, { key: "Delete" });
 
     expect(firstInput).toHaveValue("");
-    expect(mockedInvoke).not.toHaveBeenCalled();
+    expectInvokeCount("track_shipment", 0);
   });
 
   it("clears the row tracking cell when Delete is pressed on the row checkbox", () => {
@@ -319,7 +356,7 @@ describe("App workspace isolation", () => {
     fireEvent.keyDown(firstRowCheckbox, { key: "Delete" });
 
     expect(firstInput).toHaveValue("");
-    expect(mockedInvoke).not.toHaveBeenCalled();
+    expectInvokeCount("track_shipment", 0);
   });
 
   it("can start a fresh tracking request in a new sheet while another sheet is still loading", async () => {
@@ -330,7 +367,7 @@ describe("App workspace isolation", () => {
     fireEvent.blur(firstInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(1);
+      expectInvokeCount("track_shipment", 1);
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
@@ -340,7 +377,7 @@ describe("App workspace isolation", () => {
     fireEvent.blur(newSheetInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(2);
+      expectInvokeCount("track_shipment", 2);
     });
 
     resolveRequest("P7");
@@ -364,7 +401,7 @@ describe("App workspace isolation", () => {
     fireEvent.blur(firstInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(1);
+      expectInvokeCount("track_shipment", 1);
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
@@ -379,7 +416,7 @@ describe("App workspace isolation", () => {
     fireEvent(newSheetInput, pasteEvent);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(3);
+      expectInvokeCount("track_shipment", 3);
     });
   });
 
@@ -396,7 +433,7 @@ describe("App workspace isolation", () => {
     fireEvent.blur(secondInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(2);
+      expectInvokeCount("track_shipment", 2);
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }));
@@ -482,7 +519,7 @@ describe("App workspace isolation", () => {
     fireEvent.blur(firstInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(0);
+      expectInvokeCount("track_shipment", 0);
     });
 
     expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
@@ -496,14 +533,14 @@ describe("App workspace isolation", () => {
     fireEvent.blur(firstInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(1);
+      expectInvokeCount("track_shipment", 1);
     });
 
     fireEvent.keyDown(firstInput, { key: "Enter" });
     fireEvent.blur(firstInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(1);
+      expectInvokeCount("track_shipment", 1);
     });
   });
 
@@ -515,7 +552,7 @@ describe("App workspace isolation", () => {
     fireEvent.blur(firstInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(1);
+      expectInvokeCount("track_shipment", 1);
     });
 
     fireEvent.change(firstInput, { target: { value: "" } });
@@ -535,7 +572,7 @@ describe("App workspace isolation", () => {
     fireEvent.blur(firstInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(1);
+      expectInvokeCount("track_shipment", 1);
     });
 
     resolveRequest("P500");
@@ -567,7 +604,7 @@ describe("App workspace isolation", () => {
     fireEvent.blur(secondInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(2);
+      expectInvokeCount("track_shipment", 2);
     });
 
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
@@ -597,7 +634,7 @@ describe("App workspace isolation", () => {
     fireEvent.blur(secondInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(2);
+      expectInvokeCount("track_shipment", 2);
     });
 
     resolveRequest("P800");
@@ -634,7 +671,7 @@ describe("App workspace isolation", () => {
     fireEvent.blur(secondInput);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(2);
+      expectInvokeCount("track_shipment", 2);
     });
 
     resolveRequest("P820");
@@ -708,7 +745,7 @@ describe("App workspace isolation", () => {
     fireEvent.blur(sheet3Input);
 
     await waitFor(() => {
-      expect(mockedInvoke).toHaveBeenCalledTimes(5);
+      expectInvokeCount("track_shipment", 5);
     });
 
     resolveRequest("P203");
@@ -772,6 +809,68 @@ describe("App workspace isolation", () => {
     });
 
     expect(window.localStorage.getItem("shipflow-display-scale")).toBe("small");
+  });
+
+  it("persists previewed service config only after settings are confirmed", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByText("Setting"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Enable API Service" }));
+    fireEvent.click(screen.getByRole("radio", { name: "LAN API" }));
+    fireEvent.change(screen.getByLabelText("Port"), {
+      target: { value: "19422" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Generate Token" }));
+
+    expect(window.localStorage.getItem("shipflow-service-config")).toBe(
+      JSON.stringify({
+        version: 1,
+        enabled: false,
+        mode: "local",
+        port: 18422,
+        authToken: "",
+        lastUpdatedAt: "",
+      })
+    );
+
+    const tokenField = screen.getByLabelText("Auth Token") as HTMLInputElement;
+    expect(tokenField.value).toMatch(/^sf_[a-f0-9]+$/);
+
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+
+    const storedServiceConfig = JSON.parse(
+      window.localStorage.getItem("shipflow-service-config") ?? "{}"
+    );
+    expect(storedServiceConfig.enabled).toBe(true);
+    expect(storedServiceConfig.mode).toBe("lan");
+    expect(storedServiceConfig.port).toBe(19422);
+    expect(storedServiceConfig.authToken).toMatch(/^sf_[a-f0-9]+$/);
+    expect(storedServiceConfig.lastUpdatedAt).toBeTruthy();
+  });
+
+  it("rolls back previewed service config and token when settings are cancelled", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByText("Setting"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Enable API Service" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate Token" }));
+    fireEvent.click(screen.getByRole("button", { name: "Batal" }));
+
+    expect(window.localStorage.getItem("shipflow-service-config")).toBe(
+      JSON.stringify({
+        version: 1,
+        enabled: false,
+        mode: "local",
+        port: 18422,
+        authToken: "",
+        lastUpdatedAt: "",
+      })
+    );
+
+    fireEvent.click(screen.getByText("Setting"));
+
+    expect(screen.getByRole("checkbox", { name: "Enable API Service" })).not.toBeChecked();
+    expect((screen.getByLabelText("Auth Token") as HTMLInputElement).value).toBe("");
   });
 
   it("blocks global delete and copy shortcuts while settings dialog is open", async () => {

@@ -1,3 +1,4 @@
+mod service;
 mod tracking;
 
 use std::process::Command;
@@ -7,6 +8,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use reqwest::header::CONTENT_TYPE;
 use scraper::{Html as ScraperHtml, Selector};
+use service::{ApiServiceConfig, ApiServiceController, ApiServiceStatus};
 use tracking::model::TrackingClientState;
 use tracking::upstream::{resolve_pos_href, scrape_pos_tracking};
 
@@ -81,6 +83,24 @@ fn open_external_url(url: String) -> Result<(), String> {
         .map_err(|error| format!("Unable to open external URL: {error}"))?;
 
     Ok(())
+}
+
+#[tauri::command]
+async fn configure_api_service(
+    config: ApiServiceConfig,
+    client_state: tauri::State<'_, TrackingClientState>,
+    service_controller: tauri::State<'_, ApiServiceController>,
+) -> Result<ApiServiceStatus, String> {
+    service_controller
+        .configure(config, client_state.client.clone())
+        .await
+}
+
+#[tauri::command]
+fn get_api_service_status(
+    service_controller: tauri::State<'_, ApiServiceController>,
+) -> ApiServiceStatus {
+    service_controller.status()
 }
 
 async fn resolve_pod_image_source(
@@ -266,10 +286,13 @@ pub fn run() {
         .manage(TrackingClientState {
             client: tracking_client,
         })
+        .manage(ApiServiceController::default())
         .invoke_handler(tauri::generate_handler![
             track_shipment,
             resolve_pod_image,
-            open_external_url
+            open_external_url,
+            configure_api_service,
+            get_api_service_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -150,3 +150,25 @@ export type TrackResponse = {
   history: TrackHistoryEntry[];
   history_summary: HistorySummary;
 };
+
+export type ServiceMode = "local" | "lan";
+
+export type ServiceConfig = {
+  version: 1;
+  enabled: boolean;
+  mode: ServiceMode;
+  port: number;
+  authToken: string;
+  lastUpdatedAt: string;
+};
+
+export type ApiServiceStatusKind = "stopped" | "running" | "error";
+
+export type ApiServiceStatus = {
+  status: ApiServiceStatusKind;
+  enabled: boolean;
+  mode: ServiceMode | null;
+  bindAddress: string | null;
+  port: number | null;
+  errorMessage: string | null;
+};

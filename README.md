@@ -15,6 +15,7 @@ The app is optimized for spreadsheet-style operational analysis. Each row repres
 - Supports retracking all current shipments from the action bar
 - Supports multiple sheets, where each sheet is an isolated tracking workspace
 - Supports creating a new sheet from selected shipment IDs only
+- Includes an optional in-app API service mode with local or LAN binding
 
 ## Tracking Flow
 
@@ -88,6 +89,13 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - Temporary header highlight when a shortcut scroll target is reached
 - Sheet-specific scroll position, request state, and notices
 - Toast notifications are shown as a fixed top-center queue and do not shift the sheet layout
+- `Setting` includes preview-and-confirm controls for display scale and API service config
+- API service settings include:
+  - enable / disable
+  - `Local API` or `LAN API`
+  - custom port
+  - app-generated bearer token with generate / regenerate / reveal
+- The settings dialog shows current API runtime status, bind address, port, and service errors
 - `Nomor Kiriman` rows include per-row QR preview, copy ID, and source-link actions
 - QR previews are generated locally in-app and do not rely on an external QR image service
 - `POD Photo 1` and `POD Photo 2` render as image thumbnails with hover preview
@@ -122,6 +130,9 @@ The main table currently focuses on:
 ## Stability And Safety Notes
 
 - Tracking now uses direct IPC instead of a localhost HTTP hop.
+- An optional embedded HTTP API service can be enabled from `Setting`.
+- Service config preview is only committed on `OK`; `Batal` rolls back previewed service changes.
+- Auth tokens for the embedded API are generated only from the app UI.
 - Retrack failures do not wipe the last successful shipment data. Failed refreshes keep the old row data and mark the row as stale.
 - Numeric parsing in the Rust scraper is hardened: invalid upstream numeric fields now fail loudly instead of silently falling back to `0`.
 - Empty numeric upstream fields are preserved as `null`, not coerced to `0`.
@@ -147,10 +158,15 @@ The main table currently focuses on:
 ### Backend
 
 - [src-tauri/src/lib.rs](./src-tauri/src/lib.rs): app startup and Tauri wiring
+- [src-tauri/src/service.rs](./src-tauri/src/service.rs): optional embedded HTTP API service controller
 - [src-tauri/src/tracking/model.rs](./src-tauri/src/tracking/model.rs): tracking response models
 - [src-tauri/src/tracking/upstream.rs](./src-tauri/src/tracking/upstream.rs): upstream request and URL building
 - [src-tauri/src/tracking/parser.rs](./src-tauri/src/tracking/parser.rs): POS HTML parsing
 - [src-tauri/src/fixtures](./src-tauri/src/fixtures): parser fixtures used by Rust tests
+
+### Architecture Notes
+
+- [docs/service-mode-architecture.md](./docs/service-mode-architecture.md): service mode, token, and tray/menu bar architecture plan
 
 ### Reference Only
 
@@ -244,6 +260,7 @@ The table benchmark is kept separate from the normal test suite so regular check
 Rust tests live in [src-tauri/src/lib.rs](./src-tauri/src/lib.rs) and cover:
 
 - Base64 + percent-encoded tracking URL generation
+- embedded API bearer-auth validation
 - sample HTML parsing
 - not-found parser behavior
 - invalid numeric parser behavior

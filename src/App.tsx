@@ -20,7 +20,7 @@ import {
 import { COLUMNS, SELECTOR_COLUMN_WIDTH } from "./features/sheet/columns";
 import { SheetActionBar } from "./features/sheet/components/SheetActionBar";
 import { SheetTable } from "./features/sheet/components/SheetTable";
-import { ColumnShortcut, SheetState, TrackResponse } from "./features/sheet/types";
+import { ColumnShortcut, SheetState } from "./features/sheet/types";
 import {
   assertValidSheetState,
   buildCsvValue,
@@ -97,6 +97,12 @@ import {
   getWorkspaceTabs,
 } from "./features/workspace/selectors";
 import { SheetTabs } from "./features/workspace/components/SheetTabs";
+import {
+  ApiServiceStatus,
+  ServiceConfig,
+  ServiceMode,
+  TrackResponse,
+} from "./types";
 
 type ActionNotice = {
   id?: string;
@@ -126,9 +132,82 @@ type TrackingRequestMeta = {
 type DisplayScale = "small" | "medium" | "large";
 
 const DISPLAY_SCALE_STORAGE_KEY = "shipflow-display-scale";
+const SERVICE_CONFIG_STORAGE_KEY = "shipflow-service-config";
+
+const DEFAULT_SERVICE_CONFIG: ServiceConfig = {
+  version: 1,
+  enabled: false,
+  mode: "local",
+  port: 18422,
+  authToken: "",
+  lastUpdatedAt: "",
+};
+
+const DEFAULT_API_SERVICE_STATUS: ApiServiceStatus = {
+  status: "stopped",
+  enabled: false,
+  mode: null,
+  bindAddress: null,
+  port: null,
+  errorMessage: null,
+};
 
 function isDisplayScale(value: string | null): value is DisplayScale {
   return value === "small" || value === "medium" || value === "large";
+}
+
+function isServiceMode(value: unknown): value is ServiceMode {
+  return value === "local" || value === "lan";
+}
+
+function normalizeServicePort(value: unknown) {
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    return DEFAULT_SERVICE_CONFIG.port;
+  }
+
+  if (value < 1 || value > 65535) {
+    return DEFAULT_SERVICE_CONFIG.port;
+  }
+
+  return value;
+}
+
+function createServiceToken() {
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    return `sf_${Array.from(bytes, (byte) =>
+      byte.toString(16).padStart(2, "0")
+    ).join("")}`;
+  }
+
+  return `sf_${createRequestId().replace(/-/g, "")}`;
+}
+
+function loadServiceConfig(): ServiceConfig {
+  if (!isBrowserReady()) {
+    return DEFAULT_SERVICE_CONFIG;
+  }
+
+  const stored = window.localStorage.getItem(SERVICE_CONFIG_STORAGE_KEY);
+  if (!stored) {
+    return DEFAULT_SERVICE_CONFIG;
+  }
+
+  try {
+    const parsed = JSON.parse(stored) as Partial<ServiceConfig>;
+    return {
+      version: 1,
+      enabled: Boolean(parsed.enabled),
+      mode: isServiceMode(parsed.mode) ? parsed.mode : DEFAULT_SERVICE_CONFIG.mode,
+      port: normalizeServicePort(parsed.port),
+      authToken: typeof parsed.authToken === "string" ? parsed.authToken : "",
+      lastUpdatedAt:
+        typeof parsed.lastUpdatedAt === "string" ? parsed.lastUpdatedAt : "",
+    };
+  } catch {
+    return DEFAULT_SERVICE_CONFIG;
+  }
 }
 
 function getSheetRequestKey(sheetId: string, rowKey: string) {
@@ -241,6 +320,11 @@ function App() {
     return isDisplayScale(storedDisplayScale) ? storedDisplayScale : "small";
   });
   const [displayScalePreview, setDisplayScalePreview] = useState<DisplayScale | null>(null);
+  const [serviceConfig, setServiceConfig] = useState<ServiceConfig>(loadServiceConfig);
+  const [serviceConfigPreview, setServiceConfigPreview] = useState<ServiceConfig | null>(null);
+  const [apiServiceStatus, setApiServiceStatus] = useState<ApiServiceStatus>(
+    DEFAULT_API_SERVICE_STATUS
+  );
   const [actionNoticeBySheetId, setActionNoticeBySheetId] = useState<
     Record<string, ActionNotice[]>
   >({});
@@ -272,7 +356,10 @@ function App() {
   );
   const activeActionNotices = actionNoticeBySheetId[activeSheetId] ?? [];
   const workspaceRef = useRef(workspaceState);
+  const serviceConfigRef = useRef(serviceConfig);
   const effectiveDisplayScale = displayScalePreview ?? displayScale;
+  const effectiveServiceConfig = serviceConfigPreview ?? serviceConfig;
+  const hasPendingServiceConfigChanges = serviceConfigPreview !== null;
 
   const updateActiveSheet = useCallback(
     (updater: (sheetState: SheetState) => SheetState) => {
@@ -305,6 +392,10 @@ function App() {
   useEffect(() => {
     workspaceRef.current = workspaceState;
   }, [workspaceState]);
+
+  useEffect(() => {
+    serviceConfigRef.current = serviceConfig;
+  }, [serviceConfig]);
 
   useEffect(() => {
     const scrollContainer = sheetScrollRef.current;
@@ -376,17 +467,94 @@ function App() {
     window.localStorage.setItem(DISPLAY_SCALE_STORAGE_KEY, displayScale);
   }, [displayScale]);
 
+  useEffect(() => {
+    if (!isBrowserReady()) {
+      return;
+    }
+
+    window.localStorage.setItem(
+      SERVICE_CONFIG_STORAGE_KEY,
+      JSON.stringify(serviceConfig)
+    );
+  }, [serviceConfig]);
+
   const previewDisplayScale = useCallback((scale: DisplayScale) => {
     setDisplayScalePreview(scale);
   }, []);
 
-  const confirmDisplayScale = useCallback(() => {
+  const previewServiceConfig = useCallback(
+    (updater: (config: ServiceConfig) => ServiceConfig) => {
+      setServiceConfigPreview((current) => {
+        const base = current ?? serviceConfigRef.current;
+        return updater(base);
+      });
+    },
+    []
+  );
+
+  const previewServiceEnabled = useCallback(
+    (enabled: boolean) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        enabled,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewServiceMode = useCallback(
+    (mode: ServiceMode) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        mode,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewServicePort = useCallback(
+    (port: number) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        port: normalizeServicePort(port),
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewGenerateServiceToken = useCallback(() => {
+    previewServiceConfig((current) => ({
+      ...current,
+      authToken: createServiceToken(),
+    }));
+  }, [previewServiceConfig]);
+
+  const previewRegenerateServiceToken = useCallback(() => {
+    previewServiceConfig((current) => ({
+      ...current,
+      authToken: createServiceToken(),
+    }));
+  }, [previewServiceConfig]);
+
+  const confirmSettings = useCallback(() => {
     setDisplayScale((current) => displayScalePreview ?? current);
     setDisplayScalePreview(null);
-  }, [displayScalePreview]);
+    setServiceConfig((current) => {
+      if (!serviceConfigPreview) {
+        return current;
+      }
 
-  const cancelDisplayScalePreview = useCallback(() => {
+      return {
+        ...serviceConfigPreview,
+        lastUpdatedAt: new Date().toISOString(),
+      };
+    });
+    setServiceConfigPreview(null);
+  }, [displayScalePreview, serviceConfigPreview]);
+
+  const cancelSettingsPreview = useCallback(() => {
     setDisplayScalePreview(null);
+    setServiceConfigPreview(null);
   }, []);
 
   useEffect(() => {
@@ -534,6 +702,85 @@ function App() {
 
     actionNoticeTimeoutsRef.current.set(noticeId, timeoutId);
   }, []);
+
+  const refreshApiServiceStatus = useCallback(async () => {
+    try {
+      const status = await invoke<ApiServiceStatus>("get_api_service_status");
+      setApiServiceStatus(status);
+    } catch (error) {
+      setApiServiceStatus({
+        status: "error",
+        enabled: serviceConfigRef.current.enabled,
+        mode: serviceConfigRef.current.mode,
+        bindAddress:
+          serviceConfigRef.current.mode === "lan" ? "0.0.0.0" : "127.0.0.1",
+        port: serviceConfigRef.current.port,
+        errorMessage:
+          error instanceof Error
+            ? error.message
+            : "Gagal membaca status API service.",
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void invoke<ApiServiceStatus>("configure_api_service", { config: serviceConfig })
+      .then((status) => {
+        if (cancelled) {
+          return;
+        }
+
+        setApiServiceStatus(status);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+
+        setApiServiceStatus({
+          status: "error",
+          enabled: serviceConfig.enabled,
+          mode: serviceConfig.mode,
+          bindAddress: serviceConfig.mode === "lan" ? "0.0.0.0" : "127.0.0.1",
+          port: serviceConfig.port,
+          errorMessage:
+            error instanceof Error
+              ? error.message
+              : "Gagal mengonfigurasi API service.",
+        });
+        showActionNotice(workspaceRef.current.activeSheetId, {
+          tone: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Gagal mengonfigurasi API service.",
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [serviceConfig, showActionNotice]);
+
+  useEffect(() => {
+    void refreshApiServiceStatus();
+  }, [refreshApiServiceStatus]);
+
+  useEffect(() => {
+    if (!serviceConfig.enabled) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void refreshApiServiceStatus();
+    }, 5000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [refreshApiServiceStatus, serviceConfig.enabled]);
 
   const focusFirstTrackingInput = useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -1659,14 +1906,22 @@ function App() {
           tabs={workspaceTabs}
           activeSheetId={activeSheetId}
           displayScale={effectiveDisplayScale}
+          serviceConfig={effectiveServiceConfig}
+          serviceStatus={apiServiceStatus}
+          hasPendingServiceConfigChanges={hasPendingServiceConfigChanges}
           onActivateSheet={activateSheet}
           onCreateSheet={createSheet}
           onDuplicateActiveSheet={duplicateActiveSheet}
           onRenameSheet={renameActiveSheet}
           onDeleteSheet={deleteActiveSheet}
           onPreviewDisplayScale={previewDisplayScale}
-          onConfirmDisplayScale={confirmDisplayScale}
-          onCancelDisplayScale={cancelDisplayScalePreview}
+          onPreviewServiceEnabled={previewServiceEnabled}
+          onPreviewServiceMode={previewServiceMode}
+          onPreviewServicePort={previewServicePort}
+          onGenerateServiceToken={previewGenerateServiceToken}
+          onRegenerateServiceToken={previewRegenerateServiceToken}
+          onConfirmSettings={confirmSettings}
+          onCancelSettings={cancelSettingsPreview}
         />
         <section className="sheet-panel">
           <SheetActionBar

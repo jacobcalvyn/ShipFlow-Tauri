@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { ApiServiceStatus, ServiceConfig, ServiceMode } from "../../../types";
 
 type SheetTabItem = {
   id: string;
@@ -11,28 +12,44 @@ type SheetTabsProps = {
   tabs: SheetTabItem[];
   activeSheetId: string;
   displayScale: "small" | "medium" | "large";
+  serviceConfig: ServiceConfig;
+  serviceStatus: ApiServiceStatus;
+  hasPendingServiceConfigChanges: boolean;
   onActivateSheet: (sheetId: string) => void;
   onCreateSheet: () => void;
   onDuplicateActiveSheet: () => void;
   onRenameSheet: (sheetId: string, name: string) => void;
   onDeleteSheet: (sheetId: string) => void;
   onPreviewDisplayScale: (scale: "small" | "medium" | "large") => void;
-  onConfirmDisplayScale: () => void;
-  onCancelDisplayScale: () => void;
+  onPreviewServiceEnabled: (enabled: boolean) => void;
+  onPreviewServiceMode: (mode: ServiceMode) => void;
+  onPreviewServicePort: (port: number) => void;
+  onGenerateServiceToken: () => void;
+  onRegenerateServiceToken: () => void;
+  onConfirmSettings: () => void;
+  onCancelSettings: () => void;
 };
 
 export function SheetTabs({
   tabs,
   activeSheetId,
   displayScale,
+  serviceConfig,
+  serviceStatus,
+  hasPendingServiceConfigChanges,
   onActivateSheet,
   onCreateSheet,
   onDuplicateActiveSheet,
   onRenameSheet,
   onDeleteSheet,
   onPreviewDisplayScale,
-  onConfirmDisplayScale,
-  onCancelDisplayScale,
+  onPreviewServiceEnabled,
+  onPreviewServiceMode,
+  onPreviewServicePort,
+  onGenerateServiceToken,
+  onRegenerateServiceToken,
+  onConfirmSettings,
+  onCancelSettings,
 }: SheetTabsProps) {
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeSheetId) ?? tabs[0] ?? null,
@@ -42,6 +59,8 @@ export function SheetTabs({
   const [sheetNameDraft, setSheetNameDraft] = useState("");
   const [deleteArmedSheetId, setDeleteArmedSheetId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isTokenVisible, setIsTokenVisible] = useState(false);
+  const [portDraft, setPortDraft] = useState(String(serviceConfig.port));
   const settingsModalRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -107,6 +126,13 @@ export function SheetTabs({
     };
   }, [displayScale, isSettingsOpen]);
 
+  useEffect(() => {
+    if (!isSettingsOpen) {
+      setIsTokenVisible(false);
+      setPortDraft(String(serviceConfig.port));
+    }
+  }, [isSettingsOpen, serviceConfig.port]);
+
   const beginRename = () => {
     if (!activeTab) {
       return;
@@ -162,7 +188,7 @@ export function SheetTabs({
     setDeleteArmedSheetId(null);
     setEditingSheetId(null);
     setSheetNameDraft("");
-    onCancelDisplayScale();
+    onCancelSettings();
     setIsSettingsOpen(false);
     onCreateSheet();
   };
@@ -171,23 +197,48 @@ export function SheetTabs({
     setDeleteArmedSheetId(null);
     setEditingSheetId(null);
     setSheetNameDraft("");
-    onCancelDisplayScale();
+    onCancelSettings();
     setIsSettingsOpen(false);
     onDuplicateActiveSheet();
   };
 
   const closeSettings = () => {
-    onCancelDisplayScale();
+    onCancelSettings();
     setIsSettingsOpen(false);
   };
 
   const openSettings = () => {
+    setIsTokenVisible(false);
+    setPortDraft(String(serviceConfig.port));
     setIsSettingsOpen(true);
   };
 
   const confirmSettings = () => {
-    onConfirmDisplayScale();
+    onConfirmSettings();
     setIsSettingsOpen(false);
+  };
+
+  const normalizedPort = Number.parseInt(portDraft, 10);
+  const isPortValid =
+    Number.isInteger(normalizedPort) && normalizedPort >= 1 && normalizedPort <= 65535;
+
+  const serviceStatusLabel = useMemo(() => {
+    switch (serviceStatus.status) {
+      case "running":
+        return "Running";
+      case "error":
+        return "Error";
+      default:
+        return "Stopped";
+    }
+  }, [serviceStatus.status]);
+
+  const handlePortDraftChange = (value: string) => {
+    setPortDraft(value);
+    const nextPort = Number.parseInt(value, 10);
+    if (Number.isInteger(nextPort) && nextPort >= 1 && nextPort <= 65535) {
+      onPreviewServicePort(nextPort);
+    }
   };
 
   return (
@@ -339,6 +390,139 @@ export function SheetTabs({
                     </label>
                   </div>
                 </div>
+                <div className="settings-form-group">
+                  <div className="settings-modal-field-label">API Service</div>
+                  <label className="settings-checkbox-option">
+                    <input
+                      type="checkbox"
+                      checked={serviceConfig.enabled}
+                      onChange={(event) =>
+                        onPreviewServiceEnabled(event.currentTarget.checked)
+                      }
+                    />
+                    <span>Enable API Service</span>
+                  </label>
+
+                  <div
+                    className="settings-radio-group"
+                    role="radiogroup"
+                    aria-label="Service Mode"
+                  >
+                    <label className="settings-radio-option">
+                      <input
+                        type="radio"
+                        name="service-mode"
+                        checked={serviceConfig.mode === "local"}
+                        onChange={() => onPreviewServiceMode("local")}
+                      />
+                      <span className="settings-radio-text">Local API</span>
+                    </label>
+                    <label className="settings-radio-option">
+                      <input
+                        type="radio"
+                        name="service-mode"
+                        checked={serviceConfig.mode === "lan"}
+                        onChange={() => onPreviewServiceMode("lan")}
+                      />
+                      <span className="settings-radio-text">LAN API</span>
+                    </label>
+                  </div>
+
+                  <label className="settings-text-field">
+                    <span className="settings-input-label">Port</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={65535}
+                      inputMode="numeric"
+                      aria-label="Port"
+                      value={portDraft}
+                      onChange={(event) => handlePortDraftChange(event.target.value)}
+                    />
+                  </label>
+                  {!isPortValid ? (
+                    <div className="settings-field-help settings-field-help-error">
+                      Port must be between 1 and 65535.
+                    </div>
+                  ) : null}
+
+                  <label className="settings-text-field">
+                    <span className="settings-input-label">Auth Token</span>
+                    <input
+                      type={isTokenVisible ? "text" : "password"}
+                      readOnly
+                      aria-label="Auth Token"
+                      value={serviceConfig.authToken}
+                      placeholder="Generate token from the app"
+                    />
+                  </label>
+                  <div className="settings-inline-actions">
+                    <button
+                      type="button"
+                      className="sheet-tab-action"
+                      onClick={() => setIsTokenVisible((current) => !current)}
+                    >
+                      {isTokenVisible ? "Hide Token" : "Reveal Token"}
+                    </button>
+                    {serviceConfig.authToken ? (
+                      <button
+                        type="button"
+                        className="sheet-tab-action"
+                        onClick={onRegenerateServiceToken}
+                      >
+                        Regenerate Token
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="sheet-tab-action"
+                        onClick={onGenerateServiceToken}
+                      >
+                        Generate Token
+                      </button>
+                    )}
+                  </div>
+                  {serviceConfig.mode === "lan" ? (
+                    <div className="settings-field-help settings-field-help-warning">
+                      LAN API exposes the service to other devices on the same network.
+                    </div>
+                  ) : null}
+
+                  {hasPendingServiceConfigChanges ? (
+                    <div className="settings-field-help settings-field-help-info">
+                      Perubahan API service belum diterapkan. Klik OK untuk menyimpan.
+                    </div>
+                  ) : null}
+
+                  <div className="settings-service-status" role="status" aria-live="polite">
+                    <div className="settings-service-status-row">
+                      <span className="settings-service-status-label">Runtime Status</span>
+                      <span
+                        className={[
+                          "settings-service-status-badge",
+                          `is-${serviceStatus.status}`,
+                        ].join(" ")}
+                      >
+                        {serviceStatusLabel}
+                      </span>
+                    </div>
+                    <div className="settings-service-status-meta">
+                      {serviceStatus.bindAddress && serviceStatus.port
+                        ? `${serviceStatus.bindAddress}:${serviceStatus.port}`
+                        : "Service belum aktif."}
+                    </div>
+                    {serviceStatus.mode ? (
+                      <div className="settings-service-status-meta">
+                        Mode: {serviceStatus.mode === "lan" ? "LAN API" : "Local API"}
+                      </div>
+                    ) : null}
+                    {serviceStatus.errorMessage ? (
+                      <div className="settings-field-help settings-field-help-error">
+                        {serviceStatus.errorMessage}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
                 <div className="settings-modal-footer">
                   <button
                     type="button"
@@ -351,6 +535,7 @@ export function SheetTabs({
                     type="button"
                     className="sheet-tab-action settings-modal-ok"
                     onClick={confirmSettings}
+                    disabled={!isPortValid}
                   >
                     OK
                   </button>
