@@ -28,6 +28,7 @@ import {
 
 const POD_PHOTO_COLUMN_PATHS = new Set(["pod.photo1_url", "pod.photo2_url"]);
 const podImageCache = new Map<string, string>();
+const qrImageCache = new Map<string, string>();
 
 export function getPreviewPortalLayout(
   rect: Pick<DOMRect, "top" | "left" | "right" | "height">,
@@ -143,12 +144,26 @@ function PodPhotoPreview({
   const [isHovered, setIsHovered] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
+    const cached = podImageCache.get(source);
+    if (cached) {
+      setResolvedSrc(cached);
+    } else {
+      setResolvedSrc("");
+    }
+  }, [source]);
+
+  useEffect(() => {
+    if (!isHovered) {
+      return;
+    }
+
     const cached = podImageCache.get(source);
     if (cached) {
       setResolvedSrc(cached);
       return;
     }
+
+    let cancelled = false;
 
     void invoke<string>("resolve_pod_image", { imageSource: source })
       .then((resolved) => {
@@ -168,11 +183,7 @@ function PodPhotoPreview({
     return () => {
       cancelled = true;
     };
-  }, [source]);
-
-  if (!resolvedSrc) {
-    return <span className="pod-photo-empty">-</span>;
-  }
+  }, [isHovered, source]);
 
   return (
     <>
@@ -182,24 +193,32 @@ function PodPhotoPreview({
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
-        <img className="pod-photo-thumb" src={resolvedSrc} alt={label} loading="lazy" />
+        {resolvedSrc ? (
+          <img className="pod-photo-thumb" src={resolvedSrc} alt={label} loading="lazy" />
+        ) : (
+          <span className="pod-photo-empty" aria-label={`${label} placeholder`}>
+            Preview
+          </span>
+        )}
       </div>
-      <HoverPreviewPortal
-        anchorRef={anchorRef}
-        isVisible={isHovered}
-        className="pod-photo-hover-preview"
-        width={440}
-        height={480}
-      >
-        <div role="img" aria-label={`${label} preview`}>
-          <img
-            className="pod-photo-preview-image"
-            src={resolvedSrc}
-            alt={label}
-            loading="lazy"
-          />
-        </div>
-      </HoverPreviewPortal>
+      {resolvedSrc ? (
+        <HoverPreviewPortal
+          anchorRef={anchorRef}
+          isVisible={isHovered}
+          className="pod-photo-hover-preview"
+          width={440}
+          height={480}
+        >
+          <div role="img" aria-label={`${label} preview`}>
+            <img
+              className="pod-photo-preview-image"
+              src={resolvedSrc}
+              alt={label}
+              loading="lazy"
+            />
+          </div>
+        </HoverPreviewPortal>
+      ) : null}
     </>
   );
 }
@@ -211,9 +230,23 @@ function TrackingQrPreview({
 }) {
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const [isHovered, setIsHovered] = useState(false);
-  const [qrSource, setQrSource] = useState("");
+  const [qrSource, setQrSource] = useState(() => qrImageCache.get(value) ?? "");
 
   useEffect(() => {
+    setQrSource(qrImageCache.get(value) ?? "");
+  }, [value]);
+
+  useEffect(() => {
+    if (!isHovered) {
+      return;
+    }
+
+    const cached = qrImageCache.get(value);
+    if (cached) {
+      setQrSource(cached);
+      return;
+    }
+
     let cancelled = false;
 
     void QRCode.toDataURL(value, {
@@ -227,6 +260,7 @@ function TrackingQrPreview({
     })
       .then((nextQrSource) => {
         if (!cancelled) {
+          qrImageCache.set(value, nextQrSource);
           setQrSource(nextQrSource);
         }
       })
@@ -239,7 +273,7 @@ function TrackingQrPreview({
     return () => {
       cancelled = true;
     };
-  }, [value]);
+  }, [isHovered, value]);
 
   return (
     <>
@@ -254,6 +288,8 @@ function TrackingQrPreview({
           className="tracking-qr-trigger"
           title="Lihat QR code"
           aria-label={`Lihat QR code untuk ${value}`}
+          onFocus={() => setIsHovered(true)}
+          onBlur={() => setIsHovered(false)}
         >
           <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
             <path
@@ -392,13 +428,11 @@ type SheetBodyRowProps = {
   columnWidths: Record<string, number>;
   pinnedColumnSet: Set<string>;
   pinnedLeftMap: Record<string, number>;
-  hoveredColumn: number | null;
   isSelected: boolean;
   onToggleSelection: (rowKey: string) => void;
   onOpenSourceLink: (url: string) => void;
   onCopyTrackingId: (value: string) => void;
   onClearTrackingCell: (sheetId: string, rowKey: string) => void;
-  onHoverColumn: (columnIndex: number | null) => void;
   onTrackingInputChange: (sheetId: string, rowKey: string, value: string) => void;
   onTrackingInputBlur: (
     event: FocusEvent<HTMLInputElement>,
@@ -424,13 +458,11 @@ export const SheetBodyRow = memo(function SheetBodyRow({
   columnWidths,
   pinnedColumnSet,
   pinnedLeftMap,
-  hoveredColumn,
   isSelected,
   onToggleSelection,
   onOpenSourceLink,
   onCopyTrackingId,
   onClearTrackingCell,
-  onHoverColumn,
   onTrackingInputChange,
   onTrackingInputBlur,
   onTrackingInputKeyDown,
@@ -454,7 +486,7 @@ export const SheetBodyRow = memo(function SheetBodyRow({
           aria-label={`Select row ${row.trackingInput || row.key}`}
         />
       </td>
-      {visibleColumns.map((column, index) => {
+      {visibleColumns.map((column) => {
         const formattedValue = formatColumnValue(row, column);
         const rawValue = getRawColumnValue(row, column);
         const width = columnWidths[column.path];
@@ -466,7 +498,6 @@ export const SheetBodyRow = memo(function SheetBodyRow({
           getColumnTypeClass(column),
           POD_PHOTO_COLUMN_PATHS.has(column.path) ? "has-pod-photo" : "",
           isHistorySummary ? "has-history-summary" : "",
-          hoveredColumn === index ? "column-hover" : "",
         ]
           .filter(Boolean)
           .join(" ");
@@ -484,7 +515,6 @@ export const SheetBodyRow = memo(function SheetBodyRow({
                 left: isPinned ? pinnedLeftMap[column.path] : undefined,
               }}
               className={className}
-              onMouseEnter={() => onHoverColumn(index)}
             >
               <div className="tracking-cell">
                 <input
@@ -591,7 +621,6 @@ export const SheetBodyRow = memo(function SheetBodyRow({
                 left: isPinned ? pinnedLeftMap[column.path] : undefined,
               }}
               className={className}
-              onMouseEnter={() => onHoverColumn(index)}
             >
               {imageSource ? (
                 <PodPhotoPreview source={imageSource} label={column.label} />
@@ -615,7 +644,6 @@ export const SheetBodyRow = memo(function SheetBodyRow({
                 left: isPinned ? pinnedLeftMap[column.path] : undefined,
               }}
               className={className}
-              onMouseEnter={() => onHoverColumn(index)}
             >
               <HistorySummaryPreview
                 rawValue={rawValue}
@@ -636,7 +664,6 @@ export const SheetBodyRow = memo(function SheetBodyRow({
               left: isPinned ? pinnedLeftMap[column.path] : undefined,
             }}
             className={className}
-            onMouseEnter={() => onHoverColumn(index)}
           >
             <div className="cell-text" title={formattedValue}>
               {formattedValue}

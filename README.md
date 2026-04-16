@@ -224,6 +224,12 @@ Run frontend tests:
 npm test
 ```
 
+Run the large-table virtualization benchmark:
+
+```bash
+npm run bench:table
+```
+
 Current frontend tests cover:
 
 - sheet utility functions
@@ -232,6 +238,8 @@ Current frontend tests cover:
 - `SheetActionBar` interaction smoke test
 - multi-sheet app-level isolation and stress scenarios
 - tracking telemetry and malformed-response guards
+
+The table benchmark is kept separate from the normal test suite so regular checks stay fast. It renders `1000` rows, verifies virtualization is still active, and logs baseline render / scroll timings for the table body.
 
 Rust tests live in [src-tauri/src/lib.rs](./src-tauri/src/lib.rs) and cover:
 

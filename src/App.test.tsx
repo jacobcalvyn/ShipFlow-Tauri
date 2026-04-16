@@ -98,6 +98,7 @@ describe("App workspace isolation", () => {
 
   beforeEach(() => {
     pendingRequests.clear();
+    window.localStorage.clear();
     infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     mockedInvoke.mockImplementation((command, args) => {
@@ -619,7 +620,46 @@ describe("App workspace isolation", () => {
 
     await waitFor(() => {
       expect(screen.getAllByDisplayValue("P801")[0]).toBeInTheDocument();
-      expect(screen.queryByText(/row dipilih/i)).not.toBeInTheDocument();
+      expect(screen.getByText("0 row dipilih")).toBeInTheDocument();
+    });
+  });
+
+  it("drops hidden selections when filters hide selected rows", async () => {
+    render(<App />);
+
+    const [firstInput, secondInput] = screen.getAllByPlaceholderText("Masukkan ID");
+    fireEvent.change(firstInput, { target: { value: "P820" } });
+    fireEvent.blur(firstInput);
+    fireEvent.change(secondInput, { target: { value: "P821" } });
+    fireEvent.blur(secondInput);
+
+    await waitFor(() => {
+      expect(mockedInvoke).toHaveBeenCalledTimes(2);
+    });
+
+    resolveRequest("P820");
+    resolveRequest("P821");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    fireEvent.click(screen.getAllByRole("checkbox")[2]);
+    expect(screen.getByText("2 row dipilih")).toBeInTheDocument();
+
+    fireEvent.change(screen.getAllByPlaceholderText("Filter")[0], {
+      target: { value: "P820" },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("1 row dipilih")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear Filter" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("1 row dipilih")).toBeInTheDocument();
     });
   });
 
@@ -696,5 +736,70 @@ describe("App workspace isolation", () => {
     await waitFor(() => {
       expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
     });
+  });
+
+  it("applies and persists the selected display scale", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByText("Setting"));
+    fireEvent.click(screen.getByRole("radio", { name: "Besar" }));
+
+    await waitFor(() => {
+      expect(document.querySelector("main.shell")).toHaveClass("display-scale-large");
+    });
+
+    expect(window.localStorage.getItem("shipflow-display-scale")).toBe("small");
+
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+
+    expect(window.localStorage.getItem("shipflow-display-scale")).toBe("large");
+  });
+
+  it("rolls back previewed display scale when settings are cancelled", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByText("Setting"));
+    fireEvent.click(screen.getByRole("radio", { name: "Besar" }));
+
+    await waitFor(() => {
+      expect(document.querySelector("main.shell")).toHaveClass("display-scale-large");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Batal" }));
+
+    await waitFor(() => {
+      expect(document.querySelector("main.shell")).toHaveClass("display-scale-small");
+    });
+
+    expect(window.localStorage.getItem("shipflow-display-scale")).toBe("small");
+  });
+
+  it("blocks global delete and copy shortcuts while settings dialog is open", async () => {
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
+    fireEvent.change(firstInput, { target: { value: "P900" } });
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+
+    expect(screen.getByText("1 row dipilih")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Setting"));
+
+    const okButton = screen.getByRole("button", { name: "OK" });
+    okButton.focus();
+
+    fireEvent.keyDown(window, { key: "Delete" });
+    expect(screen.getAllByDisplayValue("P900")[0]).toBeInTheDocument();
+
+    const setData = vi.fn();
+    const copyEvent = createEvent.copy(document);
+    Object.defineProperty(copyEvent, "clipboardData", {
+      value: {
+        setData,
+      },
+    });
+    fireEvent(document, copyEvent);
+
+    expect(setData).not.toHaveBeenCalled();
   });
 });

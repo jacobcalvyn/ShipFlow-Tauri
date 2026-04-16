@@ -6,6 +6,7 @@ import {
   getEffectiveColumnWidths,
   getLoadedCount,
   getNonEmptyRows,
+  getTrackingColumnAutoWidth,
   getVisibleColumns,
   getVisibleColumnPathSet,
 } from "./selectors";
@@ -138,10 +139,11 @@ describe("sheet selectors", () => {
     );
 
     const visibleColumns = getVisibleColumns(next);
+    const trackingColumnAutoWidth = getTrackingColumnAutoWidth(next.rows);
     const widths = getEffectiveColumnWidths(
       visibleColumns,
       next.columnWidths,
-      next.rows
+      trackingColumnAutoWidth
     );
 
     expect(widths["detail.shipment_header.nomor_kiriman"]).toBeGreaterThan(200);

@@ -5,11 +5,35 @@ import {
   MouseEvent as ReactMouseEvent,
   RefObject,
   UIEvent,
+  useEffect,
+  useMemo,
+  useState,
 } from "react";
 import { ColumnHeaderCell } from "./ColumnHeaderCell";
 import { SheetBodyRow } from "./SheetBodyRow";
 import { ColumnDefinition, SheetRow } from "../types";
 import { getColumnToneClass } from "../utils";
+
+const TABLE_SCALE_METRICS = {
+  small: {
+    headerHeight: 38,
+    filterHeight: 32,
+    rowHeight: 66,
+  },
+  medium: {
+    headerHeight: 42,
+    filterHeight: 36,
+    rowHeight: 74,
+  },
+  large: {
+    headerHeight: 48,
+    filterHeight: 40,
+    rowHeight: 82,
+  },
+} as const;
+
+const VIRTUALIZATION_THRESHOLD = 120;
+const VIRTUALIZATION_OVERSCAN = 8;
 
 function isShortcutHighlighted(
   columnPath: string,
@@ -41,6 +65,7 @@ function isShortcutHighlighted(
 
 type SheetTableProps = {
   sheetId: string;
+  displayScale: "small" | "medium" | "large";
   displayedRows: SheetRow[];
   visibleColumns: ColumnDefinition[];
   hiddenColumns: ColumnDefinition[];
@@ -98,6 +123,7 @@ type SheetTableProps = {
 
 export function SheetTable({
   sheetId,
+  displayScale,
   displayedRows,
   visibleColumns,
   hiddenColumns,
@@ -137,12 +163,79 @@ export function SheetTable({
   onCloseColumnMenu,
   onColumnMenuRef,
 }: SheetTableProps) {
+  const [virtualScrollTop, setVirtualScrollTop] = useState(0);
+  const [scrollViewportHeight, setScrollViewportHeight] = useState(0);
+  const scaleMetrics = TABLE_SCALE_METRICS[displayScale];
+
+  useEffect(() => {
+    const scrollContainer = scrollContainerRef.current;
+    if (!scrollContainer) {
+      return;
+    }
+
+    const syncMetrics = () => {
+      setVirtualScrollTop(scrollContainer.scrollTop);
+      setScrollViewportHeight(scrollContainer.clientHeight);
+    };
+
+    syncMetrics();
+
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(syncMetrics)
+        : null;
+
+    resizeObserver?.observe(scrollContainer);
+    window.addEventListener("resize", syncMetrics);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", syncMetrics);
+    };
+  }, [displayScale, scrollContainerRef, sheetId, displayedRows.length]);
+
+  const bodyViewportHeight = Math.max(
+    scrollViewportHeight - scaleMetrics.headerHeight - scaleMetrics.filterHeight,
+    0
+  );
+  const shouldVirtualize =
+    bodyViewportHeight > 0 && displayedRows.length > VIRTUALIZATION_THRESHOLD;
+  const bodyScrollTop = Math.max(
+    0,
+    virtualScrollTop - scaleMetrics.headerHeight - scaleMetrics.filterHeight
+  );
+  const startIndex = shouldVirtualize
+    ? Math.max(
+        0,
+        Math.floor(bodyScrollTop / scaleMetrics.rowHeight) - VIRTUALIZATION_OVERSCAN
+      )
+    : 0;
+  const visibleRowCount = shouldVirtualize
+    ? Math.ceil(bodyViewportHeight / scaleMetrics.rowHeight) + VIRTUALIZATION_OVERSCAN * 2
+    : displayedRows.length;
+  const endIndex = shouldVirtualize
+    ? Math.min(displayedRows.length, startIndex + visibleRowCount)
+    : displayedRows.length;
+  const renderedRows = useMemo(
+    () => displayedRows.slice(startIndex, endIndex),
+    [displayedRows, endIndex, startIndex]
+  );
+  const topSpacerHeight = shouldVirtualize ? startIndex * scaleMetrics.rowHeight : 0;
+  const bottomSpacerHeight = shouldVirtualize
+    ? Math.max(0, (displayedRows.length - endIndex) * scaleMetrics.rowHeight)
+    : 0;
+
+  const handleScroll = (event: UIEvent<HTMLDivElement>) => {
+    setVirtualScrollTop(event.currentTarget.scrollTop);
+    onScrollContainer(event);
+  };
+
   return (
     <div
       ref={scrollContainerRef}
       className="sheet-scroll"
       onMouseLeave={onMouseLeaveTable}
-      onScroll={onScrollContainer}
+      onScroll={handleScroll}
     >
       <table className="sheet-table">
         <thead>
@@ -224,8 +317,16 @@ export function SheetTable({
             })}
           </tr>
         </thead>
-        <tbody>
-          {displayedRows.map((row) => (
+        <tbody onMouseEnter={() => onHoverColumn(null)}>
+          {topSpacerHeight > 0 ? (
+            <tr aria-hidden="true" className="virtual-spacer-row">
+              <td
+                colSpan={visibleColumns.length + 1}
+                style={{ height: topSpacerHeight }}
+              />
+            </tr>
+          ) : null}
+          {renderedRows.map((row) => (
             <SheetBodyRow
               key={row.key}
               sheetId={sheetId}
@@ -234,19 +335,25 @@ export function SheetTable({
               columnWidths={columnWidths}
               pinnedColumnSet={pinnedColumnSet}
               pinnedLeftMap={pinnedLeftMap}
-              hoveredColumn={hoveredColumn}
               isSelected={selectedRowKeySet.has(row.key)}
               onToggleSelection={onToggleRowSelection}
               onOpenSourceLink={onOpenSourceLink}
               onCopyTrackingId={onCopyTrackingId}
               onClearTrackingCell={onClearTrackingCell}
-              onHoverColumn={onHoverColumn}
               onTrackingInputChange={onTrackingInputChange}
               onTrackingInputBlur={onTrackingInputBlur}
               onTrackingInputKeyDown={onTrackingInputKeyDown}
               onTrackingInputPaste={onTrackingInputPaste}
             />
           ))}
+          {bottomSpacerHeight > 0 ? (
+            <tr aria-hidden="true" className="virtual-spacer-row">
+              <td
+                colSpan={visibleColumns.length + 1}
+                style={{ height: bottomSpacerHeight }}
+              />
+            </tr>
+          ) : null}
         </tbody>
       </table>
     </div>

@@ -52,6 +52,7 @@ import {
   setSortInSheet,
   setTextFilterInSheet,
   setTrackingInputInSheet,
+  pruneSelectionToVisibleRowsInSheet,
   syncSelectionWithVisibleRowsInSheet,
   toggleColumnVisibilityInSheet,
   togglePinnedColumnInSheet,
@@ -75,7 +76,8 @@ import {
   getSelectedTrackingIds,
   getSelectedVisibleRowKeys,
   getTotalShipmentCount,
-  getValueOptionsByPath,
+  getTrackingColumnAutoWidth,
+  getValueOptionsForOpenColumn,
   getVisibleColumnPathSet,
   getVisibleColumns,
   getVisibleSelectableKeys,
@@ -120,6 +122,14 @@ type TrackingRequestMeta = {
   shipmentId: string;
   startedAt: number;
 };
+
+type DisplayScale = "small" | "medium" | "large";
+
+const DISPLAY_SCALE_STORAGE_KEY = "shipflow-display-scale";
+
+function isDisplayScale(value: string | null): value is DisplayScale {
+  return value === "small" || value === "medium" || value === "large";
+}
 
 function getSheetRequestKey(sheetId: string, rowKey: string) {
   return `${sheetId}:${rowKey}`;
@@ -222,6 +232,15 @@ function assertValidTrackResponse(
 
 function App() {
   const [workspaceState, setWorkspaceState] = useState(createDefaultWorkspaceState);
+  const [displayScale, setDisplayScale] = useState<DisplayScale>(() => {
+    if (!isBrowserReady()) {
+      return "small";
+    }
+
+    const storedDisplayScale = window.localStorage.getItem(DISPLAY_SCALE_STORAGE_KEY);
+    return isDisplayScale(storedDisplayScale) ? storedDisplayScale : "small";
+  });
+  const [displayScalePreview, setDisplayScalePreview] = useState<DisplayScale | null>(null);
   const [actionNoticeBySheetId, setActionNoticeBySheetId] = useState<
     Record<string, ActionNotice[]>
   >({});
@@ -253,6 +272,7 @@ function App() {
   );
   const activeActionNotices = actionNoticeBySheetId[activeSheetId] ?? [];
   const workspaceRef = useRef(workspaceState);
+  const effectiveDisplayScale = displayScalePreview ?? displayScale;
 
   const updateActiveSheet = useCallback(
     (updater: (sheetState: SheetState) => SheetState) => {
@@ -347,6 +367,27 @@ function App() {
       JSON.stringify(activeSheet.pinnedColumnPaths)
     );
   }, [activeSheet.pinnedColumnPaths]);
+
+  useEffect(() => {
+    if (!isBrowserReady()) {
+      return;
+    }
+
+    window.localStorage.setItem(DISPLAY_SCALE_STORAGE_KEY, displayScale);
+  }, [displayScale]);
+
+  const previewDisplayScale = useCallback((scale: DisplayScale) => {
+    setDisplayScalePreview(scale);
+  }, []);
+
+  const confirmDisplayScale = useCallback(() => {
+    setDisplayScale((current) => displayScalePreview ?? current);
+    setDisplayScalePreview(null);
+  }, [displayScalePreview]);
+
+  const cancelDisplayScalePreview = useCallback(() => {
+    setDisplayScalePreview(null);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -575,14 +616,19 @@ function App() {
     [activeSheet]
   );
 
+  const trackingColumnAutoWidth = useMemo(
+    () => getTrackingColumnAutoWidth(nonEmptyRows),
+    [nonEmptyRows]
+  );
+
   const effectiveColumnWidths = useMemo(
     () =>
       getEffectiveColumnWidths(
         visibleColumns,
         activeSheet.columnWidths,
-        activeSheet.rows
+        trackingColumnAutoWidth
       ),
-    [activeSheet.columnWidths, activeSheet.rows, visibleColumns]
+    [activeSheet.columnWidths, trackingColumnAutoWidth, visibleColumns]
   );
 
   const pinnedLeftMap = useMemo(() => {
@@ -600,8 +646,13 @@ function App() {
   );
 
   const valueOptionsByPath = useMemo(
-    () => getValueOptionsByPath(nonEmptyRows, visibleColumns),
-    [nonEmptyRows, visibleColumns]
+    () =>
+      getValueOptionsForOpenColumn(
+        nonEmptyRows,
+        visibleColumns,
+        activeSheet.openColumnMenuPath
+      ),
+    [activeSheet.openColumnMenuPath, nonEmptyRows, visibleColumns]
   );
 
   const displayedRows = useMemo(() => {
@@ -611,11 +662,6 @@ function App() {
   const visibleSelectableKeys = useMemo(
     () => getVisibleSelectableKeys(displayedRows),
     [displayedRows]
-  );
-
-  const visibleSelectableKeySet = useMemo(
-    () => new Set(visibleSelectableKeys),
-    [visibleSelectableKeys]
   );
 
   const allVisibleSelected =
@@ -1029,6 +1075,16 @@ function App() {
 
     updateActiveSheet((current) =>
       syncSelectionWithVisibleRowsInSheet(current, visibleSelectableKeys)
+    );
+  }, [activeSheet.selectionFollowsVisibleRows, updateActiveSheet, visibleSelectableKeys]);
+
+  useEffect(() => {
+    if (activeSheet.selectionFollowsVisibleRows) {
+      return;
+    }
+
+    updateActiveSheet((current) =>
+      pruneSelectionToVisibleRowsInSheet(current, visibleSelectableKeys)
     );
   }, [activeSheet.selectionFollowsVisibleRows, updateActiveSheet, visibleSelectableKeys]);
 
@@ -1509,6 +1565,10 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (document.querySelector('.settings-modal[role="dialog"][aria-modal="true"]')) {
+        return;
+      }
+
       if (selectedVisibleRowKeys.length === 0) {
         return;
       }
@@ -1539,6 +1599,10 @@ function App() {
     };
 
     const handleCopy = (event: globalThis.ClipboardEvent) => {
+      if (document.querySelector('.settings-modal[role="dialog"][aria-modal="true"]')) {
+        return;
+      }
+
       if (selectedVisibleRowKeys.length === 0) {
         return;
       }
@@ -1590,15 +1654,19 @@ function App() {
           ))}
         </div>
       ) : null}
-      <main className="shell">
+      <main className={`shell display-scale-${effectiveDisplayScale}`}>
         <SheetTabs
           tabs={workspaceTabs}
           activeSheetId={activeSheetId}
+          displayScale={effectiveDisplayScale}
           onActivateSheet={activateSheet}
           onCreateSheet={createSheet}
           onDuplicateActiveSheet={duplicateActiveSheet}
           onRenameSheet={renameActiveSheet}
           onDeleteSheet={deleteActiveSheet}
+          onPreviewDisplayScale={previewDisplayScale}
+          onConfirmDisplayScale={confirmDisplayScale}
+          onCancelDisplayScale={cancelDisplayScalePreview}
         />
         <section className="sheet-panel">
           <SheetActionBar
@@ -1627,6 +1695,7 @@ function App() {
 
           <SheetTable
             sheetId={activeSheetId}
+            displayScale={effectiveDisplayScale}
             displayedRows={displayedRows}
             visibleColumns={visibleColumns}
             hiddenColumns={hiddenColumns}

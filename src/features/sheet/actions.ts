@@ -345,6 +345,28 @@ export function syncSelectionWithVisibleRowsInSheet(
   };
 }
 
+export function pruneSelectionToVisibleRowsInSheet(
+  sheetState: SheetState,
+  visibleSelectableKeys: string[]
+) {
+  const visibleSelectableKeySet = new Set(visibleSelectableKeys);
+  const nextSelectedRowKeys = sheetState.selectedRowKeys.filter((key) =>
+    visibleSelectableKeySet.has(key)
+  );
+
+  if (
+    nextSelectedRowKeys.length === sheetState.selectedRowKeys.length &&
+    nextSelectedRowKeys.every((key, index) => key === sheetState.selectedRowKeys[index])
+  ) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    selectedRowKeys: nextSelectedRowKeys,
+  };
+}
+
 export function clearSelectionInSheet(sheetState: SheetState) {
   return {
     ...sheetState,

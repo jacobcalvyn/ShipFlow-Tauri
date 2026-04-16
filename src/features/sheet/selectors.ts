@@ -58,25 +58,7 @@ export function getPinnedColumnSet(sheetState: SheetState) {
   return new Set(sheetState.pinnedColumnPaths);
 }
 
-export function getEffectiveColumnWidths(
-  visibleColumns: ReturnType<typeof getVisibleColumns>,
-  columnWidths: SheetState["columnWidths"],
-  rows: SheetState["rows"]
-) {
-  const trackingColumnWidth = getTrackingColumnAutoWidth(rows);
-
-  return Object.fromEntries(
-    visibleColumns.map((column) => [
-      column.path,
-      Math.max(
-        getEffectiveColumnWidth(column, columnWidths),
-        column.path === TRACKING_COLUMN_PATH ? trackingColumnWidth : 0
-      ),
-    ])
-  );
-}
-
-function getTrackingColumnAutoWidth(rows: SheetState["rows"]) {
+export function getTrackingColumnAutoWidth(rows: SheetRow[]) {
   const longestTrackingValue = rows.reduce((longest, row) => {
     const candidate =
       row.trackingInput.trim() ||
@@ -94,6 +76,22 @@ function getTrackingColumnAutoWidth(rows: SheetState["rows"]) {
   const estimatedTextWidth = longestTrackingValue.length * 8.7;
   const trackingCellChromeWidth = 118;
   return Math.ceil(estimatedTextWidth + trackingCellChromeWidth);
+}
+
+export function getEffectiveColumnWidths(
+  visibleColumns: ReturnType<typeof getVisibleColumns>,
+  columnWidths: SheetState["columnWidths"],
+  trackingColumnAutoWidth: number
+) {
+  return Object.fromEntries(
+    visibleColumns.map((column) => [
+      column.path,
+      Math.max(
+        getEffectiveColumnWidth(column, columnWidths),
+        column.path === TRACKING_COLUMN_PATH ? trackingColumnAutoWidth : 0
+      ),
+    ])
+  );
 }
 
 export function getPinnedLeftMap(
@@ -147,6 +145,25 @@ export function getValueOptionsByPath(
       getColumnValueOptions(nonEmptyRows, column),
     ])
   );
+}
+
+export function getValueOptionsForOpenColumn(
+  nonEmptyRows: SheetRow[],
+  visibleColumns: ReturnType<typeof getVisibleColumns>,
+  openColumnMenuPath: string | null
+) {
+  if (!openColumnMenuPath) {
+    return {};
+  }
+
+  const openColumn = visibleColumns.find((column) => column.path === openColumnMenuPath);
+  if (!openColumn) {
+    return {};
+  }
+
+  return {
+    [openColumnMenuPath]: getColumnValueOptions(nonEmptyRows, openColumn),
+  };
 }
 
 export function getDisplayedRows(

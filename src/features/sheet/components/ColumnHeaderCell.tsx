@@ -1,4 +1,4 @@
-import { MouseEvent as ReactMouseEvent } from "react";
+import { MouseEvent as ReactMouseEvent, memo } from "react";
 import { TRACKING_COLUMN_PATH } from "../columns";
 import { ColumnDefinition } from "../types";
 import { getColumnToneClass, getColumnTypeClass } from "../utils";
@@ -38,7 +38,7 @@ type ColumnHeaderCellProps = {
   onMenuRef: (path: string, element: HTMLDivElement | null) => void;
 };
 
-export function ColumnHeaderCell({
+export const ColumnHeaderCell = memo(function ColumnHeaderCell({
   column,
   columnIndex,
   width,
@@ -233,4 +233,4 @@ export function ColumnHeaderCell({
       />
     </th>
   );
-}
+});
