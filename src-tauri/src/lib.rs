@@ -1,7 +1,9 @@
 mod service;
 mod tracking;
 
+use std::collections::HashSet;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD;
@@ -9,6 +11,8 @@ use base64::Engine as _;
 use reqwest::header::CONTENT_TYPE;
 use scraper::{Html as ScraperHtml, Selector};
 use service::{ApiServiceConfig, ApiServiceController, ApiServiceStatus};
+use tauri::plugin::Builder as PluginBuilder;
+use tauri::webview::PageLoadEvent;
 use tracking::model::TrackingClientState;
 use tracking::upstream::{resolve_pos_href, scrape_pos_tracking};
 
@@ -101,6 +105,26 @@ fn get_api_service_status(
     service_controller: tauri::State<'_, ApiServiceController>,
 ) -> ApiServiceStatus {
     service_controller.status()
+}
+
+#[tauri::command]
+fn log_frontend_runtime_event(level: String, message: String) {
+    let normalized_level = level.trim().to_lowercase();
+    let trimmed_message = message.trim();
+
+    if trimmed_message.is_empty() {
+        return;
+    }
+
+    eprintln!(
+        "[ShipFlowFrontend][{}] {}",
+        if normalized_level.is_empty() {
+            "info"
+        } else {
+            &normalized_level
+        },
+        trimmed_message
+    );
 }
 
 async fn resolve_pod_image_source(
@@ -273,6 +297,47 @@ fn base64_to_data_url(normalized: &str) -> String {
     format!("data:{mime_type};base64,{normalized}")
 }
 
+#[derive(Clone, Default)]
+struct MainWebviewNavigationGuard {
+    initial_load_finished_for_labels: Arc<Mutex<HashSet<String>>>,
+}
+
+impl MainWebviewNavigationGuard {
+    fn observe_navigation(&self, label: &str, url: &str) {
+        if label != "main" {
+            return;
+        }
+
+        let state = self
+            .initial_load_finished_for_labels
+            .lock()
+            .expect("main webview navigation guard lock poisoned");
+
+        if state.contains(label) {
+            eprintln!(
+                "[ShipFlowTauri] observed top-level navigation for webview '{label}' to {url}"
+            );
+        }
+    }
+
+    fn mark_initial_load_finished(&self, label: &str, url: &str) {
+        if label != "main" {
+            return;
+        }
+
+        let mut state = self
+            .initial_load_finished_for_labels
+            .lock()
+            .expect("main webview navigation guard lock poisoned");
+
+        if state.insert(label.to_string()) {
+            eprintln!(
+                "[ShipFlowTauri] recorded initial page load finish for webview '{label}' at {url}"
+            );
+        }
+    }
+}
+
 pub fn run() {
     let tracking_client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(6))
@@ -281,16 +346,44 @@ pub fn run() {
         .user_agent("ShipFlow Desktop/0.1")
         .build()
         .expect("failed to create tracking client");
+    let navigation_guard = MainWebviewNavigationGuard::default();
+    let navigation_guard_plugin = navigation_guard.clone();
+    let page_load_guard_plugin = navigation_guard.clone();
 
     tauri::Builder::default()
         .manage(TrackingClientState {
             client: tracking_client,
         })
         .manage(ApiServiceController::default())
+        .plugin(
+            PluginBuilder::<tauri::Wry>::new("main-webview-navigation-guard")
+                .on_navigation(move |webview, url| {
+                    let label = webview.label().to_string();
+                    navigation_guard_plugin.observe_navigation(&label, url.as_str());
+                    true
+                })
+                .on_page_load(move |webview, payload| {
+                    let label = webview.label().to_string();
+                    let url = payload.url().to_string();
+
+                    match payload.event() {
+                        PageLoadEvent::Started => {
+                            eprintln!(
+                                "[ShipFlowTauri] page load started for webview '{label}' at {url}"
+                            );
+                        }
+                        PageLoadEvent::Finished => {
+                            page_load_guard_plugin.mark_initial_load_finished(&label, &url);
+                        }
+                    }
+                })
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             track_shipment,
             resolve_pod_image,
             open_external_url,
+            log_frontend_runtime_event,
             configure_api_service,
             get_api_service_status
         ])
@@ -305,7 +398,9 @@ mod tests {
     use super::{base64_to_data_url, normalize_base64_image};
     use super::tracking::model::TrackingError;
     use super::tracking::parser::parse_tracking_html;
-    use super::tracking::upstream::{build_tracking_url, POS_TRACKING_ENDPOINT};
+    use super::tracking::upstream::{
+        build_tracking_url, normalize_and_validate_shipment_id, POS_TRACKING_ENDPOINT,
+    };
 
     const SAMPLE_HTML: &str = include_str!("fixtures/pos_tracking_sample.html");
     const NULLABLE_NUMERIC_HTML: &str =
@@ -499,6 +594,62 @@ mod tests {
         assert_eq!(runsheet.updates.len(), 1);
         assert_eq!(runsheet.updates[0].status.as_deref(), Some("DELIVERED"));
         assert_eq!(runsheet.updates[0].keterangan_status, None);
+    }
+
+    #[test]
+    fn parse_tracking_html_keeps_only_latest_effective_update_per_runsheet() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2603310888888</td></tr>
+              <tr><td>Status Akhir</td><td>FAILEDTODELIVERED di DC JAYAPURA 9910A [Kurir/9910bkurir] [2026-04-15 14:50:02]</td></tr>
+            </table>
+            <table>
+              <tr><td>TANGGAL UPDATE</td><td>DETAIL HISTORY</td></tr>
+              <tr>
+                <td>2026-04-15 11:40:47</td>
+                <td>Barang P2603310888888 anda telah melewati proses DeliveryRunsheet oleh Akbar di DC JAYAPURA 9910A diterima oleh Kurir</td>
+              </tr>
+              <tr>
+                <td>2026-04-15 14:00:00</td>
+                <td>Barang P2603310888888 anda telah melewati proses antaran oleh Gabriel Erick Taurui dengan keterangan (ALAMAT TIDAK DITEMUKAN)</td>
+              </tr>
+              <tr>
+                <td>2026-04-15 14:50:02</td>
+                <td>Barang P2603310888888 anda telah melewati proses antaran oleh Gabriel Erick Taurui dengan keterangan (YANG BERSANGKUTAN TIDAK DITEMPAT)</td>
+              </tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("multi-update runsheet sample should parse");
+
+        let runsheet = &response.history_summary.delivery_runsheet[0];
+        assert_eq!(runsheet.updates.len(), 1);
+        assert_eq!(
+            runsheet.updates[0].status.as_deref(),
+            Some("FAILEDTODELIVERED")
+        );
+        assert_eq!(
+            runsheet.updates[0].keterangan_status.as_deref(),
+            Some("YANG BERSANGKUTAN TIDAK DITEMPAT")
+        );
+    }
+
+    #[test]
+    fn normalize_and_validate_shipment_id_matches_frontend_constraints() {
+        assert_eq!(
+            normalize_and_validate_shipment_id(" p2603310114291 ")
+                .expect("valid shipment id should normalize"),
+            "P2603310114291"
+        );
+        assert!(matches!(
+            normalize_and_validate_shipment_id("   "),
+            Err(TrackingError::BadRequest(_))
+        ));
+        assert!(matches!(
+            normalize_and_validate_shipment_id(&format!("P{}", "1".repeat(80))),
+            Err(TrackingError::BadRequest(_))
+        ));
     }
 
     #[test]

@@ -1,4 +1,7 @@
-import { seedTrackingIdsInSheet } from "../sheet/actions";
+import {
+  appendTrackingIdsToSheet,
+  seedTrackingIdsInSheet,
+} from "../sheet/actions";
 import { createDefaultSheetState } from "../sheet/default-state";
 import { SheetState } from "../sheet/types";
 import {
@@ -212,6 +215,35 @@ export function createSheetWithTrackingIdsInWorkspace(
       sheetsById: {
         ...workspaceState.sheetsById,
         [nextSheetId]: seededSheet.sheetState,
+      },
+    },
+  };
+}
+
+export function appendTrackingIdsToExistingSheetInWorkspace(
+  workspaceState: WorkspaceState,
+  sheetId: string,
+  trackingIds: string[]
+) {
+  const targetSheet = workspaceState.sheetsById[sheetId];
+  if (!targetSheet || trackingIds.length === 0) {
+    return {
+      sheetId,
+      targetKeys: [] as string[],
+      workspaceState,
+    };
+  }
+
+  const appendedSheet = appendTrackingIdsToSheet(targetSheet, trackingIds);
+
+  return {
+    sheetId,
+    targetKeys: appendedSheet.targetKeys,
+    workspaceState: {
+      ...workspaceState,
+      sheetsById: {
+        ...workspaceState.sheetsById,
+        [sheetId]: appendedSheet.sheetState,
       },
     },
   };

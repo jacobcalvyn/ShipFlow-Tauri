@@ -15,6 +15,7 @@ The app is optimized for spreadsheet-style operational analysis. Each row repres
 - Supports retracking all current shipments from the action bar
 - Supports multiple sheets, where each sheet is an isolated tracking workspace
 - Supports creating a new sheet from selected shipment IDs only
+- Supports appending selected shipment IDs into another existing sheet
 - Includes an optional in-app API service mode with local or LAN binding
 
 ## Tracking Flow
@@ -83,6 +84,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
   - delete all
   - clear selection
   - create a new sheet from selected shipment IDs
+  - append selected shipment IDs into another existing sheet from a hover target menu
   - copy selected shipment IDs
   - delete selected rows
 - The action bar keeps a dedicated second row for selection actions and disables those buttons when nothing is selected, so the layout stays stable
@@ -138,11 +140,13 @@ The main table currently focuses on:
 - Numeric parsing in the Rust scraper is hardened: invalid upstream numeric fields now fail loudly instead of silently falling back to `0`.
 - Empty numeric upstream fields are preserved as `null`, not coerced to `0`.
 - Shipment IDs are sanitized before tracking and rejected when they exceed `64` characters.
+- The backend now applies the same shipment-ID validation rules as the frontend, including embedded API requests.
 - Duplicate in-flight requests for the same `sheetId + rowKey + shipmentId` are skipped.
 - Active, dirty, and loading rows remain visible even while filters are active.
 - Request telemetry is emitted for `start`, `success`, `fail`, and `abort` with `sheetId`, `rowKey`, and `shipmentId`.
 - `Delete All` resets rows, filters, value filters, sort state, and in-flight tracking work so the table returns to a clean input state.
 - Delivery-runsheet parsing is hardened so `FAILEDTODELIVERED` cases are not incorrectly split into two updates on the latest runsheet.
+- Delivery-runsheet parsing now keeps only the latest effective update for a runsheet summary.
 
 ## Project Structure
 
@@ -262,6 +266,7 @@ Rust tests live in [src-tauri/src/lib.rs](./src-tauri/src/lib.rs) and cover:
 
 - Base64 + percent-encoded tracking URL generation
 - embedded API bearer-auth validation
+- backend shipment-ID normalization and validation
 - sample HTML parsing
 - not-found parser behavior
 - invalid numeric parser behavior
@@ -270,6 +275,7 @@ Rust tests live in [src-tauri/src/lib.rs](./src-tauri/src/lib.rs) and cover:
 - selected-field parser snapshots
 - partial-upstream vs true not-found heuristics
 - latest-runsheet `FAILEDTODELIVERED` parsing with `keterangan_status`
+- latest-effective-update-only runsheet parsing
 
 Run Rust tests with:
 
@@ -283,4 +289,4 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - If the upstream HTML changes, the Rust parser may need updates
 - Hidden columns are stored in browser/webview local storage
 - Pinned columns are stored in browser/webview local storage
-- Sheet data is currently in-memory only unless explicitly persisted in a later change
+- Workspace and sheet state are persisted in browser/webview local storage with a storage-safe fallback snapshot

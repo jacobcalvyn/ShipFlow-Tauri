@@ -1,5 +1,6 @@
 import { createDefaultWorkspaceState } from "./default-state";
 import {
+  appendTrackingIdsToExistingSheetInWorkspace,
   createSheetInWorkspace,
   createSheetWithTrackingIdsInWorkspace,
   deleteSheetInWorkspace,
@@ -139,6 +140,37 @@ describe("workspace state", () => {
     expect(seededSheet.rows[1].trackingInput).toBe("P2603002");
     expect(seededSheet.rows[0].shipment).toBeNull();
     expect(seededSheet.selectedRowKeys).toEqual([]);
+    expect(result.targetKeys).toHaveLength(2);
+  });
+
+  it("appends tracking ids into an existing sheet without replacing current data", () => {
+    let workspace = createDefaultWorkspaceState();
+    const firstSheetId = workspace.activeSheetId;
+
+    workspace = updateActiveSheetInWorkspace(workspace, (sheet) => ({
+      ...sheet,
+      rows: sheet.rows.map((row, index) =>
+        index === 0
+          ? {
+              ...row,
+              trackingInput: "P2603999",
+            }
+          : row
+      ),
+    }));
+
+    workspace = createSheetInWorkspace(workspace, { activate: false });
+    const secondSheetId = workspace.sheetOrder[1];
+    const result = appendTrackingIdsToExistingSheetInWorkspace(workspace, secondSheetId, [
+      "P2604001",
+      "P2604002",
+    ]);
+
+    const targetSheet = result.workspaceState.sheetsById[secondSheetId];
+
+    expect(result.workspaceState.activeSheetId).toBe(firstSheetId);
+    expect(targetSheet.rows[0].trackingInput).toBe("P2604001");
+    expect(targetSheet.rows[1].trackingInput).toBe("P2604002");
     expect(result.targetKeys).toHaveLength(2);
   });
 });

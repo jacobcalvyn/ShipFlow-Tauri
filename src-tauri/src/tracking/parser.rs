@@ -871,7 +871,7 @@ fn build_history_summary(
 
             if let Some(idx) = current_delivery_idx {
                 if let Some(summary) = delivery_runsheet.get_mut(idx) {
-                    summary.updates.push(update);
+                    summary.updates = vec![update];
                     continue;
                 }
             }
@@ -899,7 +899,7 @@ fn build_history_summary(
 
             if let Some(idx) = current_delivery_idx {
                 if let Some(summary) = delivery_runsheet.get_mut(idx) {
-                    summary.updates.push(update);
+                    summary.updates = vec![update];
                     continue;
                 }
             }
@@ -933,14 +933,14 @@ fn build_history_summary(
                         _ => None,
                     };
 
-                    last_sheet.updates.push(DeliveryRunsheetUpdate {
+                    last_sheet.updates = vec![DeliveryRunsheetUpdate {
                         petugas,
                         status: Some(final_status.clone()),
                         keterangan_status: None,
                         tanggal,
                         waktu,
                         koordinat: pod.coordinate.clone(),
-                    });
+                    }];
                 }
             }
         }

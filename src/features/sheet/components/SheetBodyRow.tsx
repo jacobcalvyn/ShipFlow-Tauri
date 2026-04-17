@@ -477,12 +477,6 @@ export const SheetBodyRow = memo(function SheetBodyRow({
           type="checkbox"
           checked={isSelected}
           onChange={() => onToggleSelection(row.key)}
-          onKeyDown={(event) => {
-            if (event.key === "Delete" || event.key === "Backspace") {
-              event.preventDefault();
-              onClearTrackingCell(sheetId, row.key);
-            }
-          }}
           aria-label={`Select row ${row.trackingInput || row.key}`}
         />
       </td>

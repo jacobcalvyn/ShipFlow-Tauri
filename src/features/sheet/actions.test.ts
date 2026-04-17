@@ -130,4 +130,43 @@ describe("sheet actions", () => {
     });
     expect(() => assertValidSheetState(successState)).not.toThrow();
   });
+
+  it("clears carried tracking state when a row input becomes empty", () => {
+    const initial = createDefaultSheetState();
+    const rowKey = initial.rows[0].key;
+
+    const successState = setRowSuccessInSheet(initial, rowKey, "P2603310114291", {
+      url: "https://example.test",
+      detail: {
+        shipment_header: { nomor_kiriman: "P2603310114291" },
+        origin_detail: {},
+        package_detail: {},
+        billing_detail: { cod_info: { is_cod: false } },
+        actors: { pengirim: {}, penerima: {} },
+        performance_detail: {},
+      },
+      status_akhir: {},
+      pod: {},
+      history: [],
+      history_summary: {
+        irregularity: [],
+        bagging_unbagging: [],
+        manifest_r7: [],
+        delivery_runsheet: [],
+      },
+    });
+
+    const clearedState = setTrackingInputInSheet(successState, rowKey, "");
+    const clearedRow = clearedState.rows.find((row) => row.key === rowKey);
+
+    expect(clearedRow).toMatchObject({
+      trackingInput: "",
+      shipment: null,
+      loading: false,
+      stale: false,
+      dirty: false,
+      error: "",
+    });
+    expect(() => assertValidSheetState(clearedState)).not.toThrow();
+  });
 });

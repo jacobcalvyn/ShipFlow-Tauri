@@ -84,6 +84,7 @@ import {
 } from "./features/sheet/selectors";
 import { createDefaultWorkspaceState } from "./features/workspace/default-state";
 import {
+  appendTrackingIdsToExistingSheetInWorkspace,
   createSheetInWorkspace,
   createSheetWithTrackingIdsInWorkspace,
   deleteSheetInWorkspace,
@@ -103,6 +104,9 @@ import {
   ServiceMode,
   TrackResponse,
 } from "./types";
+import { createDefaultSheetState } from "./features/sheet/default-state";
+import { createEmptyRow, ensureTrailingEmptyRows } from "./features/sheet/utils";
+import { WorkspaceState } from "./features/workspace/types";
 
 type ActionNotice = {
   id?: string;
@@ -133,6 +137,7 @@ type DisplayScale = "small" | "medium" | "large";
 
 const DISPLAY_SCALE_STORAGE_KEY = "shipflow-display-scale";
 const SERVICE_CONFIG_STORAGE_KEY = "shipflow-service-config";
+const WORKSPACE_STATE_STORAGE_KEY = "shipflow-workspace-state";
 
 const DEFAULT_SERVICE_CONFIG: ServiceConfig = {
   version: 1,
@@ -182,6 +187,261 @@ function createServiceToken() {
   }
 
   return `sf_${createRequestId().replace(/-/g, "")}`;
+}
+
+function isTrackResponseLike(value: unknown): value is TrackResponse {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Partial<TrackResponse>;
+  return (
+    typeof candidate.url === "string" &&
+    !!candidate.detail &&
+    typeof candidate.detail === "object" &&
+    !!candidate.status_akhir &&
+    typeof candidate.status_akhir === "object" &&
+    Array.isArray(candidate.history) &&
+    !!candidate.history_summary &&
+    typeof candidate.history_summary === "object"
+  );
+}
+
+function createStorageSafeTrackResponse(response: TrackResponse): TrackResponse {
+  return {
+    ...response,
+    pod: {
+      ...response.pod,
+      photo1_url: "",
+      photo2_url: "",
+      signature_url: "",
+    },
+  };
+}
+
+function createStorageSafeWorkspaceState(
+  workspaceState: WorkspaceState,
+  mode: "full" | "inputs_only" = "full"
+) {
+  return {
+    ...workspaceState,
+    sheetsById: Object.fromEntries(
+      Object.entries(workspaceState.sheetsById).map(([sheetId, sheetState]) => [
+        sheetId,
+        {
+          ...sheetState,
+          deleteAllArmed: false,
+          openColumnMenuPath: null,
+          highlightedColumnPath: null,
+          rows: sheetState.rows.map((row) => ({
+            ...row,
+            loading: false,
+            shipment:
+              mode === "full" && row.shipment
+                ? createStorageSafeTrackResponse(row.shipment)
+                : null,
+            stale: mode === "full" ? row.stale : false,
+            dirty: mode === "full" ? row.dirty : false,
+          })),
+        },
+      ])
+    ),
+  };
+}
+
+function normalizePersistedWorkspaceState(
+  workspace: Partial<WorkspaceState> | null | undefined
+): WorkspaceState {
+  const fallback = createDefaultWorkspaceState();
+  if (!workspace || typeof workspace !== "object") {
+    return fallback;
+  }
+
+  const parsedSheetOrder = Array.isArray(workspace.sheetOrder)
+    ? workspace.sheetOrder.filter((sheetId): sheetId is string => typeof sheetId === "string")
+    : [];
+  const parsedMeta =
+    workspace.sheetMetaById && typeof workspace.sheetMetaById === "object"
+      ? workspace.sheetMetaById
+      : {};
+  const parsedSheets =
+    workspace.sheetsById && typeof workspace.sheetsById === "object"
+      ? workspace.sheetsById
+      : {};
+
+  const normalizedSheetOrder = parsedSheetOrder.filter(
+    (sheetId) => sheetId in parsedMeta && sheetId in parsedSheets
+  );
+
+  if (normalizedSheetOrder.length === 0) {
+    return fallback;
+  }
+
+  const sheetsById = Object.fromEntries(
+    normalizedSheetOrder.map((sheetId) => {
+      const baseSheet = createDefaultSheetState();
+      const candidate =
+        parsedSheets[sheetId] && typeof parsedSheets[sheetId] === "object"
+          ? (parsedSheets[sheetId] as Partial<SheetState>)
+          : null;
+      const parsedRows = Array.isArray(candidate?.rows) ? candidate.rows : [];
+      const normalizedRows = ensureTrailingEmptyRows(
+        parsedRows.length > 0
+          ? parsedRows.map((row) => {
+              const baseRow = createEmptyRow();
+              if (!row || typeof row !== "object") {
+                return baseRow;
+              }
+
+              const candidateRow = row as Partial<(typeof baseSheet.rows)[number]>;
+              const trackingInput =
+                typeof candidateRow.trackingInput === "string"
+                  ? candidateRow.trackingInput
+                  : "";
+              const shipment = isTrackResponseLike(candidateRow.shipment)
+                ? candidateRow.shipment
+                : null;
+              const rowKey =
+                typeof candidateRow.key === "string" && candidateRow.key
+                  ? candidateRow.key
+                  : baseRow.key;
+
+              if (trackingInput.trim() === "") {
+                return {
+                  ...baseRow,
+                  key: rowKey,
+                };
+              }
+
+              return {
+                key: rowKey,
+                trackingInput,
+                shipment,
+                loading: false,
+                stale: shipment ? Boolean(candidateRow.stale) : false,
+                dirty: shipment ? Boolean(candidateRow.dirty) : false,
+                error: typeof candidateRow.error === "string" ? candidateRow.error : "",
+              };
+            })
+          : baseSheet.rows
+      );
+      const rowKeySet = new Set(normalizedRows.map((row) => row.key));
+
+      const nextSheet: SheetState = {
+        ...baseSheet,
+        rows: normalizedRows,
+        filters:
+          candidate?.filters && typeof candidate.filters === "object"
+            ? Object.fromEntries(
+                Object.entries(candidate.filters).filter(
+                  (entry): entry is [string, string] => typeof entry[1] === "string"
+                )
+              )
+            : baseSheet.filters,
+        valueFilters:
+          candidate?.valueFilters && typeof candidate.valueFilters === "object"
+            ? Object.fromEntries(
+                Object.entries(candidate.valueFilters).map(([path, values]) => [
+                  path,
+                  Array.isArray(values)
+                    ? values.filter((value): value is string => typeof value === "string")
+                    : [],
+                ])
+              )
+            : baseSheet.valueFilters,
+        sortState:
+          candidate?.sortState &&
+          typeof candidate.sortState === "object" &&
+          (candidate.sortState.path === null ||
+            typeof candidate.sortState.path === "string") &&
+          (candidate.sortState.direction === "asc" ||
+            candidate.sortState.direction === "desc")
+            ? candidate.sortState
+            : baseSheet.sortState,
+        selectedRowKeys: Array.isArray(candidate?.selectedRowKeys)
+          ? candidate.selectedRowKeys.filter(
+              (rowKey): rowKey is string =>
+                typeof rowKey === "string" && rowKeySet.has(rowKey)
+            )
+          : baseSheet.selectedRowKeys,
+        selectionFollowsVisibleRows: Boolean(candidate?.selectionFollowsVisibleRows),
+        columnWidths:
+          candidate?.columnWidths && typeof candidate.columnWidths === "object"
+            ? {
+                ...baseSheet.columnWidths,
+                ...Object.fromEntries(
+                  Object.entries(candidate.columnWidths).filter(
+                    (entry): entry is [string, number] =>
+                      typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] > 0
+                  )
+                ),
+              }
+            : baseSheet.columnWidths,
+        hiddenColumnPaths: Array.isArray(candidate?.hiddenColumnPaths)
+          ? candidate.hiddenColumnPaths.filter(
+              (path): path is string =>
+                typeof path === "string" && COLUMNS.some((column) => column.path === path)
+            )
+          : baseSheet.hiddenColumnPaths,
+        pinnedColumnPaths: Array.isArray(candidate?.pinnedColumnPaths)
+          ? candidate.pinnedColumnPaths.filter(
+              (path): path is string =>
+                typeof path === "string" && COLUMNS.some((column) => column.path === path)
+            )
+          : baseSheet.pinnedColumnPaths,
+        openColumnMenuPath: null,
+        highlightedColumnPath: null,
+        deleteAllArmed: false,
+      };
+
+      return [sheetId, shouldAssertSheetState() ? assertValidSheetState(nextSheet) : nextSheet];
+    })
+  );
+
+  const sheetMetaById = Object.fromEntries(
+    normalizedSheetOrder.map((sheetId) => [
+      sheetId,
+      {
+        name:
+          parsedMeta[sheetId] &&
+          typeof parsedMeta[sheetId] === "object" &&
+          typeof (parsedMeta[sheetId] as { name?: unknown }).name === "string" &&
+          (parsedMeta[sheetId] as { name: string }).name.trim()
+            ? (parsedMeta[sheetId] as { name: string }).name
+            : `Sheet ${normalizedSheetOrder.indexOf(sheetId) + 1}`,
+      },
+    ])
+  );
+
+  const activeSheetId =
+    typeof workspace.activeSheetId === "string" && workspace.activeSheetId in sheetsById
+      ? workspace.activeSheetId
+      : normalizedSheetOrder[0];
+
+  return {
+    version: 1,
+    activeSheetId,
+    sheetOrder: normalizedSheetOrder,
+    sheetMetaById,
+    sheetsById,
+  };
+}
+
+function loadWorkspaceState(): WorkspaceState {
+  if (!isBrowserReady()) {
+    return createDefaultWorkspaceState();
+  }
+
+  const stored = window.localStorage.getItem(WORKSPACE_STATE_STORAGE_KEY);
+  if (!stored) {
+    return createDefaultWorkspaceState();
+  }
+
+  try {
+    return normalizePersistedWorkspaceState(JSON.parse(stored) as Partial<WorkspaceState>);
+  } catch {
+    return createDefaultWorkspaceState();
+  }
 }
 
 function loadServiceConfig(): ServiceConfig {
@@ -310,7 +570,7 @@ function assertValidTrackResponse(
 }
 
 function App() {
-  const [workspaceState, setWorkspaceState] = useState(createDefaultWorkspaceState);
+  const [workspaceState, setWorkspaceState] = useState(loadWorkspaceState);
   const [displayScale, setDisplayScale] = useState<DisplayScale>(() => {
     if (!isBrowserReady()) {
       return "small";
@@ -348,11 +608,26 @@ function App() {
   const actionNoticeTimeoutsRef = useRef(new Map<string, number>());
   const deleteAllTimeoutRef = useRef<number | null>(null);
   const deleteAllArmedSheetIdRef = useRef<string | null>(null);
+  const deleteSelectedTimeoutRef = useRef<number | null>(null);
+  const deleteSelectedArmedSheetIdRef = useRef<string | null>(null);
+  const [deleteSelectedArmedSheetId, setDeleteSelectedArmedSheetId] = useState<string | null>(
+    null
+  );
   const activeSheet = useMemo(() => getActiveSheet(workspaceState), [workspaceState]);
   const activeSheetId = workspaceState.activeSheetId;
   const workspaceTabs = useMemo(
     () => getWorkspaceTabs(workspaceState),
     [workspaceState]
+  );
+  const appendTargetSheets = useMemo(
+    () =>
+      workspaceTabs
+        .filter((tab) => tab.id !== activeSheetId)
+        .map((tab) => ({
+          id: tab.id,
+          name: tab.name,
+        })),
+    [activeSheetId, workspaceTabs]
   );
   const activeActionNotices = actionNoticeBySheetId[activeSheetId] ?? [];
   const workspaceRef = useRef(workspaceState);
@@ -360,6 +635,41 @@ function App() {
   const effectiveDisplayScale = displayScalePreview ?? displayScale;
   const effectiveServiceConfig = serviceConfigPreview ?? serviceConfig;
   const hasPendingServiceConfigChanges = serviceConfigPreview !== null;
+
+  useEffect(() => {
+    const emitRuntimeEvent = (level: "info" | "error", message: string) => {
+      void Promise.resolve(
+        invoke("log_frontend_runtime_event", { level, message })
+      ).catch(() => {
+        // Ignore logging failures to avoid recursive runtime errors.
+      });
+    };
+
+    emitRuntimeEvent("info", "App mounted.");
+
+    const handlePageHide = () => {
+      emitRuntimeEvent("info", "window.pagehide fired.");
+    };
+
+    const handleBeforeUnload = () => {
+      emitRuntimeEvent("info", "window.beforeunload fired.");
+    };
+
+    const handleVisibilityChange = () => {
+      emitRuntimeEvent("info", `document.visibilityState=${document.visibilityState}`);
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    return () => {
+      emitRuntimeEvent("info", "App unmounted.");
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, []);
 
   const updateActiveSheet = useCallback(
     (updater: (sheetState: SheetState) => SheetState) => {
@@ -477,6 +787,37 @@ function App() {
       JSON.stringify(serviceConfig)
     );
   }, [serviceConfig]);
+
+  useEffect(() => {
+    if (!isBrowserReady()) {
+      return;
+    }
+
+    const persistWorkspace = (mode: "full" | "inputs_only") => {
+      const serialized = JSON.stringify(
+        createStorageSafeWorkspaceState(workspaceState, mode)
+      );
+      window.localStorage.setItem(WORKSPACE_STATE_STORAGE_KEY, serialized);
+    };
+
+    try {
+      persistWorkspace("full");
+    } catch (error) {
+      console.warn(
+        "[ShipFlowWorkspace] failed to persist full workspace snapshot, falling back to inputs-only snapshot.",
+        error
+      );
+
+      try {
+        persistWorkspace("inputs_only");
+      } catch (fallbackError) {
+        console.error(
+          "[ShipFlowWorkspace] failed to persist workspace snapshot.",
+          fallbackError
+        );
+      }
+    }
+  }, [workspaceState]);
 
   const previewDisplayScale = useCallback((scale: DisplayScale) => {
     setDisplayScalePreview(scale);
@@ -609,6 +950,31 @@ function App() {
     deleteAllArmedSheetIdRef.current = null;
   }, [activeSheetId, updateSheet]);
 
+  const armDeleteSelected = useCallback(() => {
+    const targetSheetId = activeSheetId;
+    deleteSelectedArmedSheetIdRef.current = targetSheetId;
+    setDeleteSelectedArmedSheetId(targetSheetId);
+
+    if (deleteSelectedTimeoutRef.current !== null) {
+      window.clearTimeout(deleteSelectedTimeoutRef.current);
+    }
+
+    deleteSelectedTimeoutRef.current = window.setTimeout(() => {
+      deleteSelectedArmedSheetIdRef.current = null;
+      setDeleteSelectedArmedSheetId(null);
+      deleteSelectedTimeoutRef.current = null;
+    }, 2000);
+  }, [activeSheetId]);
+
+  const disarmDeleteSelected = useCallback(() => {
+    if (deleteSelectedTimeoutRef.current !== null) {
+      window.clearTimeout(deleteSelectedTimeoutRef.current);
+      deleteSelectedTimeoutRef.current = null;
+    }
+    deleteSelectedArmedSheetIdRef.current = null;
+    setDeleteSelectedArmedSheetId(null);
+  }, []);
+
   const getSheetEpoch = useCallback(
     (
       epochMapRef: MutableRefObject<Map<string, number>>,
@@ -652,7 +1018,11 @@ function App() {
     (
       sheetId: string,
       rowKeys: string[],
-      reason: "selected_rows_deleted" | "sheet_invalidation" | "cell_cleared"
+      reason:
+        | "selected_rows_deleted"
+        | "sheet_invalidation"
+        | "cell_cleared"
+        | "bulk_paste_overwrite"
     ) => {
       rowKeys.forEach((rowKey) => {
         const requestKey = getSheetRequestKey(sheetId, rowKey);
@@ -1067,6 +1437,14 @@ function App() {
           return;
         }
 
+        const targetRow = targetSheet.rows.find((row) => row.key === rowKey);
+        if (
+          !targetRow ||
+          sanitizeTrackingInput(targetRow.trackingInput) !== normalizedId
+        ) {
+          return;
+        }
+
         updateSheet(sheetId, (current) =>
           setRowSuccessInSheet(
             current,
@@ -1098,6 +1476,14 @@ function App() {
           getSheetEpoch(requestEpochBySheetRef, sheetId) !== requestEpoch ||
           !targetSheet ||
           !targetSheet.rows.some((row) => row.key === rowKey)
+        ) {
+          return;
+        }
+
+        const targetRow = targetSheet.rows.find((row) => row.key === rowKey);
+        if (
+          !targetRow ||
+          sanitizeTrackingInput(targetRow.trackingInput) !== normalizedId
         ) {
           return;
         }
@@ -1134,11 +1520,11 @@ function App() {
   const fetchRow = useCallback(
     async (sheetId: string, rowKey: string, shipmentIdOverride?: string) => {
       const shipmentId =
-        sanitizeTrackingInput(shipmentIdOverride ?? "") ||
-        (workspaceRef.current.sheetsById[sheetId]?.rows
-          .find((row) => row.key === rowKey)
-          ?.trackingInput ??
-          "");
+        shipmentIdOverride !== undefined
+          ? sanitizeTrackingInput(shipmentIdOverride)
+          : workspaceRef.current.sheetsById[sheetId]?.rows.find(
+              (row) => row.key === rowKey
+            )?.trackingInput ?? "";
 
       if (!shipmentId) {
         return;
@@ -1171,15 +1557,21 @@ function App() {
   const handleTrackingInputKeyDown = useCallback(
     (event: KeyboardEvent<HTMLInputElement>, sheetId: string, rowKey: string) => {
       const currentInput = event.currentTarget;
-
-      if (event.key === "Delete" && !event.metaKey && !event.ctrlKey && !event.altKey) {
-        event.preventDefault();
-        clearTrackingCell(sheetId, rowKey);
-        return;
+      event.stopPropagation();
+      if ("stopImmediatePropagation" in event.nativeEvent) {
+        event.nativeEvent.stopImmediatePropagation();
       }
+
+      const hasSelectedText =
+        typeof currentInput.selectionStart === "number" &&
+        typeof currentInput.selectionEnd === "number" &&
+        currentInput.selectionStart !== currentInput.selectionEnd;
 
       if (event.key === "Enter") {
         event.preventDefault();
+        if (hasSelectedText) {
+          return;
+        }
         const moved = focusTrackingInputRelative(currentInput, 1);
         if (!moved) {
           void fetchRow(sheetId, rowKey, currentInput.value);
@@ -1199,7 +1591,7 @@ function App() {
         focusTrackingInputRelative(currentInput, -1);
       }
     },
-    [clearTrackingCell, fetchRow, focusTrackingInputRelative]
+    [fetchRow, focusTrackingInputRelative, handleTrackingInputChange]
   );
 
   const runBulkPasteFetches = useCallback(
@@ -1255,6 +1647,8 @@ function App() {
       const result = applyBulkPasteToSheet(currentSheet, startIndex, values);
       const targetKeys = result.targetKeys;
 
+      abortRowTrackingWork(sheetId, targetKeys, "bulk_paste_overwrite");
+
       updateSheet(sheetId, () => result.sheetState);
 
       if (targetKeys.length === 0) {
@@ -1278,7 +1672,7 @@ function App() {
           .filter(({ value }) => !getTrackingInputValidationError(value))
       );
     },
-    [disarmDeleteAll, runBulkPasteFetches, updateSheet]
+    [abortRowTrackingWork, disarmDeleteAll, runBulkPasteFetches, updateSheet]
   );
 
   const handleFilterChange = useCallback((path: string, value: string) => {
@@ -1446,8 +1840,9 @@ function App() {
   );
 
   const clearSelection = useCallback(() => {
+    disarmDeleteSelected();
     updateActiveSheet((current) => clearSelectionInSheet(current));
-  }, [updateActiveSheet]);
+  }, [disarmDeleteSelected, updateActiveSheet]);
 
   const createSheetFromSelectedIds = useCallback(() => {
     if (selectedTrackingIds.length === 0) {
@@ -1478,6 +1873,43 @@ function App() {
     );
   }, [disarmDeleteAll, runBulkPasteFetches, selectedTrackingIds]);
 
+  const appendSelectedIdsToExistingSheet = useCallback(
+    (targetSheetId: string) => {
+      if (selectedTrackingIds.length === 0) {
+        return;
+      }
+
+      const currentWorkspace = workspaceRef.current;
+      const targetSheetName =
+        currentWorkspace.sheetMetaById[targetSheetId]?.name ?? "Sheet";
+      const result = appendTrackingIdsToExistingSheetInWorkspace(
+        currentWorkspace,
+        targetSheetId,
+        selectedTrackingIds
+      );
+
+      setWorkspaceState(result.workspaceState);
+
+      if (result.targetKeys.length === 0) {
+        return;
+      }
+
+      showActionNotice(activeSheetId, {
+        tone: "success",
+        message: `${selectedTrackingIds.length} ID ditambahkan ke ${targetSheetName}.`,
+      });
+
+      void runBulkPasteFetches(
+        targetSheetId,
+        result.targetKeys.map((key, index) => ({
+          key,
+          value: selectedTrackingIds[index],
+        }))
+      );
+    },
+    [activeSheetId, runBulkPasteFetches, selectedTrackingIds, showActionNotice]
+  );
+
   const clearAllFilters = useCallback(() => {
     updateActiveSheet((current) => clearFiltersInSheet(current));
   }, [updateActiveSheet]);
@@ -1490,6 +1922,12 @@ function App() {
 
   const deleteSelectedRows = useCallback(() => {
     if (selectedVisibleRowKeys.length === 0) {
+      disarmDeleteSelected();
+      return;
+    }
+
+    if (deleteSelectedArmedSheetId !== activeSheetId) {
+      armDeleteSelected();
       return;
     }
 
@@ -1498,13 +1936,17 @@ function App() {
     updateActiveSheet((current) =>
       clearSelectionInSheet(deleteRowsInSheet(current, selectedVisibleRowKeys))
     );
+    disarmDeleteSelected();
     showActionNotice(activeSheetId, {
       tone: "info",
       message: `${selectedVisibleRowKeys.length} row terselect dihapus.`,
     });
   }, [
     activeSheetId,
+    armDeleteSelected,
     abortRowTrackingWork,
+    deleteSelectedArmedSheetId,
+    disarmDeleteSelected,
     selectedVisibleRowKeys,
     showActionNotice,
     updateActiveSheet,
@@ -1609,6 +2051,7 @@ function App() {
 
   const activateSheet = useCallback((sheetId: string) => {
     disarmDeleteAll();
+    disarmDeleteSelected();
     if (highlightedColumnTimeoutRef.current !== null) {
       window.clearTimeout(highlightedColumnTimeoutRef.current);
       highlightedColumnTimeoutRef.current = null;
@@ -1616,23 +2059,25 @@ function App() {
     }
     setHoveredColumn(null);
     setWorkspaceState((current) => setActiveSheetInWorkspace(current, sheetId));
-  }, [disarmDeleteAll]);
+  }, [disarmDeleteAll, disarmDeleteSelected]);
 
   const createSheet = useCallback(() => {
     disarmDeleteAll();
+    disarmDeleteSelected();
     setHoveredColumn(null);
     setWorkspaceState((current) => createSheetInWorkspace(current));
-  }, [disarmDeleteAll]);
+  }, [disarmDeleteAll, disarmDeleteSelected]);
 
   const duplicateSheet = useCallback((sheetId: string) => {
     disarmDeleteAll();
+    disarmDeleteSelected();
     setHoveredColumn(null);
     setWorkspaceState((current) =>
       createSheetInWorkspace(current, {
         sourceSheetId: sheetId,
       })
     );
-  }, [disarmDeleteAll]);
+  }, [disarmDeleteAll, disarmDeleteSelected]);
 
   const renameActiveSheet = useCallback(
     (sheetId: string, name: string) => {
@@ -1674,6 +2119,14 @@ function App() {
         }
         deleteAllArmedSheetIdRef.current = null;
       }
+      if (deleteSelectedArmedSheetIdRef.current === sheetId) {
+        if (deleteSelectedTimeoutRef.current !== null) {
+          window.clearTimeout(deleteSelectedTimeoutRef.current);
+          deleteSelectedTimeoutRef.current = null;
+        }
+        deleteSelectedArmedSheetIdRef.current = null;
+        setDeleteSelectedArmedSheetId(null);
+      }
       const currentWorkspace = workspaceRef.current;
       const currentIndex = currentWorkspace.sheetOrder.indexOf(sheetId);
       const nextSheetId =
@@ -1711,6 +2164,24 @@ function App() {
     },
     [invalidateSheetTrackingWork, showActionNotice]
   );
+
+  useEffect(() => {
+    if (deleteSelectedArmedSheetIdRef.current !== activeSheetId) {
+      return;
+    }
+
+    if (selectedVisibleRowKeys.length === 0) {
+      disarmDeleteSelected();
+    }
+  }, [activeSheetId, disarmDeleteSelected, selectedVisibleRowKeys.length]);
+
+  useEffect(() => {
+    if (deleteSelectedArmedSheetIdRef.current !== activeSheetId) {
+      return;
+    }
+
+    disarmDeleteSelected();
+  }, [activeSheetId, disarmDeleteSelected, selectedVisibleRowKeys.join("|")]);
 
   const scrollToColumn = useCallback(
     (path: string) => {
@@ -1811,22 +2282,110 @@ function App() {
   }, [updateActiveSheet]);
 
   useEffect(() => {
+    const hasActiveTextSelection = () => {
+      const selection = document.getSelection();
+      return !!selection && selection.type === "Range" && selection.toString().trim().length > 0;
+    };
+
+    const isEditableNode = (node: EventTarget | null) => {
+      if (!(node instanceof HTMLElement)) {
+        return false;
+      }
+
+      if (
+        node instanceof HTMLInputElement ||
+        node instanceof HTMLTextAreaElement ||
+        node.isContentEditable
+      ) {
+        return true;
+      }
+
+      return !!node.closest('input, textarea, [contenteditable="true"]');
+    };
+
+    const isEditableEventTarget = (event: Event) => {
+      if (isEditableNode(event.target)) {
+        return true;
+      }
+
+      const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+      return path.some((node) => isEditableNode(node));
+    };
+
+    const hasSelectedTextInFormControl = (target: EventTarget | null) => {
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+        return (
+          typeof target.selectionStart === "number" &&
+          typeof target.selectionEnd === "number" &&
+          target.selectionStart !== target.selectionEnd
+        );
+      }
+
+      return false;
+    };
+
+    const isSafeGlobalShortcutContext = () => {
+      const activeElement = document.activeElement;
+
+      return (
+        !activeElement ||
+        activeElement === document.body ||
+        activeElement === document.documentElement
+      );
+    };
+
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      const isDeleteKey = event.key === "Delete" || event.key === "Backspace";
       if (document.querySelector('.settings-modal[role="dialog"][aria-modal="true"]')) {
+        if (isDeleteKey) {
+          event.preventDefault();
+        }
         return;
       }
 
-      if (selectedVisibleRowKeys.length === 0) {
+      const activeElement = document.activeElement;
+      const hasSelectedTextInActiveControl =
+        activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement
+          ? typeof activeElement.selectionStart === "number" &&
+            typeof activeElement.selectionEnd === "number" &&
+            activeElement.selectionStart !== activeElement.selectionEnd
+          : false;
+
+      if (
+        isEditableEventTarget(event) ||
+        hasSelectedTextInFormControl(event.target) ||
+        hasSelectedTextInActiveControl
+      ) {
         return;
       }
 
-      const activeTag = document.activeElement?.tagName;
+      if (!isSafeGlobalShortcutContext()) {
+        if (isDeleteKey) {
+          event.preventDefault();
+        }
+        return;
+      }
+
+      const activeTag = activeElement?.tagName;
       if (
         activeTag === "INPUT" ||
         activeTag === "TEXTAREA" ||
         (document.activeElement instanceof HTMLElement &&
           document.activeElement.isContentEditable)
       ) {
+        return;
+      }
+
+      if (hasActiveTextSelection()) {
+        return;
+      }
+
+      if (isDeleteKey) {
+        event.preventDefault();
+        return;
+      }
+
+      if (selectedVisibleRowKeys.length === 0) {
         return;
       }
 
@@ -1839,10 +2398,6 @@ function App() {
         copySelectedTrackingIds();
       }
 
-      if (event.key === "Delete" || event.key === "Backspace") {
-        event.preventDefault();
-        deleteSelectedRows();
-      }
     };
 
     const handleCopy = (event: globalThis.ClipboardEvent) => {
@@ -1854,13 +2409,37 @@ function App() {
         return;
       }
 
-      const activeTag = document.activeElement?.tagName;
+      const activeElement = document.activeElement;
+      const hasSelectedTextInActiveControl =
+        activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement
+          ? typeof activeElement.selectionStart === "number" &&
+            typeof activeElement.selectionEnd === "number" &&
+            activeElement.selectionStart !== activeElement.selectionEnd
+          : false;
+
+      if (
+        isEditableEventTarget(event) ||
+        hasSelectedTextInFormControl(event.target) ||
+        hasSelectedTextInActiveControl
+      ) {
+        return;
+      }
+
+      if (!isSafeGlobalShortcutContext()) {
+        return;
+      }
+
+      const activeTag = activeElement?.tagName;
       if (
         activeTag === "INPUT" ||
         activeTag === "TEXTAREA" ||
         (document.activeElement instanceof HTMLElement &&
           document.activeElement.isContentEditable)
       ) {
+        return;
+      }
+
+      if (hasActiveTextSelection()) {
         return;
       }
 
@@ -1872,16 +2451,15 @@ function App() {
       event.clipboardData?.setData("text/plain", selectedTrackingIds.join("\n"));
     };
 
-    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown, true);
     document.addEventListener("copy", handleCopy);
 
     return () => {
-      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keydown", handleKeyDown, true);
       document.removeEventListener("copy", handleCopy);
     };
   }, [
     copySelectedTrackingIds,
-    deleteSelectedRows,
     selectedTrackingIds,
     selectedVisibleRowKeys.length,
   ]);
@@ -1933,6 +2511,7 @@ function App() {
             exportableRowsCount={exportableRows.length}
             activeFilterCount={activeFilterCount}
             selectedRowCount={selectedVisibleRowKeys.length}
+            deleteSelectedArmed={deleteSelectedArmedSheetId === activeSheetId}
             ignoredHiddenFilterCount={ignoredHiddenFilterCount}
             columnShortcuts={columnShortcuts}
             onRetrackAll={retrackAllRows}
@@ -1941,6 +2520,8 @@ function App() {
             onDeleteAllRows={deleteAllRows}
             onClearSelection={clearSelection}
             onCreateSheetFromSelectedIds={createSheetFromSelectedIds}
+            targetSheetOptions={appendTargetSheets}
+            onAppendSelectedIdsToSheet={appendSelectedIdsToExistingSheet}
             onClearFilter={clearAllFilters}
             onCopySelectedIds={copySelectedTrackingIds}
             onDeleteSelectedRows={deleteSelectedRows}

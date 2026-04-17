@@ -22,6 +22,9 @@ export function setTrackingInputInSheet(
   rowKey: string,
   value: string
 ) {
+  const nextTrackingInput = value;
+  const nextTrackingInputTrimmed = nextTrackingInput.trim();
+
   return {
     ...sheetState,
     rows: ensureTrailingEmptyRows(
@@ -29,15 +32,17 @@ export function setTrackingInputInSheet(
         row.key === rowKey
           ? {
               ...row,
-              trackingInput: value,
-              shipment: row.shipment,
+              trackingInput: nextTrackingInput,
+              shipment: nextTrackingInputTrimmed === "" ? null : row.shipment,
               loading: false,
               stale:
+                nextTrackingInputTrimmed !== "" &&
                 row.shipment !== null &&
-                value.trim() !== row.trackingInput.trim(),
+                nextTrackingInputTrimmed !== row.trackingInput.trim(),
               dirty:
+                nextTrackingInputTrimmed !== "" &&
                 row.shipment !== null &&
-                value.trim() !== row.trackingInput.trim(),
+                nextTrackingInputTrimmed !== row.trackingInput.trim(),
               error: "",
             }
           : row
@@ -235,6 +240,55 @@ export function seedTrackingIdsInSheet(sheetState: SheetState, values: string[])
       rows: ensureTrailingEmptyRows(expandedRows),
       selectedRowKeys: [],
       selectionFollowsVisibleRows: false,
+    },
+    targetKeys,
+  };
+}
+
+export function appendTrackingIdsToSheet(sheetState: SheetState, values: string[]) {
+  if (values.length === 0) {
+    return {
+      sheetState,
+      targetKeys: [] as string[],
+    };
+  }
+
+  let appendStartIndex = 0;
+  for (let index = 0; index < sheetState.rows.length; index += 1) {
+    const row = sheetState.rows[index];
+    if (row.trackingInput.trim() !== "" || row.shipment !== null) {
+      appendStartIndex = index + 1;
+    }
+  }
+
+  const expandedRows = ensureRowCapacity(
+    [...sheetState.rows],
+    appendStartIndex + values.length
+  );
+  const targetKeys: string[] = [];
+
+  for (let offset = 0; offset < values.length; offset += 1) {
+    const rowIndex = appendStartIndex + offset;
+    const row = expandedRows[rowIndex];
+    targetKeys.push(row.key);
+    expandedRows[rowIndex] = {
+      ...row,
+      trackingInput: values[offset],
+      shipment: null,
+      loading: false,
+      stale: false,
+      dirty: false,
+      error: "",
+    };
+  }
+
+  return {
+    sheetState: {
+      ...sheetState,
+      rows: ensureTrailingEmptyRows(expandedRows),
+      selectedRowKeys: sheetState.selectedRowKeys.filter(
+        (key) => !targetKeys.includes(key)
+      ),
     },
     targetKeys,
   };

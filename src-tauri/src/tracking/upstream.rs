@@ -13,18 +13,48 @@ pub const POS_TRACKING_ENDPOINT: &str =
 pub const POS_TRACKING_BASE_URL: &str = "https://pid.posindonesia.co.id/lacak/admin/";
 const TRACKING_MAX_ATTEMPTS: u32 = 3;
 const TRACKING_RETRY_BASE_DELAY_MS: u64 = 250;
+pub const MAX_SHIPMENT_ID_LENGTH: usize = 64;
 
-pub async fn scrape_pos_tracking(
-    client: &Client,
-    shipment_id: &str,
-) -> Result<TrackResponse, TrackingError> {
-    if shipment_id.is_empty() {
+pub fn sanitize_shipment_id(value: &str) -> String {
+    value
+        .chars()
+        .filter_map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                Some(ch.to_ascii_uppercase())
+            } else if ch == '-' {
+                Some(ch)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+pub fn normalize_and_validate_shipment_id(input: &str) -> Result<String, TrackingError> {
+    let normalized = sanitize_shipment_id(input.trim());
+
+    if normalized.is_empty() {
         return Err(TrackingError::BadRequest(
             "Shipment ID is required.".into(),
         ));
     }
 
-    let request_url = build_tracking_url(POS_TRACKING_ENDPOINT, shipment_id);
+    if normalized.len() > MAX_SHIPMENT_ID_LENGTH {
+        return Err(TrackingError::BadRequest(format!(
+            "Shipment ID exceeds {MAX_SHIPMENT_ID_LENGTH} characters."
+        )));
+    }
+
+    Ok(normalized)
+}
+
+pub async fn scrape_pos_tracking(
+    client: &Client,
+    shipment_id: &str,
+) -> Result<TrackResponse, TrackingError> {
+    let normalized_shipment_id = normalize_and_validate_shipment_id(shipment_id)?;
+
+    let request_url = build_tracking_url(POS_TRACKING_ENDPOINT, &normalized_shipment_id);
     let response = fetch_tracking_response(client, &request_url).await?;
 
     if !response.status().is_success() {

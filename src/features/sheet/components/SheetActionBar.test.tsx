@@ -9,6 +9,7 @@ describe("SheetActionBar", () => {
     const onDeleteAllRows = vi.fn();
     const onClearSelection = vi.fn();
     const onCreateSheetFromSelectedIds = vi.fn();
+    const onAppendSelectedIdsToSheet = vi.fn();
     const onClearFilter = vi.fn();
     const onCopySelectedIds = vi.fn();
     const onDeleteSelectedRows = vi.fn();
@@ -25,6 +26,7 @@ describe("SheetActionBar", () => {
         exportableRowsCount={12}
         activeFilterCount={2}
         selectedRowCount={3}
+        deleteSelectedArmed={false}
         ignoredHiddenFilterCount={1}
         columnShortcuts={[
           {
@@ -40,6 +42,11 @@ describe("SheetActionBar", () => {
         onDeleteAllRows={onDeleteAllRows}
         onClearSelection={onClearSelection}
         onCreateSheetFromSelectedIds={onCreateSheetFromSelectedIds}
+        targetSheetOptions={[
+          { id: "sheet-2", name: "Sheet 2" },
+          { id: "sheet-3", name: "Sheet 3" },
+        ]}
+        onAppendSelectedIdsToSheet={onAppendSelectedIdsToSheet}
         onClearFilter={onClearFilter}
         onCopySelectedIds={onCopySelectedIds}
         onDeleteSelectedRows={onDeleteSelectedRows}
@@ -72,6 +79,10 @@ describe("SheetActionBar", () => {
     fireEvent.click(screen.getByText("ID Terselect ke Sheet Baru"));
     expect(onCreateSheetFromSelectedIds).toHaveBeenCalledTimes(1);
 
+    fireEvent.mouseEnter(screen.getByRole("button", { name: "ID Terselect ke Sheet Lain" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sheet 2" }));
+    expect(onAppendSelectedIdsToSheet).toHaveBeenCalledWith("sheet-2");
+
     fireEvent.click(screen.getByText("Clear Filter"));
     expect(onClearFilter).toHaveBeenCalledTimes(1);
 
@@ -96,6 +107,7 @@ describe("SheetActionBar", () => {
         exportableRowsCount={0}
         activeFilterCount={0}
         selectedRowCount={0}
+        deleteSelectedArmed={false}
         ignoredHiddenFilterCount={0}
         columnShortcuts={[]}
         onRetrackAll={vi.fn()}
@@ -104,6 +116,8 @@ describe("SheetActionBar", () => {
         onDeleteAllRows={vi.fn()}
         onClearSelection={vi.fn()}
         onCreateSheetFromSelectedIds={vi.fn()}
+        targetSheetOptions={[]}
+        onAppendSelectedIdsToSheet={vi.fn()}
         onClearFilter={vi.fn()}
         onCopySelectedIds={vi.fn()}
         onDeleteSelectedRows={vi.fn()}
@@ -115,6 +129,7 @@ describe("SheetActionBar", () => {
     expect(screen.getByText("0 row dipilih")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Clear Selection" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "ID Terselect ke Sheet Baru" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "ID Terselect ke Sheet Lain" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Copy ID Kiriman Terselect" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Hapus Terselect" })).toBeDisabled();
   });

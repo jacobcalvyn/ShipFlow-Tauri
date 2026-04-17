@@ -724,6 +724,74 @@ button {
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
 }
 
+.action-button-accent-alt {
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
+.action-button-accent-alt:hover:not(:disabled) {
+  border-color: #93c5fd;
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.action-button-accent-alt:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+}
+
+.sheet-target-hover-action {
+  position: relative;
+}
+
+.sheet-target-hover-menu {
+  position: fixed;
+  z-index: 220;
+  padding: 10px;
+  border: 1px solid #dbe6f2;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 18px 32px rgba(15, 23, 42, 0.12);
+}
+
+.sheet-target-hover-menu-title {
+  margin-bottom: 8px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.sheet-target-hover-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sheet-target-hover-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 9px 11px;
+  border: 1px solid #d9e3ee;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 0.83rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sheet-target-hover-menu-item:hover {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
 .action-button-icon {
   display: inline-flex;
   align-items: center;
@@ -2132,6 +2200,49 @@ button {
   border-color: #fecaca;
   color: #991b1b;
   background: #fff7f7;
+}
+
+.app-runtime-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.runtime-fallback-card {
+  width: min(100%, 720px);
+  border: 1px solid #dbe4f0;
+  border-radius: 20px;
+  background: #ffffff;
+  box-shadow: 0 22px 50px rgba(15, 23, 42, 0.12);
+  padding: 28px;
+}
+
+.runtime-fallback-card h1 {
+  margin: 0 0 12px;
+  color: #0f172a;
+  font-size: 1.5rem;
+  line-height: 1.2;
+}
+
+.runtime-fallback-card p {
+  margin: 0 0 16px;
+  color: #475569;
+  font-size: 0.98rem;
+  line-height: 1.5;
+}
+
+.runtime-fallback-card pre {
+  margin: 0;
+  border-radius: 14px;
+  background: #f8fafc;
+  border: 1px solid #dbe4f0;
+  padding: 14px;
+  overflow: auto;
+  color: #0f172a;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 @media (max-width: 640px) {

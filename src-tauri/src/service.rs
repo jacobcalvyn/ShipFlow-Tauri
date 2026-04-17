@@ -123,12 +123,9 @@ impl ApiServiceController {
         client: Client,
     ) -> Result<ApiServiceStatus, String> {
         let bind_address = config.mode.bind_address_label().to_string();
-
-        {
+        let previous_handle = {
             let mut runtime = self.inner.lock().expect("service runtime lock poisoned");
-            if let Some(handle) = runtime.server_task.take() {
-                handle.abort();
-            }
+            let previous_handle = runtime.server_task.take();
 
             runtime.generation += 1;
 
@@ -137,12 +134,22 @@ impl ApiServiceController {
                     status: ApiServiceStatusKind::Stopped,
                     enabled: false,
                     mode: Some(config.mode.clone()),
-                    bind_address: Some(bind_address),
+                    bind_address: Some(bind_address.clone()),
                     port: Some(config.port),
                     error_message: None,
                 };
-                return Ok(runtime.status.clone());
             }
+
+            previous_handle
+        };
+
+        if let Some(handle) = previous_handle {
+            handle.abort();
+            let _ = handle.await;
+        }
+
+        if !config.enabled {
+            return Ok(self.status());
         }
 
         if config.auth_token.trim().is_empty() {

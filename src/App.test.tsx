@@ -13,7 +13,7 @@ const { mockedInvoke } = vi.hoisted(() => ({
         imageSource?: string;
         config?: ServiceConfig;
       }
-    ) => Promise<TrackResponse | string>
+    ) => Promise<TrackResponse | string | undefined>
   >(),
 }));
 
@@ -153,6 +153,10 @@ describe("App workspace isolation", () => {
         return Promise.resolve(typeof args?.imageSource === "string" ? args.imageSource : "");
       }
 
+      if (command === "log_frontend_runtime_event") {
+        return Promise.resolve(undefined);
+      }
+
       if (command !== "track_shipment" || !args?.shipmentId) {
         throw new Error(`Unexpected invoke: ${command}`);
       }
@@ -201,7 +205,7 @@ describe("App workspace isolation", () => {
   it("keeps a duplicated sheet isolated while the source request is still running", async () => {
     render(<App />);
 
-    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
     fireEvent.change(firstInput, { target: { value: "P1" } });
     fireEvent.blur(firstInput);
 
@@ -232,7 +236,7 @@ describe("App workspace isolation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
 
-    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
     fireEvent.change(firstInput, { target: { value: "P2" } });
     fireEvent.blur(firstInput);
 
@@ -261,7 +265,7 @@ describe("App workspace isolation", () => {
   it("creates a truly empty new sheet while another sheet still has in-flight tracking", async () => {
     render(<App />);
 
-    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
     fireEvent.change(firstInput, { target: { value: "P5" } });
     fireEvent.blur(firstInput);
 
@@ -282,7 +286,7 @@ describe("App workspace isolation", () => {
   it("creates a new sheet from selected ids and starts tracking them immediately", async () => {
     render(<App />);
 
-    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
     fireEvent.change(firstInput, { target: { value: "PSEL1" } });
     fireEvent.blur(firstInput);
 
@@ -316,6 +320,69 @@ describe("App workspace isolation", () => {
     });
   });
 
+  it("appends selected ids into another existing sheet without replacing its current data", async () => {
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    fireEvent.change(firstInput, { target: { value: "PAPP1" } });
+    fireEvent.blur(firstInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 1);
+    });
+
+    resolveRequest("PAPP1");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
+
+    const secondSheetInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    fireEvent.change(secondSheetInput, { target: { value: "PAPP2" } });
+    fireEvent.blur(secondSheetInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 2);
+    });
+
+    resolveRequest("PAPP2");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+
+    fireEvent.mouseEnter(
+      screen.getByRole("button", { name: "ID Terselect ke Sheet Lain" })
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sheet 2" }));
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 3);
+      expect(screen.getByRole("tab", { name: "Sheet 1" })).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByDisplayValue("PAPP2")[0]).toBeInTheDocument();
+      expect(screen.getAllByDisplayValue("PAPP1")[0]).toBeInTheDocument();
+    });
+
+    resolveRequest("PAPP1");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+    });
+  });
+
   it("moves focus to the next tracking row when Enter is pressed", () => {
     render(<App />);
 
@@ -345,19 +412,20 @@ describe("App workspace isolation", () => {
     expect(document.activeElement).toBe(secondInput);
   });
 
-  it("clears the active tracking cell when Delete is pressed in the input", () => {
+  it("does not intercept Delete inside the input or clear the whole tracking cell", () => {
     render(<App />);
 
-    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
     fireEvent.change(firstInput, { target: { value: "P2603310114291" } });
+    firstInput.setSelectionRange(0, 5);
 
     fireEvent.keyDown(firstInput, { key: "Delete" });
 
-    expect(firstInput).toHaveValue("");
+    expect(firstInput).toHaveValue("P2603310114291");
     expectInvokeCount("track_shipment", 0);
   });
 
-  it("clears the row tracking cell when Delete is pressed on the row checkbox", () => {
+  it("does not clear the row when Delete is pressed on the row checkbox", () => {
     render(<App />);
 
     const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
@@ -367,7 +435,7 @@ describe("App workspace isolation", () => {
     firstRowCheckbox.focus();
     fireEvent.keyDown(firstRowCheckbox, { key: "Delete" });
 
-    expect(firstInput).toHaveValue("");
+    expect(firstInput).toHaveValue("P2603310114291");
     expectInvokeCount("track_shipment", 0);
   });
 
@@ -576,6 +644,83 @@ describe("App workspace isolation", () => {
     });
   });
 
+  it("does not re-fetch a stale tracking id when an emptied input immediately blurs", async () => {
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
+    fireEvent.change(firstInput, { target: { value: "P405" } });
+    fireEvent.blur(firstInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 1);
+    });
+
+    fireEvent.change(firstInput, { target: { value: "" } });
+    fireEvent.blur(firstInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 1);
+      expect(firstInput).toHaveValue("");
+    });
+
+    resolveRequest("P405");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(firstInput).toHaveValue("");
+    });
+  });
+
+  it("aborts overwritten row requests before bulk paste applies replacement values", async () => {
+    render(<App />);
+
+    const [firstInput, secondInput] = screen.getAllByPlaceholderText(
+      "Masukkan ID"
+    ) as HTMLInputElement[];
+    fireEvent.change(firstInput, { target: { value: "P406" } });
+    fireEvent.blur(firstInput);
+    fireEvent.change(secondInput, { target: { value: "P407" } });
+    fireEvent.blur(secondInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 2);
+    });
+
+    const overlongTrackingId = `P${"1".repeat(80)}`;
+    const pasteEvent = createEvent.paste(firstInput);
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      value: {
+        getData: (type: string) =>
+          type === "text" ? `${overlongTrackingId}\nP408` : "",
+      },
+    });
+    fireEvent(firstInput, pasteEvent);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 3);
+      expect(firstInput).toHaveValue(overlongTrackingId);
+      expect(secondInput).toHaveValue("P408");
+      expectInfoTelemetry("abort", "P406");
+      expectInfoTelemetry("abort", "P407");
+    });
+
+    resolveRequest("P406");
+    resolveRequest("P407");
+
+    await waitFor(() => {
+      expect(firstInput).toHaveValue(overlongTrackingId);
+      expect(secondInput).toHaveValue("P408");
+    });
+
+    resolveRequest("P408");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+      expect(firstInput).toHaveValue(overlongTrackingId);
+      expect(secondInput).toHaveValue("P408");
+    });
+  });
+
   it("keeps a dirty row visible while filters are active", async () => {
     render(<App />);
 
@@ -621,6 +766,7 @@ describe("App workspace isolation", () => {
 
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
     fireEvent.click(screen.getByRole("button", { name: "Hapus Terselect" }));
+    fireEvent.click(screen.getByRole("button", { name: "Konfirmasi Hapus Terselect" }));
 
     await waitFor(() => {
       expect(screen.queryByDisplayValue("P700")).not.toBeInTheDocument();
@@ -664,6 +810,7 @@ describe("App workspace isolation", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Hapus Terselect" }));
+    fireEvent.click(screen.getByRole("button", { name: "Konfirmasi Hapus Terselect" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Clear Filter" }));
 
@@ -804,6 +951,117 @@ describe("App workspace isolation", () => {
     expect(window.localStorage.getItem("shipflow-display-scale")).toBe("large");
   });
 
+  it("restores the workspace after the app remounts", () => {
+    const firstRender = render(<App />);
+
+    const [firstInput, secondInput] = screen.getAllByPlaceholderText(
+      "Masukkan ID"
+    ) as HTMLInputElement[];
+    fireEvent.change(firstInput, { target: { value: "P2603310114291" } });
+    fireEvent.change(secondInput, { target: { value: "P2603310114292" } });
+
+    firstRender.unmount();
+
+    render(<App />);
+
+    const restoredInputs = screen.getAllByPlaceholderText(
+      "Masukkan ID"
+    ) as HTMLInputElement[];
+    expect(restoredInputs[0]).toHaveValue("P2603310114291");
+    expect(restoredInputs[1]).toHaveValue("P2603310114292");
+  });
+
+  it("heals invalid persisted empty rows that still carry tracking state", async () => {
+    const sheetId = "sheet-stale";
+    const invalidPersistedWorkspace = {
+      version: 1,
+      activeSheetId: sheetId,
+      sheetOrder: [sheetId],
+      sheetMetaById: {
+        [sheetId]: {
+          name: "Sheet 1",
+        },
+      },
+      sheetsById: {
+        [sheetId]: {
+          rows: [
+            {
+              key: "row-stale",
+              trackingInput: "",
+              shipment: createTrackingResponse("PSTALE"),
+              loading: false,
+              stale: true,
+              dirty: true,
+              error: "stale state",
+            },
+          ],
+          filters: {},
+          valueFilters: {},
+          sortState: {
+            path: null,
+            direction: "asc",
+          },
+          selectedRowKeys: [],
+          selectionFollowsVisibleRows: false,
+          columnWidths: {},
+          hiddenColumnPaths: [],
+          pinnedColumnPaths: [],
+          openColumnMenuPath: null,
+          highlightedColumnPath: null,
+          deleteAllArmed: false,
+        },
+      },
+    };
+
+    window.localStorage.setItem(
+      "shipflow-workspace-state",
+      JSON.stringify(invalidPersistedWorkspace)
+    );
+
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    expect(firstInput).toHaveValue("");
+    expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem("shipflow-workspace-state")).not.toContain(
+        "PSTALE"
+      );
+    });
+  });
+
+  it("falls back to an inputs-only workspace snapshot when full workspace persistence fails", async () => {
+    const originalSetItem = Storage.prototype.setItem;
+    let shouldFailWorkspacePersist = true;
+
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+      this: Storage,
+      key: string,
+      value: string
+    ) {
+      if (key === "shipflow-workspace-state" && shouldFailWorkspacePersist) {
+        shouldFailWorkspacePersist = false;
+        throw new DOMException("Quota exceeded", "QuotaExceededError");
+      }
+
+      return originalSetItem.call(this, key, value);
+    });
+
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    fireEvent.change(firstInput, { target: { value: "P2603310114291" } });
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem("shipflow-workspace-state")).toContain(
+        "P2603310114291"
+      );
+    });
+
+    expect(firstInput).toHaveValue("P2603310114291");
+  });
+
   it("rolls back previewed display scale when settings are cancelled", async () => {
     render(<App />);
 
@@ -915,5 +1173,149 @@ describe("App workspace isolation", () => {
     fireEvent(document, copyEvent);
 
     expect(setData).not.toHaveBeenCalled();
+  });
+
+  it("does not delete selected rows while a text selection is active", async () => {
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
+    fireEvent.change(firstInput, { target: { value: "P910" } });
+    fireEvent.blur(firstInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 1);
+    });
+
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    expect(screen.getByText("1 row dipilih")).toBeInTheDocument();
+
+    const selectedText = document.createElement("div");
+    selectedText.textContent = "P910";
+    document.body.appendChild(selectedText);
+
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(selectedText);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    fireEvent.keyDown(window, { key: "Delete" });
+
+    expect(screen.getByRole("button", { name: "Hapus Terselect" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Konfirmasi Hapus Terselect" })).not.toBeInTheDocument();
+    expect(screen.getAllByDisplayValue("P910")[0]).toBeInTheDocument();
+
+    selection?.removeAllRanges();
+    selectedText.remove();
+  });
+
+  it("prevents global Backspace navigation when focus is outside editable fields", async () => {
+    render(<App />);
+
+    const event = createEvent.keyDown(window, { key: "Backspace" });
+    fireEvent(window, event);
+
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("does not use a global Delete shortcut for selected-row deletion", async () => {
+    render(<App />);
+
+    const [firstInput, secondInput] = screen.getAllByPlaceholderText("Masukkan ID") as HTMLInputElement[];
+    fireEvent.change(firstInput, { target: { value: "P915" } });
+    fireEvent.change(secondInput, { target: { value: "P916" } });
+
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    fireEvent.click(screen.getAllByRole("checkbox")[2]);
+    expect(screen.getByText("2 row dipilih")).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Delete" });
+
+    expect(screen.getByText("2 row dipilih")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Konfirmasi Hapus Terselect" })).not.toBeInTheDocument();
+  });
+
+  it("does not trigger selected-row deletion when Delete is pressed inside a focused input", () => {
+    render(<App />);
+
+    const [firstInput, secondInput] = screen.getAllByPlaceholderText("Masukkan ID") as HTMLInputElement[];
+    fireEvent.change(firstInput, { target: { value: "P920" } });
+    fireEvent.change(secondInput, { target: { value: "P921" } });
+
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    fireEvent.click(screen.getAllByRole("checkbox")[2]);
+    expect(screen.getByText("2 row dipilih")).toBeInTheDocument();
+
+    firstInput.focus();
+    firstInput.setSelectionRange(0, firstInput.value.length);
+    fireEvent.keyDown(firstInput, { key: "Delete" });
+
+    expect(firstInput).toHaveValue("P920");
+    expect(screen.queryByRole("button", { name: "Konfirmasi Hapus Terselect" })).not.toBeInTheDocument();
+  });
+
+  it("does not trigger selected-row deletion from a window keydown while an input still owns the text selection", async () => {
+    render(<App />);
+
+    const [firstInput, secondInput] = screen.getAllByPlaceholderText("Masukkan ID") as HTMLInputElement[];
+    fireEvent.change(firstInput, { target: { value: "P922" } });
+    fireEvent.change(secondInput, { target: { value: "P923" } });
+
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    fireEvent.click(screen.getAllByRole("checkbox")[2]);
+    expect(screen.getByText("2 row dipilih")).toBeInTheDocument();
+
+    firstInput.focus();
+    firstInput.setSelectionRange(0, firstInput.value.length);
+    fireEvent.keyDown(window, { key: "Delete" });
+
+    expect(document.activeElement).toBe(firstInput);
+    expect(screen.getByText("2 row dipilih")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Konfirmasi Hapus Terselect" })).not.toBeInTheDocument();
+  });
+
+  it("does not affect multi-row selection state when Delete is pressed inside an input", () => {
+    render(<App />);
+
+    const [firstInput, secondInput, thirdInput] = screen.getAllByPlaceholderText(
+      "Masukkan ID"
+    ) as HTMLInputElement[];
+    fireEvent.change(firstInput, { target: { value: "P940" } });
+    fireEvent.change(secondInput, { target: { value: "P941" } });
+    fireEvent.change(thirdInput, { target: { value: "P942" } });
+
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    fireEvent.click(screen.getAllByRole("checkbox")[2]);
+    fireEvent.click(screen.getAllByRole("checkbox")[3]);
+    expect(screen.getByText("3 row dipilih")).toBeInTheDocument();
+
+    secondInput.focus();
+    secondInput.setSelectionRange(0, secondInput.value.length);
+    fireEvent.keyDown(secondInput, { key: "Delete" });
+
+    expect(secondInput).toHaveValue("P941");
+    expect(screen.getByText("3 row dipilih")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Konfirmasi Hapus Terselect" })).not.toBeInTheDocument();
+  });
+
+  it("does not trigger custom Enter behavior when text is selected inside a focused input", async () => {
+    render(<App />);
+
+    const [firstInput, secondInput] = screen.getAllByPlaceholderText("Masukkan ID") as HTMLInputElement[];
+    fireEvent.change(firstInput, { target: { value: "P930" } });
+    fireEvent.change(secondInput, { target: { value: "P931" } });
+
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    fireEvent.click(screen.getAllByRole("checkbox")[2]);
+    expect(screen.getByText("2 row dipilih")).toBeInTheDocument();
+
+    firstInput.focus();
+    firstInput.setSelectionRange(0, firstInput.value.length);
+    fireEvent.keyDown(firstInput, { key: "Enter" });
+
+    expect(document.activeElement).toBe(firstInput);
+    expect(screen.getByText("2 row dipilih")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Konfirmasi Hapus Terselect" })).not.toBeInTheDocument();
+    expectInvokeCount("track_shipment", 0);
   });
 });
