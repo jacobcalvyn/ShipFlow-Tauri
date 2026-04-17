@@ -65,6 +65,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 
 - Spreadsheet-style table with `50` initial rows
 - Multi-sheet workspace with create / rename / duplicate / delete sheet
+- Sheet tabs use a `+` button for new sheets, and sheet-specific actions are exposed from a hover menu on each tab
 - Sticky selector column and sticky `Nomor Kiriman`
 - Keyboard row navigation in `Nomor Kiriman` with `Enter`, `ArrowUp`, and `ArrowDown`
 - Row checkbox selection for copy/delete actions
@@ -89,7 +90,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - Temporary header highlight when a shortcut scroll target is reached
 - Sheet-specific scroll position, request state, and notices
 - Toast notifications are shown as a fixed top-center queue and do not shift the sheet layout
-- `Setting` includes preview-and-confirm controls for display scale and API service config
+- `Setting` is opened from a gear icon in the tabs panel and includes preview-and-confirm controls for display scale and API service config
 - API service settings include:
   - enable / disable
   - `Local API` or `LAN API`

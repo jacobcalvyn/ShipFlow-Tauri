@@ -91,6 +91,16 @@ function expectInvokeCount(command: string, count: number) {
   expect(getInvokeCalls(command)).toHaveLength(count);
 }
 
+function hoverSheetTab(name: string) {
+  const tab = screen.getByRole("tab", { name });
+  const wrapper = tab.closest(".sheet-tab");
+  if (!wrapper) {
+    throw new Error(`Sheet tab wrapper not found for ${name}`);
+  }
+  fireEvent.mouseEnter(wrapper);
+  return wrapper;
+}
+
 describe("App workspace isolation", () => {
   const pendingRequests = new Map<string, Deferred<TrackResponse>>();
   let infoSpy: ReturnType<typeof vi.spyOn>;
@@ -199,7 +209,8 @@ describe("App workspace isolation", () => {
       expectInvokeCount("track_shipment", 1);
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Duplikat Sheet Aktif" }));
+    hoverSheetTab("Sheet 1");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Duplikat" }));
 
     expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
 
@@ -229,9 +240,10 @@ describe("App workspace isolation", () => {
       expectInvokeCount("track_shipment", 1);
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Hapus Sheet Aktif" }));
+    hoverSheetTab("Sheet 2");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Hapus" }));
     fireEvent.click(
-      screen.getByRole("button", { name: "Konfirmasi Hapus Sheet Aktif" })
+      screen.getByRole("menuitem", { name: "Konfirmasi Hapus" })
     );
 
     await waitFor(() => {
@@ -778,8 +790,8 @@ describe("App workspace isolation", () => {
   it("applies and persists the selected display scale", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByText("Setting"));
-    fireEvent.click(screen.getByRole("radio", { name: "Besar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
+    fireEvent.click(screen.getByRole("radio", { name: /Besar/i }));
 
     await waitFor(() => {
       expect(document.querySelector("main.shell")).toHaveClass("display-scale-large");
@@ -795,8 +807,8 @@ describe("App workspace isolation", () => {
   it("rolls back previewed display scale when settings are cancelled", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByText("Setting"));
-    fireEvent.click(screen.getByRole("radio", { name: "Besar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
+    fireEvent.click(screen.getByRole("radio", { name: /Besar/i }));
 
     await waitFor(() => {
       expect(document.querySelector("main.shell")).toHaveClass("display-scale-large");
@@ -814,7 +826,8 @@ describe("App workspace isolation", () => {
   it("persists previewed service config only after settings are confirmed", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByText("Setting"));
+    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
+    fireEvent.click(screen.getByRole("button", { name: "API Service" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Enable API Service" }));
     fireEvent.click(screen.getByRole("radio", { name: "LAN API" }));
     fireEvent.change(screen.getByLabelText("Port"), {
@@ -851,7 +864,8 @@ describe("App workspace isolation", () => {
   it("rolls back previewed service config and token when settings are cancelled", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByText("Setting"));
+    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
+    fireEvent.click(screen.getByRole("button", { name: "API Service" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Enable API Service" }));
     fireEvent.click(screen.getByRole("button", { name: "Generate Token" }));
     fireEvent.click(screen.getByRole("button", { name: "Batal" }));
@@ -867,7 +881,8 @@ describe("App workspace isolation", () => {
       })
     );
 
-    fireEvent.click(screen.getByText("Setting"));
+    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
+    fireEvent.click(screen.getByRole("button", { name: "API Service" }));
 
     expect(screen.getByRole("checkbox", { name: "Enable API Service" })).not.toBeChecked();
     expect((screen.getByLabelText("Auth Token") as HTMLInputElement).value).toBe("");
@@ -882,7 +897,7 @@ describe("App workspace isolation", () => {
 
     expect(screen.getByText("1 row dipilih")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("Setting"));
+    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
 
     const okButton = screen.getByRole("button", { name: "OK" });
     okButton.focus();

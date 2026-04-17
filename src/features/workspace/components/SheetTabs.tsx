@@ -17,7 +17,7 @@ type SheetTabsProps = {
   hasPendingServiceConfigChanges: boolean;
   onActivateSheet: (sheetId: string) => void;
   onCreateSheet: () => void;
-  onDuplicateActiveSheet: () => void;
+  onDuplicateSheet: (sheetId: string) => void;
   onRenameSheet: (sheetId: string, name: string) => void;
   onDeleteSheet: (sheetId: string) => void;
   onPreviewDisplayScale: (scale: "small" | "medium" | "large") => void;
@@ -30,6 +30,8 @@ type SheetTabsProps = {
   onCancelSettings: () => void;
 };
 
+type SettingsSection = "display" | "service";
+
 export function SheetTabs({
   tabs,
   activeSheetId,
@@ -39,7 +41,7 @@ export function SheetTabs({
   hasPendingServiceConfigChanges,
   onActivateSheet,
   onCreateSheet,
-  onDuplicateActiveSheet,
+  onDuplicateSheet,
   onRenameSheet,
   onDeleteSheet,
   onPreviewDisplayScale,
@@ -58,10 +60,14 @@ export function SheetTabs({
   const [editingSheetId, setEditingSheetId] = useState<string | null>(null);
   const [sheetNameDraft, setSheetNameDraft] = useState("");
   const [deleteArmedSheetId, setDeleteArmedSheetId] = useState<string | null>(null);
+  const [hoveredSheetId, setHoveredSheetId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("display");
   const [isTokenVisible, setIsTokenVisible] = useState(false);
   const [portDraft, setPortDraft] = useState(String(serviceConfig.port));
   const settingsModalRef = useRef<HTMLDivElement | null>(null);
+  const hoveredSheetTimeoutRef = useRef<number | null>(null);
+  const sheetTabRefs = useRef(new Map<string, HTMLDivElement | null>());
 
   useEffect(() => {
     if (editingSheetId && editingSheetId !== activeSheetId) {
@@ -71,17 +77,28 @@ export function SheetTabs({
   }, [activeSheetId, editingSheetId]);
 
   useEffect(() => {
+    return () => {
+      if (hoveredSheetTimeoutRef.current !== null) {
+        window.clearTimeout(hoveredSheetTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!isSettingsOpen) {
       return;
     }
 
     const modal = settingsModalRef.current;
     const focusableSelectors =
-      'input[name="display-scale"], button:not([disabled]), [tabindex]:not([tabindex="-1"])';
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
     const focusFirst = () => {
       const firstTarget =
-        modal?.querySelector<HTMLInputElement>('input[name="display-scale"]:checked') ??
-        modal?.querySelector<HTMLInputElement>('input[name="display-scale"]') ??
+        modal?.querySelector<HTMLElement>(
+          settingsSection === "display"
+            ? 'input[name="display-scale"]:checked, input[name="display-scale"]'
+            : 'input[name="service-mode"]:checked, input[name="service-mode"], input[type="checkbox"], input[type="number"]'
+        ) ??
         modal?.querySelector<HTMLElement>("button");
       firstTarget?.focus();
     };
@@ -124,23 +141,26 @@ export function SheetTabs({
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [displayScale, isSettingsOpen]);
+  }, [displayScale, isSettingsOpen, settingsSection]);
 
   useEffect(() => {
     if (!isSettingsOpen) {
       setIsTokenVisible(false);
       setPortDraft(String(serviceConfig.port));
+      setSettingsSection("display");
     }
   }, [isSettingsOpen, serviceConfig.port]);
 
-  const beginRename = () => {
-    if (!activeTab) {
+  const beginRename = (sheetId: string) => {
+    const targetTab = tabs.find((tab) => tab.id === sheetId);
+    if (!targetTab) {
       return;
     }
 
     setDeleteArmedSheetId(null);
-    setEditingSheetId(activeTab.id);
-    setSheetNameDraft(activeTab.name);
+    setHoveredSheetId(null);
+    setEditingSheetId(targetTab.id);
+    setSheetNameDraft(targetTab.name);
   };
 
   const submitRename = (event?: FormEvent) => {
@@ -160,24 +180,27 @@ export function SheetTabs({
     setSheetNameDraft("");
   };
 
-  const handleDeleteSheet = () => {
-    if (!activeTab) {
+  const handleDeleteSheet = (sheetId: string) => {
+    const targetTab = tabs.find((tab) => tab.id === sheetId);
+    if (!targetTab) {
       return;
     }
 
-    if (deleteArmedSheetId !== activeTab.id) {
-      setDeleteArmedSheetId(activeTab.id);
+    if (deleteArmedSheetId !== targetTab.id) {
+      setDeleteArmedSheetId(targetTab.id);
       setEditingSheetId(null);
       return;
     }
 
-    onDeleteSheet(activeTab.id);
+    onDeleteSheet(targetTab.id);
+    setHoveredSheetId(null);
     setDeleteArmedSheetId(null);
   };
 
   const handleActivateSheet = (sheetId: string) => {
     setDeleteArmedSheetId(null);
     setEditingSheetId(null);
+    setHoveredSheetId(null);
     onActivateSheet(sheetId);
   };
 
@@ -193,13 +216,14 @@ export function SheetTabs({
     onCreateSheet();
   };
 
-  const handleDuplicateSheet = () => {
+  const handleDuplicateSheet = (sheetId: string) => {
     setDeleteArmedSheetId(null);
     setEditingSheetId(null);
     setSheetNameDraft("");
+    setHoveredSheetId(null);
     onCancelSettings();
     setIsSettingsOpen(false);
-    onDuplicateActiveSheet();
+    onDuplicateSheet(sheetId);
   };
 
   const closeSettings = () => {
@@ -210,7 +234,34 @@ export function SheetTabs({
   const openSettings = () => {
     setIsTokenVisible(false);
     setPortDraft(String(serviceConfig.port));
+    setSettingsSection("display");
     setIsSettingsOpen(true);
+  };
+
+  const clearHoveredSheet = () => {
+    if (hoveredSheetTimeoutRef.current !== null) {
+      window.clearTimeout(hoveredSheetTimeoutRef.current);
+      hoveredSheetTimeoutRef.current = null;
+    }
+    setHoveredSheetId(null);
+  };
+
+  const scheduleClearHoveredSheet = () => {
+    if (hoveredSheetTimeoutRef.current !== null) {
+      window.clearTimeout(hoveredSheetTimeoutRef.current);
+    }
+    hoveredSheetTimeoutRef.current = window.setTimeout(() => {
+      setHoveredSheetId(null);
+      hoveredSheetTimeoutRef.current = null;
+    }, 120);
+  };
+
+  const activateHoveredSheet = (sheetId: string) => {
+    if (hoveredSheetTimeoutRef.current !== null) {
+      window.clearTimeout(hoveredSheetTimeoutRef.current);
+      hoveredSheetTimeoutRef.current = null;
+    }
+    setHoveredSheetId(sheetId);
   };
 
   const confirmSettings = () => {
@@ -233,6 +284,18 @@ export function SheetTabs({
     }
   }, [serviceStatus.status]);
 
+  const serviceGuideBaseUrl = useMemo(() => {
+    if (serviceStatus.status === "running" && serviceStatus.bindAddress && serviceStatus.port) {
+      return `http://${serviceStatus.bindAddress}:${serviceStatus.port}`;
+    }
+
+    if (serviceConfig.mode === "local") {
+      return `http://127.0.0.1:${serviceConfig.port}`;
+    }
+
+    return `http://<device-ip>:${serviceConfig.port}`;
+  }, [serviceConfig.mode, serviceConfig.port, serviceStatus]);
+
   const handlePortDraftChange = (value: string) => {
     setPortDraft(value);
     const nextPort = Number.parseInt(value, 10);
@@ -241,11 +304,29 @@ export function SheetTabs({
     }
   };
 
+  const hoveredSheetMenuStyle = useMemo(() => {
+    if (!hoveredSheetId || editingSheetId) {
+      return null;
+    }
+
+    const target = sheetTabRefs.current.get(hoveredSheetId);
+    if (!target) {
+      return null;
+    }
+
+    const rect = target.getBoundingClientRect();
+    return {
+      top: rect.bottom + 6,
+      left: rect.left,
+    };
+  }, [editingSheetId, hoveredSheetId, tabs, activeSheetId]);
+
   return (
     <section className="sheet-tabs-panel" aria-label="Sheet tabs">
       <div className="sheet-tabs-list" role="tablist" aria-label="Workspace sheets">
         {tabs.map((tab) => {
           const isEditing = editingSheetId === tab.id;
+          const isHovered = hoveredSheetId === tab.id;
 
           return (
             <div
@@ -254,9 +335,15 @@ export function SheetTabs({
                 "sheet-tab",
                 tab.isActive ? "sheet-tab-active" : "",
                 isEditing ? "sheet-tab-editing" : "",
+                isHovered ? "sheet-tab-hovered" : "",
               ]
                 .filter(Boolean)
                 .join(" ")}
+              ref={(element) => {
+                sheetTabRefs.current.set(tab.id, element);
+              }}
+              onMouseEnter={() => activateHoveredSheet(tab.id)}
+              onMouseLeave={scheduleClearHoveredSheet}
             >
               {isEditing ? (
                 <form className="sheet-tab-form" onSubmit={submitRename}>
@@ -288,59 +375,117 @@ export function SheetTabs({
             </div>
           );
         })}
-      </div>
-
-      <div className="sheet-tabs-actions">
         <button
           type="button"
-          className="sheet-tab-action"
+          className="sheet-tab-add-button"
           onClick={handleCreateSheet}
           disabled={isRenaming}
+          aria-label="Sheet Baru"
+          title="Sheet Baru"
         >
-          Sheet Baru
+          <span className="sheet-tab-add-icon" aria-hidden="true">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.2">
+              <path strokeLinecap="round" d="M10 4.5v11" />
+              <path strokeLinecap="round" d="M4.5 10h11" />
+            </svg>
+          </span>
         </button>
-        <button
-          type="button"
-          className="sheet-tab-action"
-          onClick={handleDuplicateSheet}
-          disabled={!activeTab || isRenaming}
-        >
-          Duplikat Sheet Aktif
-        </button>
-        <button
-          type="button"
-          className="sheet-tab-action"
-          onClick={editingSheetId ? submitRename : beginRename}
-          disabled={!activeTab}
-        >
-          {editingSheetId ? "Simpan Nama" : "Ganti Nama"}
-        </button>
-        <button
-          type="button"
-          className="sheet-tab-action sheet-tab-action-danger"
-          onClick={handleDeleteSheet}
-          disabled={!activeTab || !canDeleteSheet || isRenaming}
-        >
-          {deleteArmedSheetId === activeSheetId
-            ? "Konfirmasi Hapus Sheet Aktif"
-            : "Hapus Sheet Aktif"}
-        </button>
+      </div>
+      <div className="sheet-tabs-actions">
         <div className="sheet-settings-popover">
+          {serviceConfig.enabled ? (
+            <span
+              className={[
+                "sheet-service-indicator",
+                `is-${serviceStatus.status}`,
+              ].join(" ")}
+              aria-label={`API Service ${serviceStatusLabel}`}
+              title={`API Service ${serviceStatusLabel}`}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <rect x="4" y="5" width="16" height="6" rx="2" />
+                <rect x="4" y="13" width="16" height="6" rx="2" />
+                <path strokeLinecap="round" d="M8 8h.01M8 16h.01M12 8h4M12 16h4" />
+              </svg>
+            </span>
+          ) : null}
           <button
             type="button"
             className={[
               "sheet-tab-action",
+              "sheet-tab-action-icon-only",
               "tool-popover-trigger",
               isSettingsOpen ? "is-active" : "",
             ]
               .filter(Boolean)
               .join(" ")}
             onClick={openSettings}
+            aria-label="Setting"
+            title="Setting"
           >
-            Setting
+            <span className="action-button-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M10.325 4.317a1.724 1.724 0 0 1 3.35 0 1.724 1.724 0 0 0 2.573 1.066 1.724 1.724 0 0 1 2.898 1.675 1.724 1.724 0 0 0 .536 2.704 1.724 1.724 0 0 1 0 2.976 1.724 1.724 0 0 0-.536 2.704 1.724 1.724 0 0 1-2.898 1.675 1.724 1.724 0 0 0-2.573 1.066 1.724 1.724 0 0 1-3.35 0 1.724 1.724 0 0 0-2.573-1.066 1.724 1.724 0 0 1-2.898-1.675 1.724 1.724 0 0 0-.536-2.704 1.724 1.724 0 0 1 0-2.976 1.724 1.724 0 0 0 .536-2.704 1.724 1.724 0 0 1 2.898-1.675 1.724 1.724 0 0 0 2.573-1.066Z"
+                />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9.25a2.75 2.75 0 1 1 0 5.5 2.75 2.75 0 0 1 0-5.5Z" />
+              </svg>
+            </span>
           </button>
         </div>
       </div>
+      {hoveredSheetId && hoveredSheetMenuStyle && !editingSheetId
+        ? createPortal(
+            <div
+              className="sheet-tab-hover-menu"
+              style={{
+                top: hoveredSheetMenuStyle.top,
+                left: hoveredSheetMenuStyle.left,
+              }}
+              role="menu"
+              aria-label={`${
+                tabs.find((tab) => tab.id === hoveredSheetId)?.name ?? "Sheet"
+              } actions`}
+              onMouseEnter={() => activateHoveredSheet(hoveredSheetId)}
+              onMouseLeave={scheduleClearHoveredSheet}
+            >
+              <button
+                type="button"
+                className="sheet-tab-hover-menu-button"
+                role="menuitem"
+                onClick={() => handleDuplicateSheet(hoveredSheetId)}
+                disabled={isRenaming}
+              >
+                Duplikat
+              </button>
+              <button
+                type="button"
+                className="sheet-tab-hover-menu-button"
+                role="menuitem"
+                onClick={() => beginRename(hoveredSheetId)}
+              >
+                Ganti Nama
+              </button>
+              <button
+                type="button"
+                className={[
+                  "sheet-tab-hover-menu-button",
+                  "is-danger",
+                ].join(" ")}
+                role="menuitem"
+                onClick={() => handleDeleteSheet(hoveredSheetId)}
+                disabled={!canDeleteSheet || isRenaming}
+              >
+                {deleteArmedSheetId === hoveredSheetId
+                  ? "Konfirmasi Hapus"
+                  : "Hapus"}
+              </button>
+            </div>,
+            document.body
+          )
+        : null}
       {isSettingsOpen
         ? createPortal(
             <div className="settings-modal-backdrop">
@@ -354,173 +499,290 @@ export function SheetTabs({
                 <div className="settings-modal-header">
                   <h3>Setting</h3>
                 </div>
-                <div className="settings-form-group">
-                  <div className="settings-modal-field-label">Ukuran Tampilan</div>
-                  <div
-                    className="settings-radio-group"
-                    role="radiogroup"
-                    aria-label="Ukuran Tampilan"
-                  >
-                    <label className="settings-radio-option">
-                      <input
-                        type="radio"
-                        name="display-scale"
-                        checked={displayScale === "small"}
-                        onChange={() => onPreviewDisplayScale("small")}
-                      />
-                      <span className="settings-radio-text">Kecil</span>
-                    </label>
-                    <label className="settings-radio-option">
-                      <input
-                        type="radio"
-                        name="display-scale"
-                        checked={displayScale === "medium"}
-                        onChange={() => onPreviewDisplayScale("medium")}
-                      />
-                      <span className="settings-radio-text">Sedang</span>
-                    </label>
-                    <label className="settings-radio-option">
-                      <input
-                        type="radio"
-                        name="display-scale"
-                        checked={displayScale === "large"}
-                        onChange={() => onPreviewDisplayScale("large")}
-                      />
-                      <span className="settings-radio-text">Besar</span>
-                    </label>
-                  </div>
-                </div>
-                <div className="settings-form-group">
-                  <div className="settings-modal-field-label">API Service</div>
-                  <label className="settings-checkbox-option">
-                    <input
-                      type="checkbox"
-                      checked={serviceConfig.enabled}
-                      onChange={(event) =>
-                        onPreviewServiceEnabled(event.currentTarget.checked)
-                      }
-                    />
-                    <span>Enable API Service</span>
-                  </label>
-
-                  <div
-                    className="settings-radio-group"
-                    role="radiogroup"
-                    aria-label="Service Mode"
-                  >
-                    <label className="settings-radio-option">
-                      <input
-                        type="radio"
-                        name="service-mode"
-                        checked={serviceConfig.mode === "local"}
-                        onChange={() => onPreviewServiceMode("local")}
-                      />
-                      <span className="settings-radio-text">Local API</span>
-                    </label>
-                    <label className="settings-radio-option">
-                      <input
-                        type="radio"
-                        name="service-mode"
-                        checked={serviceConfig.mode === "lan"}
-                        onChange={() => onPreviewServiceMode("lan")}
-                      />
-                      <span className="settings-radio-text">LAN API</span>
-                    </label>
-                  </div>
-
-                  <label className="settings-text-field">
-                    <span className="settings-input-label">Port</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={65535}
-                      inputMode="numeric"
-                      aria-label="Port"
-                      value={portDraft}
-                      onChange={(event) => handlePortDraftChange(event.target.value)}
-                    />
-                  </label>
-                  {!isPortValid ? (
-                    <div className="settings-field-help settings-field-help-error">
-                      Port must be between 1 and 65535.
-                    </div>
-                  ) : null}
-
-                  <label className="settings-text-field">
-                    <span className="settings-input-label">Auth Token</span>
-                    <input
-                      type={isTokenVisible ? "text" : "password"}
-                      readOnly
-                      aria-label="Auth Token"
-                      value={serviceConfig.authToken}
-                      placeholder="Generate token from the app"
-                    />
-                  </label>
-                  <div className="settings-inline-actions">
+                <div className="settings-layout">
+                  <aside className="settings-sidebar" aria-label="Setting sections">
                     <button
                       type="button"
-                      className="sheet-tab-action"
-                      onClick={() => setIsTokenVisible((current) => !current)}
+                      className={[
+                        "settings-nav-button",
+                        settingsSection === "display" ? "is-active" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      onClick={() => setSettingsSection("display")}
                     >
-                      {isTokenVisible ? "Hide Token" : "Reveal Token"}
+                      Tampilan
                     </button>
-                    {serviceConfig.authToken ? (
-                      <button
-                        type="button"
-                        className="sheet-tab-action"
-                        onClick={onRegenerateServiceToken}
-                      >
-                        Regenerate Token
-                      </button>
+                    <button
+                      type="button"
+                      className={[
+                        "settings-nav-button",
+                        settingsSection === "service" ? "is-active" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      onClick={() => setSettingsSection("service")}
+                    >
+                      API Service
+                    </button>
+                  </aside>
+
+                  <div className="settings-content">
+                    {settingsSection === "display" ? (
+                      <section className="settings-pane">
+                        <div className="settings-pane-header">
+                          <h4>Ukuran Tampilan</h4>
+                          <p>Pilih ukuran workspace sesuai kenyamanan kerja di desktop.</p>
+                        </div>
+                        <div
+                          className="settings-option-list"
+                          role="radiogroup"
+                          aria-label="Ukuran Tampilan"
+                        >
+                          <label className="settings-option-row">
+                            <div className="settings-option-main">
+                              <input
+                                type="radio"
+                                name="display-scale"
+                                checked={displayScale === "small"}
+                                onChange={() => onPreviewDisplayScale("small")}
+                              />
+                              <div>
+                                <div className="settings-option-title">Kecil</div>
+                                <div className="settings-option-description">
+                                  Layout paling rapat untuk melihat lebih banyak data sekaligus.
+                                </div>
+                              </div>
+                            </div>
+                          </label>
+                          <label className="settings-option-row">
+                            <div className="settings-option-main">
+                              <input
+                                type="radio"
+                                name="display-scale"
+                                checked={displayScale === "medium"}
+                                onChange={() => onPreviewDisplayScale("medium")}
+                              />
+                              <div>
+                                <div className="settings-option-title">Sedang</div>
+                                <div className="settings-option-description">
+                                  Keseimbangan antara kepadatan tabel dan keterbacaan.
+                                </div>
+                              </div>
+                            </div>
+                          </label>
+                          <label className="settings-option-row">
+                            <div className="settings-option-main">
+                              <input
+                                type="radio"
+                                name="display-scale"
+                                checked={displayScale === "large"}
+                                onChange={() => onPreviewDisplayScale("large")}
+                              />
+                              <div>
+                                <div className="settings-option-title">Besar</div>
+                                <div className="settings-option-description">
+                                  Tampilan lebih lega untuk jarak pandang yang santai.
+                                </div>
+                              </div>
+                            </div>
+                          </label>
+                        </div>
+                      </section>
                     ) : (
-                      <button
-                        type="button"
-                        className="sheet-tab-action"
-                        onClick={onGenerateServiceToken}
-                      >
-                        Generate Token
-                      </button>
+                      <section className="settings-pane">
+                        <div className="settings-pane-header">
+                          <h4>API Service</h4>
+                          <p>
+                            Aktifkan endpoint lokal atau LAN agar aplikasi lain bisa memakai
+                            engine tracking dari app desktop ini.
+                          </p>
+                        </div>
+
+                        <label className="settings-checkbox-option">
+                          <input
+                            type="checkbox"
+                            checked={serviceConfig.enabled}
+                            onChange={(event) =>
+                              onPreviewServiceEnabled(event.currentTarget.checked)
+                            }
+                          />
+                          <span>Enable API Service</span>
+                        </label>
+
+                        <div className="settings-field-block">
+                          <span className="settings-input-label">Service Mode</span>
+                          <div
+                            className="settings-radio-group"
+                            role="radiogroup"
+                            aria-label="Service Mode"
+                          >
+                            <label className="settings-radio-option">
+                              <input
+                                type="radio"
+                                name="service-mode"
+                                checked={serviceConfig.mode === "local"}
+                                onChange={() => onPreviewServiceMode("local")}
+                              />
+                              <span className="settings-radio-text">Local API</span>
+                            </label>
+                            <label className="settings-radio-option">
+                              <input
+                                type="radio"
+                                name="service-mode"
+                                checked={serviceConfig.mode === "lan"}
+                                onChange={() => onPreviewServiceMode("lan")}
+                              />
+                              <span className="settings-radio-text">LAN API</span>
+                            </label>
+                          </div>
+                        </div>
+
+                        <label className="settings-text-field settings-text-field-port">
+                          <span className="settings-input-label">Port</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={65535}
+                            inputMode="numeric"
+                            aria-label="Port"
+                            value={portDraft}
+                            onChange={(event) => handlePortDraftChange(event.target.value)}
+                          />
+                        </label>
+                        {!isPortValid ? (
+                          <div className="settings-field-help settings-field-help-error">
+                            Port must be between 1 and 65535.
+                          </div>
+                        ) : null}
+
+                        <label className="settings-text-field">
+                          <span className="settings-input-label">Auth Token</span>
+                          <input
+                            type={isTokenVisible ? "text" : "password"}
+                            readOnly
+                            aria-label="Auth Token"
+                            value={serviceConfig.authToken}
+                            placeholder="Generate token from the app"
+                          />
+                        </label>
+                        <div className="settings-inline-actions">
+                          <button
+                            type="button"
+                            className="sheet-tab-action"
+                            onClick={() => setIsTokenVisible((current) => !current)}
+                          >
+                            {isTokenVisible ? "Hide Token" : "Reveal Token"}
+                          </button>
+                          {serviceConfig.authToken ? (
+                            <button
+                              type="button"
+                              className="sheet-tab-action"
+                              onClick={onRegenerateServiceToken}
+                            >
+                              Regenerate Token
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="sheet-tab-action"
+                              onClick={onGenerateServiceToken}
+                            >
+                              Generate Token
+                            </button>
+                          )}
+                        </div>
+
+                        {serviceConfig.mode === "lan" ? (
+                          <div className="settings-field-help settings-field-help-warning">
+                            LAN API exposes the service to other devices on the same network.
+                          </div>
+                        ) : null}
+
+                        {hasPendingServiceConfigChanges ? (
+                          <div className="settings-field-help settings-field-help-info">
+                            Perubahan API service belum diterapkan. Klik OK untuk menyimpan.
+                          </div>
+                        ) : null}
+
+                        <div className="settings-service-status" role="status" aria-live="polite">
+                          <div className="settings-service-status-row">
+                            <span className="settings-service-status-label">Runtime Status</span>
+                            <span
+                              className={[
+                                "settings-service-status-badge",
+                                `is-${serviceStatus.status}`,
+                              ].join(" ")}
+                            >
+                              {serviceStatusLabel}
+                            </span>
+                          </div>
+                          <div className="settings-service-status-meta">
+                            {serviceStatus.bindAddress && serviceStatus.port
+                              ? `${serviceStatus.bindAddress}:${serviceStatus.port}`
+                              : "Service belum aktif."}
+                          </div>
+                          {serviceStatus.mode ? (
+                            <div className="settings-service-status-meta">
+                              Mode: {serviceStatus.mode === "lan" ? "LAN API" : "Local API"}
+                            </div>
+                          ) : null}
+                          {serviceStatus.errorMessage ? (
+                            <div className="settings-field-help settings-field-help-error">
+                              {serviceStatus.errorMessage}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        <div className="settings-api-guide">
+                          <div className="settings-api-guide-header">
+                            <span className="settings-service-status-label">Panduan API</span>
+                          </div>
+                          <div className="settings-api-guide-row">
+                            <span className="settings-api-guide-key">Base URL</span>
+                            <code className="settings-api-guide-code">{serviceGuideBaseUrl}</code>
+                          </div>
+                          <div className="settings-api-guide-row">
+                            <span className="settings-api-guide-key">Auth</span>
+                            <span className="settings-service-status-meta">
+                              Gunakan header{" "}
+                              <code className="settings-api-guide-inline">
+                                Authorization: Bearer &lt;token&gt;
+                              </code>{" "}
+                              untuk semua endpoint selain <code>/health</code>.
+                            </span>
+                          </div>
+                          <div className="settings-api-guide-endpoints">
+                            <div className="settings-api-guide-endpoint">
+                              <code className="settings-api-guide-code">GET /health</code>
+                              <span className="settings-service-status-meta">
+                                Health check tanpa auth.
+                              </span>
+                            </div>
+                            <div className="settings-api-guide-endpoint">
+                              <code className="settings-api-guide-code">GET /status</code>
+                              <span className="settings-service-status-meta">
+                                Status runtime service dengan auth bearer.
+                              </span>
+                            </div>
+                            <div className="settings-api-guide-endpoint">
+                              <code className="settings-api-guide-code">
+                                GET /track/:shipment_id
+                              </code>
+                              <span className="settings-service-status-meta">
+                                Ambil JSON tracking untuk satu ID kiriman.
+                              </span>
+                            </div>
+                          </div>
+                          {serviceConfig.mode === "lan" ? (
+                            <div className="settings-field-help settings-field-help-info">
+                              Untuk LAN API, ganti <code>&lt;device-ip&gt;</code> dengan IP mesin
+                              yang menjalankan app ini.
+                            </div>
+                          ) : null}
+                        </div>
+                      </section>
                     )}
-                  </div>
-                  {serviceConfig.mode === "lan" ? (
-                    <div className="settings-field-help settings-field-help-warning">
-                      LAN API exposes the service to other devices on the same network.
-                    </div>
-                  ) : null}
-
-                  {hasPendingServiceConfigChanges ? (
-                    <div className="settings-field-help settings-field-help-info">
-                      Perubahan API service belum diterapkan. Klik OK untuk menyimpan.
-                    </div>
-                  ) : null}
-
-                  <div className="settings-service-status" role="status" aria-live="polite">
-                    <div className="settings-service-status-row">
-                      <span className="settings-service-status-label">Runtime Status</span>
-                      <span
-                        className={[
-                          "settings-service-status-badge",
-                          `is-${serviceStatus.status}`,
-                        ].join(" ")}
-                      >
-                        {serviceStatusLabel}
-                      </span>
-                    </div>
-                    <div className="settings-service-status-meta">
-                      {serviceStatus.bindAddress && serviceStatus.port
-                        ? `${serviceStatus.bindAddress}:${serviceStatus.port}`
-                        : "Service belum aktif."}
-                    </div>
-                    {serviceStatus.mode ? (
-                      <div className="settings-service-status-meta">
-                        Mode: {serviceStatus.mode === "lan" ? "LAN API" : "Local API"}
-                      </div>
-                    ) : null}
-                    {serviceStatus.errorMessage ? (
-                      <div className="settings-field-help settings-field-help-error">
-                        {serviceStatus.errorMessage}
-                      </div>
-                    ) : null}
                   </div>
                 </div>
                 <div className="settings-modal-footer">

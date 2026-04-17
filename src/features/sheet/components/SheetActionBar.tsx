@@ -182,7 +182,7 @@ export function SheetActionBar({
           </button>
           <button
             type="button"
-            className="action-button"
+            className="action-button action-button-accent"
             onClick={onCreateSheetFromSelectedIds}
             disabled={!hasSelection}
             title="ID Terselect ke Sheet Baru"

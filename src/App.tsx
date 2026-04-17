@@ -1624,15 +1624,15 @@ function App() {
     setWorkspaceState((current) => createSheetInWorkspace(current));
   }, [disarmDeleteAll]);
 
-  const duplicateActiveSheet = useCallback(() => {
+  const duplicateSheet = useCallback((sheetId: string) => {
     disarmDeleteAll();
     setHoveredColumn(null);
     setWorkspaceState((current) =>
       createSheetInWorkspace(current, {
-        sourceSheetId: activeSheetId,
+        sourceSheetId: sheetId,
       })
     );
-  }, [activeSheetId, disarmDeleteAll]);
+  }, [disarmDeleteAll]);
 
   const renameActiveSheet = useCallback(
     (sheetId: string, name: string) => {
@@ -1911,7 +1911,7 @@ function App() {
           hasPendingServiceConfigChanges={hasPendingServiceConfigChanges}
           onActivateSheet={activateSheet}
           onCreateSheet={createSheet}
-          onDuplicateActiveSheet={duplicateActiveSheet}
+          onDuplicateSheet={duplicateSheet}
           onRenameSheet={renameActiveSheet}
           onDeleteSheet={deleteActiveSheet}
           onPreviewDisplayScale={previewDisplayScale}

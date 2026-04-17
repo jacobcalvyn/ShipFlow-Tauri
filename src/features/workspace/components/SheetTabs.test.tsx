@@ -14,6 +14,16 @@ function createServiceConfig(overrides: Partial<ServiceConfig> = {}): ServiceCon
   };
 }
 
+function hoverSheetTab(name: string) {
+  const tab = screen.getByRole("tab", { name });
+  const wrapper = tab.closest(".sheet-tab");
+  if (!wrapper) {
+    throw new Error(`Sheet tab wrapper not found for ${name}`);
+  }
+  fireEvent.mouseEnter(wrapper);
+  return wrapper;
+}
+
 function createServiceStatus(
   overrides: Partial<ApiServiceStatus> = {}
 ): ApiServiceStatus {
@@ -32,7 +42,7 @@ describe("SheetTabs", () => {
   it("switches, renames, duplicates, creates, and deletes sheets", () => {
     const onActivateSheet = vi.fn();
     const onCreateSheet = vi.fn();
-    const onDuplicateActiveSheet = vi.fn();
+    const onDuplicateSheet = vi.fn();
     const onRenameSheet = vi.fn();
     const onDeleteSheet = vi.fn();
 
@@ -49,7 +59,7 @@ describe("SheetTabs", () => {
         hasPendingServiceConfigChanges={false}
         onActivateSheet={onActivateSheet}
         onCreateSheet={onCreateSheet}
-        onDuplicateActiveSheet={onDuplicateActiveSheet}
+        onDuplicateSheet={onDuplicateSheet}
         onRenameSheet={onRenameSheet}
         onDeleteSheet={onDeleteSheet}
         onPreviewDisplayScale={vi.fn()}
@@ -69,17 +79,20 @@ describe("SheetTabs", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
     expect(onCreateSheet).toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Duplikat Sheet Aktif" }));
-    expect(onDuplicateActiveSheet).toHaveBeenCalled();
+    hoverSheetTab("Sheet 1");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Duplikat" }));
+    expect(onDuplicateSheet).toHaveBeenCalledWith("sheet-1");
 
-    fireEvent.click(screen.getByRole("button", { name: "Ganti Nama" }));
+    hoverSheetTab("Sheet 1");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Ganti Nama" }));
     const renameInput = screen.getByDisplayValue("Sheet 1");
     fireEvent.change(renameInput, { target: { value: "Case COD" } });
     fireEvent.blur(renameInput);
     expect(onRenameSheet).toHaveBeenCalledWith("sheet-1", "Case COD");
 
-    fireEvent.click(screen.getByRole("button", { name: "Hapus Sheet Aktif" }));
-    fireEvent.click(screen.getByRole("button", { name: "Konfirmasi Hapus Sheet Aktif" }));
+    hoverSheetTab("Sheet 1");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Hapus" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Konfirmasi Hapus" }));
     expect(onDeleteSheet).toHaveBeenCalledWith("sheet-1");
   });
 
@@ -97,7 +110,7 @@ describe("SheetTabs", () => {
         hasPendingServiceConfigChanges={false}
         onActivateSheet={vi.fn()}
         onCreateSheet={vi.fn()}
-        onDuplicateActiveSheet={vi.fn()}
+        onDuplicateSheet={vi.fn()}
         onRenameSheet={vi.fn()}
         onDeleteSheet={vi.fn()}
         onPreviewDisplayScale={vi.fn()}
@@ -111,16 +124,12 @@ describe("SheetTabs", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Ganti Nama" }));
+    hoverSheetTab("Sheet 1");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Ganti Nama" }));
 
     expect(screen.getByRole("button", { name: "Sheet Baru" })).toBeDisabled();
-    expect(
-      screen.getByRole("button", { name: "Duplikat Sheet Aktif" })
-    ).toBeDisabled();
-    expect(
-      screen.getByRole("button", { name: "Hapus Sheet Aktif" })
-    ).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Simpan Nama" })).toBeEnabled();
+    expect(screen.queryByRole("menuitem", { name: "Duplikat" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Hapus" })).not.toBeInTheDocument();
   });
 
   it("changes display scale from the settings menu", () => {
@@ -137,7 +146,7 @@ describe("SheetTabs", () => {
         hasPendingServiceConfigChanges={false}
         onActivateSheet={vi.fn()}
         onCreateSheet={vi.fn()}
-        onDuplicateActiveSheet={vi.fn()}
+        onDuplicateSheet={vi.fn()}
         onRenameSheet={vi.fn()}
         onDeleteSheet={vi.fn()}
         onPreviewDisplayScale={onPreviewDisplayScale}
@@ -151,8 +160,9 @@ describe("SheetTabs", () => {
       />
     );
 
-    fireEvent.click(screen.getByText("Setting"));
-    fireEvent.click(screen.getByRole("radio", { name: "Besar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
+    fireEvent.click(screen.getByRole("radio", { name: /Besar/i }));
+    fireEvent.click(screen.getByRole("button", { name: "API Service" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Enable API Service" }));
 
     expect(onPreviewDisplayScale).toHaveBeenCalledWith("large");
@@ -173,7 +183,7 @@ describe("SheetTabs", () => {
         hasPendingServiceConfigChanges={false}
         onActivateSheet={vi.fn()}
         onCreateSheet={vi.fn()}
-        onDuplicateActiveSheet={vi.fn()}
+        onDuplicateSheet={vi.fn()}
         onRenameSheet={vi.fn()}
         onDeleteSheet={vi.fn()}
         onPreviewDisplayScale={onPreviewDisplayScale}
@@ -187,7 +197,7 @@ describe("SheetTabs", () => {
       />
     );
 
-    fireEvent.click(screen.getByText("Setting"));
+    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
     fireEvent.click(screen.getAllByRole("radio")[1]);
     fireEvent.click(screen.getByRole("button", { name: "Batal" }));
 
@@ -210,7 +220,7 @@ describe("SheetTabs", () => {
         hasPendingServiceConfigChanges={false}
         onActivateSheet={vi.fn()}
         onCreateSheet={vi.fn()}
-        onDuplicateActiveSheet={vi.fn()}
+        onDuplicateSheet={vi.fn()}
         onRenameSheet={vi.fn()}
         onDeleteSheet={vi.fn()}
         onPreviewDisplayScale={onPreviewDisplayScale}
@@ -224,8 +234,9 @@ describe("SheetTabs", () => {
       />
     );
 
-    fireEvent.click(screen.getByText("Setting"));
+    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
     fireEvent.click(screen.getAllByRole("radio")[2]);
+    fireEvent.click(screen.getByRole("button", { name: "API Service" }));
     fireEvent.click(screen.getByRole("button", { name: "Regenerate Token" }));
     fireEvent.click(screen.getByRole("button", { name: "OK" }));
 
@@ -251,7 +262,7 @@ describe("SheetTabs", () => {
         hasPendingServiceConfigChanges
         onActivateSheet={vi.fn()}
         onCreateSheet={vi.fn()}
-        onDuplicateActiveSheet={vi.fn()}
+        onDuplicateSheet={vi.fn()}
         onRenameSheet={vi.fn()}
         onDeleteSheet={vi.fn()}
         onPreviewDisplayScale={vi.fn()}
@@ -265,7 +276,8 @@ describe("SheetTabs", () => {
       />
     );
 
-    fireEvent.click(screen.getByText("Setting"));
+    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
+    fireEvent.click(screen.getByRole("button", { name: "API Service" }));
 
     expect(screen.getByText("Runtime Status")).toBeInTheDocument();
     expect(screen.getByText("Running")).toBeInTheDocument();
