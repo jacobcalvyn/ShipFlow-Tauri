@@ -1,14 +1,22 @@
 import {
   appendTrackingIdsToSheet,
+  clearSelectionInSheet,
+  deleteRowsInSheet,
   seedTrackingIdsInSheet,
 } from "../sheet/actions";
 import { createDefaultSheetState } from "../sheet/default-state";
 import { SheetState } from "../sheet/types";
 import {
+  createDefaultSheetColor,
+  createDefaultSheetIcon,
   createDefaultSheetName,
   createWorkspaceSheetId,
 } from "./default-state";
-import { WorkspaceState } from "./types";
+import {
+  WorkspaceSheetColor,
+  WorkspaceSheetIcon,
+  WorkspaceState,
+} from "./types";
 
 function cloneSheetState(sourceSheet: SheetState): SheetState {
   return {
@@ -174,6 +182,14 @@ export function createSheetInWorkspace(
       ...workspaceState.sheetMetaById,
       [nextSheetId]: {
         name: nextName,
+        color: sourceSheet
+          ? workspaceState.sheetMetaById[options?.sourceSheetId ?? ""]?.color ??
+            createDefaultSheetColor()
+          : createDefaultSheetColor(),
+        icon: sourceSheet
+          ? workspaceState.sheetMetaById[options?.sourceSheetId ?? ""]?.icon ??
+            createDefaultSheetIcon()
+          : createDefaultSheetIcon(),
       },
     },
     sheetsById: {
@@ -210,6 +226,8 @@ export function createSheetWithTrackingIdsInWorkspace(
         ...workspaceState.sheetMetaById,
         [nextSheetId]: {
           name: nextName,
+          color: createDefaultSheetColor(),
+          icon: createDefaultSheetIcon(),
         },
       },
       sheetsById: {
@@ -246,6 +264,165 @@ export function appendTrackingIdsToExistingSheetInWorkspace(
         [sheetId]: appendedSheet.sheetState,
       },
     },
+  };
+}
+
+export function moveTrackingIdsToExistingSheetInWorkspace(
+  workspaceState: WorkspaceState,
+  sourceSheetId: string,
+  targetSheetId: string,
+  sourceRowKeys: string[],
+  trackingIds: string[]
+) {
+  if (sourceSheetId === targetSheetId || trackingIds.length === 0) {
+    return {
+      sheetId: targetSheetId,
+      targetKeys: [] as string[],
+      workspaceState,
+    };
+  }
+
+  const appendResult = appendTrackingIdsToExistingSheetInWorkspace(
+    workspaceState,
+    targetSheetId,
+    trackingIds
+  );
+
+  const sourceSheet = appendResult.workspaceState.sheetsById[sourceSheetId];
+  if (!sourceSheet) {
+    return appendResult;
+  }
+
+  return {
+    sheetId: targetSheetId,
+    targetKeys: appendResult.targetKeys,
+    workspaceState: {
+      ...appendResult.workspaceState,
+      sheetsById: {
+        ...appendResult.workspaceState.sheetsById,
+        [sourceSheetId]: clearSelectionInSheet(
+          deleteRowsInSheet(sourceSheet, sourceRowKeys)
+        ),
+      },
+    },
+  };
+}
+
+export function moveTrackingIdsToNewSheetInWorkspace(
+  workspaceState: WorkspaceState,
+  sourceSheetId: string,
+  sourceRowKeys: string[],
+  trackingIds: string[],
+  options?: {
+    activate?: boolean;
+    name?: string;
+  }
+) {
+  const createResult = createSheetWithTrackingIdsInWorkspace(
+    workspaceState,
+    trackingIds,
+    options
+  );
+  const sourceSheet = createResult.workspaceState.sheetsById[sourceSheetId];
+
+  if (!sourceSheet || trackingIds.length === 0) {
+    return createResult;
+  }
+
+  return {
+    sheetId: createResult.sheetId,
+    targetKeys: createResult.targetKeys,
+    workspaceState: {
+      ...createResult.workspaceState,
+      sheetsById: {
+        ...createResult.workspaceState.sheetsById,
+        [sourceSheetId]: clearSelectionInSheet(
+          deleteRowsInSheet(sourceSheet, sourceRowKeys)
+        ),
+      },
+    },
+  };
+}
+
+export function updateSheetStyleInWorkspace(
+  workspaceState: WorkspaceState,
+  sheetId: string,
+  style: {
+    color: WorkspaceSheetColor;
+    icon: WorkspaceSheetIcon;
+  }
+): WorkspaceState {
+  const currentMeta = workspaceState.sheetMetaById[sheetId];
+  if (!currentMeta) {
+    return workspaceState;
+  }
+
+  if (currentMeta.color === style.color && currentMeta.icon === style.icon) {
+    return workspaceState;
+  }
+
+  return {
+    ...workspaceState,
+    sheetMetaById: {
+      ...workspaceState.sheetMetaById,
+      [sheetId]: {
+        ...currentMeta,
+        color: style.color,
+        icon: style.icon,
+      },
+    },
+  };
+}
+
+export function mergeSheetIntoExistingSheetInWorkspace(
+  workspaceState: WorkspaceState,
+  sourceSheetId: string,
+  targetSheetId: string
+) {
+  if (sourceSheetId === targetSheetId) {
+    return {
+      targetSheetId,
+      targetKeys: [] as string[],
+      appendedTrackingIds: [] as string[],
+      skippedCount: 0,
+      workspaceState,
+    };
+  }
+
+  const sourceSheet = workspaceState.sheetsById[sourceSheetId];
+  const targetSheet = workspaceState.sheetsById[targetSheetId];
+  if (!sourceSheet || !targetSheet) {
+    return {
+      targetSheetId,
+      targetKeys: [] as string[],
+      appendedTrackingIds: [] as string[],
+      skippedCount: 0,
+      workspaceState,
+    };
+  }
+
+  const sourceTrackingIds = sourceSheet.rows
+    .map((row) => row.trackingInput.trim())
+    .filter(Boolean);
+  const targetTrackingIdSet = new Set(
+    targetSheet.rows.map((row) => row.trackingInput.trim()).filter(Boolean)
+  );
+  const appendedTrackingIds = sourceTrackingIds.filter(
+    (trackingId) => !targetTrackingIdSet.has(trackingId)
+  );
+  const skippedCount = sourceTrackingIds.length - appendedTrackingIds.length;
+  const appendResult = appendTrackingIdsToExistingSheetInWorkspace(
+    workspaceState,
+    targetSheetId,
+    appendedTrackingIds
+  );
+
+  return {
+    targetSheetId,
+    targetKeys: appendResult.targetKeys,
+    appendedTrackingIds,
+    skippedCount,
+    workspaceState: deleteSheetInWorkspace(appendResult.workspaceState, sourceSheetId),
   };
 }
 

@@ -152,6 +152,7 @@ export type TrackResponse = {
 };
 
 export type ServiceMode = "local" | "lan";
+export type TrackingSource = "default" | "externalApi";
 
 export type ServiceConfig = {
   version: 1;
@@ -159,6 +160,11 @@ export type ServiceConfig = {
   mode: ServiceMode;
   port: number;
   authToken: string;
+  trackingSource: TrackingSource;
+  externalApiBaseUrl: string;
+  externalApiAuthToken: string;
+  allowInsecureExternalApiHttp: boolean;
+  keepRunningInTray: boolean;
   lastUpdatedAt: string;
 };
 

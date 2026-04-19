@@ -1,5 +1,6 @@
 import {
   ClipboardEvent,
+  DragEvent as ReactDragEvent,
   FocusEvent,
   KeyboardEvent,
   MutableRefObject,
@@ -12,6 +13,7 @@ import {
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   HIDDEN_COLUMNS_STORAGE_KEY,
   MAX_CONCURRENT_BULK_REQUESTS,
@@ -88,6 +90,8 @@ import {
   createSheetInWorkspace,
   createSheetWithTrackingIdsInWorkspace,
   deleteSheetInWorkspace,
+  moveTrackingIdsToExistingSheetInWorkspace,
+  moveTrackingIdsToNewSheetInWorkspace,
   renameSheetInWorkspace,
   setActiveSheetInWorkspace,
   updateActiveSheetInWorkspace,
@@ -98,15 +102,30 @@ import {
   getWorkspaceTabs,
 } from "./features/workspace/selectors";
 import { SheetTabs } from "./features/workspace/components/SheetTabs";
+import { ServiceSettingsWindow } from "./features/service/components/ServiceSettingsWindow";
+import {
+  createDefaultWorkspaceDocumentMeta,
+  createPersistedWorkspaceDocumentMeta,
+  createWorkspaceDocumentFile,
+  getWorkspaceDocumentName,
+  normalizePersistedWorkspaceDocumentMeta,
+  WorkspaceDocumentFile,
+  WorkspaceDocumentMeta,
+} from "./features/workspace/document";
 import {
   ApiServiceStatus,
   ServiceConfig,
   ServiceMode,
   TrackResponse,
+  TrackingSource,
 } from "./types";
 import { createDefaultSheetState } from "./features/sheet/default-state";
 import { createEmptyRow, ensureTrailingEmptyRows } from "./features/sheet/utils";
-import { WorkspaceState } from "./features/workspace/types";
+import {
+  WorkspaceSheetColor,
+  WorkspaceSheetIcon,
+  WorkspaceState,
+} from "./features/workspace/types";
 
 type ActionNotice = {
   id?: string;
@@ -134,10 +153,40 @@ type TrackingRequestMeta = {
 };
 
 type DisplayScale = "small" | "medium" | "large";
+type SelectionTransferMode = "copy" | "move";
 
 const DISPLAY_SCALE_STORAGE_KEY = "shipflow-display-scale";
-const SERVICE_CONFIG_STORAGE_KEY = "shipflow-service-config";
 const WORKSPACE_STATE_STORAGE_KEY = "shipflow-workspace-state";
+const WORKSPACE_DOCUMENT_META_STORAGE_KEY = "shipflow-workspace-document-meta";
+const RECENT_WORKSPACE_DOCUMENTS_STORAGE_KEY = "shipflow-recent-workspaces";
+const DOCUMENT_AUTOSAVE_ENABLED_STORAGE_KEY = "shipflow-document-autosave-enabled";
+
+type WorkspaceDocumentDialogMode = "open" | "saveAs";
+
+type WorkspaceDocumentReadResult = {
+  path: string;
+  document: WorkspaceDocumentFile;
+};
+
+type WorkspaceDocumentWriteResult = {
+  path: string;
+  savedAt: string;
+};
+
+type WorkspaceWindowLaunchRequest = {
+  documentPath: string | null;
+  startFresh: boolean;
+};
+
+type WorkspaceDocumentClaimResult = {
+  status: "claimed" | "alreadyOpen";
+  path: string | null;
+  ownerLabel: string | null;
+};
+
+type WindowCloseRequestPayload = {
+  documentName: string;
+};
 
 const DEFAULT_SERVICE_CONFIG: ServiceConfig = {
   version: 1,
@@ -145,6 +194,11 @@ const DEFAULT_SERVICE_CONFIG: ServiceConfig = {
   mode: "local",
   port: 18422,
   authToken: "",
+  trackingSource: "default",
+  externalApiBaseUrl: "",
+  externalApiAuthToken: "",
+  allowInsecureExternalApiHttp: false,
+  keepRunningInTray: true,
   lastUpdatedAt: "",
 };
 
@@ -161,8 +215,25 @@ function isDisplayScale(value: string | null): value is DisplayScale {
   return value === "small" || value === "medium" || value === "large";
 }
 
-function isServiceMode(value: unknown): value is ServiceMode {
-  return value === "local" || value === "lan";
+function isWorkspaceSheetColor(value: unknown): value is WorkspaceSheetColor {
+  return (
+    value === "slate" ||
+    value === "blue" ||
+    value === "green" ||
+    value === "amber" ||
+    value === "rose" ||
+    value === "violet"
+  );
+}
+
+function isWorkspaceSheetIcon(value: unknown): value is WorkspaceSheetIcon {
+  return (
+    value === "sheet" ||
+    value === "pin" ||
+    value === "stack" ||
+    value === "flag" ||
+    value === "star"
+  );
 }
 
 function normalizeServicePort(value: unknown) {
@@ -409,6 +480,18 @@ function normalizePersistedWorkspaceState(
           (parsedMeta[sheetId] as { name: string }).name.trim()
             ? (parsedMeta[sheetId] as { name: string }).name
             : `Sheet ${normalizedSheetOrder.indexOf(sheetId) + 1}`,
+        color:
+          parsedMeta[sheetId] &&
+          typeof parsedMeta[sheetId] === "object" &&
+          isWorkspaceSheetColor((parsedMeta[sheetId] as { color?: unknown }).color)
+            ? (parsedMeta[sheetId] as { color: WorkspaceSheetColor }).color
+            : "slate",
+        icon:
+          parsedMeta[sheetId] &&
+          typeof parsedMeta[sheetId] === "object" &&
+          isWorkspaceSheetIcon((parsedMeta[sheetId] as { icon?: unknown }).icon)
+            ? (parsedMeta[sheetId] as { icon: WorkspaceSheetIcon }).icon
+            : "sheet",
       },
     ])
   );
@@ -427,12 +510,14 @@ function normalizePersistedWorkspaceState(
   };
 }
 
-function loadWorkspaceState(): WorkspaceState {
+function loadWorkspaceState(windowLabel: string | null = null): WorkspaceState {
   if (!isBrowserReady()) {
     return createDefaultWorkspaceState();
   }
 
-  const stored = window.localStorage.getItem(WORKSPACE_STATE_STORAGE_KEY);
+  const stored = window.localStorage.getItem(
+    getScopedStorageKey(WORKSPACE_STATE_STORAGE_KEY, windowLabel)
+  );
   if (!stored) {
     return createDefaultWorkspaceState();
   }
@@ -444,34 +529,114 @@ function loadWorkspaceState(): WorkspaceState {
   }
 }
 
-function loadServiceConfig(): ServiceConfig {
-  if (!isBrowserReady()) {
-    return DEFAULT_SERVICE_CONFIG;
+function getScopedStorageKey(baseKey: string, windowLabel: string | null) {
+  if (!windowLabel || windowLabel === "main") {
+    return baseKey;
   }
 
-  const stored = window.localStorage.getItem(SERVICE_CONFIG_STORAGE_KEY);
+  return `${baseKey}:${windowLabel}`;
+}
+
+function clearScopedStorageKey(baseKey: string, windowLabel: string | null) {
+  if (!isBrowserReady()) {
+    return;
+  }
+
+  window.localStorage.removeItem(getScopedStorageKey(baseKey, windowLabel));
+}
+
+function loadWorkspaceDocumentMeta(windowLabel: string | null = null): WorkspaceDocumentMeta {
+  if (!isBrowserReady()) {
+    return createDefaultWorkspaceDocumentMeta();
+  }
+
+  const stored = window.localStorage.getItem(
+    getScopedStorageKey(WORKSPACE_DOCUMENT_META_STORAGE_KEY, windowLabel)
+  );
   if (!stored) {
-    return DEFAULT_SERVICE_CONFIG;
+    return createDefaultWorkspaceDocumentMeta();
   }
 
   try {
-    const parsed = JSON.parse(stored) as Partial<ServiceConfig>;
-    return {
-      version: 1,
-      enabled: Boolean(parsed.enabled),
-      mode: isServiceMode(parsed.mode) ? parsed.mode : DEFAULT_SERVICE_CONFIG.mode,
-      port: normalizeServicePort(parsed.port),
-      authToken: typeof parsed.authToken === "string" ? parsed.authToken : "",
-      lastUpdatedAt:
-        typeof parsed.lastUpdatedAt === "string" ? parsed.lastUpdatedAt : "",
-    };
+    return normalizePersistedWorkspaceDocumentMeta(JSON.parse(stored));
   } catch {
-    return DEFAULT_SERVICE_CONFIG;
+    return createDefaultWorkspaceDocumentMeta();
   }
+}
+
+function loadRecentWorkspaceDocuments() {
+  if (!isBrowserReady()) {
+    return [] as string[];
+  }
+
+  const stored = window.localStorage.getItem(RECENT_WORKSPACE_DOCUMENTS_STORAGE_KEY);
+  if (!stored) {
+    return [] as string[];
+  }
+
+  try {
+    const parsed = JSON.parse(stored);
+    return Array.isArray(parsed)
+      ? parsed.filter(
+          (value): value is string => typeof value === "string" && value.trim().length > 0
+        )
+      : [];
+  } catch {
+    return [] as string[];
+  }
+}
+
+function loadDocumentAutosaveEnabled() {
+  if (!isBrowserReady()) {
+    return true;
+  }
+
+  return window.localStorage.getItem(DOCUMENT_AUTOSAVE_ENABLED_STORAGE_KEY) !== "false";
+}
+
+function areServiceConfigsEqual(left: ServiceConfig, right: ServiceConfig) {
+  return (
+    left.version === right.version &&
+    left.enabled === right.enabled &&
+    left.mode === right.mode &&
+    left.port === right.port &&
+    left.authToken === right.authToken &&
+    left.trackingSource === right.trackingSource &&
+    left.externalApiBaseUrl === right.externalApiBaseUrl &&
+    left.externalApiAuthToken === right.externalApiAuthToken &&
+    left.allowInsecureExternalApiHttp === right.allowInsecureExternalApiHttp &&
+    left.keepRunningInTray === right.keepRunningInTray &&
+    left.lastUpdatedAt === right.lastUpdatedAt
+  );
 }
 
 function getSheetRequestKey(sheetId: string, rowKey: string) {
   return `${sheetId}:${rowKey}`;
+}
+
+function serializeWorkspaceStateForDocument(workspaceState: WorkspaceState) {
+  return JSON.stringify(createStorageSafeWorkspaceState(workspaceState, "full"));
+}
+
+function buildWorkspaceWindowTitle(documentMeta: WorkspaceDocumentMeta) {
+  const dirtyPrefix = documentMeta.isDirty ? "* " : "";
+  return `${dirtyPrefix}${documentMeta.name} - ShipFlow Desktop`;
+}
+
+async function pickWorkspaceDocumentPath(
+  mode: "open" | "save",
+  suggestedName?: string
+) {
+  return Promise.resolve(
+    invoke<string | null>("pick_workspace_document_path", {
+      mode,
+      suggestedName,
+    })
+  );
+}
+
+function pushRecentWorkspaceDocument(currentPaths: string[], nextPath: string) {
+  return [nextPath, ...currentPaths.filter((path) => path !== nextPath)].slice(0, 8);
 }
 
 function emitTrackingTelemetry(
@@ -501,6 +666,47 @@ function createRequestId() {
   }
 
   return `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function resolveShipFlowWindowKind() {
+  if (typeof window === "undefined") {
+    return "workspace" as const;
+  }
+
+  const searchParams = new URLSearchParams(window.location.search);
+  if (searchParams.get("windowKind") === "service-settings") {
+    return "service-settings" as const;
+  }
+
+  const shipflowWindow = window as Window & {
+    __SHIPFLOW_WINDOW_KIND__?: string;
+  };
+
+  return shipflowWindow.__SHIPFLOW_WINDOW_KIND__ === "service-settings"
+    ? ("service-settings" as const)
+    : ("workspace" as const);
+}
+
+async function writeClipboardText(value: string) {
+  const text = value.trim();
+  if (!text) {
+    throw new Error("Clipboard text is required.");
+  }
+
+  if (
+    typeof navigator !== "undefined" &&
+    navigator.clipboard &&
+    typeof navigator.clipboard.writeText === "function"
+  ) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall through to the native clipboard bridge below.
+    }
+  }
+
+  await invoke("copy_to_clipboard", { text });
 }
 
 function classifyTrackingError(error: unknown): TrackingErrorClass {
@@ -569,8 +775,22 @@ function assertValidTrackResponse(
   }
 }
 
-function App() {
+function WorkspaceApp() {
   const [workspaceState, setWorkspaceState] = useState(loadWorkspaceState);
+  const [documentMeta, setDocumentMeta] = useState<WorkspaceDocumentMeta>(
+    () => loadWorkspaceDocumentMeta()
+  );
+  const [windowStorageScope, setWindowStorageScope] = useState<string | null>("main");
+  const [recentWorkspaceDocuments, setRecentWorkspaceDocuments] = useState<string[]>(
+    loadRecentWorkspaceDocuments
+  );
+  const [autosaveEnabled, setAutosaveEnabled] = useState(loadDocumentAutosaveEnabled);
+  const [pendingWindowCloseRequest, setPendingWindowCloseRequest] =
+    useState<WindowCloseRequestPayload | null>(null);
+  const [isResolvingWindowClose, setIsResolvingWindowClose] = useState(false);
+  const [documentDialogMode, setDocumentDialogMode] =
+    useState<WorkspaceDocumentDialogMode | null>(null);
+  const [documentPathDraft, setDocumentPathDraft] = useState("");
   const [displayScale, setDisplayScale] = useState<DisplayScale>(() => {
     if (!isBrowserReady()) {
       return "small";
@@ -580,14 +800,13 @@ function App() {
     return isDisplayScale(storedDisplayScale) ? storedDisplayScale : "small";
   });
   const [displayScalePreview, setDisplayScalePreview] = useState<DisplayScale | null>(null);
-  const [serviceConfig, setServiceConfig] = useState<ServiceConfig>(loadServiceConfig);
+  const [serviceConfig, setServiceConfig] = useState<ServiceConfig>(DEFAULT_SERVICE_CONFIG);
   const [serviceConfigPreview, setServiceConfigPreview] = useState<ServiceConfig | null>(null);
+  const [hasLoadedServiceConfig, setHasLoadedServiceConfig] = useState(false);
   const [apiServiceStatus, setApiServiceStatus] = useState<ApiServiceStatus>(
     DEFAULT_API_SERVICE_STATUS
   );
-  const [actionNoticeBySheetId, setActionNoticeBySheetId] = useState<
-    Record<string, ActionNotice[]>
-  >({});
+  const [actionNotices, setActionNotices] = useState<ActionNotice[]>([]);
   const [hoveredColumn, setHoveredColumn] = useState<number | null>(null);
   const resizeStateRef = useRef<{
     path: string;
@@ -598,6 +817,9 @@ function App() {
   const requestMetaRef = useRef(new Map<string, TrackingRequestMeta>());
   const requestEpochBySheetRef = useRef(new Map<string, number>());
   const bulkRunEpochBySheetRef = useRef(new Map<string, number>());
+  const documentBaselineRef = useRef<string>("__unset__");
+  const documentSaveInFlightRef = useRef(false);
+  const documentAutosaveTimeoutRef = useRef<number | null>(null);
   const columnMenuRefs = useRef(new Map<string, HTMLDivElement | null>());
   const sheetScrollRef = useRef<HTMLDivElement>(null);
   const sheetScrollPositionsRef = useRef(
@@ -613,6 +835,7 @@ function App() {
   const [deleteSelectedArmedSheetId, setDeleteSelectedArmedSheetId] = useState<string | null>(
     null
   );
+  const [isSheetTransferDragActive, setIsSheetTransferDragActive] = useState(false);
   const activeSheet = useMemo(() => getActiveSheet(workspaceState), [workspaceState]);
   const activeSheetId = workspaceState.activeSheetId;
   const workspaceTabs = useMemo(
@@ -629,12 +852,22 @@ function App() {
         })),
     [activeSheetId, workspaceTabs]
   );
-  const activeActionNotices = actionNoticeBySheetId[activeSheetId] ?? [];
   const workspaceRef = useRef(workspaceState);
   const serviceConfigRef = useRef(serviceConfig);
+  const documentMetaRef = useRef(documentMeta);
   const effectiveDisplayScale = displayScalePreview ?? displayScale;
   const effectiveServiceConfig = serviceConfigPreview ?? serviceConfig;
   const hasPendingServiceConfigChanges = serviceConfigPreview !== null;
+  const canUseAutosave = documentMeta.path !== null;
+  const isAutosaveActive = canUseAutosave && autosaveEnabled;
+  const recentDocumentItems = recentWorkspaceDocuments.map((path) => ({
+    path,
+    name: getWorkspaceDocumentName(path),
+  }));
+
+  if (documentBaselineRef.current === "__unset__") {
+    documentBaselineRef.current = serializeWorkspaceStateForDocument(workspaceState);
+  }
 
   useEffect(() => {
     const emitRuntimeEvent = (level: "info" | "error", message: string) => {
@@ -699,6 +932,41 @@ function App() {
     []
   );
 
+  const syncServiceConfigFromBackend = useCallback(
+    async (options?: { preservePreview?: boolean }) => {
+      const preservePreview = options?.preservePreview ?? true;
+
+      try {
+        const savedConfig = await invoke<ServiceConfig | null>("load_saved_api_service_config");
+        const nextConfig = savedConfig
+          ? {
+              ...savedConfig,
+              keepRunningInTray: true,
+            }
+          : DEFAULT_SERVICE_CONFIG;
+
+        if (!preservePreview || serviceConfigPreview === null) {
+          if (!areServiceConfigsEqual(serviceConfigRef.current, nextConfig)) {
+            serviceConfigRef.current = nextConfig;
+            setServiceConfig(nextConfig);
+          }
+        }
+
+        return nextConfig;
+      } catch {
+        if (!preservePreview || serviceConfigPreview === null) {
+          if (!areServiceConfigsEqual(serviceConfigRef.current, DEFAULT_SERVICE_CONFIG)) {
+            serviceConfigRef.current = DEFAULT_SERVICE_CONFIG;
+            setServiceConfig(DEFAULT_SERVICE_CONFIG);
+          }
+        }
+
+        return DEFAULT_SERVICE_CONFIG;
+      }
+    },
+    [serviceConfigPreview]
+  );
+
   useEffect(() => {
     workspaceRef.current = workspaceState;
   }, [workspaceState]);
@@ -706,6 +974,143 @@ function App() {
   useEffect(() => {
     serviceConfigRef.current = serviceConfig;
   }, [serviceConfig]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void syncServiceConfigFromBackend({ preservePreview: false }).finally(() => {
+      if (!cancelled) {
+        setHasLoadedServiceConfig(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [syncServiceConfigFromBackend]);
+
+  useEffect(() => {
+    documentMetaRef.current = documentMeta;
+  }, [documentMeta]);
+
+  useEffect(() => {
+    void Promise.resolve(invoke<string>("get_current_window_label"))
+      .then((label) => {
+        setWindowStorageScope(label);
+
+        if (label !== "main") {
+          const scopedWorkspace = loadWorkspaceState(label);
+          const scopedDocumentMeta = loadWorkspaceDocumentMeta(label);
+          documentBaselineRef.current = serializeWorkspaceStateForDocument(scopedWorkspace);
+          setWorkspaceState(scopedWorkspace);
+          setDocumentMeta(scopedDocumentMeta);
+        }
+      })
+      .catch(() => {
+        setWindowStorageScope("main");
+      });
+  }, []);
+
+  useEffect(() => {
+    const serializedWorkspace = serializeWorkspaceStateForDocument(workspaceState);
+    const isDirty = serializedWorkspace !== documentBaselineRef.current;
+
+    setDocumentMeta((current) =>
+      current.isDirty === isDirty ? current : { ...current, isDirty }
+    );
+  }, [workspaceState]);
+
+  useEffect(() => {
+    if (!isBrowserReady() || windowStorageScope === null) {
+      return;
+    }
+
+    const scopedMetaKey = getScopedStorageKey(
+      WORKSPACE_DOCUMENT_META_STORAGE_KEY,
+      windowStorageScope
+    );
+    if (!documentMeta.path) {
+      window.localStorage.removeItem(scopedMetaKey);
+      return;
+    }
+
+    window.localStorage.setItem(
+      scopedMetaKey,
+      JSON.stringify(createPersistedWorkspaceDocumentMeta(documentMeta))
+    );
+  }, [documentMeta.lastSavedAt, documentMeta.path, windowStorageScope]);
+
+  useEffect(() => {
+    if (!isBrowserReady()) {
+      return;
+    }
+
+    window.localStorage.setItem(
+      RECENT_WORKSPACE_DOCUMENTS_STORAGE_KEY,
+      JSON.stringify(recentWorkspaceDocuments)
+    );
+  }, [recentWorkspaceDocuments]);
+
+  useEffect(() => {
+    if (!isBrowserReady()) {
+      return;
+    }
+
+    window.localStorage.setItem(
+      DOCUMENT_AUTOSAVE_ENABLED_STORAGE_KEY,
+      autosaveEnabled ? "true" : "false"
+    );
+  }, [autosaveEnabled]);
+
+  useEffect(() => {
+    void Promise.resolve(
+      invoke("set_current_window_title", {
+        title: buildWorkspaceWindowTitle(documentMeta),
+      })
+    ).catch(() => {
+      // Ignore title update failures so document state stays functional.
+    });
+  }, [documentMeta]);
+
+  useEffect(() => {
+    void Promise.resolve(
+      invoke("set_current_window_document_state", {
+        isDirty: documentMeta.isDirty,
+        documentName: documentMeta.name,
+      })
+    ).catch(() => {
+      // Ignore sync failures so editing stays functional.
+    });
+  }, [documentMeta.isDirty, documentMeta.name]);
+
+  useEffect(() => {
+    let isDisposed = false;
+    let unlistenWindowCloseRequest: null | (() => void) = null;
+
+    void listen<WindowCloseRequestPayload>("shipflow://window-close-requested", (event) => {
+      if (isDisposed) {
+        return;
+      }
+
+      setPendingWindowCloseRequest({
+        documentName: event.payload.documentName,
+      });
+    }).then((unlisten) => {
+      if (isDisposed) {
+        void unlisten();
+        return;
+      }
+
+      unlistenWindowCloseRequest = unlisten;
+    });
+
+    return () => {
+      isDisposed = true;
+      if (unlistenWindowCloseRequest) {
+        void unlistenWindowCloseRequest();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const scrollContainer = sheetScrollRef.current;
@@ -778,18 +1183,17 @@ function App() {
   }, [displayScale]);
 
   useEffect(() => {
-    if (!isBrowserReady()) {
+    if (!isBrowserReady() || windowStorageScope === null) {
       return;
     }
 
-    window.localStorage.setItem(
-      SERVICE_CONFIG_STORAGE_KEY,
-      JSON.stringify(serviceConfig)
-    );
-  }, [serviceConfig]);
+    if (!documentMeta.path) {
+      clearScopedStorageKey(WORKSPACE_STATE_STORAGE_KEY, windowStorageScope);
+      return;
+    }
 
-  useEffect(() => {
-    if (!isBrowserReady()) {
+    // Unsaved edits should be lost on exit; keep only the last clean snapshot.
+    if (documentMeta.isDirty) {
       return;
     }
 
@@ -797,7 +1201,10 @@ function App() {
       const serialized = JSON.stringify(
         createStorageSafeWorkspaceState(workspaceState, mode)
       );
-      window.localStorage.setItem(WORKSPACE_STATE_STORAGE_KEY, serialized);
+      window.localStorage.setItem(
+        getScopedStorageKey(WORKSPACE_STATE_STORAGE_KEY, windowStorageScope),
+        serialized
+      );
     };
 
     try {
@@ -817,7 +1224,470 @@ function App() {
         );
       }
     }
-  }, [workspaceState]);
+  }, [documentMeta.isDirty, documentMeta.path, windowStorageScope, workspaceState]);
+
+  const closeDocumentDialog = useCallback(() => {
+    setDocumentDialogMode(null);
+    setDocumentPathDraft("");
+  }, []);
+
+  const claimCurrentWorkspaceDocumentPath = useCallback(
+    async (path: string | null) => {
+      return Promise.resolve(
+        invoke<WorkspaceDocumentClaimResult>("claim_current_workspace_document", {
+          path,
+        })
+      );
+    },
+    []
+  );
+
+  const openDocumentDialog = useCallback(
+    (mode: WorkspaceDocumentDialogMode) => {
+      setDocumentDialogMode(mode);
+      setDocumentPathDraft(documentMeta.path ?? "");
+    },
+    [documentMeta.path]
+  );
+
+  const confirmReplaceCurrentDocument = useCallback((message: string) => {
+    const hasUnsavedChanges =
+      serializeWorkspaceStateForDocument(workspaceRef.current) !== documentBaselineRef.current;
+
+    if (!hasUnsavedChanges) {
+      return true;
+    }
+
+    return window.confirm(message);
+  }, []);
+
+  const saveWorkspaceDocumentToPath = useCallback(
+    async (path: string, options?: { silent?: boolean }) => {
+      const trimmedPath = path.trim();
+      if (!trimmedPath || documentSaveInFlightRef.current) {
+        return false;
+      }
+
+      const previousPath = documentMetaRef.current.path;
+      const claimResult = await claimCurrentWorkspaceDocumentPath(trimmedPath);
+      if (claimResult.status === "alreadyOpen") {
+        if (!options?.silent) {
+          showActionNotice(workspaceRef.current.activeSheetId, {
+            tone: "info",
+            message: "Dokumen itu sudah terbuka di jendela lain.",
+          });
+        }
+        return false;
+      }
+
+      const savedAt = new Date().toISOString();
+      const serializedWorkspace = serializeWorkspaceStateForDocument(workspaceRef.current);
+      const document = createWorkspaceDocumentFile(
+        JSON.parse(serializedWorkspace) as WorkspaceState,
+        savedAt
+      );
+
+      documentSaveInFlightRef.current = true;
+      setDocumentMeta((current) => ({
+        ...current,
+        persistenceStatus: "saving",
+        errorMessage: null,
+      }));
+
+      try {
+        const result = await Promise.resolve(
+          invoke<WorkspaceDocumentWriteResult>("write_workspace_document", {
+            path: trimmedPath,
+            document,
+          })
+        );
+
+        documentBaselineRef.current = serializedWorkspace;
+        setDocumentMeta({
+          path: result.path,
+          name: getWorkspaceDocumentName(result.path),
+          isDirty: false,
+          lastSavedAt: result.savedAt,
+          persistenceStatus: "idle",
+          errorMessage: null,
+        });
+        setRecentWorkspaceDocuments((current) =>
+          pushRecentWorkspaceDocument(current, result.path)
+        );
+
+        if (!options?.silent) {
+          showActionNotice(workspaceRef.current.activeSheetId, {
+            tone: "success",
+            message: "Dokumen berhasil disimpan.",
+          });
+        }
+
+        return true;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Gagal menyimpan dokumen.";
+
+        if (previousPath !== trimmedPath) {
+          void claimCurrentWorkspaceDocumentPath(previousPath);
+        }
+
+        setDocumentMeta((current) => ({
+          ...current,
+          persistenceStatus: "error",
+          errorMessage: message,
+        }));
+
+        if (!options?.silent) {
+          showActionNotice(workspaceRef.current.activeSheetId, {
+            tone: "error",
+            message,
+          });
+        }
+
+        return false;
+      } finally {
+        documentSaveInFlightRef.current = false;
+      }
+    },
+    [claimCurrentWorkspaceDocumentPath]
+  );
+
+  const applyWorkspaceDocument = useCallback(
+    (path: string, document: WorkspaceDocumentFile) => {
+      const normalizedWorkspace = normalizePersistedWorkspaceState(document.workspace);
+      const serializedWorkspace = serializeWorkspaceStateForDocument(normalizedWorkspace);
+      documentBaselineRef.current = serializedWorkspace;
+      setWorkspaceState(normalizedWorkspace);
+      setDocumentMeta({
+        path,
+        name: getWorkspaceDocumentName(path),
+        isDirty: false,
+        lastSavedAt: document.savedAt,
+        persistenceStatus: "idle",
+        errorMessage: null,
+      });
+    },
+    []
+  );
+
+  const openWorkspaceDocumentFromPath = useCallback(
+    async (path: string) => {
+      const trimmedPath = path.trim();
+      if (!trimmedPath) {
+        return false;
+      }
+
+      if (!confirmReplaceCurrentDocument("Perubahan belum disimpan. Buka dokumen lain?")) {
+        return false;
+      }
+
+      const previousPath = documentMetaRef.current.path;
+      const claimResult = await claimCurrentWorkspaceDocumentPath(trimmedPath);
+      if (claimResult.status === "alreadyOpen") {
+        showActionNotice(workspaceRef.current.activeSheetId, {
+          tone: "info",
+          message: "Dokumen itu sudah terbuka di jendela lain.",
+        });
+        return false;
+      }
+
+      try {
+        const result = await Promise.resolve(
+          invoke<WorkspaceDocumentReadResult>("read_workspace_document", {
+            path: trimmedPath,
+          })
+        );
+
+        applyWorkspaceDocument(result.path, result.document);
+        setRecentWorkspaceDocuments((current) =>
+          pushRecentWorkspaceDocument(current, result.path)
+        );
+        showActionNotice(workspaceRef.current.activeSheetId, {
+          tone: "success",
+          message: "Dokumen berhasil dibuka.",
+        });
+        return true;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Gagal membuka dokumen.";
+        void claimCurrentWorkspaceDocumentPath(previousPath);
+        showActionNotice(workspaceRef.current.activeSheetId, {
+          tone: "error",
+          message,
+        });
+        return false;
+      }
+    },
+    [applyWorkspaceDocument, claimCurrentWorkspaceDocumentPath, confirmReplaceCurrentDocument]
+  );
+
+  const openWorkspaceDocumentWithPicker = useCallback(async () => {
+    try {
+      const pickedPath = await pickWorkspaceDocumentPath("open");
+      if (!pickedPath) {
+        return false;
+      }
+
+      return openWorkspaceDocumentFromPath(pickedPath);
+    } catch {
+      openDocumentDialog("open");
+      return false;
+    }
+  }, [openDocumentDialog, openWorkspaceDocumentFromPath]);
+
+  const createNewWorkspaceDocument = useCallback(() => {
+    const hasUnsavedChanges =
+      serializeWorkspaceStateForDocument(workspaceRef.current) !== documentBaselineRef.current;
+
+    if (hasUnsavedChanges && !window.confirm("Perubahan belum disimpan. Buat dokumen baru?")) {
+      return;
+    }
+
+    const nextWorkspace = createDefaultWorkspaceState();
+    documentBaselineRef.current = serializeWorkspaceStateForDocument(nextWorkspace);
+    setWorkspaceState(nextWorkspace);
+    setDocumentMeta(createDefaultWorkspaceDocumentMeta());
+    void claimCurrentWorkspaceDocumentPath(null);
+    showActionNotice(nextWorkspace.activeSheetId, {
+      tone: "info",
+      message: "Dokumen baru dibuat.",
+    });
+  }, [claimCurrentWorkspaceDocumentPath]);
+
+  const saveCurrentWorkspaceDocument = useCallback(async () => {
+    if (documentMeta.path) {
+      return saveWorkspaceDocumentToPath(documentMeta.path);
+    }
+
+    try {
+      const pickedPath = await pickWorkspaceDocumentPath("save", documentMeta.name);
+      if (!pickedPath) {
+        return false;
+      }
+
+      return saveWorkspaceDocumentToPath(pickedPath);
+    } catch {
+      openDocumentDialog("saveAs");
+    }
+
+    return false;
+  }, [documentMeta.name, documentMeta.path, openDocumentDialog, saveWorkspaceDocumentToPath]);
+
+  const saveWorkspaceDocumentAs = useCallback(async () => {
+    try {
+      const pickedPath = await pickWorkspaceDocumentPath("save", documentMeta.name);
+      if (!pickedPath) {
+        return false;
+      }
+
+      return saveWorkspaceDocumentToPath(pickedPath);
+    } catch {
+      openDocumentDialog("saveAs");
+      return false;
+    }
+  }, [documentMeta.name, openDocumentDialog, saveWorkspaceDocumentToPath]);
+
+  const createNewWorkspaceWindow = useCallback(async () => {
+    const result = await Promise.resolve(
+      invoke<WorkspaceDocumentClaimResult>("create_workspace_window", {
+        documentPath: null,
+      })
+    );
+
+    if (result.status === "alreadyOpen") {
+      showActionNotice(workspaceRef.current.activeSheetId, {
+        tone: "info",
+        message: "Dokumen itu sudah terbuka di jendela lain.",
+      });
+    }
+  }, []);
+
+  const openWorkspaceInNewWindow = useCallback(async () => {
+    try {
+      const pickedPath = await pickWorkspaceDocumentPath("open");
+      if (!pickedPath) {
+        return;
+      }
+
+      const result = await Promise.resolve(
+        invoke<WorkspaceDocumentClaimResult>("create_workspace_window", {
+          documentPath: pickedPath,
+        })
+      );
+
+      if (result.status === "alreadyOpen") {
+        showActionNotice(workspaceRef.current.activeSheetId, {
+          tone: "info",
+          message: "Dokumen itu sudah terbuka di jendela lain.",
+        });
+      } else {
+        setRecentWorkspaceDocuments((current) =>
+          pushRecentWorkspaceDocument(current, pickedPath)
+        );
+      }
+    } catch {
+      showActionNotice(workspaceRef.current.activeSheetId, {
+        tone: "error",
+        message: "Gagal membuka pemilih file untuk jendela baru.",
+      });
+    }
+  }, []);
+
+  const submitDocumentDialog = useCallback(async () => {
+    if (documentDialogMode === "open") {
+      const didOpen = await openWorkspaceDocumentFromPath(documentPathDraft);
+      if (didOpen) {
+        closeDocumentDialog();
+      }
+      return;
+    }
+
+    if (documentDialogMode === "saveAs") {
+      const didSave = await saveWorkspaceDocumentToPath(documentPathDraft);
+      if (didSave) {
+        closeDocumentDialog();
+      }
+    }
+  }, [
+    closeDocumentDialog,
+    documentDialogMode,
+    documentPathDraft,
+    openWorkspaceDocumentFromPath,
+    saveWorkspaceDocumentToPath,
+  ]);
+
+  useEffect(() => {
+    if (
+      !isAutosaveActive ||
+      !documentMeta.path ||
+      !documentMeta.isDirty ||
+      documentSaveInFlightRef.current
+    ) {
+      return;
+    }
+
+    const autosavePath = documentMeta.path;
+
+    if (documentAutosaveTimeoutRef.current !== null) {
+      window.clearTimeout(documentAutosaveTimeoutRef.current);
+    }
+
+    documentAutosaveTimeoutRef.current = window.setTimeout(() => {
+      void saveWorkspaceDocumentToPath(autosavePath, { silent: true });
+      documentAutosaveTimeoutRef.current = null;
+    }, 700);
+
+    return () => {
+      if (documentAutosaveTimeoutRef.current !== null) {
+        window.clearTimeout(documentAutosaveTimeoutRef.current);
+        documentAutosaveTimeoutRef.current = null;
+      }
+    };
+  }, [
+    isAutosaveActive,
+    documentMeta.isDirty,
+    documentMeta.path,
+    saveWorkspaceDocumentToPath,
+    workspaceState,
+  ]);
+
+  useEffect(() => {
+    const handleDocumentShortcuts = (event: globalThis.KeyboardEvent) => {
+      const isModifierPressed = event.metaKey || event.ctrlKey;
+      if (!isModifierPressed || event.key.toLowerCase() !== "s") {
+        return;
+      }
+
+      event.preventDefault();
+      if (event.shiftKey) {
+        openDocumentDialog("saveAs");
+        return;
+      }
+
+      void saveCurrentWorkspaceDocument();
+    };
+
+    window.addEventListener("keydown", handleDocumentShortcuts);
+
+    return () => {
+      window.removeEventListener("keydown", handleDocumentShortcuts);
+    };
+  }, [openDocumentDialog, saveCurrentWorkspaceDocument]);
+
+  useEffect(() => {
+    void Promise.resolve(
+      invoke<WorkspaceWindowLaunchRequest | null>("take_pending_workspace_window_request")
+    )
+      .then((request) => {
+        if (!request) {
+          return;
+        }
+
+        if (request.documentPath) {
+          void openWorkspaceDocumentFromPath(request.documentPath);
+          return;
+        }
+
+        if (request.startFresh) {
+          const nextWorkspace = createDefaultWorkspaceState();
+          documentBaselineRef.current = serializeWorkspaceStateForDocument(nextWorkspace);
+          setWorkspaceState(nextWorkspace);
+          setDocumentMeta(createDefaultWorkspaceDocumentMeta());
+        }
+      })
+      .catch(() => {
+        // Ignore launch request failures for the primary window.
+      });
+  }, [openWorkspaceDocumentFromPath]);
+
+  useEffect(() => {
+    if (!documentMeta.path) {
+      return;
+    }
+
+    void claimCurrentWorkspaceDocumentPath(documentMeta.path);
+  }, [claimCurrentWorkspaceDocumentPath, documentMeta.path]);
+
+  const resolvePendingWindowClose = useCallback(
+    async (action: "cancel" | "discard") => {
+      await Promise.resolve(
+        invoke("resolve_window_close_request", {
+          action,
+        })
+      );
+      setPendingWindowCloseRequest(null);
+    },
+    []
+  );
+
+  const cancelPendingWindowClose = useCallback(() => {
+    setIsResolvingWindowClose(true);
+    void resolvePendingWindowClose("cancel").finally(() => {
+      setIsResolvingWindowClose(false);
+    });
+  }, [resolvePendingWindowClose]);
+
+  const discardPendingWindowClose = useCallback(() => {
+    setIsResolvingWindowClose(true);
+    void resolvePendingWindowClose("discard").finally(() => {
+      setIsResolvingWindowClose(false);
+    });
+  }, [resolvePendingWindowClose]);
+
+  const saveAndCloseWindow = useCallback(() => {
+    setIsResolvingWindowClose(true);
+    void saveCurrentWorkspaceDocument()
+      .then((didSave) => {
+        if (!didSave) {
+          return;
+        }
+
+        return resolvePendingWindowClose("discard");
+      })
+      .finally(() => {
+        setIsResolvingWindowClose(false);
+      });
+  }, [resolvePendingWindowClose, saveCurrentWorkspaceDocument]);
 
   const previewDisplayScale = useCallback((scale: DisplayScale) => {
     setDisplayScalePreview(scale);
@@ -863,6 +1733,46 @@ function App() {
     [previewServiceConfig]
   );
 
+  const previewTrackingSource = useCallback(
+    (trackingSource: TrackingSource) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        trackingSource,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewExternalApiBaseUrl = useCallback(
+    (externalApiBaseUrl: string) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        externalApiBaseUrl,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewExternalApiAuthToken = useCallback(
+    (externalApiAuthToken: string) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        externalApiAuthToken,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewAllowInsecureExternalApiHttp = useCallback(
+    (allowInsecureExternalApiHttp: boolean) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        allowInsecureExternalApiHttp,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
   const previewGenerateServiceToken = useCallback(() => {
     previewServiceConfig((current) => ({
       ...current,
@@ -876,22 +1786,6 @@ function App() {
       authToken: createServiceToken(),
     }));
   }, [previewServiceConfig]);
-
-  const confirmSettings = useCallback(() => {
-    setDisplayScale((current) => displayScalePreview ?? current);
-    setDisplayScalePreview(null);
-    setServiceConfig((current) => {
-      if (!serviceConfigPreview) {
-        return current;
-      }
-
-      return {
-        ...serviceConfigPreview,
-        lastUpdatedAt: new Date().toISOString(),
-      };
-    });
-    setServiceConfigPreview(null);
-  }, [displayScalePreview, serviceConfigPreview]);
 
   const cancelSettingsPreview = useCallback(() => {
     setDisplayScalePreview(null);
@@ -1041,37 +1935,99 @@ function App() {
     []
   );
 
-  const showActionNotice = useCallback((sheetId: string, notice: ActionNotice) => {
+  const showActionNotice = useCallback((_sheetId: string, notice: ActionNotice) => {
     const noticeId = notice.id || createRequestId();
 
-    setActionNoticeBySheetId((current) => ({
-      ...current,
-      [sheetId]: [...(current[sheetId] ?? []), { ...notice, id: noticeId }].slice(-5),
-    }));
+    setActionNotices((current) => [...current, { ...notice, id: noticeId }].slice(-5));
 
     const timeoutId = window.setTimeout(() => {
-      setActionNoticeBySheetId((current) => {
-        const currentNotices = current[sheetId] ?? [];
-        if (currentNotices.length === 0) {
-          return current;
-        }
-
-        const nextSheetNotices = currentNotices.filter(
-          (currentNotice) => currentNotice.id !== noticeId
-        );
-        const next = { ...current };
-        if (nextSheetNotices.length > 0) {
-          next[sheetId] = nextSheetNotices;
-        } else {
-          delete next[sheetId];
-        }
-        return next;
-      });
+      setActionNotices((current) =>
+        current.filter((currentNotice) => currentNotice.id !== noticeId)
+      );
       actionNoticeTimeoutsRef.current.delete(noticeId);
     }, 2200);
 
     actionNoticeTimeoutsRef.current.set(noticeId, timeoutId);
   }, []);
+
+  const openShipFlowServiceApp = useCallback(async () => {
+    try {
+      await invoke("open_shipflow_service_app");
+    } catch {
+      showActionNotice(workspaceRef.current.activeSheetId, {
+        tone: "error",
+        message: "Gagal membuka ShipFlow Service.",
+      });
+    }
+  }, [showActionNotice]);
+
+  const applyServiceConfig = useCallback(
+    async (nextConfig: ServiceConfig) => {
+      try {
+        const status = await invoke<ApiServiceStatus>("configure_api_service", {
+          config: nextConfig,
+        });
+        serviceConfigRef.current = nextConfig;
+        setServiceConfig(nextConfig);
+        setApiServiceStatus(status);
+        return true;
+      } catch (error) {
+        setApiServiceStatus({
+          status: "error",
+          enabled: nextConfig.enabled,
+          mode: nextConfig.mode,
+          bindAddress: nextConfig.mode === "lan" ? "0.0.0.0" : "127.0.0.1",
+          port: nextConfig.port,
+          errorMessage:
+            error instanceof Error ? error.message : "Gagal mengonfigurasi akses API eksternal.",
+        });
+        showActionNotice(workspaceRef.current.activeSheetId, {
+          tone: "error",
+          message:
+            error instanceof Error ? error.message : "Gagal mengonfigurasi akses API eksternal.",
+        });
+        return false;
+      }
+    },
+    [showActionNotice]
+  );
+
+  const confirmSettings = useCallback(async () => {
+    const nextServiceConfig = serviceConfigPreview
+      ? {
+          ...serviceConfigPreview,
+          keepRunningInTray: true,
+          lastUpdatedAt: new Date().toISOString(),
+        }
+      : null;
+
+    if (nextServiceConfig) {
+      try {
+        await invoke("validate_tracking_source_config", { config: nextServiceConfig });
+      } catch (error) {
+        showActionNotice(workspaceRef.current.activeSheetId, {
+          tone: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Konfigurasi sumber tracking tidak valid.",
+        });
+        return false;
+      }
+    }
+
+    if (nextServiceConfig) {
+      const didApply = await applyServiceConfig(nextServiceConfig);
+      if (!didApply) {
+        return false;
+      }
+    }
+
+    setDisplayScale((current) => displayScalePreview ?? current);
+    setDisplayScalePreview(null);
+    setServiceConfigPreview(null);
+    return true;
+  }, [applyServiceConfig, displayScalePreview, serviceConfigPreview, showActionNotice]);
 
   const refreshApiServiceStatus = useCallback(async () => {
     try {
@@ -1088,69 +2044,37 @@ function App() {
         errorMessage:
           error instanceof Error
             ? error.message
-            : "Gagal membaca status API service.",
+            : "Gagal membaca status akses API eksternal.",
       });
     }
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-
-    void invoke<ApiServiceStatus>("configure_api_service", { config: serviceConfig })
-      .then((status) => {
-        if (cancelled) {
-          return;
-        }
-
-        setApiServiceStatus(status);
-      })
-      .catch((error) => {
-        if (cancelled) {
-          return;
-        }
-
-        setApiServiceStatus({
-          status: "error",
-          enabled: serviceConfig.enabled,
-          mode: serviceConfig.mode,
-          bindAddress: serviceConfig.mode === "lan" ? "0.0.0.0" : "127.0.0.1",
-          port: serviceConfig.port,
-          errorMessage:
-            error instanceof Error
-              ? error.message
-              : "Gagal mengonfigurasi API service.",
-        });
-        showActionNotice(workspaceRef.current.activeSheetId, {
-          tone: "error",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Gagal mengonfigurasi API service.",
-        });
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [serviceConfig, showActionNotice]);
-
-  useEffect(() => {
-    void refreshApiServiceStatus();
-  }, [refreshApiServiceStatus]);
-
-  useEffect(() => {
-    if (!serviceConfig.enabled) {
+    if (!hasLoadedServiceConfig) {
       return;
     }
 
-    const intervalId = window.setInterval(() => {
+    void refreshApiServiceStatus();
+  }, [hasLoadedServiceConfig, refreshApiServiceStatus]);
+
+  useEffect(() => {
+    if (!hasLoadedServiceConfig) {
+      return;
+    }
+
+    const syncFromService = () => {
+      void syncServiceConfigFromBackend();
       void refreshApiServiceStatus();
-    }, 5000);
+    };
+
+    const intervalId = window.setInterval(syncFromService, 5000);
+    window.addEventListener("focus", syncFromService);
 
     return () => {
       window.clearInterval(intervalId);
+      window.removeEventListener("focus", syncFromService);
     };
-  }, [refreshApiServiceStatus, serviceConfig.enabled]);
+  }, [hasLoadedServiceConfig, refreshApiServiceStatus, syncServiceConfigFromBackend]);
 
   const focusFirstTrackingInput = useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -1170,7 +2094,7 @@ function App() {
       } catch (error) {
         showActionNotice(activeSheetId, {
           tone: "error",
-          message: "Gagal membuka sumber scrap.",
+          message: "Gagal membuka sumber tracking.",
         });
         console.error("[ShipFlow] Unable to open source link.", error);
       }
@@ -1308,6 +2232,22 @@ function App() {
   const exportableRows = useMemo(() => {
     return getExportableRows(activeSheet.rows, displayedRows, selectedVisibleRowKeys);
   }, [displayedRows, activeSheet.rows, selectedVisibleRowKeys]);
+
+  const retryFailedEntries = useMemo(
+    () =>
+      activeSheet.rows
+        .filter(
+          (row) =>
+            row.trackingInput.trim() !== "" &&
+            !row.loading &&
+            (row.error !== "" || row.stale || row.dirty)
+        )
+        .map((row) => ({
+          key: row.key,
+          value: row.trackingInput.trim(),
+        })),
+    [activeSheet.rows]
+  );
 
   const hiddenColumns = useMemo(
     () => getHiddenColumns(activeSheet),
@@ -1777,14 +2717,7 @@ function App() {
       return;
     }
 
-    void navigator.clipboard
-      .writeText(selectedTrackingIds.join("\n"))
-      .then(() =>
-        showActionNotice(activeSheetId, {
-          tone: "success",
-          message: `${selectedTrackingIds.length} ID kiriman berhasil disalin.`,
-        })
-      )
+    void writeClipboardText(selectedTrackingIds.join("\n"))
       .catch(() =>
         showActionNotice(activeSheetId, {
           tone: "error",
@@ -1798,14 +2731,7 @@ function App() {
       return;
     }
 
-    void navigator.clipboard
-      .writeText(allTrackingIds.join("\n"))
-      .then(() =>
-        showActionNotice(activeSheetId, {
-          tone: "success",
-          message: `${allTrackingIds.length} ID kiriman berhasil disalin.`,
-        })
-      )
+    void writeClipboardText(allTrackingIds.join("\n"))
       .catch(() =>
         showActionNotice(activeSheetId, {
           tone: "error",
@@ -1821,14 +2747,7 @@ function App() {
         return;
       }
 
-      void navigator.clipboard
-        .writeText(trackingId)
-        .then(() =>
-          showActionNotice(activeSheetId, {
-            tone: "success",
-            message: "ID kiriman berhasil disalin.",
-          })
-        )
+      void writeClipboardText(trackingId)
         .catch(() =>
           showActionNotice(activeSheetId, {
             tone: "error",
@@ -1839,30 +2758,98 @@ function App() {
     [activeSheetId, showActionNotice]
   );
 
+  const copyServiceEndpoint = useCallback(
+    (endpoint: string) => {
+      if (!endpoint.trim()) {
+        return;
+      }
+
+      void writeClipboardText(endpoint)
+        .then(() =>
+          showActionNotice(activeSheetId, {
+            tone: "success",
+            message: "Endpoint API berhasil disalin.",
+          })
+        )
+        .catch(() =>
+          showActionNotice(activeSheetId, {
+            tone: "error",
+            message: "Gagal menyalin endpoint API.",
+          })
+        );
+    },
+    [activeSheetId, showActionNotice]
+  );
+
+  const copyServiceToken = useCallback(
+    (token: string) => {
+      if (!token.trim()) {
+        return;
+      }
+
+      void writeClipboardText(token)
+        .then(() =>
+          showActionNotice(activeSheetId, {
+            tone: "success",
+            message: "Auth token berhasil disalin.",
+          })
+        )
+        .catch(() =>
+          showActionNotice(activeSheetId, {
+            tone: "error",
+            message: "Gagal menyalin auth token.",
+          })
+        );
+    },
+    [activeSheetId, showActionNotice]
+  );
+
+  const testExternalTrackingSource = useCallback(async (config: ServiceConfig) => {
+    return invoke<string>("test_external_tracking_source", { config });
+  }, []);
+
   const clearSelection = useCallback(() => {
     disarmDeleteSelected();
     updateActiveSheet((current) => clearSelectionInSheet(current));
   }, [disarmDeleteSelected, updateActiveSheet]);
 
-  const createSheetFromSelectedIds = useCallback(() => {
+  const transferSelectedIdsToNewSheet = useCallback((mode: SelectionTransferMode) => {
     if (selectedTrackingIds.length === 0) {
       return;
     }
 
     disarmDeleteAll();
+    disarmDeleteSelected();
     setHoveredColumn(null);
 
+    if (mode === "move") {
+      abortRowTrackingWork(activeSheetId, selectedVisibleRowKeys, "selected_rows_deleted");
+    }
+
     const currentWorkspace = workspaceRef.current;
-    const result = createSheetWithTrackingIdsInWorkspace(
-      currentWorkspace,
-      selectedTrackingIds
-    );
+    const result =
+      mode === "move"
+        ? moveTrackingIdsToNewSheetInWorkspace(
+            currentWorkspace,
+            activeSheetId,
+            selectedVisibleRowKeys,
+            selectedTrackingIds
+          )
+        : createSheetWithTrackingIdsInWorkspace(currentWorkspace, selectedTrackingIds);
 
     setWorkspaceState(result.workspaceState);
 
     if (result.targetKeys.length === 0) {
       return;
     }
+
+    showActionNotice(result.sheetId, {
+      tone: "success",
+      message:
+        mode === "move"
+          ? `${selectedTrackingIds.length} ID dipindahkan ke sheet baru.`
+          : `${selectedTrackingIds.length} ID disalin ke sheet baru.`,
+    });
 
     void runBulkPasteFetches(
       result.sheetId,
@@ -1871,22 +2858,72 @@ function App() {
         value: selectedTrackingIds[index],
       }))
     );
-  }, [disarmDeleteAll, runBulkPasteFetches, selectedTrackingIds]);
+  }, [
+    abortRowTrackingWork,
+    activeSheetId,
+    disarmDeleteAll,
+    disarmDeleteSelected,
+    runBulkPasteFetches,
+    selectedTrackingIds,
+    selectedVisibleRowKeys,
+    showActionNotice,
+  ]);
 
-  const appendSelectedIdsToExistingSheet = useCallback(
-    (targetSheetId: string) => {
+  const beginSelectedIdsDrag = useCallback(
+    (event: ReactDragEvent<HTMLButtonElement>) => {
+      if (selectedTrackingIds.length === 0) {
+        event.preventDefault();
+        return;
+      }
+
+      const payload = JSON.stringify({
+        sourceSheetId: activeSheetId,
+        rowKeys: selectedVisibleRowKeys,
+        trackingIds: selectedTrackingIds,
+      });
+
+      event.dataTransfer.setData("application/x-shipflow-selected-ids", payload);
+      event.dataTransfer.setData("text/plain", selectedTrackingIds.join("\n"));
+      event.dataTransfer.effectAllowed = "copyMove";
+      setIsSheetTransferDragActive(true);
+    },
+    [activeSheetId, selectedTrackingIds, selectedVisibleRowKeys]
+  );
+
+  const endSelectedIdsDrag = useCallback(() => {
+    setIsSheetTransferDragActive(false);
+  }, []);
+
+  const transferSelectedIdsToExistingSheet = useCallback(
+    (mode: SelectionTransferMode, targetSheetId: string) => {
       if (selectedTrackingIds.length === 0) {
         return;
+      }
+
+      disarmDeleteAll();
+      disarmDeleteSelected();
+
+      if (mode === "move") {
+        abortRowTrackingWork(activeSheetId, selectedVisibleRowKeys, "selected_rows_deleted");
       }
 
       const currentWorkspace = workspaceRef.current;
       const targetSheetName =
         currentWorkspace.sheetMetaById[targetSheetId]?.name ?? "Sheet";
-      const result = appendTrackingIdsToExistingSheetInWorkspace(
-        currentWorkspace,
-        targetSheetId,
-        selectedTrackingIds
-      );
+      const result =
+        mode === "move"
+          ? moveTrackingIdsToExistingSheetInWorkspace(
+              currentWorkspace,
+              activeSheetId,
+              targetSheetId,
+              selectedVisibleRowKeys,
+              selectedTrackingIds
+            )
+          : appendTrackingIdsToExistingSheetInWorkspace(
+              currentWorkspace,
+              targetSheetId,
+              selectedTrackingIds
+            );
 
       setWorkspaceState(result.workspaceState);
 
@@ -1896,7 +2933,10 @@ function App() {
 
       showActionNotice(activeSheetId, {
         tone: "success",
-        message: `${selectedTrackingIds.length} ID ditambahkan ke ${targetSheetName}.`,
+        message:
+          mode === "move"
+            ? `${selectedTrackingIds.length} ID dipindahkan ke ${targetSheetName}.`
+            : `${selectedTrackingIds.length} ID ditambahkan ke ${targetSheetName}.`,
       });
 
       void runBulkPasteFetches(
@@ -1907,12 +2947,56 @@ function App() {
         }))
       );
     },
-    [activeSheetId, runBulkPasteFetches, selectedTrackingIds, showActionNotice]
+    [
+      abortRowTrackingWork,
+      activeSheetId,
+      disarmDeleteAll,
+      disarmDeleteSelected,
+      runBulkPasteFetches,
+      selectedTrackingIds,
+      selectedVisibleRowKeys,
+      showActionNotice,
+    ]
+  );
+
+  const dropSelectedIdsToExistingSheet = useCallback(
+    (targetSheetId: string, mode: SelectionTransferMode) => {
+      setIsSheetTransferDragActive(false);
+      transferSelectedIdsToExistingSheet(mode, targetSheetId);
+    },
+    [transferSelectedIdsToExistingSheet]
+  );
+
+  const dropSelectedIdsToNewSheet = useCallback(
+    (mode: SelectionTransferMode) => {
+      setIsSheetTransferDragActive(false);
+      transferSelectedIdsToNewSheet(mode);
+    },
+    [transferSelectedIdsToNewSheet]
   );
 
   const clearAllFilters = useCallback(() => {
     updateActiveSheet((current) => clearFiltersInSheet(current));
   }, [updateActiveSheet]);
+
+  const retryFailedRows = useCallback(() => {
+    if (retryFailedEntries.length === 0) {
+      return;
+    }
+
+    disarmDeleteAll();
+    void runBulkPasteFetches(activeSheetId, retryFailedEntries);
+    showActionNotice(activeSheetId, {
+      tone: "info",
+      message: "Proses lacak ulang dimulai.",
+    });
+  }, [activeSheetId, disarmDeleteAll, retryFailedEntries, runBulkPasteFetches, showActionNotice]);
+
+  useEffect(() => {
+    if (selectedTrackingIds.length === 0 || appendTargetSheets.length === 0) {
+      setIsSheetTransferDragActive(false);
+    }
+  }, [appendTargetSheets.length, selectedTrackingIds.length]);
 
   const clearHiddenFilters = useCallback(() => {
     updateActiveSheet((current) =>
@@ -1937,10 +3021,6 @@ function App() {
       clearSelectionInSheet(deleteRowsInSheet(current, selectedVisibleRowKeys))
     );
     disarmDeleteSelected();
-    showActionNotice(activeSheetId, {
-      tone: "info",
-      message: `${selectedVisibleRowKeys.length} row terselect dihapus.`,
-    });
   }, [
     activeSheetId,
     armDeleteSelected,
@@ -1966,10 +3046,6 @@ function App() {
     invalidateSheetTrackingWork(activeSheetId);
 
     updateActiveSheet((current) => clearAllDataInSheet(current));
-    showActionNotice(activeSheetId, {
-      tone: "info",
-      message: `${allTrackingIds.length} ID kiriman dihapus.`,
-    });
     focusFirstTrackingInput();
   }, [
     allTrackingIds.length,
@@ -2028,7 +3104,7 @@ function App() {
 
     showActionNotice(targetSheetId, {
       tone: "info",
-      message: `Lacak ulang dimulai untuk ${retrackableRows.length} kiriman.`,
+      message: "Proses lacak ulang dimulai.",
     });
 
     void runBulkPasteFetches(targetSheetId, retrackableRows).then(() => {
@@ -2037,14 +3113,10 @@ function App() {
           retrackableKeySet.has(row.key)
         ) ?? [];
       const failedCount = refreshedRows.filter((row) => row.error).length;
-      const successCount = refreshedRows.length - failedCount;
 
       showActionNotice(targetSheetId, {
-        tone: failedCount > 0 ? "info" : "success",
-        message:
-          failedCount > 0
-            ? `Lacak ulang selesai. ${successCount} berhasil, ${failedCount} gagal.`
-            : `Lacak ulang selesai untuk ${retrackableRows.length} kiriman.`,
+        tone: failedCount > 0 ? "error" : "success",
+        message: failedCount > 0 ? "Lacak ulang gagal." : "Lacak ulang berhasil.",
       });
     });
   }, [activeSheetId, retrackableRows, runBulkPasteFetches, showActionNotice]);
@@ -2091,10 +3163,6 @@ function App() {
       }
 
       setWorkspaceState((current) => renameSheetInWorkspace(current, sheetId, name));
-      showActionNotice(sheetId, {
-        tone: "success",
-        message: "Nama sheet berhasil diperbarui.",
-      });
     },
     [showActionNotice]
   );
@@ -2127,42 +3195,10 @@ function App() {
         deleteSelectedArmedSheetIdRef.current = null;
         setDeleteSelectedArmedSheetId(null);
       }
-      const currentWorkspace = workspaceRef.current;
-      const currentIndex = currentWorkspace.sheetOrder.indexOf(sheetId);
-      const nextSheetId =
-        currentWorkspace.activeSheetId === sheetId
-          ? currentWorkspace.sheetOrder.filter((currentSheetId) => currentSheetId !== sheetId)[
-              Math.max(currentIndex - 1, 0)
-            ] ??
-            currentWorkspace.sheetOrder.find((currentSheetId) => currentSheetId !== sheetId) ??
-            null
-          : currentWorkspace.activeSheetId;
-      setActionNoticeBySheetId((current) => {
-        const sheetNotices = current[sheetId] ?? [];
-        sheetNotices.forEach((notice) => {
-          if (!notice.id) {
-            return;
-          }
-          const timeoutId = actionNoticeTimeoutsRef.current.get(notice.id);
-          if (timeoutId !== undefined) {
-            window.clearTimeout(timeoutId);
-            actionNoticeTimeoutsRef.current.delete(notice.id);
-          }
-        });
-        const next = { ...current };
-        delete next[sheetId];
-        return next;
-      });
       setHoveredColumn(null);
       setWorkspaceState((current) => deleteSheetInWorkspace(current, sheetId));
-      if (nextSheetId) {
-        showActionNotice(nextSheetId, {
-          tone: "info",
-          message: "Sheet berhasil dihapus.",
-        });
-      }
     },
-    [invalidateSheetTrackingWork, showActionNotice]
+    [invalidateSheetTrackingWork]
   );
 
   useEffect(() => {
@@ -2466,9 +3502,9 @@ function App() {
 
   return (
     <>
-      {activeActionNotices.length > 0 ? (
+      {actionNotices.length > 0 ? (
         <div className="action-toast-stack" aria-live="polite">
-          {activeActionNotices.map((notice) => (
+          {actionNotices.map((notice) => (
             <div
               key={notice.id ?? notice.message}
               className={`action-notice action-notice-${notice.tone}`}
@@ -2484,9 +3520,40 @@ function App() {
           tabs={workspaceTabs}
           activeSheetId={activeSheetId}
           displayScale={effectiveDisplayScale}
+          recentDocuments={recentDocumentItems}
+          canUseAutosave={canUseAutosave}
+          isAutosaveEnabled={isAutosaveActive}
           serviceConfig={effectiveServiceConfig}
           serviceStatus={apiServiceStatus}
           hasPendingServiceConfigChanges={hasPendingServiceConfigChanges}
+          onToggleAutosave={() => {
+            if (!canUseAutosave) {
+              return;
+            }
+            setAutosaveEnabled((current) => !current);
+          }}
+          onCreateDocument={createNewWorkspaceDocument}
+          onOpenDocument={() => {
+            void openWorkspaceDocumentWithPicker();
+          }}
+          onSaveDocument={() => {
+            void saveCurrentWorkspaceDocument();
+          }}
+          onSaveDocumentAs={() => {
+            void saveWorkspaceDocumentAs();
+          }}
+          onCreateDocumentWindow={() => {
+            void createNewWorkspaceWindow();
+          }}
+          onOpenDocumentInNewWindow={() => {
+            void openWorkspaceInNewWindow();
+          }}
+          onOpenServiceSettings={() => {
+            void openShipFlowServiceApp();
+          }}
+          onOpenRecentDocument={(path) => {
+            void openWorkspaceDocumentFromPath(path);
+          }}
           onActivateSheet={activateSheet}
           onCreateSheet={createSheet}
           onDuplicateSheet={duplicateSheet}
@@ -2496,10 +3563,21 @@ function App() {
           onPreviewServiceEnabled={previewServiceEnabled}
           onPreviewServiceMode={previewServiceMode}
           onPreviewServicePort={previewServicePort}
+          onPreviewTrackingSource={previewTrackingSource}
+          onPreviewExternalApiBaseUrl={previewExternalApiBaseUrl}
+          onPreviewExternalApiAuthToken={previewExternalApiAuthToken}
+          onPreviewAllowInsecureExternalApiHttp={previewAllowInsecureExternalApiHttp}
           onGenerateServiceToken={previewGenerateServiceToken}
           onRegenerateServiceToken={previewRegenerateServiceToken}
+          onCopyServiceEndpoint={copyServiceEndpoint}
+          onCopyServiceToken={copyServiceToken}
+          onTestExternalTrackingSource={testExternalTrackingSource}
           onConfirmSettings={confirmSettings}
           onCancelSettings={cancelSettingsPreview}
+          isSelectionDragActive={isSheetTransferDragActive}
+          selectionDragSourceSheetId={isSheetTransferDragActive ? activeSheetId : null}
+          onDropSelectionToSheet={dropSelectedIdsToExistingSheet}
+          onDropSelectionToNewSheet={dropSelectedIdsToNewSheet}
         />
         <section className="sheet-panel">
           <SheetActionBar
@@ -2507,6 +3585,7 @@ function App() {
             totalShipmentCount={totalShipmentCount}
             loadingCount={loadingCount}
             retrackableRowsCount={retrackableRows.length}
+            retryFailedRowsCount={retryFailedEntries.length}
             deleteAllArmed={activeSheet.deleteAllArmed}
             exportableRowsCount={exportableRows.length}
             activeFilterCount={activeFilterCount}
@@ -2515,18 +3594,21 @@ function App() {
             ignoredHiddenFilterCount={ignoredHiddenFilterCount}
             columnShortcuts={columnShortcuts}
             onRetrackAll={retrackAllRows}
+            onRetryFailedRows={retryFailedRows}
             onExportCsv={exportCsv}
             onCopyAllIds={copyAllTrackingIds}
             onDeleteAllRows={deleteAllRows}
             onClearSelection={clearSelection}
-            onCreateSheetFromSelectedIds={createSheetFromSelectedIds}
+            onTransferSelectedIdsToNewSheet={transferSelectedIdsToNewSheet}
             targetSheetOptions={appendTargetSheets}
-            onAppendSelectedIdsToSheet={appendSelectedIdsToExistingSheet}
+            onTransferSelectedIdsToSheet={transferSelectedIdsToExistingSheet}
             onClearFilter={clearAllFilters}
             onCopySelectedIds={copySelectedTrackingIds}
             onDeleteSelectedRows={deleteSelectedRows}
             onClearHiddenFilters={clearHiddenFilters}
             onScrollToColumn={scrollToColumn}
+            onStartSelectedIdsDrag={beginSelectedIdsDrag}
+            onEndSelectedIdsDrag={endSelectedIdsDrag}
           />
 
           <SheetTable
@@ -2573,8 +3655,500 @@ function App() {
           />
         </section>
       </main>
+      {documentDialogMode ? (
+        <div className="document-dialog-backdrop">
+          <div
+            className="document-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Dokumen"
+          >
+            <div className="document-dialog-header">
+              <h3>{documentDialogMode === "open" ? "Buka Dokumen" : "Simpan Dokumen"}</h3>
+              <p>
+                {documentDialogMode === "open"
+                  ? "Masukkan lokasi file yang ingin dibuka."
+                  : "Masukkan lokasi file tujuan untuk dokumen ini."}
+              </p>
+            </div>
+            <label className="settings-text-field">
+              <span className="settings-input-label">Lokasi File</span>
+              <input
+                type="text"
+                aria-label="Lokasi File"
+                value={documentPathDraft}
+                placeholder="~/Documents/dokumen.shipflow"
+                onChange={(event) => setDocumentPathDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void submitDocumentDialog();
+                  }
+                }}
+                autoFocus
+              />
+            </label>
+            <div className="document-dialog-actions">
+              <button type="button" className="sheet-tab-action" onClick={closeDocumentDialog}>
+                Batal
+              </button>
+              <button
+                type="button"
+                className="sheet-tab-action"
+                onClick={() => {
+                  void submitDocumentDialog();
+                }}
+                disabled={!documentPathDraft.trim()}
+              >
+                {documentDialogMode === "open" ? "Buka" : "Simpan"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {pendingWindowCloseRequest ? (
+        <div className="document-dialog-backdrop">
+          <div
+            className="document-dialog document-close-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Tutup Dokumen"
+          >
+            <div className="document-dialog-header">
+              <h3>Tutup Dokumen?</h3>
+              <p>
+                Perubahan pada <strong>{pendingWindowCloseRequest.documentName}</strong> belum
+                disimpan. Jika keluar sekarang, perubahan ini tidak akan tersimpan.
+              </p>
+            </div>
+            <div className="document-dialog-actions">
+              <button
+                type="button"
+                className="sheet-tab-action"
+                onClick={cancelPendingWindowClose}
+                disabled={isResolvingWindowClose}
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                className="sheet-tab-action"
+                onClick={discardPendingWindowClose}
+                disabled={isResolvingWindowClose}
+              >
+                Jangan Simpan
+              </button>
+              <button
+                type="button"
+                className="sheet-tab-action"
+                onClick={saveAndCloseWindow}
+                disabled={isResolvingWindowClose || documentMeta.persistenceStatus === "saving"}
+              >
+                Simpan & Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
+}
+
+function ServiceSettingsApp() {
+  const [serviceConfig, setServiceConfig] = useState<ServiceConfig>(DEFAULT_SERVICE_CONFIG);
+  const [serviceConfigPreview, setServiceConfigPreview] = useState<ServiceConfig | null>(null);
+  const [hasLoadedServiceConfig, setHasLoadedServiceConfig] = useState(false);
+  const [apiServiceStatus, setApiServiceStatus] = useState<ApiServiceStatus>(
+    DEFAULT_API_SERVICE_STATUS
+  );
+  const [actionNotices, setActionNotices] = useState<ActionNotice[]>([]);
+  const serviceConfigRef = useRef(serviceConfig);
+  const actionNoticeTimeoutsRef = useRef(new Map<string, number>());
+  const effectiveServiceConfig = serviceConfigPreview ?? serviceConfig;
+  const hasPendingServiceConfigChanges = serviceConfigPreview !== null;
+
+  useEffect(() => {
+    return () => {
+      actionNoticeTimeoutsRef.current.forEach((timeoutId) => {
+        window.clearTimeout(timeoutId);
+      });
+      actionNoticeTimeoutsRef.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    serviceConfigRef.current = serviceConfig;
+  }, [serviceConfig]);
+
+  const showActionNotice = useCallback((notice: ActionNotice) => {
+    const noticeId = notice.id || createRequestId();
+
+    setActionNotices((current) => [...current, { ...notice, id: noticeId }].slice(-5));
+
+    const timeoutId = window.setTimeout(() => {
+      setActionNotices((current) =>
+        current.filter((currentNotice) => currentNotice.id !== noticeId)
+      );
+      actionNoticeTimeoutsRef.current.delete(noticeId);
+    }, 2200);
+
+    actionNoticeTimeoutsRef.current.set(noticeId, timeoutId);
+  }, []);
+
+  const syncServiceConfigFromBackend = useCallback(
+    async (options?: { preservePreview?: boolean }) => {
+      const preservePreview = options?.preservePreview ?? true;
+
+      try {
+        const savedConfig = await invoke<ServiceConfig | null>("load_saved_api_service_config");
+        const nextConfig = savedConfig
+          ? {
+              ...savedConfig,
+              keepRunningInTray: true,
+            }
+          : DEFAULT_SERVICE_CONFIG;
+
+        if (!preservePreview || serviceConfigPreview === null) {
+          if (!areServiceConfigsEqual(serviceConfigRef.current, nextConfig)) {
+            serviceConfigRef.current = nextConfig;
+            setServiceConfig(nextConfig);
+          }
+        }
+
+        return nextConfig;
+      } catch {
+        if (!preservePreview || serviceConfigPreview === null) {
+          if (!areServiceConfigsEqual(serviceConfigRef.current, DEFAULT_SERVICE_CONFIG)) {
+            serviceConfigRef.current = DEFAULT_SERVICE_CONFIG;
+            setServiceConfig(DEFAULT_SERVICE_CONFIG);
+          }
+        }
+
+        return DEFAULT_SERVICE_CONFIG;
+      }
+    },
+    [serviceConfigPreview]
+  );
+
+  const refreshApiServiceStatus = useCallback(async () => {
+    try {
+      const status = await invoke<ApiServiceStatus>("get_api_service_status");
+      setApiServiceStatus(status);
+    } catch (error) {
+      setApiServiceStatus({
+        status: "error",
+        enabled: serviceConfigRef.current.enabled,
+        mode: serviceConfigRef.current.mode,
+        bindAddress:
+          serviceConfigRef.current.mode === "lan" ? "0.0.0.0" : "127.0.0.1",
+        port: serviceConfigRef.current.port,
+        errorMessage:
+          error instanceof Error
+            ? error.message
+            : "Gagal membaca status akses API eksternal.",
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void syncServiceConfigFromBackend({ preservePreview: false }).finally(() => {
+      if (!cancelled) {
+        setHasLoadedServiceConfig(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [syncServiceConfigFromBackend]);
+
+  useEffect(() => {
+    if (!hasLoadedServiceConfig) {
+      return;
+    }
+
+    void refreshApiServiceStatus();
+  }, [hasLoadedServiceConfig, refreshApiServiceStatus]);
+
+  useEffect(() => {
+    if (!hasLoadedServiceConfig) {
+      return;
+    }
+
+    const syncFromService = () => {
+      void syncServiceConfigFromBackend();
+      void refreshApiServiceStatus();
+    };
+
+    const intervalId = window.setInterval(syncFromService, 5000);
+    window.addEventListener("focus", syncFromService);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", syncFromService);
+    };
+  }, [hasLoadedServiceConfig, refreshApiServiceStatus, syncServiceConfigFromBackend]);
+
+  const previewServiceConfig = useCallback((updater: (config: ServiceConfig) => ServiceConfig) => {
+    setServiceConfigPreview((current) => {
+      const base = current ?? serviceConfigRef.current;
+      return updater(base);
+    });
+  }, []);
+
+  const previewServiceEnabled = useCallback(
+    (enabled: boolean) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        enabled,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewServiceMode = useCallback(
+    (mode: ServiceMode) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        mode,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewServicePort = useCallback(
+    (port: number) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        port: normalizeServicePort(port),
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewTrackingSource = useCallback(
+    (trackingSource: TrackingSource) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        trackingSource,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewExternalApiBaseUrl = useCallback(
+    (externalApiBaseUrl: string) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        externalApiBaseUrl,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewExternalApiAuthToken = useCallback(
+    (externalApiAuthToken: string) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        externalApiAuthToken,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewAllowInsecureExternalApiHttp = useCallback(
+    (allowInsecureExternalApiHttp: boolean) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        allowInsecureExternalApiHttp,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewGenerateServiceToken = useCallback(() => {
+    previewServiceConfig((current) => ({
+      ...current,
+      authToken: createServiceToken(),
+    }));
+  }, [previewServiceConfig]);
+
+  const previewRegenerateServiceToken = useCallback(() => {
+    previewServiceConfig((current) => ({
+      ...current,
+      authToken: createServiceToken(),
+    }));
+  }, [previewServiceConfig]);
+
+  const cancelSettingsPreview = useCallback(() => {
+    setServiceConfigPreview(null);
+  }, []);
+
+  const applyServiceConfig = useCallback(
+    async (nextConfig: ServiceConfig) => {
+      try {
+        const status = await invoke<ApiServiceStatus>("configure_api_service", {
+          config: nextConfig,
+        });
+        serviceConfigRef.current = nextConfig;
+        setServiceConfig(nextConfig);
+        setApiServiceStatus(status);
+        return true;
+      } catch (error) {
+        setApiServiceStatus({
+          status: "error",
+          enabled: nextConfig.enabled,
+          mode: nextConfig.mode,
+          bindAddress: nextConfig.mode === "lan" ? "0.0.0.0" : "127.0.0.1",
+          port: nextConfig.port,
+          errorMessage:
+            error instanceof Error ? error.message : "Gagal mengonfigurasi akses API eksternal.",
+        });
+        showActionNotice({
+          tone: "error",
+          message:
+            error instanceof Error ? error.message : "Gagal mengonfigurasi akses API eksternal.",
+        });
+        return false;
+      }
+    },
+    [showActionNotice]
+  );
+
+  const confirmSettings = useCallback(async () => {
+    const nextServiceConfig = serviceConfigPreview
+      ? {
+          ...serviceConfigPreview,
+          keepRunningInTray: true,
+          lastUpdatedAt: new Date().toISOString(),
+        }
+      : null;
+
+    if (nextServiceConfig) {
+      try {
+        await invoke("validate_tracking_source_config", { config: nextServiceConfig });
+      } catch (error) {
+        showActionNotice({
+          tone: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Konfigurasi sumber tracking tidak valid.",
+        });
+        return false;
+      }
+    }
+
+    if (nextServiceConfig) {
+      const didApply = await applyServiceConfig(nextServiceConfig);
+      if (!didApply) {
+        return false;
+      }
+    }
+
+    setServiceConfigPreview(null);
+    return true;
+  }, [applyServiceConfig, serviceConfigPreview, showActionNotice]);
+
+  const copyServiceEndpoint = useCallback(
+    (endpoint: string) => {
+      if (!endpoint.trim()) {
+        return;
+      }
+
+      void writeClipboardText(endpoint)
+        .then(() =>
+          showActionNotice({
+            tone: "success",
+            message: "Endpoint API berhasil disalin.",
+          })
+        )
+        .catch(() =>
+          showActionNotice({
+            tone: "error",
+            message: "Gagal menyalin endpoint API.",
+          })
+        );
+    },
+    [showActionNotice]
+  );
+
+  const copyServiceToken = useCallback(
+    (token: string) => {
+      if (!token.trim()) {
+        return;
+      }
+
+      void writeClipboardText(token)
+        .then(() =>
+          showActionNotice({
+            tone: "success",
+            message: "Token API berhasil disalin.",
+          })
+        )
+        .catch(() =>
+          showActionNotice({
+            tone: "error",
+            message: "Gagal menyalin token API.",
+          })
+        );
+    },
+    [showActionNotice]
+  );
+
+  const testExternalTrackingSource = useCallback(async (config: ServiceConfig) => {
+    return invoke<string>("test_external_tracking_source", { config });
+  }, []);
+
+  if (!hasLoadedServiceConfig) {
+    return <main className="shell service-settings-shell display-scale-small" />;
+  }
+
+  return (
+    <>
+      {actionNotices.length > 0 ? (
+        <div className="action-toast-stack" aria-live="polite">
+          {actionNotices.map((notice) => (
+            <div
+              key={notice.id ?? notice.message}
+              className={`action-notice action-notice-${notice.tone}`}
+              role="status"
+            >
+              {notice.message}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <ServiceSettingsWindow
+        serviceConfig={effectiveServiceConfig}
+        hasPendingServiceConfigChanges={hasPendingServiceConfigChanges}
+        onPreviewServiceEnabled={previewServiceEnabled}
+        onPreviewServiceMode={previewServiceMode}
+        onPreviewServicePort={previewServicePort}
+        onPreviewTrackingSource={previewTrackingSource}
+        onPreviewExternalApiBaseUrl={previewExternalApiBaseUrl}
+        onPreviewExternalApiAuthToken={previewExternalApiAuthToken}
+        onPreviewAllowInsecureExternalApiHttp={previewAllowInsecureExternalApiHttp}
+        onGenerateServiceToken={previewGenerateServiceToken}
+        onRegenerateServiceToken={previewRegenerateServiceToken}
+        onCopyServiceEndpoint={copyServiceEndpoint}
+        onCopyServiceToken={copyServiceToken}
+        onTestExternalTrackingSource={testExternalTrackingSource}
+        onConfirmSettings={confirmSettings}
+        onCancelSettings={cancelSettingsPreview}
+      />
+    </>
+  );
+}
+
+function App() {
+  if (resolveShipFlowWindowKind() === "service-settings") {
+    return <ServiceSettingsApp />;
+  }
+
+  return <WorkspaceApp />;
 }
 
 export default App;

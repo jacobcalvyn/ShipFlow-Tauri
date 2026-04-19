@@ -4,6 +4,8 @@ import {
   createSheetInWorkspace,
   createSheetWithTrackingIdsInWorkspace,
   deleteSheetInWorkspace,
+  moveTrackingIdsToExistingSheetInWorkspace,
+  moveTrackingIdsToNewSheetInWorkspace,
   renameSheetInWorkspace,
   setActiveSheetInWorkspace,
   updateActiveSheetInWorkspace,
@@ -172,5 +174,75 @@ describe("workspace state", () => {
     expect(targetSheet.rows[0].trackingInput).toBe("P2604001");
     expect(targetSheet.rows[1].trackingInput).toBe("P2604002");
     expect(result.targetKeys).toHaveLength(2);
+  });
+
+  it("moves tracking ids into an existing sheet and removes them from the source sheet", () => {
+    let workspace = createDefaultWorkspaceState();
+    const firstSheetId = workspace.activeSheetId;
+
+    workspace = updateActiveSheetInWorkspace(workspace, (sheet) => ({
+      ...sheet,
+      rows: sheet.rows.map((row, index) =>
+        index === 0
+          ? {
+              ...row,
+              trackingInput: "P2604999",
+            }
+          : row
+      ),
+      selectedRowKeys: [sheet.rows[0].key],
+    }));
+
+    workspace = createSheetInWorkspace(workspace, { activate: false });
+    const secondSheetId = workspace.sheetOrder[1];
+    const sourceRowKey = workspace.sheetsById[firstSheetId].rows[0].key;
+    const result = moveTrackingIdsToExistingSheetInWorkspace(
+      workspace,
+      firstSheetId,
+      secondSheetId,
+      [sourceRowKey],
+      ["P2604999"]
+    );
+
+    const targetSheet = result.workspaceState.sheetsById[secondSheetId];
+    const sourceSheet = result.workspaceState.sheetsById[firstSheetId];
+
+    expect(targetSheet.rows[0].trackingInput).toBe("P2604999");
+    expect(sourceSheet.rows[0].trackingInput).toBe("");
+    expect(sourceSheet.selectedRowKeys).toEqual([]);
+  });
+
+  it("moves tracking ids into a new sheet and clears them from the source sheet", () => {
+    let workspace = createDefaultWorkspaceState();
+    const firstSheetId = workspace.activeSheetId;
+    const sourceRowKey = workspace.sheetsById[firstSheetId].rows[0].key;
+
+    workspace = updateActiveSheetInWorkspace(workspace, (sheet) => ({
+      ...sheet,
+      rows: sheet.rows.map((row, index) =>
+        index === 0
+          ? {
+              ...row,
+              trackingInput: "P2605001",
+            }
+          : row
+      ),
+      selectedRowKeys: [sheet.rows[0].key],
+    }));
+
+    const result = moveTrackingIdsToNewSheetInWorkspace(
+      workspace,
+      firstSheetId,
+      [sourceRowKey],
+      ["P2605001"]
+    );
+
+    const newSheet = result.workspaceState.sheetsById[result.sheetId];
+    const sourceSheet = result.workspaceState.sheetsById[firstSheetId];
+
+    expect(result.workspaceState.activeSheetId).toBe(result.sheetId);
+    expect(newSheet.rows[0].trackingInput).toBe("P2605001");
+    expect(sourceSheet.rows[0].trackingInput).toBe("");
+    expect(sourceSheet.selectedRowKeys).toEqual([]);
   });
 });

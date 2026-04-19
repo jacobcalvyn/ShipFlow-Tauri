@@ -261,10 +261,11 @@ pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackRespons
         ));
     }
 
-    if let Some(entry) = history
-        .iter()
-        .find(|item| item.detail_history.to_lowercase().contains("connote telah dibuat oleh"))
-    {
+    if let Some(entry) = history.iter().find(|item| {
+        item.detail_history
+            .to_lowercase()
+            .contains("connote telah dibuat oleh")
+    }) {
         origin = parse_kantor_kiriman_detail(entry);
     }
 
@@ -324,14 +325,11 @@ fn parse_currency(value: &str) -> Result<Option<f64>, TrackingError> {
         return Ok(None);
     }
 
-    normalized
-        .parse::<f64>()
-        .map(Some)
-        .map_err(|_| {
-            TrackingError::Upstream(format!(
-                "Unable to parse currency value from upstream HTML: {value}"
-            ))
-        })
+    normalized.parse::<f64>().map(Some).map_err(|_| {
+        TrackingError::Upstream(format!(
+            "Unable to parse currency value from upstream HTML: {value}"
+        ))
+    })
 }
 
 fn parse_weight(value: &str) -> Result<(Option<f64>, Option<f64>), TrackingError> {
@@ -355,24 +353,17 @@ fn parse_weight(value: &str) -> Result<(Option<f64>, Option<f64>), TrackingError
 }
 
 fn parse_weight_value(value: &str) -> Result<Option<f64>, TrackingError> {
-    let normalized = value
-        .replace("kg", "")
-        .replace("KG", "")
-        .trim()
-        .to_string();
+    let normalized = value.replace("kg", "").replace("KG", "").trim().to_string();
 
     if normalized.is_empty() || normalized == "-" {
         return Ok(None);
     }
 
-    normalized
-        .parse::<f64>()
-        .map(Some)
-        .map_err(|_| {
-            TrackingError::Upstream(format!(
-                "Unable to parse weight value from upstream HTML: {value}"
-            ))
-        })
+    normalized.parse::<f64>().map(Some).map_err(|_| {
+        TrackingError::Upstream(format!(
+            "Unable to parse weight value from upstream HTML: {value}"
+        ))
+    })
 }
 
 fn parse_cod_non_cod(raw: &str) -> Result<TrackCodDetail, TrackingError> {
@@ -624,7 +615,9 @@ fn parse_kantor_kiriman_detail(entry: &TrackHistoryEntry) -> OriginDetail {
         .unwrap_or(raw)
         .trim();
 
-    let (petugas_part, lokasi_part) = after_prefix.split_once(" di lokasi ").unwrap_or((after_prefix, ""));
+    let (petugas_part, lokasi_part) = after_prefix
+        .split_once(" di lokasi ")
+        .unwrap_or((after_prefix, ""));
 
     if let Some(idx_open) = petugas_part.find('(') {
         if let Some(idx_close) = petugas_part.find(')') {
@@ -789,13 +782,14 @@ fn build_history_summary(
                 if !bag_map.contains_key(&nomor_kantung) {
                     bag_order.push(nomor_kantung.clone());
                 }
-                let bag_entry = bag_map.entry(nomor_kantung.clone()).or_insert(
-                    BaggingUnbaggingSummary {
-                        nomor_kantung,
-                        bagging: None,
-                        unbagging: None,
-                    },
-                );
+                let bag_entry =
+                    bag_map
+                        .entry(nomor_kantung.clone())
+                        .or_insert(BaggingUnbaggingSummary {
+                            nomor_kantung,
+                            bagging: None,
+                            unbagging: None,
+                        });
                 bag_entry.bagging = Some(event);
                 matched_any = true;
             }
@@ -812,13 +806,14 @@ fn build_history_summary(
                 if !bag_map.contains_key(&nomor_kantung) {
                     bag_order.push(nomor_kantung.clone());
                 }
-                let bag_entry = bag_map.entry(nomor_kantung.clone()).or_insert(
-                    BaggingUnbaggingSummary {
-                        nomor_kantung,
-                        bagging: None,
-                        unbagging: None,
-                    },
-                );
+                let bag_entry =
+                    bag_map
+                        .entry(nomor_kantung.clone())
+                        .or_insert(BaggingUnbaggingSummary {
+                            nomor_kantung,
+                            bagging: None,
+                            unbagging: None,
+                        });
                 bag_entry.unbagging = Some(event);
                 matched_any = true;
             }

@@ -557,8 +557,8 @@ export const SheetBodyRow = memo(function SheetBodyRow({
                   <button
                     type="button"
                     className="tracking-source-link"
-                    title="Buka sumber scrap"
-                    aria-label={`Buka sumber scrap untuk ${row.trackingInput || "row"}`}
+                    title="Buka sumber tracking"
+                    aria-label={`Buka sumber tracking untuk ${row.trackingInput || "row"}`}
                     onClick={() => {
                       onOpenSourceLink(sourceUrl);
                     }}

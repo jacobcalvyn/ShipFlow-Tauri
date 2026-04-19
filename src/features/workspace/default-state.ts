@@ -1,5 +1,9 @@
 import { createDefaultSheetState } from "../sheet/default-state";
-import { WorkspaceState } from "./types";
+import {
+  WorkspaceSheetColor,
+  WorkspaceSheetIcon,
+  WorkspaceState,
+} from "./types";
 
 let workspaceSheetCounter = 0;
 
@@ -13,6 +17,14 @@ export function createDefaultSheetName(index: number) {
   return `Sheet ${index}`;
 }
 
+export function createDefaultSheetColor(): WorkspaceSheetColor {
+  return "slate";
+}
+
+export function createDefaultSheetIcon(): WorkspaceSheetIcon {
+  return "sheet";
+}
+
 export function createDefaultWorkspaceState(): WorkspaceState {
   const sheetId = createWorkspaceSheetId();
 
@@ -23,6 +35,8 @@ export function createDefaultWorkspaceState(): WorkspaceState {
     sheetMetaById: {
       [sheetId]: {
         name: createDefaultSheetName(1),
+        color: createDefaultSheetColor(),
+        icon: createDefaultSheetIcon(),
       },
     },
     sheetsById: {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SheetTabs } from "./SheetTabs";
 import { ApiServiceStatus, ServiceConfig } from "../../../types";
 
@@ -9,6 +9,11 @@ function createServiceConfig(overrides: Partial<ServiceConfig> = {}): ServiceCon
     mode: "local",
     port: 18422,
     authToken: "",
+    trackingSource: "default",
+    externalApiBaseUrl: "",
+    externalApiAuthToken: "",
+    allowInsecureExternalApiHttp: false,
+    keepRunningInTray: true,
     lastUpdatedAt: "",
     ...overrides,
   };
@@ -39,7 +44,7 @@ function createServiceStatus(
 }
 
 describe("SheetTabs", () => {
-  it("switches, renames, duplicates, creates, and deletes sheets", () => {
+  it("switches, duplicates, renames, creates, and deletes sheets", () => {
     const onActivateSheet = vi.fn();
     const onCreateSheet = vi.fn();
     const onDuplicateSheet = vi.fn();
@@ -49,8 +54,8 @@ describe("SheetTabs", () => {
     render(
       <SheetTabs
         tabs={[
-          { id: "sheet-1", name: "Sheet 1", isActive: true },
-          { id: "sheet-2", name: "Sheet 2", isActive: false },
+          { id: "sheet-1", name: "Sheet 1", color: "slate", icon: "sheet", isActive: true },
+          { id: "sheet-2", name: "Sheet 2", color: "blue", icon: "pin", isActive: false },
         ]}
         activeSheetId="sheet-1"
         displayScale="small"
@@ -82,6 +87,10 @@ describe("SheetTabs", () => {
     hoverSheetTab("Sheet 1");
     fireEvent.click(screen.getByRole("menuitem", { name: "Duplikat" }));
     expect(onDuplicateSheet).toHaveBeenCalledWith("sheet-1");
+    expect(screen.queryByLabelText("Sheet style presets")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("menuitem", { name: "Gabungkan ke Sheet Lain" })
+    ).not.toBeInTheDocument();
 
     hoverSheetTab("Sheet 1");
     fireEvent.click(screen.getByRole("menuitem", { name: "Ganti Nama" }));
@@ -100,8 +109,8 @@ describe("SheetTabs", () => {
     render(
       <SheetTabs
         tabs={[
-          { id: "sheet-1", name: "Sheet 1", isActive: true },
-          { id: "sheet-2", name: "Sheet 2", isActive: false },
+          { id: "sheet-1", name: "Sheet 1", color: "slate", icon: "sheet", isActive: true },
+          { id: "sheet-2", name: "Sheet 2", color: "blue", icon: "pin", isActive: false },
         ]}
         activeSheetId="sheet-1"
         displayScale="small"
@@ -132,13 +141,54 @@ describe("SheetTabs", () => {
     expect(screen.queryByRole("menuitem", { name: "Hapus" })).not.toBeInTheDocument();
   });
 
-  it("changes display scale from the settings menu", () => {
-    const onPreviewDisplayScale = vi.fn();
-    const onPreviewServiceEnabled = vi.fn();
+  it("renames an inactive sheet from its hover menu without activating it first", () => {
+    const onActivateSheet = vi.fn();
+    const onRenameSheet = vi.fn();
 
     render(
       <SheetTabs
-        tabs={[{ id: "sheet-1", name: "Sheet 1", isActive: true }]}
+        tabs={[
+          { id: "sheet-1", name: "Sheet 1", color: "slate", icon: "sheet", isActive: true },
+          { id: "sheet-2", name: "Sheet 2", color: "blue", icon: "pin", isActive: false },
+        ]}
+        activeSheetId="sheet-1"
+        displayScale="small"
+        serviceConfig={createServiceConfig()}
+        serviceStatus={createServiceStatus()}
+        hasPendingServiceConfigChanges={false}
+        onActivateSheet={onActivateSheet}
+        onCreateSheet={vi.fn()}
+        onDuplicateSheet={vi.fn()}
+        onRenameSheet={onRenameSheet}
+        onDeleteSheet={vi.fn()}
+        onPreviewDisplayScale={vi.fn()}
+        onPreviewServiceEnabled={vi.fn()}
+        onPreviewServiceMode={vi.fn()}
+        onPreviewServicePort={vi.fn()}
+        onGenerateServiceToken={vi.fn()}
+        onRegenerateServiceToken={vi.fn()}
+        onConfirmSettings={vi.fn()}
+        onCancelSettings={vi.fn()}
+      />
+    );
+
+    hoverSheetTab("Sheet 2");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Ganti Nama" }));
+
+    const renameInput = screen.getByDisplayValue("Sheet 2");
+    fireEvent.change(renameInput, { target: { value: "Sheet Follow Up" } });
+    fireEvent.blur(renameInput);
+
+    expect(onActivateSheet).not.toHaveBeenCalled();
+    expect(onRenameSheet).toHaveBeenCalledWith("sheet-2", "Sheet Follow Up");
+  });
+
+  it("changes display scale from the settings menu", () => {
+    const onPreviewDisplayScale = vi.fn();
+
+    render(
+      <SheetTabs
+        tabs={[{ id: "sheet-1", name: "Sheet 1", color: "slate", icon: "sheet", isActive: true }]}
         activeSheetId="sheet-1"
         displayScale="small"
         serviceConfig={createServiceConfig()}
@@ -150,7 +200,7 @@ describe("SheetTabs", () => {
         onRenameSheet={vi.fn()}
         onDeleteSheet={vi.fn()}
         onPreviewDisplayScale={onPreviewDisplayScale}
-        onPreviewServiceEnabled={onPreviewServiceEnabled}
+        onPreviewServiceEnabled={vi.fn()}
         onPreviewServiceMode={vi.fn()}
         onPreviewServicePort={vi.fn()}
         onGenerateServiceToken={vi.fn()}
@@ -162,11 +212,8 @@ describe("SheetTabs", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
     fireEvent.click(screen.getByRole("radio", { name: /Besar/i }));
-    fireEvent.click(screen.getByRole("button", { name: "API Service" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Enable API Service" }));
 
     expect(onPreviewDisplayScale).toHaveBeenCalledWith("large");
-    expect(onPreviewServiceEnabled).toHaveBeenCalledWith(true);
   });
 
   it("rolls back previewed display scale when settings are cancelled", () => {
@@ -175,7 +222,7 @@ describe("SheetTabs", () => {
 
     render(
       <SheetTabs
-        tabs={[{ id: "sheet-1", name: "Sheet 1", isActive: true }]}
+        tabs={[{ id: "sheet-1", name: "Sheet 1", color: "slate", icon: "sheet", isActive: true }]}
         activeSheetId="sheet-1"
         displayScale="small"
         serviceConfig={createServiceConfig()}
@@ -205,14 +252,13 @@ describe("SheetTabs", () => {
     expect(onCancelSettings).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps previewed display scale when settings are confirmed", () => {
+  it("keeps previewed display scale when settings are confirmed", async () => {
     const onPreviewDisplayScale = vi.fn();
     const onConfirmSettings = vi.fn();
-    const onRegenerateServiceToken = vi.fn();
 
     render(
       <SheetTabs
-        tabs={[{ id: "sheet-1", name: "Sheet 1", isActive: true }]}
+        tabs={[{ id: "sheet-1", name: "Sheet 1", color: "slate", icon: "sheet", isActive: true }]}
         activeSheetId="sheet-1"
         displayScale="small"
         serviceConfig={createServiceConfig({ authToken: "sf_existing" })}
@@ -228,7 +274,7 @@ describe("SheetTabs", () => {
         onPreviewServiceMode={vi.fn()}
         onPreviewServicePort={vi.fn()}
         onGenerateServiceToken={vi.fn()}
-        onRegenerateServiceToken={onRegenerateServiceToken}
+        onRegenerateServiceToken={vi.fn()}
         onConfirmSettings={onConfirmSettings}
         onCancelSettings={vi.fn()}
       />
@@ -236,30 +282,25 @@ describe("SheetTabs", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
     fireEvent.click(screen.getAllByRole("radio")[2]);
-    fireEvent.click(screen.getByRole("button", { name: "API Service" }));
-    fireEvent.click(screen.getByRole("button", { name: "Regenerate Token" }));
     fireEvent.click(screen.getByRole("button", { name: "OK" }));
 
-    expect(onPreviewDisplayScale).toHaveBeenCalledWith("large");
-    expect(onRegenerateServiceToken).toHaveBeenCalledTimes(1);
-    expect(onConfirmSettings).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(onPreviewDisplayScale).toHaveBeenCalledWith("large");
+      expect(onConfirmSettings).toHaveBeenCalledTimes(1);
+    });
   });
 
-  it("shows runtime service status and pending preview warning in settings", () => {
+  it("opens ShipFlow Service from the desktop settings modal", () => {
+    const onOpenServiceSettings = vi.fn();
+
     render(
       <SheetTabs
-        tabs={[{ id: "sheet-1", name: "Sheet 1", isActive: true }]}
+        tabs={[{ id: "sheet-1", name: "Sheet 1", color: "slate", icon: "sheet", isActive: true }]}
         activeSheetId="sheet-1"
         displayScale="small"
-        serviceConfig={createServiceConfig({ enabled: true, mode: "lan", port: 19422 })}
-        serviceStatus={createServiceStatus({
-          status: "running",
-          enabled: true,
-          mode: "local",
-          bindAddress: "127.0.0.1",
-          port: 18422,
-        })}
-        hasPendingServiceConfigChanges
+        serviceConfig={createServiceConfig()}
+        serviceStatus={createServiceStatus({ status: "running" })}
+        hasPendingServiceConfigChanges={false}
         onActivateSheet={vi.fn()}
         onCreateSheet={vi.fn()}
         onDuplicateSheet={vi.fn()}
@@ -273,17 +314,68 @@ describe("SheetTabs", () => {
         onRegenerateServiceToken={vi.fn()}
         onConfirmSettings={vi.fn()}
         onCancelSettings={vi.fn()}
+        onOpenServiceSettings={onOpenServiceSettings}
       />
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
-    fireEvent.click(screen.getByRole("button", { name: "API Service" }));
+    expect(screen.getByText("API Eksternal")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Buka ShipFlow Service" }));
 
-    expect(screen.getByText("Runtime Status")).toBeInTheDocument();
-    expect(screen.getByText("Running")).toBeInTheDocument();
-    expect(screen.getByText("127.0.0.1:18422")).toBeInTheDocument();
-    expect(
-      screen.getByText("Perubahan API service belum diterapkan. Klik OK untuk menyimpan.")
-    ).toBeInTheDocument();
+    expect(onOpenServiceSettings).toHaveBeenCalledTimes(1);
   });
+
+  it("drops dragged selections onto another sheet with copy mode", () => {
+    const onDropSelectionToSheet = vi.fn();
+
+    render(
+      <SheetTabs
+        tabs={[
+          { id: "sheet-1", name: "Sheet 1", color: "slate", icon: "sheet", isActive: true },
+          { id: "sheet-2", name: "Sheet 2", color: "blue", icon: "pin", isActive: false },
+        ]}
+        activeSheetId="sheet-1"
+        displayScale="small"
+        serviceConfig={createServiceConfig()}
+        serviceStatus={createServiceStatus()}
+        hasPendingServiceConfigChanges={false}
+        onActivateSheet={vi.fn()}
+        onCreateSheet={vi.fn()}
+        onDuplicateSheet={vi.fn()}
+        onRenameSheet={vi.fn()}
+        onDeleteSheet={vi.fn()}
+        onPreviewDisplayScale={vi.fn()}
+        onPreviewServiceEnabled={vi.fn()}
+        onPreviewServiceMode={vi.fn()}
+        onPreviewServicePort={vi.fn()}
+        onPreviewServiceKeepRunningInTray={vi.fn()}
+        onGenerateServiceToken={vi.fn()}
+        onRegenerateServiceToken={vi.fn()}
+        onCopyServiceEndpoint={vi.fn()}
+        onCopyServiceToken={vi.fn()}
+        onConfirmSettings={vi.fn()}
+        onCancelSettings={vi.fn()}
+        isSelectionDragActive
+        selectionDragSourceSheetId="sheet-1"
+        onDropSelectionToSheet={onDropSelectionToSheet}
+      />
+    );
+
+    const targetWrapper = screen.getByRole("tab", { name: "Sheet 2" }).closest(".sheet-tab");
+    if (!targetWrapper) {
+      throw new Error("Target sheet wrapper not found.");
+    }
+
+    fireEvent.dragOver(targetWrapper, {
+      altKey: true,
+      dataTransfer: { dropEffect: "move" },
+    });
+    fireEvent.drop(targetWrapper, {
+      altKey: true,
+      dataTransfer: { dropEffect: "copy" },
+    });
+
+    expect(onDropSelectionToSheet).toHaveBeenCalledWith("sheet-2", "copy");
+  });
+
 });

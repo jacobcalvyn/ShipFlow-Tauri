@@ -1,6 +1,7 @@
 import { createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 import { ServiceConfig, TrackResponse } from "./types";
+import { WorkspaceDocumentFile } from "./features/workspace/document";
 
 const { mockedInvoke } = vi.hoisted(() => ({
   mockedInvoke: vi.fn<
@@ -11,14 +12,25 @@ const { mockedInvoke } = vi.hoisted(() => ({
         sheetId?: string;
         rowKey?: string;
         imageSource?: string;
+        text?: string;
+        path?: string | null;
+        title?: string;
+        mode?: string;
+        suggestedName?: string;
+        documentPath?: string | null;
         config?: ServiceConfig;
+        document?: WorkspaceDocumentFile;
       }
-    ) => Promise<TrackResponse | string | undefined>
+    ) => Promise<unknown>
   >(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: mockedInvoke,
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(() => Promise.resolve(vi.fn())),
 }));
 
 type Deferred<T> = {
@@ -101,10 +113,28 @@ function hoverSheetTab(name: string) {
   return wrapper;
 }
 
+function openFileMenu() {
+  fireEvent.click(screen.getByRole("button", { name: "File" }));
+}
+
+function setShipFlowWindowKind(kind: "workspace" | "service-settings") {
+  const shipflowWindow = window as Window & {
+    __SHIPFLOW_WINDOW_KIND__?: string;
+  };
+
+  if (kind === "service-settings") {
+    shipflowWindow.__SHIPFLOW_WINDOW_KIND__ = "service-settings";
+    return;
+  }
+
+  delete shipflowWindow.__SHIPFLOW_WINDOW_KIND__;
+}
+
 describe("App workspace isolation", () => {
   const pendingRequests = new Map<string, Deferred<TrackResponse>>();
   let infoSpy: ReturnType<typeof vi.spyOn>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
+  let persistedServiceConfig: ServiceConfig | null;
 
   function resolveRequest(shipmentId: string) {
     const request = pendingRequests.get(shipmentId);
@@ -117,7 +147,10 @@ describe("App workspace isolation", () => {
 
   beforeEach(() => {
     pendingRequests.clear();
+    persistedServiceConfig = null;
     window.localStorage.clear();
+    setShipFlowWindowKind("workspace");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
     infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     mockedInvoke.mockImplementation((command, args) => {
@@ -127,6 +160,7 @@ describe("App workspace isolation", () => {
           mode: "local",
           port: 18422,
         };
+        persistedServiceConfig = config as ServiceConfig;
 
         return Promise.resolve({
           status: config.enabled ? "running" : "stopped",
@@ -136,6 +170,10 @@ describe("App workspace isolation", () => {
           port: config.port,
           errorMessage: null,
         } as unknown as TrackResponse);
+      }
+
+      if (command === "load_saved_api_service_config") {
+        return Promise.resolve(persistedServiceConfig);
       }
 
       if (command === "get_api_service_status") {
@@ -149,12 +187,155 @@ describe("App workspace isolation", () => {
         } as unknown as TrackResponse);
       }
 
+      if (command === "test_external_tracking_source") {
+        return Promise.resolve(
+          "Koneksi berhasil. Akses API aktif via lan (0.0.0.0:18422)." as unknown as TrackResponse
+        );
+      }
+
+      if (command === "validate_tracking_source_config") {
+        const config = args?.config;
+        if (
+          config?.trackingSource === "externalApi" &&
+          config.externalApiBaseUrl.startsWith("http://") &&
+          !config.allowInsecureExternalApiHttp
+        ) {
+          return Promise.reject(
+            new Error(
+              "External API base URL must use HTTPS unless insecure HTTP is explicitly allowed."
+            )
+          );
+        }
+
+        if (
+          config?.trackingSource === "externalApi" &&
+          !config.externalApiAuthToken.trim()
+        ) {
+          return Promise.reject(
+            new Error("External API bearer token is required.")
+          );
+        }
+
+        return Promise.resolve(undefined);
+      }
+
       if (command === "resolve_pod_image") {
         return Promise.resolve(typeof args?.imageSource === "string" ? args.imageSource : "");
       }
 
       if (command === "log_frontend_runtime_event") {
         return Promise.resolve(undefined);
+      }
+
+      if (command === "set_current_window_title") {
+        return Promise.resolve(undefined);
+      }
+
+      if (command === "set_current_window_document_state") {
+        return Promise.resolve(undefined);
+      }
+
+      if (command === "resolve_window_close_request") {
+        return Promise.resolve(undefined);
+      }
+
+      if (command === "get_current_window_label") {
+        return Promise.resolve("main");
+      }
+
+      if (command === "take_pending_workspace_window_request") {
+        return Promise.resolve(null);
+      }
+
+      if (command === "claim_current_workspace_document") {
+        return Promise.resolve({
+          status: "claimed",
+          path: args?.path ?? null,
+          ownerLabel: null,
+        });
+      }
+
+      if (command === "create_workspace_window") {
+        return Promise.resolve({
+          status: "claimed",
+          path: args?.documentPath ?? null,
+          ownerLabel: "workspace-test-window",
+        });
+      }
+
+      if (command === "pick_workspace_document_path") {
+        if (args?.mode === "open") {
+          return Promise.resolve("/tmp/picked-open.shipflow");
+        }
+
+        return Promise.resolve("/tmp/picked-save.shipflow");
+      }
+
+      if (command === "copy_to_clipboard") {
+        return Promise.resolve(undefined);
+      }
+
+      if (command === "open_shipflow_service_app") {
+        return Promise.resolve(undefined);
+      }
+
+      if (command === "write_workspace_document") {
+        return Promise.resolve({
+          path: args?.path ?? "/tmp/workspace.shipflow",
+          savedAt: args?.document?.savedAt ?? "2026-04-18T00:00:00.000Z",
+        });
+      }
+
+      if (command === "read_workspace_document") {
+        return Promise.resolve({
+          path: args?.path ?? "/tmp/workspace.shipflow",
+          document: {
+            version: 1,
+            app: "shipflow-desktop",
+            savedAt: "2026-04-18T00:00:00.000Z",
+            workspace: {
+              version: 1,
+              activeSheetId: "sheet-opened",
+              sheetOrder: ["sheet-opened"],
+              sheetMetaById: {
+                "sheet-opened": {
+                  name: "Sheet 1",
+                  color: "slate",
+                  icon: "sheet",
+                },
+              },
+              sheetsById: {
+                "sheet-opened": {
+                  rows: [
+                    {
+                      key: "row-opened",
+                      trackingInput: "POPEN1",
+                      shipment: null,
+                      loading: false,
+                      stale: false,
+                      dirty: false,
+                      error: "",
+                    },
+                  ],
+                  filters: {},
+                  valueFilters: {},
+                  sortState: {
+                    path: null,
+                    direction: "asc",
+                  },
+                  selectedRowKeys: [],
+                  selectionFollowsVisibleRows: false,
+                  columnWidths: {},
+                  hiddenColumnPaths: [],
+                  pinnedColumnPaths: [],
+                  openColumnMenuPath: null,
+                  highlightedColumnPath: null,
+                  deleteAllArmed: false,
+                },
+              },
+            },
+          },
+        });
       }
 
       if (command !== "track_shipment" || !args?.shipmentId) {
@@ -201,35 +382,6 @@ describe("App workspace isolation", () => {
 
     return (matchedCall?.[1] as Record<string, unknown> | undefined) ?? null;
   }
-
-  it("keeps a duplicated sheet isolated while the source request is still running", async () => {
-    render(<App />);
-
-    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
-    fireEvent.change(firstInput, { target: { value: "P1" } });
-    fireEvent.blur(firstInput);
-
-    await waitFor(() => {
-      expectInvokeCount("track_shipment", 1);
-    });
-
-    hoverSheetTab("Sheet 1");
-    fireEvent.click(screen.getByRole("menuitem", { name: "Duplikat" }));
-
-    expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
-
-    resolveRequest("P1");
-
-    await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
-
-    await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
-    });
-  });
 
   it("ignores late responses after deleting the active sheet during an in-flight request", async () => {
     render(<App />);
@@ -283,7 +435,7 @@ describe("App workspace isolation", () => {
     expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("");
   });
 
-  it("creates a new sheet from selected ids and starts tracking them immediately", async () => {
+  it("copies selected ids into a new sheet and starts tracking them immediately", async () => {
     render(<App />);
 
     const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
@@ -301,7 +453,10 @@ describe("App workspace isolation", () => {
     });
 
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
-    fireEvent.click(screen.getByRole("button", { name: "ID Terselect ke Sheet Baru" }));
+    fireEvent.mouseEnter(
+      screen.getByRole("button", { name: "ID Terselect ke Sheet Baru" })
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Salin" }));
 
     await waitFor(() => {
       expect(screen.getByRole("tab", { name: "Sheet 2" })).toHaveAttribute(
@@ -320,7 +475,49 @@ describe("App workspace isolation", () => {
     });
   });
 
-  it("appends selected ids into another existing sheet without replacing its current data", async () => {
+  it("moves selected ids into a new sheet and removes them from the source sheet", async () => {
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    fireEvent.change(firstInput, { target: { value: "PMOVE1" } });
+    fireEvent.blur(firstInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 1);
+    });
+
+    resolveRequest("PMOVE1");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    fireEvent.mouseEnter(
+      screen.getByRole("button", { name: "ID Terselect ke Sheet Baru" })
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Pindahkan" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "Sheet 2" })).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+      expectInvokeCount("track_shipment", 2);
+      expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("PMOVE1");
+    });
+
+    resolveRequest("PMOVE1");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("");
+    });
+  });
+
+  it("copies selected ids into another existing sheet without replacing its current data", async () => {
     render(<App />);
 
     const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
@@ -359,6 +556,7 @@ describe("App workspace isolation", () => {
     fireEvent.mouseEnter(
       screen.getByRole("button", { name: "ID Terselect ke Sheet Lain" })
     );
+    fireEvent.mouseEnter(screen.getByRole("menuitem", { name: "Salin" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sheet 2" }));
 
     await waitFor(() => {
@@ -377,6 +575,138 @@ describe("App workspace isolation", () => {
     });
 
     resolveRequest("PAPP1");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+    });
+  });
+
+  it("moves selected ids into another existing sheet and clears them from the source sheet", async () => {
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    fireEvent.change(firstInput, { target: { value: "PMOVE2" } });
+    fireEvent.blur(firstInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 1);
+    });
+
+    resolveRequest("PMOVE2");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
+
+    const secondSheetInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    fireEvent.change(secondSheetInput, { target: { value: "PTARGET2" } });
+    fireEvent.blur(secondSheetInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 2);
+    });
+
+    resolveRequest("PTARGET2");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+
+    fireEvent.mouseEnter(
+      screen.getByRole("button", { name: "ID Terselect ke Sheet Lain" })
+    );
+    fireEvent.mouseEnter(screen.getByRole("menuitem", { name: "Pindahkan" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sheet 2" }));
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 3);
+      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByDisplayValue("PTARGET2")[0]).toBeInTheDocument();
+      expect(screen.getAllByDisplayValue("PMOVE2")[0]).toBeInTheDocument();
+    });
+
+    resolveRequest("PMOVE2");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+    });
+  });
+
+  it("moves selected ids into another existing sheet via drag and drop", async () => {
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    fireEvent.change(firstInput, { target: { value: "PDRAG1" } });
+    fireEvent.blur(firstInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 1);
+    });
+
+    resolveRequest("PDRAG1");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
+
+    const secondSheetInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    fireEvent.change(secondSheetInput, { target: { value: "PDRAG2" } });
+    fireEvent.blur(secondSheetInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 2);
+    });
+
+    resolveRequest("PDRAG2");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+
+    const transferButton = screen.getByRole("button", { name: "ID Terselect ke Sheet Lain" });
+    const targetWrapper = screen.getByRole("tab", { name: "Sheet 2" }).closest(".sheet-tab");
+    if (!targetWrapper) {
+      throw new Error("Target sheet wrapper not found.");
+    }
+
+    fireEvent.dragStart(transferButton, {
+      dataTransfer: {
+        effectAllowed: "copyMove",
+        setData: vi.fn(),
+      },
+    });
+    fireEvent.dragOver(targetWrapper, {
+      dataTransfer: { dropEffect: "move" },
+    });
+    fireEvent.drop(targetWrapper, {
+      dataTransfer: { dropEffect: "move" },
+    });
+    fireEvent.dragEnd(transferButton);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 3);
+      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByDisplayValue("PDRAG2")[0]).toBeInTheDocument();
+      expect(screen.getAllByDisplayValue("PDRAG1")[0]).toBeInTheDocument();
+    });
+
+    resolveRequest("PDRAG1");
 
     await waitFor(() => {
       expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
@@ -528,6 +858,47 @@ describe("App workspace isolation", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+    });
+  });
+
+  it("keeps async completion toasts visible after switching sheets", async () => {
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    fireEvent.change(firstInput, { target: { value: "PTOAST" } });
+    fireEvent.blur(firstInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 1);
+    });
+
+    resolveRequest("PTOAST");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Lacak Ulang" }));
+
+    expect(screen.getByText("Proses lacak ulang dimulai.")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 2);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
+
+    expect(screen.getByRole("tab", { name: "Sheet 2" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+
+    resolveRequest("PTOAST");
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Lacak ulang berhasil.")
+      ).toBeInTheDocument();
     });
   });
 
@@ -934,6 +1305,73 @@ describe("App workspace isolation", () => {
     });
   });
 
+  it("does not show redundant success toasts for sheet rename or deletion", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
+
+    hoverSheetTab("Sheet 2");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Ganti Nama" }));
+
+    const renameInput = screen.getByDisplayValue("Sheet 2");
+    fireEvent.change(renameInput, { target: { value: "Sheet Renamed" } });
+    fireEvent.blur(renameInput);
+
+    expect(screen.getByRole("tab", { name: "Sheet Renamed" })).toBeInTheDocument();
+    expect(screen.queryByText("Nama sheet berhasil diperbarui.")).not.toBeInTheDocument();
+
+    hoverSheetTab("Sheet Renamed");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Hapus" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Konfirmasi Hapus" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("tab", { name: "Sheet Renamed" })).not.toBeInTheDocument();
+    });
+
+    expect(screen.queryByText("Sheet berhasil dihapus.")).not.toBeInTheDocument();
+  });
+
+  it("does not show redundant success toasts for copying ids", async () => {
+    const originalClipboard = navigator.clipboard;
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+
+    try {
+      render(<App />);
+
+      const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+      fireEvent.change(firstInput, { target: { value: "PCOPY" } });
+      fireEvent.blur(firstInput);
+
+      await waitFor(() => {
+        expectInvokeCount("track_shipment", 1);
+      });
+
+      resolveRequest("PCOPY");
+
+      await waitFor(() => {
+        expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Copy ID Kiriman" }));
+
+      await waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith("PCOPY");
+      });
+
+      expect(screen.queryByText("1 ID kiriman berhasil disalin.")).not.toBeInTheDocument();
+      expect(screen.queryByText("ID kiriman berhasil disalin.")).not.toBeInTheDocument();
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        value: originalClipboard,
+        configurable: true,
+      });
+    }
+  });
+
   it("applies and persists the selected display scale", async () => {
     render(<App />);
 
@@ -951,7 +1389,18 @@ describe("App workspace isolation", () => {
     expect(window.localStorage.getItem("shipflow-display-scale")).toBe("large");
   });
 
-  it("restores the workspace after the app remounts", () => {
+  it("opens ShipFlow Service from desktop settings", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
+    fireEvent.click(screen.getByRole("button", { name: "Buka ShipFlow Service" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("open_shipflow_service_app")).toHaveLength(1);
+    });
+  });
+
+  it("does not restore an unsaved workspace after the app remounts", () => {
     const firstRender = render(<App />);
 
     const [firstInput, secondInput] = screen.getAllByPlaceholderText(
@@ -967,8 +1416,248 @@ describe("App workspace isolation", () => {
     const restoredInputs = screen.getAllByPlaceholderText(
       "Masukkan ID"
     ) as HTMLInputElement[];
-    expect(restoredInputs[0]).toHaveValue("P2603310114291");
-    expect(restoredInputs[1]).toHaveValue("P2603310114292");
+    expect(restoredInputs[0]).toHaveValue("");
+    expect(restoredInputs[1]).toHaveValue("");
+  });
+
+  it("restores the last saved workspace snapshot after the app remounts", async () => {
+    const firstRender = render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    fireEvent.change(firstInput, { target: { value: "PSAVED1" } });
+
+    openFileMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Simpan Sebagai" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("write_workspace_document")).toHaveLength(1);
+    });
+
+    firstRender.unmount();
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("PSAVED1");
+    });
+  });
+
+  it("saves the current workspace to a document file via Save As", async () => {
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    fireEvent.change(firstInput, { target: { value: "PSAVE1" } });
+
+    openFileMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Simpan Sebagai" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("pick_workspace_document_path")).toHaveLength(1);
+      expect(getInvokeCalls("write_workspace_document")).toHaveLength(1);
+    });
+
+    openFileMenu();
+    expect(screen.getByRole("menuitem", { name: "picked-save.shipflow" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Simpan Otomatis" })).not.toBeDisabled();
+  });
+
+  it("opens a workspace from a document file path", async () => {
+    render(<App />);
+
+    openFileMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Buka" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("pick_workspace_document_path")).toHaveLength(1);
+      expect(getInvokeCalls("read_workspace_document")).toHaveLength(1);
+    });
+
+    expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("POPEN1");
+    openFileMenu();
+    expect(screen.getByRole("menuitem", { name: "picked-open.shipflow" })).toBeInTheDocument();
+  });
+
+  it("asks for confirmation before opening another document over unsaved changes", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    fireEvent.change(firstInput, { target: { value: "PCANCEL1" } });
+
+    openFileMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Buka" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("pick_workspace_document_path")).toHaveLength(1);
+      expect(confirmSpy).toHaveBeenCalledWith(
+        "Perubahan belum disimpan. Buka dokumen lain?"
+      );
+    });
+
+    expect(getInvokeCalls("read_workspace_document")).toHaveLength(0);
+    expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("PCANCEL1");
+  });
+
+  it("autosaves changes back to the active workspace file", async () => {
+    render(<App />);
+
+    openFileMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Simpan Sebagai" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("write_workspace_document")).toHaveLength(1);
+    });
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    fireEvent.change(firstInput, { target: { value: "PAUTO1" } });
+
+    await waitFor(() => {
+      expect(getInvokeCalls("write_workspace_document")).toHaveLength(2);
+    }, { timeout: 2000 });
+  });
+
+  it("can create and open workspaces in a new window", async () => {
+    render(<App />);
+
+    openFileMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Jendela Baru" }));
+    openFileMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Buka di Jendela Baru" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("create_workspace_window")).toHaveLength(2);
+    });
+
+    expect(getInvokeCalls("pick_workspace_document_path")).toHaveLength(1);
+    expect(getInvokeCalls("create_workspace_window")[0]?.[1]).toMatchObject({
+      documentPath: null,
+    });
+    expect(getInvokeCalls("create_workspace_window")[1]?.[1]).toMatchObject({
+      documentPath: "/tmp/picked-open.shipflow",
+    });
+  });
+
+  it("shows recent workspace files after save and open", async () => {
+    render(<App />);
+
+    openFileMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Simpan Sebagai" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("write_workspace_document")).toHaveLength(1);
+    });
+
+    openFileMenu();
+    expect(screen.getByRole("menuitem", { name: "picked-save.shipflow" })).toBeInTheDocument();
+
+    openFileMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Buka" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("read_workspace_document")).toHaveLength(1);
+    });
+
+    openFileMenu();
+    expect(screen.getByRole("menuitem", { name: "picked-open.shipflow" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "picked-save.shipflow" })).toBeInTheDocument();
+  });
+
+  it("does not open the same workspace twice when another window already owns it", async () => {
+    mockedInvoke.mockImplementation((command, args) => {
+      if (command === "get_current_window_label") {
+        return Promise.resolve("main");
+      }
+
+      if (command === "take_pending_workspace_window_request") {
+        return Promise.resolve(null);
+      }
+
+      if (command === "pick_workspace_document_path") {
+        return Promise.resolve("/tmp/picked-open.shipflow");
+      }
+
+      if (command === "claim_current_workspace_document") {
+        return Promise.resolve({
+          status: "alreadyOpen",
+          path: args?.path ?? null,
+          ownerLabel: "workspace-other",
+        });
+      }
+
+      if (command === "set_current_window_title" || command === "log_frontend_runtime_event") {
+        return Promise.resolve(undefined);
+      }
+
+      if (command === "load_saved_api_service_config") {
+        return Promise.resolve(null);
+      }
+
+      if (command === "get_api_service_status") {
+        return Promise.resolve({
+          status: "stopped",
+          enabled: false,
+          mode: "local",
+          bindAddress: "127.0.0.1",
+          port: 18422,
+          errorMessage: null,
+        });
+      }
+
+      if (command === "configure_api_service") {
+        return Promise.resolve({
+          status: "stopped",
+          enabled: false,
+          mode: "local",
+          bindAddress: "127.0.0.1",
+          port: 18422,
+          errorMessage: null,
+        });
+      }
+
+      if (command === "resolve_pod_image" || command === "copy_to_clipboard") {
+        return Promise.resolve(undefined);
+      }
+
+      if (command === "validate_tracking_source_config") {
+        return Promise.resolve(undefined);
+      }
+
+      if (command === "test_external_tracking_source") {
+        return Promise.resolve("OK");
+      }
+
+      if (command === "create_workspace_window") {
+        return Promise.resolve({
+          status: "alreadyOpen",
+          path: args?.documentPath ?? null,
+          ownerLabel: "workspace-other",
+        });
+      }
+
+      if (command === "read_workspace_document") {
+        throw new Error("read_workspace_document should not run for duplicate file");
+      }
+
+      if (command === "track_shipment") {
+        const deferred = createDeferred<TrackResponse>();
+        pendingRequests.set(args?.shipmentId ?? "unknown", deferred);
+        return deferred.promise;
+      }
+
+      return Promise.resolve(undefined);
+    });
+
+    render(<App />);
+
+    openFileMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Buka" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Dokumen itu sudah terbuka di jendela lain.")).toBeInTheDocument();
+    });
+
+    expect(getInvokeCalls("read_workspace_document")).toHaveLength(0);
   });
 
   it("heals invalid persisted empty rows that still carry tracking state", async () => {
@@ -1017,6 +1706,13 @@ describe("App workspace isolation", () => {
       "shipflow-workspace-state",
       JSON.stringify(invalidPersistedWorkspace)
     );
+    window.localStorage.setItem(
+      "shipflow-workspace-document-meta",
+      JSON.stringify({
+        path: "/tmp/healed.shipflow",
+        lastSavedAt: "2026-04-18T00:00:00.000Z",
+      })
+    );
 
     render(<App />);
 
@@ -1053,6 +1749,9 @@ describe("App workspace isolation", () => {
     const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
     fireEvent.change(firstInput, { target: { value: "P2603310114291" } });
 
+    openFileMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Simpan Sebagai" }));
+
     await waitFor(() => {
       expect(window.localStorage.getItem("shipflow-workspace-state")).toContain(
         "P2603310114291"
@@ -1081,69 +1780,207 @@ describe("App workspace isolation", () => {
     expect(window.localStorage.getItem("shipflow-display-scale")).toBe("small");
   });
 
-  it("persists previewed service config only after settings are confirmed", async () => {
+  it("persists previewed service config only after settings are confirmed in the service window", async () => {
+    setShipFlowWindowKind("service-settings");
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
-    fireEvent.click(screen.getByRole("button", { name: "API Service" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Enable API Service" }));
-    fireEvent.click(screen.getByRole("radio", { name: "LAN API" }));
+    expect(window.localStorage.getItem("shipflow-service-config")).toBeNull();
+    expect(getInvokeCalls("configure_api_service")).toHaveLength(0);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "API" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Buka Akses API Eksternal" }));
+    fireEvent.click(screen.getByLabelText("LAN / Jaringan Lokal"));
     fireEvent.change(screen.getByLabelText("Port"), {
       target: { value: "19422" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Generate Token" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
 
-    expect(window.localStorage.getItem("shipflow-service-config")).toBe(
-      JSON.stringify({
-        version: 1,
-        enabled: false,
-        mode: "local",
-        port: 18422,
-        authToken: "",
-        lastUpdatedAt: "",
-      })
-    );
+    expect(window.localStorage.getItem("shipflow-service-config")).toBeNull();
 
-    const tokenField = screen.getByLabelText("Auth Token") as HTMLInputElement;
+    const tokenField = screen.getByLabelText("Token API") as HTMLInputElement;
     expect(tokenField.value).toMatch(/^sf_[a-f0-9]+$/);
 
-    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
 
-    const storedServiceConfig = JSON.parse(
-      window.localStorage.getItem("shipflow-service-config") ?? "{}"
-    );
-    expect(storedServiceConfig.enabled).toBe(true);
-    expect(storedServiceConfig.mode).toBe("lan");
-    expect(storedServiceConfig.port).toBe(19422);
-    expect(storedServiceConfig.authToken).toMatch(/^sf_[a-f0-9]+$/);
-    expect(storedServiceConfig.lastUpdatedAt).toBeTruthy();
+    await waitFor(() => {
+      expect(getInvokeCalls("configure_api_service")).toHaveLength(1);
+      expect(persistedServiceConfig?.enabled).toBe(true);
+      expect(persistedServiceConfig?.mode).toBe("lan");
+      expect(persistedServiceConfig?.port).toBe(19422);
+      expect(persistedServiceConfig?.authToken).toMatch(/^sf_[a-f0-9]+$/);
+      expect(persistedServiceConfig?.lastUpdatedAt).toBeTruthy();
+    });
   });
 
-  it("rolls back previewed service config and token when settings are cancelled", async () => {
+  it("rolls back previewed service config and token when the service window resets changes", async () => {
+    setShipFlowWindowKind("service-settings");
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
-    fireEvent.click(screen.getByRole("button", { name: "API Service" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Enable API Service" }));
-    fireEvent.click(screen.getByRole("button", { name: "Generate Token" }));
-    fireEvent.click(screen.getByRole("button", { name: "Batal" }));
+    expect(window.localStorage.getItem("shipflow-service-config")).toBeNull();
 
-    expect(window.localStorage.getItem("shipflow-service-config")).toBe(
-      JSON.stringify({
-        version: 1,
-        enabled: false,
-        mode: "local",
-        port: 18422,
-        authToken: "",
-        lastUpdatedAt: "",
+    fireEvent.click(await screen.findByRole("tab", { name: "API" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Buka Akses API Eksternal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reset Perubahan" }));
+
+    expect(window.localStorage.getItem("shipflow-service-config")).toBeNull();
+    expect(getInvokeCalls("configure_api_service")).toHaveLength(0);
+
+    expect(screen.getByRole("checkbox", { name: "Buka Akses API Eksternal" })).not.toBeChecked();
+    expect((screen.getByLabelText("Token API") as HTMLInputElement).value).toBe("");
+  });
+
+  it("persists external tracking source settings after confirmation in the service window", async () => {
+    setShipFlowWindowKind("service-settings");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Runtime Internal" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "API ShipFlow Eksternal" }));
+    fireEvent.change(screen.getByLabelText("External API Base URL"), {
+      target: { value: "https://scrappid3.jacobcalvyn.io" },
+    });
+    fireEvent.change(screen.getByLabelText("External API Bearer Token"), {
+      target: {
+        value: "sf_32c18e59ecca4f91e23070d33c74a230a0ccc73161b6ae79",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("configure_api_service")).toHaveLength(1);
+      expect(persistedServiceConfig?.trackingSource).toBe("externalApi");
+      expect(persistedServiceConfig?.externalApiBaseUrl).toBe(
+        "https://scrappid3.jacobcalvyn.io"
+      );
+      expect(persistedServiceConfig?.externalApiAuthToken).toBe(
+        "sf_32c18e59ecca4f91e23070d33c74a230a0ccc73161b6ae79"
+      );
+      expect(persistedServiceConfig?.allowInsecureExternalApiHttp).toBe(false);
+    });
+  });
+
+  it("restores external tracking source selection and base URL in the service window even when the bearer token is session-only", async () => {
+    persistedServiceConfig = {
+      version: 1,
+      enabled: false,
+      mode: "local",
+      port: 18422,
+      authToken: "",
+      trackingSource: "externalApi",
+      externalApiBaseUrl: "https://scrappid3.jacobcalvyn.io",
+      externalApiAuthToken: "",
+      allowInsecureExternalApiHttp: false,
+      keepRunningInTray: true,
+      lastUpdatedAt: "2026-04-18T00:00:00.000Z",
+    };
+
+    setShipFlowWindowKind("service-settings");
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "Runtime Internal" })).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+      expect(screen.getByRole("radio", { name: "API ShipFlow Eksternal" })).toBeChecked();
+      expect(screen.getByLabelText("External API Base URL")).toHaveValue(
+        "https://scrappid3.jacobcalvyn.io"
+      );
+      expect(screen.getByLabelText("External API Bearer Token")).toHaveValue("");
+    });
+  });
+
+  it("tests external tracking source config from the service window", async () => {
+    setShipFlowWindowKind("service-settings");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Runtime Internal" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "API ShipFlow Eksternal" }));
+    fireEvent.change(screen.getByLabelText("External API Base URL"), {
+      target: { value: "https://scrappid3.jacobcalvyn.io" },
+    });
+    fireEvent.change(screen.getByLabelText("External API Bearer Token"), {
+      target: {
+        value: "sf_32c18e59ecca4f91e23070d33c74a230a0ccc73161b6ae79",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Tes" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("test_external_tracking_source")).toHaveLength(1);
+      expect(
+        screen.getByText("Koneksi berhasil. Akses API aktif via lan (0.0.0.0:18422).")
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("falls back to native clipboard bridge for copying all and selected tracking IDs", async () => {
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
+    fireEvent.change(firstInput, { target: { value: "PCOPY1" } });
+    fireEvent.blur(firstInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 1);
+    });
+
+    resolveRequest("PCOPY1");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy ID Kiriman" }));
+
+    await waitFor(() => {
+      const copyCalls = getInvokeCalls("copy_to_clipboard");
+      expect(copyCalls).toHaveLength(1);
+      expect(copyCalls[0]?.[1]).toMatchObject({ text: "PCOPY1" });
+    });
+
+    fireEvent.click(screen.getByLabelText("Select row PCOPY1"));
+    fireEvent.click(screen.getByRole("button", { name: "Copy ID Kiriman Terselect" }));
+
+    await waitFor(() => {
+      const copyCalls = getInvokeCalls("copy_to_clipboard");
+      expect(copyCalls).toHaveLength(2);
+      expect(copyCalls[1]?.[1]).toMatchObject({ text: "PCOPY1" });
+    });
+  });
+
+  it("blocks invalid external HTTP tracking config in the service window until insecure HTTP is explicitly allowed", async () => {
+    setShipFlowWindowKind("service-settings");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Runtime Internal" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "API ShipFlow Eksternal" }));
+    fireEvent.change(screen.getByLabelText("External API Base URL"), {
+      target: { value: "http://internal-shipflow.test" },
+    });
+    fireEvent.change(screen.getByLabelText("External API Bearer Token"), {
+      target: { value: "sf_http_only" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "External API base URL must use HTTPS unless insecure HTTP is explicitly allowed."
+        )
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: "Izinkan HTTP non-TLS",
       })
     );
+    fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
-    fireEvent.click(screen.getByRole("button", { name: "API Service" }));
-
-    expect(screen.getByRole("checkbox", { name: "Enable API Service" })).not.toBeChecked();
-    expect((screen.getByLabelText("Auth Token") as HTMLInputElement).value).toBe("");
+    await waitFor(() => {
+      expect(persistedServiceConfig?.allowInsecureExternalApiHttp).toBe(true);
+    });
   });
 
   it("blocks global delete and copy shortcuts while settings dialog is open", async () => {

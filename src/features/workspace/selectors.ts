@@ -35,6 +35,8 @@ export function getWorkspaceTabs(workspaceState: WorkspaceState) {
     .map((sheetId) => ({
       id: sheetId,
       name: workspaceState.sheetMetaById[sheetId]?.name ?? "Sheet",
+      color: workspaceState.sheetMetaById[sheetId]?.color ?? "slate",
+      icon: workspaceState.sheetMetaById[sheetId]?.icon ?? "sheet",
       isActive: sheetId === workspaceState.activeSheetId,
     }));
 }

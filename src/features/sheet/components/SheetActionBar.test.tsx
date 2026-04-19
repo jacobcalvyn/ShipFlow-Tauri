@@ -8,8 +8,8 @@ describe("SheetActionBar", () => {
     const onCopyAllIds = vi.fn();
     const onDeleteAllRows = vi.fn();
     const onClearSelection = vi.fn();
-    const onCreateSheetFromSelectedIds = vi.fn();
-    const onAppendSelectedIdsToSheet = vi.fn();
+    const onTransferSelectedIdsToNewSheet = vi.fn();
+    const onTransferSelectedIdsToSheet = vi.fn();
     const onClearFilter = vi.fn();
     const onCopySelectedIds = vi.fn();
     const onDeleteSelectedRows = vi.fn();
@@ -22,6 +22,7 @@ describe("SheetActionBar", () => {
         totalShipmentCount={16}
         loadingCount={4}
         retrackableRowsCount={12}
+        retryFailedRowsCount={2}
         deleteAllArmed={false}
         exportableRowsCount={12}
         activeFilterCount={2}
@@ -37,16 +38,17 @@ describe("SheetActionBar", () => {
           },
         ]}
         onRetrackAll={onRetrackAll}
+        onRetryFailedRows={vi.fn()}
         onExportCsv={onExportCsv}
         onCopyAllIds={onCopyAllIds}
         onDeleteAllRows={onDeleteAllRows}
         onClearSelection={onClearSelection}
-        onCreateSheetFromSelectedIds={onCreateSheetFromSelectedIds}
+        onTransferSelectedIdsToNewSheet={onTransferSelectedIdsToNewSheet}
         targetSheetOptions={[
           { id: "sheet-2", name: "Sheet 2" },
           { id: "sheet-3", name: "Sheet 3" },
         ]}
-        onAppendSelectedIdsToSheet={onAppendSelectedIdsToSheet}
+        onTransferSelectedIdsToSheet={onTransferSelectedIdsToSheet}
         onClearFilter={onClearFilter}
         onCopySelectedIds={onCopySelectedIds}
         onDeleteSelectedRows={onDeleteSelectedRows}
@@ -76,12 +78,16 @@ describe("SheetActionBar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear Selection" }));
     expect(onClearSelection).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByText("ID Terselect ke Sheet Baru"));
-    expect(onCreateSheetFromSelectedIds).toHaveBeenCalledTimes(1);
+    fireEvent.mouseEnter(screen.getByRole("button", { name: "ID Terselect ke Sheet Baru" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Salin" }));
+    expect(onTransferSelectedIdsToNewSheet).toHaveBeenCalledWith("copy");
 
     fireEvent.mouseEnter(screen.getByRole("button", { name: "ID Terselect ke Sheet Lain" }));
+    expect(screen.queryByRole("menuitem", { name: "Sheet 2" })).not.toBeInTheDocument();
+    fireEvent.mouseEnter(screen.getByRole("menuitem", { name: "Pindahkan" }));
+    expect(screen.getByRole("menuitem", { name: "Sheet 2" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("menuitem", { name: "Sheet 2" }));
-    expect(onAppendSelectedIdsToSheet).toHaveBeenCalledWith("sheet-2");
+    expect(onTransferSelectedIdsToSheet).toHaveBeenCalledWith("move", "sheet-2");
 
     fireEvent.click(screen.getByText("Clear Filter"));
     expect(onClearFilter).toHaveBeenCalledTimes(1);
@@ -103,6 +109,7 @@ describe("SheetActionBar", () => {
         totalShipmentCount={0}
         loadingCount={0}
         retrackableRowsCount={0}
+        retryFailedRowsCount={0}
         deleteAllArmed={false}
         exportableRowsCount={0}
         activeFilterCount={0}
@@ -111,13 +118,14 @@ describe("SheetActionBar", () => {
         ignoredHiddenFilterCount={0}
         columnShortcuts={[]}
         onRetrackAll={vi.fn()}
+        onRetryFailedRows={vi.fn()}
         onExportCsv={vi.fn()}
         onCopyAllIds={vi.fn()}
         onDeleteAllRows={vi.fn()}
         onClearSelection={vi.fn()}
-        onCreateSheetFromSelectedIds={vi.fn()}
+        onTransferSelectedIdsToNewSheet={vi.fn()}
         targetSheetOptions={[]}
-        onAppendSelectedIdsToSheet={vi.fn()}
+        onTransferSelectedIdsToSheet={vi.fn()}
         onClearFilter={vi.fn()}
         onCopySelectedIds={vi.fn()}
         onDeleteSelectedRows={vi.fn()}
