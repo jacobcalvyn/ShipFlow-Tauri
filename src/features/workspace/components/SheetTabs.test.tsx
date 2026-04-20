@@ -319,7 +319,7 @@ describe("SheetTabs", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
-    expect(screen.getByText("API Eksternal")).toBeInTheDocument();
+    expect(screen.getByText("ShipFlow Service")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Buka ShipFlow Service" }));
 
     expect(onOpenServiceSettings).toHaveBeenCalledTimes(1);

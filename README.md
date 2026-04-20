@@ -2,13 +2,14 @@
 
 Desktop shipment tracking workspace built with Tauri, Rust, React, and Vite.
 
-The app is optimized for spreadsheet-style operational analysis. Each row represents one shipment. The first data column accepts a shipment ID, then the app fetches POS Indonesia tracking details and fills the rest of the row. A sheet is treated as one independent workspace.
+The app is optimized for spreadsheet-style operational analysis. Each row represents one shipment. The first data column accepts a shipment ID, then the app asks `ShipFlow Service` for tracking data and fills the rest of the row. A sheet is treated as one independent workspace.
 
 ## What The App Does
 
 - Runs as a desktop app with Tauri
-- Scrapes tracking details directly from POS Indonesia without login
-- Uses direct Tauri IPC from the React UI into Rust tracking code
+- Uses a document-style desktop workspace with open / save / save as
+- Uses `ShipFlow Service` as the runtime that owns tracking configuration and API access
+- Supports both internal POS scraping and external ShipFlow API source selection from `ShipFlow Service`
 - Shows shipment detail and `status_akhir` fields in a wide spreadsheet-style table
 - Supports bulk paste, row selection, CSV export, column pin/hide, sorting, and filtering
 - Supports both text filters and per-column multi-select value filters
@@ -16,20 +17,24 @@ The app is optimized for spreadsheet-style operational analysis. Each row repres
 - Supports multiple sheets, where each sheet is an isolated tracking workspace
 - Supports creating a new sheet from selected shipment IDs only
 - Supports appending selected shipment IDs into another existing sheet
-- Includes an optional in-app API service mode with local or LAN binding
+- Includes external API access for other apps through the companion service
 
 ## Tracking Flow
 
 1. Enter a shipment ID in the `Nomor Kiriman` column
-2. The frontend calls the Tauri `track_shipment` command directly
-3. The Rust tracking layer converts the shipment ID to Base64 and calls:
+2. The frontend calls the Tauri `track_shipment` command
+3. `ShipFlow Desktop` forwards the request to `ShipFlow Service`
+4. The service runtime resolves the active tracking source:
+   - internal POS scraper
+   - external ShipFlow API
+5. For the internal scraper, the Rust tracking layer converts the shipment ID to Base64 and calls:
 
 ```text
 https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=...
 ```
 
-4. The HTML response is parsed into the app's JSON shape
-5. The matching row is updated with shipment details
+6. The response is normalized into the app's JSON shape
+7. The matching row is updated with shipment details
 
 Example shipment ID:
 
@@ -92,13 +97,12 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - Temporary header highlight when a shortcut scroll target is reached
 - Sheet-specific scroll position, request state, and notices
 - Toast notifications are shown as a fixed top-center queue and do not shift the sheet layout
-- `Setting` is opened from a gear icon in the tabs panel and includes preview-and-confirm controls for display scale and API service config
-- API service settings include:
-  - enable / disable
-  - `Local API` or `LAN API`
-  - custom port
-  - app-generated bearer token with generate / regenerate / reveal
-- The settings dialog shows current API runtime status, bind address, port, and service errors
+- `Setting` is opened from a gear icon in the tabs panel and includes display scale controls plus a launcher to open `ShipFlow Service`
+- `ShipFlow Service` owns:
+  - runtime tracking source selection
+  - external API access mode (`localhost` or `LAN`)
+  - external API port
+  - service-generated bearer token
 - `Nomor Kiriman` rows include per-row QR preview, copy ID, and source-link actions
 - QR previews are generated locally in-app and do not rely on an external QR image service
 - `POD Photo 1` and `POD Photo 2` render as image thumbnails with hover preview
@@ -132,10 +136,10 @@ The main table currently focuses on:
 
 ## Stability And Safety Notes
 
-- Tracking now uses direct IPC instead of a localhost HTTP hop.
-- An optional embedded HTTP API service can be enabled from `Setting`.
-- Service config preview is only committed on `OK`; `Batal` rolls back previewed service changes.
-- Auth tokens for the embedded API are generated only from the app UI.
+- `ShipFlow Desktop` does not scrape directly. Tracking is resolved by `ShipFlow Service`.
+- `ShipFlow Service` is the single source of truth for tracking source and external API access.
+- Desktop `Setting` only launches `ShipFlow Service`; service configuration is not edited from the desktop modal.
+- External API access can be opened or closed from `ShipFlow Service` without affecting the desktop runtime itself.
 - Retrack failures do not wipe the last successful shipment data. Failed refreshes keep the old row data and mark the row as stale.
 - Numeric parsing in the Rust scraper is hardened: invalid upstream numeric fields now fail loudly instead of silently falling back to `0`.
 - Empty numeric upstream fields are preserved as `null`, not coerced to `0`.
@@ -147,12 +151,14 @@ The main table currently focuses on:
 - `Delete All` resets rows, filters, value filters, sort state, and in-flight tracking work so the table returns to a clean input state.
 - Delivery-runsheet parsing is hardened so `FAILEDTODELIVERED` cases are not incorrectly split into two updates on the latest runsheet.
 - Delivery-runsheet parsing now keeps only the latest effective update for a runsheet summary.
+- The service companion always keeps tray/background behavior enabled; it is no longer exposed as a user-facing desktop setting.
 
 ## Project Structure
 
 ### Frontend
 
 - [src/App.tsx](./src/App.tsx): main state orchestration and app flow
+- [src/features/service/components/ServiceSettingsWindow.tsx](./src/features/service/components/ServiceSettingsWindow.tsx): companion service settings window UI
 - [src/features/sheet/columns.ts](./src/features/sheet/columns.ts): spreadsheet column definitions
 - [src/features/sheet/types.ts](./src/features/sheet/types.ts): sheet-level UI types
 - [src/features/sheet/utils.ts](./src/features/sheet/utils.ts): formatting and table helpers
@@ -163,15 +169,17 @@ The main table currently focuses on:
 ### Backend
 
 - [src-tauri/src/lib.rs](./src-tauri/src/lib.rs): app startup and Tauri wiring
-- [src-tauri/src/service.rs](./src-tauri/src/service.rs): optional embedded HTTP API service controller
+- [src-tauri/src/service.rs](./src-tauri/src/service.rs): companion service runtime, tray, and external API controller
 - [src-tauri/src/tracking/model.rs](./src-tauri/src/tracking/model.rs): tracking response models
 - [src-tauri/src/tracking/upstream.rs](./src-tauri/src/tracking/upstream.rs): upstream request and URL building
 - [src-tauri/src/tracking/parser.rs](./src-tauri/src/tracking/parser.rs): POS HTML parsing
 - [src-tauri/src/fixtures](./src-tauri/src/fixtures): parser fixtures used by Rust tests
 
-### Architecture Notes
+### Runtime Split
 
-- [docs/service-mode-architecture.md](./docs/service-mode-architecture.md): service mode, token, and tray/menu bar architecture plan
+- `ShipFlow Desktop`: document workspace, sheet management, and table UI
+- `ShipFlow Service`: tracking runtime, source selection, service token, tray/background lifecycle, and external API access
+- Desktop and service are installed together, but run as separate apps/processes
 
 ### Reference Only
 
@@ -197,6 +205,12 @@ Run the desktop app:
 npm run tauri dev
 ```
 
+Run the service app directly in dev:
+
+```bash
+cargo run --manifest-path src-tauri/Cargo.toml --bin shipflow-service --
+```
+
 ## Build
 
 Build the frontend bundle:
@@ -209,6 +223,12 @@ Build the desktop app:
 
 ```bash
 npm run tauri build
+```
+
+Prepare the bundled service binary:
+
+```bash
+npm run prepare:service-binary
 ```
 
 ## GitHub Actions Windows Build

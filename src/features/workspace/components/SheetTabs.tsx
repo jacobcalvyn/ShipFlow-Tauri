@@ -461,17 +461,6 @@ export function SheetTabs({
     };
   }, [editingSheetId, hoveredSheetId, tabs, activeSheetId]);
 
-  const apiAccessStatusLabel = useMemo(() => {
-    switch (serviceStatus.status) {
-      case "running":
-        return "Terbuka";
-      case "error":
-        return "Bermasalah";
-      default:
-        return "Tertutup";
-    }
-  }, [serviceStatus.status]);
-
   const fileMenuStyle = useMemo(() => {
     if (!isFileMenuOpen) {
       return null;
@@ -962,39 +951,23 @@ export function SheetTabs({
                         </div>
                       </label>
                     </div>
-                  </section>
-                  <section className="settings-pane">
-                    <div className="settings-pane-header">
-                      <h4>Service</h4>
-                      <p>
-                        Sumber data tracking ShipFlow Desktop dikelola oleh app ShipFlow Service.
-                      </p>
-                    </div>
-                    <div className="settings-service-status" role="status" aria-live="polite">
-                      <div className="settings-service-status-row">
-                        <span className="settings-service-status-label">API Eksternal</span>
-                        <span
-                          className={[
-                            "settings-service-status-badge",
-                            `is-${serviceStatus.status}`,
-                          ].join(" ")}
+                    <div className="settings-service-launcher">
+                      <div className="settings-service-launcher-copy">
+                        <div className="settings-service-launcher-title">ShipFlow Service</div>
+                        <div className="settings-service-launcher-description">
+                          Pengaturan runtime tracking dan akses API eksternal dibuka dari app
+                          service terpisah.
+                        </div>
+                      </div>
+                      <div className="settings-inline-actions">
+                        <button
+                          type="button"
+                          className="sheet-tab-action"
+                          onClick={onOpenServiceSettings}
                         >
-                          {apiAccessStatusLabel}
-                        </span>
+                          Buka ShipFlow Service
+                        </button>
                       </div>
-                      <div className="settings-service-status-meta">
-                        Pengaturan runtime tracking dan akses API eksternal dikelola di
-                        ShipFlow Service.
-                      </div>
-                    </div>
-                    <div className="settings-inline-actions">
-                      <button
-                        type="button"
-                        className="sheet-tab-action"
-                        onClick={onOpenServiceSettings}
-                      >
-                        Buka ShipFlow Service
-                      </button>
                     </div>
                   </section>
                 </div>

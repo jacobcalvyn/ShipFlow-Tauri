@@ -1685,6 +1685,32 @@ button {
   gap: 8px;
 }
 
+.settings-service-launcher {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid #e8eef5;
+}
+
+.settings-service-launcher-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-service-launcher-title {
+  color: #0f172a;
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.settings-service-launcher-description {
+  color: #64748b;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
 .settings-field-help {
   font-size: 0.76rem;
   line-height: 1.35;
