@@ -6,8 +6,9 @@ use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
 use tauri::webview::PageLoadEvent;
 use tauri::{App, Emitter, Manager, Runtime, WebviewUrl, Window, WindowEvent};
 
+use crate::runtime_log::log_runtime_event;
 use crate::service;
-use crate::service::ApiServiceController;
+use crate::service::{ApiServiceConfig, ApiServiceController};
 use crate::service_runtime::{default_tray_service_config, sync_service_tray, TrayState};
 use crate::tracking::model::TrackingClientState;
 use crate::window_runtime::{
@@ -32,8 +33,11 @@ impl MainWebviewNavigationGuard {
             .expect("main webview navigation guard lock poisoned");
 
         if state.contains(label) {
-            eprintln!(
+            log_runtime_event(
+                "INFO",
+                format!(
                 "[ShipFlowTauri] observed top-level navigation for webview '{label}' to {url}"
+                ),
             );
         }
     }
@@ -49,8 +53,11 @@ impl MainWebviewNavigationGuard {
             .expect("main webview navigation guard lock poisoned");
 
         if state.insert(label.to_string()) {
-            eprintln!(
+            log_runtime_event(
+                "INFO",
+                format!(
                 "[ShipFlowTauri] recorded initial page load finish for webview '{label}' at {url}"
+                ),
             );
         }
     }
@@ -60,14 +67,14 @@ fn initialize_tracking_source_state<R: Runtime>(
     app: &App<R>,
     load_error_label: &str,
     sync_error_label: &str,
-) {
+) -> Option<ApiServiceConfig> {
     let service_controller = app.state::<ApiServiceController>();
     let tracking_client_state = app.state::<TrackingClientState>();
     let tray_state = app.state::<TrayState>();
     let saved_config = service_controller
         .load_saved_config()
         .unwrap_or_else(|error| {
-            eprintln!("{load_error_label} {error}");
+            log_runtime_event("ERROR", format!("{load_error_label} {error}"));
             None
         });
 
@@ -76,10 +83,53 @@ fn initialize_tracking_source_state<R: Runtime>(
     }
 
     let status = service_controller.status();
-    let tray_config = saved_config.unwrap_or_else(default_tray_service_config);
+    let tray_config = saved_config
+        .clone()
+        .unwrap_or_else(default_tray_service_config);
     tray_state.update_service(&tray_config, &status);
     if let Err(error) = sync_service_tray(&app.handle(), &tray_state) {
-        eprintln!("{sync_error_label} {error}");
+        log_runtime_event("ERROR", format!("{sync_error_label} {error}"));
+    }
+
+    saved_config
+}
+
+fn ensure_desktop_tracking_runtime<R: Runtime>(app: &App<R>, saved_config: Option<ApiServiceConfig>) {
+    let tracking_client_state = app.state::<TrackingClientState>();
+    let service_controller = app.state::<ApiServiceController>();
+    let tray_state = app.state::<TrayState>();
+
+    match service::ensure_tracking_service_runtime(saved_config.clone()) {
+        Ok(runtime_config) => {
+            tracking_client_state.update_source_config(runtime_config.tracking_source_config());
+            log_runtime_event(
+                "INFO",
+                format!(
+                    "[ShipFlowDesktop] startup service runtime ready on port {} with source {:?}",
+                    runtime_config.port, runtime_config.tracking_source
+                ),
+            );
+
+            let status = service_controller.status();
+            let tray_config = saved_config.unwrap_or_else(default_tray_service_config);
+            tray_state.update_service(&tray_config, &status);
+            if let Err(error) = sync_service_tray(&app.handle(), &tray_state) {
+                log_runtime_event(
+                    "ERROR",
+                    format!(
+                        "[ShipFlowTray] failed to sync tray after desktop runtime check: {error}"
+                    ),
+                );
+            }
+        }
+        Err(error) => {
+            log_runtime_event(
+                "ERROR",
+                format!(
+                    "[ShipFlowDesktop] failed to ensure service runtime during startup: {error}"
+                ),
+            );
+        }
     }
 }
 
@@ -95,8 +145,11 @@ fn spawn_desktop_activation_listener(app_handle: tauri::AppHandle<tauri::Wry>) {
             }
             Ok(None) => {}
             Err(error) => {
-                eprintln!(
-                    "[ShipFlowDesktop] failed to consume desktop activation request: {error}"
+                log_runtime_event(
+                    "ERROR",
+                    format!(
+                        "[ShipFlowDesktop] failed to consume desktop activation request: {error}"
+                    ),
                 );
             }
             _ => {}
@@ -118,8 +171,11 @@ fn spawn_service_settings_activation_listener(app_handle: tauri::AppHandle<tauri
             }
             Ok(None) => {}
             Err(error) => {
-                eprintln!(
-                    "[ShipFlowService] failed to consume service settings activation request: {error}"
+                log_runtime_event(
+                    "ERROR",
+                    format!(
+                        "[ShipFlowService] failed to consume service settings activation request: {error}"
+                    ),
                 );
             }
             _ => {}
@@ -156,7 +212,10 @@ pub(crate) fn build_main_webview_navigation_guard_plugin() -> TauriPlugin<tauri:
 
             match payload.event() {
                 PageLoadEvent::Started => {
-                    eprintln!("[ShipFlowTauri] page load started for webview '{label}' at {url}");
+                    log_runtime_event(
+                        "INFO",
+                        format!("[ShipFlowTauri] page load started for webview '{label}' at {url}"),
+                    );
                 }
                 PageLoadEvent::Finished => {
                     page_load_guard_plugin.mark_initial_load_finished(&label, &url);
@@ -168,14 +227,18 @@ pub(crate) fn build_main_webview_navigation_guard_plugin() -> TauriPlugin<tauri:
 
 pub(crate) fn desktop_setup(app: &mut App<tauri::Wry>) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(error) = service::register_current_desktop_process() {
-        eprintln!("[ShipFlowDesktop] failed to register desktop process: {error}");
+        log_runtime_event(
+            "ERROR",
+            format!("[ShipFlowDesktop] failed to register desktop process: {error}"),
+        );
     }
 
-    initialize_tracking_source_state(
+    let saved_config = initialize_tracking_source_state(
         app,
         "[ShipFlowService] failed to load persisted config:",
         "[ShipFlowTray] failed to initialize tray:",
     );
+    ensure_desktop_tracking_runtime(app, saved_config);
 
     spawn_desktop_activation_listener(app.handle().clone());
     Ok(())
@@ -185,10 +248,13 @@ pub(crate) fn service_settings_setup(
     app: &mut App<tauri::Wry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(error) = service::register_current_service_settings_process() {
-        eprintln!("[ShipFlowService] failed to register service settings process: {error}");
+        log_runtime_event(
+            "ERROR",
+            format!("[ShipFlowService] failed to register service settings process: {error}"),
+        );
     }
 
-    initialize_tracking_source_state(
+    let _ = initialize_tracking_source_state(
         app,
         "[ShipFlowService] failed to load persisted config:",
         "[ShipFlowService] failed to sync tray companion:",

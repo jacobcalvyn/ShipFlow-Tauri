@@ -2,6 +2,7 @@ mod app_menu_runtime;
 mod app_runtime;
 mod os_bridge;
 mod pod_preview;
+mod runtime_log;
 mod service;
 mod service_runtime;
 mod tracking;
@@ -19,6 +20,7 @@ use os_bridge::{
     copy_text_to_clipboard, open_external_url_runtime, pick_workspace_document_path_runtime,
 };
 use pod_preview::resolve_pod_image_source;
+use runtime_log::log_runtime_event;
 use service::{
     ensure_tracking_service_runtime, ApiServiceConfig, ApiServiceController, ApiServiceStatus,
 };
@@ -61,7 +63,7 @@ async fn track_shipment(
     let saved_service_config = service_controller.load_saved_config().unwrap_or(None);
     let runtime_config =
         ensure_tracking_service_runtime(saved_service_config).map_err(|message| {
-            eprintln!("[ShipFlowBackend] {context} {message}");
+            log_runtime_event("ERROR", format!("[ShipFlowBackend] {context} {message}"));
             format!("{context} {message}")
         })?;
 
@@ -72,7 +74,7 @@ async fn track_shipment(
         tracking::model::TrackingError::BadRequest(message)
         | tracking::model::TrackingError::NotFound(message)
         | tracking::model::TrackingError::Upstream(message) => {
-            eprintln!("[ShipFlowBackend] {context} {message}");
+            log_runtime_event("ERROR", format!("[ShipFlowBackend] {context} {message}"));
             format!("{context} {message}")
         }
     })
@@ -251,15 +253,12 @@ fn log_frontend_runtime_event(level: String, message: String) {
         return;
     }
 
-    eprintln!(
-        "[ShipFlowFrontend][{}] {}",
-        if normalized_level.is_empty() {
-            "info"
-        } else {
-            &normalized_level
-        },
-        trimmed_message
-    );
+    let level = if normalized_level.is_empty() {
+        "info"
+    } else {
+        &normalized_level
+    };
+    log_runtime_event(level, format!("[ShipFlowFrontend][{level}] {trimmed_message}"));
 }
 
 pub fn maybe_run_service_process_from_current_args() -> Result<bool, String> {
@@ -278,11 +277,16 @@ pub fn maybe_delegate_to_existing_service_settings_process() -> Result<bool, Str
     service::maybe_delegate_service_settings_launch_to_existing_process()
 }
 
+pub fn install_runtime_logging() {
+    runtime_log::install_runtime_logging();
+}
+
 fn build_base_context() -> tauri::Context<tauri::Wry> {
     tauri::generate_context!()
 }
 
 pub fn run() {
+    install_runtime_logging();
     let tracking_client = build_tracking_client("ShipFlow Desktop/0.1");
     let context = build_base_context();
 
@@ -330,6 +334,7 @@ pub fn run() {
 }
 
 pub fn run_service_settings() {
+    install_runtime_logging();
     let tracking_client = build_tracking_client("ShipFlow Service/0.1");
     let mut context = build_base_context();
     context.config_mut().app.windows.clear();

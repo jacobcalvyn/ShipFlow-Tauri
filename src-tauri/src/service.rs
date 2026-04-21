@@ -44,7 +44,7 @@ pub use self::state_store::{
 const SERVICE_PROCESS_FLAG: &str = "--shipflow-service-process";
 const SERVICE_TRAY_FLAG: &str = "--shipflow-service-tray";
 const SERVICE_CONFIG_ARG: &str = "--service-config-base64";
-const SERVICE_STATE_DIR_NAME: &str = "shipflow-service-runtime";
+pub(crate) const SERVICE_STATE_DIR_NAME: &str = "shipflow-service-runtime";
 const SERVICE_CONFIG_FILE_NAME: &str = "config.json";
 const SERVICE_RUNTIME_CONFIG_FILE_NAME: &str = "runtime-config.json";
 const SERVICE_PID_FILE_NAME: &str = "pid";

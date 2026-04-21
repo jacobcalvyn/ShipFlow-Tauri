@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Runtime};
 
+use crate::runtime_log::log_runtime_event;
 use crate::service::{
     self, ApiServiceConfig, ApiServiceController, ApiServiceMode, ApiServiceStatus,
 };
@@ -73,7 +74,10 @@ pub(crate) fn sync_service_tray<R: Runtime>(
     }
 
     if let Err(error) = service::sync_service_tray_companion(&config) {
-        eprintln!("[ShipFlowTray] failed to sync service tray companion: {error}");
+        log_runtime_event(
+            "ERROR",
+            format!("[ShipFlowTray] failed to sync service tray companion: {error}"),
+        );
     }
 
     Ok(())
@@ -162,7 +166,10 @@ pub(crate) async fn configure_api_service_runtime<R: Runtime>(
 
     tray_state.update_service(&config, &status);
     if let Err(error) = sync_service_tray(&app_handle, tray_state) {
-        eprintln!("[ShipFlowTray] failed to sync tray after configure: {error}");
+        log_runtime_event(
+            "ERROR",
+            format!("[ShipFlowTray] failed to sync tray after configure: {error}"),
+        );
     }
 
     if result.is_ok() {
@@ -191,7 +198,10 @@ pub(crate) fn load_saved_api_service_config_runtime<R: Runtime>(
 
     tray_state.update_service(&tray_config, &status);
     if let Err(error) = sync_service_tray(&app_handle, tray_state) {
-        eprintln!("[ShipFlowTray] failed to sync tray after loading config: {error}");
+        log_runtime_event(
+            "ERROR",
+            format!("[ShipFlowTray] failed to sync tray after loading config: {error}"),
+        );
     }
 
     Ok(saved_config)
@@ -206,7 +216,10 @@ pub(crate) fn get_api_service_status_runtime<R: Runtime>(
     let config = tray_state.snapshot();
     tray_state.update_service(&config, &status);
     if let Err(error) = sync_service_tray(&app_handle, tray_state) {
-        eprintln!("[ShipFlowTray] failed to sync tray after status refresh: {error}");
+        log_runtime_event(
+            "ERROR",
+            format!("[ShipFlowTray] failed to sync tray after status refresh: {error}"),
+        );
     }
     status
 }

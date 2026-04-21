@@ -10,6 +10,7 @@ use tray_icon::{
     Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
 
+use crate::runtime_log::log_runtime_event;
 use super::{
     process_runtime::{
         build_service_endpoint, format_service_status_label, launch_shipflow_desktop_companion,
@@ -260,7 +261,7 @@ pub(crate) fn run_service_tray_app() -> Result<bool, String> {
                             tray_runtime = Some(runtime);
                         }
                         Err(error) => {
-                            eprintln!("[ShipFlowServiceTray] {error}");
+                            log_runtime_event("ERROR", format!("[ShipFlowServiceTray] {error}"));
                             *control_flow = ControlFlow::Exit;
                         }
                     }
