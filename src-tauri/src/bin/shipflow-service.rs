@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 fn main() {
     if shipflow3_tauri_lib::maybe_run_service_tray_from_current_args()
         .expect("failed to initialize ShipFlow service tray companion")

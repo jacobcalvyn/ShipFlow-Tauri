@@ -7,6 +7,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 use base64::Engine as _;
 
 use super::{
@@ -19,6 +22,16 @@ use super::{
     SERVICE_PROCESS_FLAG, SERVICE_TRAY_FLAG,
 };
 
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn prepare_background_command(_command: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        _command.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
 pub(crate) fn spawn_service_process(config: &ApiServiceConfig) -> Result<u32, String> {
     let executable = resolve_service_companion_executable()?;
     let encoded_config = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
@@ -26,7 +39,9 @@ pub(crate) fn spawn_service_process(config: &ApiServiceConfig) -> Result<u32, St
             .map_err(|error| format!("Unable to serialize API service configuration: {error}"))?,
     );
 
-    let child = Command::new(executable)
+    let mut command = Command::new(executable);
+    prepare_background_command(&mut command);
+    let child = command
         .arg(SERVICE_PROCESS_FLAG)
         .arg(super::SERVICE_CONFIG_ARG)
         .arg(encoded_config)
@@ -50,7 +65,9 @@ fn ensure_service_tray_process_running() -> Result<(), String> {
 
 fn spawn_service_tray_process() -> Result<u32, String> {
     let executable = resolve_service_companion_executable()?;
-    let child = Command::new(executable)
+    let mut command = Command::new(executable);
+    prepare_background_command(&mut command);
+    let child = command
         .arg(SERVICE_TRAY_FLAG)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -63,7 +80,9 @@ fn spawn_service_tray_process() -> Result<u32, String> {
 
 fn launch_shipflow_service_settings() -> Result<(), String> {
     let executable = resolve_service_companion_executable()?;
-    Command::new(executable)
+    let mut command = Command::new(executable);
+    prepare_background_command(&mut command);
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -146,7 +165,9 @@ fn desktop_companion_candidates(current_executable: &FsPath) -> Vec<PathBuf> {
 
 fn launch_shipflow_desktop() -> Result<(), String> {
     let executable = resolve_desktop_companion_executable()?;
-    Command::new(executable)
+    let mut command = Command::new(executable);
+    prepare_background_command(&mut command);
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -212,7 +233,9 @@ fn enable_service_tray_autostart() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let command = service_tray_autostart_command()?;
-        let status = Command::new("reg")
+        let mut registry_command = Command::new("reg");
+        prepare_background_command(&mut registry_command);
+        let status = registry_command
             .args([
                 "add",
                 r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
@@ -273,7 +296,9 @@ fn disable_service_tray_autostart() -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        let _ = Command::new("reg")
+        let mut registry_command = Command::new("reg");
+        prepare_background_command(&mut registry_command);
+        let _ = registry_command
             .args([
                 "delete",
                 r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
@@ -331,7 +356,9 @@ pub(crate) fn stop_service_tray_process() {
 fn terminate_process(pid: u32) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let status = Command::new("taskkill")
+        let mut taskkill_command = Command::new("taskkill");
+        prepare_background_command(&mut taskkill_command);
+        let status = taskkill_command
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .status()
             .map_err(|error| format!("Unable to terminate API service companion: {error}"))?;
@@ -376,7 +403,9 @@ fn terminate_process(pid: u32) -> Result<(), String> {
 pub(crate) fn is_process_alive(pid: u32) -> bool {
     #[cfg(target_os = "windows")]
     {
-        return Command::new("tasklist")
+        let mut tasklist_command = Command::new("tasklist");
+        prepare_background_command(&mut tasklist_command);
+        return tasklist_command
             .args(["/FI", &format!("PID eq {pid}")])
             .output()
             .map(|output| {

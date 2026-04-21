@@ -2,7 +2,21 @@ use std::io::Write;
 use std::process::Command;
 use std::process::Stdio;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn prepare_platform_command(_command: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        _command.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
 fn run_clipboard_command(mut command: Command, text: &str) -> Result<(), String> {
+    prepare_platform_command(&mut command);
     let mut child = command
         .stdin(Stdio::piped())
         .spawn()
@@ -139,7 +153,10 @@ fn pick_workspace_document_path_windows(
     );
 
     let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", &powershell])
+        .args(["-NoProfile", "-Command", &powershell]);
+    let mut command = output;
+    prepare_platform_command(&mut command);
+    let output = command
         .output()
         .map_err(|error| format!("Unable to open native file picker: {error}"))?;
 
@@ -255,6 +272,7 @@ pub(crate) fn open_external_url_runtime(url: &str) -> Result<(), String> {
         command
     };
 
+    prepare_platform_command(&mut command);
     command
         .spawn()
         .map_err(|error| format!("Unable to open external URL: {error}"))?;
