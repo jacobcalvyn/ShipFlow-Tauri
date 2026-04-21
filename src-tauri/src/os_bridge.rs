@@ -152,9 +152,8 @@ fn pick_workspace_document_path_windows(
          if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ Write-Output $dialog.FileName }}"
     );
 
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", &powershell]);
-    let mut command = output;
+    let mut command = Command::new("powershell");
+    command.args(["-NoProfile", "-Command", &powershell]);
     prepare_platform_command(&mut command);
     let output = command
         .output()

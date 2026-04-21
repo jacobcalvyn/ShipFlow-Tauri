@@ -1,11 +1,14 @@
 use std::{
-    env, fs,
+    env,
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
     path::{Path as FsPath, PathBuf},
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
+
+#[cfg(not(target_os = "windows"))]
+use std::fs;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
