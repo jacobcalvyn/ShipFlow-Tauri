@@ -74,6 +74,29 @@ function getUniqueSheetName(
   return `${normalizedName} (${counter})`;
 }
 
+function getNextDerivedSheetName(
+  workspaceState: WorkspaceState,
+  sourceName: string,
+  excludedSheetId?: string
+) {
+  const normalizedSourceName = sourceName.trim() || "Untitled Sheet";
+  const existingNames = new Set(
+    Object.entries(workspaceState.sheetMetaById)
+      .filter(([sheetId]) => sheetId !== excludedSheetId)
+      .map(([, sheetMeta]) => normalizeSheetName(sheetMeta.name))
+      .filter(Boolean)
+  );
+
+  let counter = 1;
+  while (
+    existingNames.has(normalizeSheetName(`${normalizedSourceName} - ${counter}`))
+  ) {
+    counter += 1;
+  }
+
+  return `${normalizedSourceName} - ${counter}`;
+}
+
 function getNextDefaultSheetName(workspaceState: WorkspaceState) {
   const existingNames = new Set(
     Object.values(workspaceState.sheetMetaById)
@@ -89,6 +112,27 @@ function getNextDefaultSheetName(workspaceState: WorkspaceState) {
   }
 
   return candidate;
+}
+
+function insertSheetIdAfterSource(
+  sheetOrder: string[],
+  nextSheetId: string,
+  sourceSheetId?: string
+) {
+  if (!sourceSheetId) {
+    return [...sheetOrder, nextSheetId];
+  }
+
+  const sourceIndex = sheetOrder.indexOf(sourceSheetId);
+  if (sourceIndex === -1) {
+    return [...sheetOrder, nextSheetId];
+  }
+
+  return [
+    ...sheetOrder.slice(0, sourceIndex + 1),
+    nextSheetId,
+    ...sheetOrder.slice(sourceIndex + 1),
+  ];
 }
 
 export function updateSheetInWorkspace(
@@ -164,20 +208,27 @@ export function createSheetInWorkspace(
     options?.sourceSheetId
       ? workspaceState.sheetsById[options.sourceSheetId]
       : null;
+  const sourceSheetName = sourceSheet
+    ? workspaceState.sheetMetaById[options?.sourceSheetId ?? ""]?.name ?? "Sheet"
+    : null;
   const nextSheet = sourceSheet
     ? cloneSheetState(sourceSheet)
     : createDefaultSheetState();
-  const baseName =
-    options?.name ??
-    (sourceSheet
-      ? `${workspaceState.sheetMetaById[options?.sourceSheetId ?? ""]?.name ?? "Sheet"} Copy`
-      : getNextDefaultSheetName(workspaceState));
-  const nextName = getUniqueSheetName(workspaceState, baseName);
+  const nextName = options?.name
+    ? getUniqueSheetName(workspaceState, options.name)
+    : sourceSheetName
+      ? getNextDerivedSheetName(workspaceState, sourceSheetName)
+      : getNextDefaultSheetName(workspaceState);
+  const nextSheetOrder = insertSheetIdAfterSource(
+    workspaceState.sheetOrder,
+    nextSheetId,
+    options?.sourceSheetId
+  );
 
   return {
     ...workspaceState,
     activeSheetId: options?.activate === false ? workspaceState.activeSheetId : nextSheetId,
-    sheetOrder: [...workspaceState.sheetOrder, nextSheetId],
+    sheetOrder: nextSheetOrder,
     sheetMetaById: {
       ...workspaceState.sheetMetaById,
       [nextSheetId]: {
@@ -205,13 +256,23 @@ export function createSheetWithTrackingIdsInWorkspace(
   options?: {
     activate?: boolean;
     name?: string;
+    sourceSheetId?: string;
   }
 ) {
   const nextSheetId = createWorkspaceSheetId();
   const seededSheet = seedTrackingIdsInSheet(createDefaultSheetState(), trackingIds);
-  const nextName = getUniqueSheetName(
-    workspaceState,
-    options?.name ?? getNextDefaultSheetName(workspaceState)
+  const sourceSheetName = options?.sourceSheetId
+    ? workspaceState.sheetMetaById[options.sourceSheetId]?.name ?? "Sheet"
+    : null;
+  const nextName = options?.name
+    ? getUniqueSheetName(workspaceState, options.name)
+    : sourceSheetName
+      ? getNextDerivedSheetName(workspaceState, sourceSheetName)
+      : getNextDefaultSheetName(workspaceState);
+  const nextSheetOrder = insertSheetIdAfterSource(
+    workspaceState.sheetOrder,
+    nextSheetId,
+    options?.sourceSheetId
   );
 
   return {
@@ -221,7 +282,7 @@ export function createSheetWithTrackingIdsInWorkspace(
       ...workspaceState,
       activeSheetId:
         options?.activate === false ? workspaceState.activeSheetId : nextSheetId,
-      sheetOrder: [...workspaceState.sheetOrder, nextSheetId],
+      sheetOrder: nextSheetOrder,
       sheetMetaById: {
         ...workspaceState.sheetMetaById,
         [nextSheetId]: {
@@ -321,7 +382,10 @@ export function moveTrackingIdsToNewSheetInWorkspace(
   const createResult = createSheetWithTrackingIdsInWorkspace(
     workspaceState,
     trackingIds,
-    options
+    {
+      ...options,
+      sourceSheetId,
+    }
   );
   const sourceSheet = createResult.workspaceState.sheetsById[sourceSheetId];
 

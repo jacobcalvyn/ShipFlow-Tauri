@@ -107,9 +107,64 @@ describe("workspace state", () => {
     });
     const duplicatedSheet = getActiveSheet(duplicated);
 
+    expect(getActiveSheetName(duplicated)).toBe("Sheet 1 - 1");
     expect(duplicatedSheet.rows[0].trackingInput).toBe("P2603310114291");
     expect(duplicatedSheet.rows[0].loading).toBe(false);
     expect(duplicatedSheet.rows[0].error).toBe("");
+  });
+
+  it("names derived sheets from their source with incrementing numeric suffixes", () => {
+    let workspace = createDefaultWorkspaceState();
+    const sourceSheetId = workspace.activeSheetId;
+
+    workspace = renameSheetInWorkspace(workspace, sourceSheetId, "Prio");
+    workspace = createSheetInWorkspace(workspace, {
+      sourceSheetId,
+      activate: false,
+    });
+    const prioDashOneId = workspace.sheetOrder[1];
+    workspace = createSheetInWorkspace(workspace, {
+      sourceSheetId,
+      activate: false,
+    });
+
+    workspace = createSheetInWorkspace(workspace, {
+      sourceSheetId: prioDashOneId,
+      activate: false,
+    });
+    workspace = createSheetInWorkspace(workspace, {
+      sourceSheetId: prioDashOneId,
+      activate: false,
+    });
+
+    expect([...getWorkspaceTabs(workspace).map((tab) => tab.name)].sort()).toEqual([
+      "Prio",
+      "Prio - 1",
+      "Prio - 1 - 1",
+      "Prio - 1 - 2",
+      "Prio - 2",
+    ]);
+  });
+
+  it("inserts a duplicated sheet immediately after its source tab", () => {
+    let workspace = createDefaultWorkspaceState();
+    workspace = createSheetInWorkspace(workspace, { activate: false });
+    workspace = createSheetInWorkspace(workspace, { activate: false });
+
+    const middleSheetId = workspace.sheetOrder[1];
+
+    workspace = renameSheetInWorkspace(workspace, middleSheetId, "Prio");
+    workspace = createSheetInWorkspace(workspace, {
+      sourceSheetId: middleSheetId,
+      activate: false,
+    });
+
+    expect(getWorkspaceTabs(workspace).map((tab) => tab.name)).toEqual([
+      "Sheet 1",
+      "Prio",
+      "Prio - 1",
+      "Sheet 3",
+    ]);
   });
 
   it("keeps generated names unique across repeated create and case-insensitive rename", () => {
@@ -215,6 +270,8 @@ describe("workspace state", () => {
   it("moves tracking ids into a new sheet and clears them from the source sheet", () => {
     let workspace = createDefaultWorkspaceState();
     const firstSheetId = workspace.activeSheetId;
+    workspace = createSheetInWorkspace(workspace, { activate: false });
+    const secondSheetId = workspace.sheetOrder[1];
     const sourceRowKey = workspace.sheetsById[firstSheetId].rows[0].key;
 
     workspace = updateActiveSheetInWorkspace(workspace, (sheet) => ({
@@ -241,8 +298,36 @@ describe("workspace state", () => {
     const sourceSheet = result.workspaceState.sheetsById[firstSheetId];
 
     expect(result.workspaceState.activeSheetId).toBe(result.sheetId);
+    expect(result.workspaceState.sheetMetaById[result.sheetId]?.name).toBe("Sheet 1 - 1");
+    expect(result.workspaceState.sheetOrder).toEqual([
+      firstSheetId,
+      result.sheetId,
+      secondSheetId,
+    ]);
     expect(newSheet.rows[0].trackingInput).toBe("P2605001");
     expect(sourceSheet.rows[0].trackingInput).toBe("");
     expect(sourceSheet.selectedRowKeys).toEqual([]);
+  });
+
+  it("uses the source sheet name when copying ids into a new sheet", () => {
+    let workspace = createDefaultWorkspaceState();
+    const sourceSheetId = workspace.activeSheetId;
+    workspace = createSheetInWorkspace(workspace, { activate: false });
+    const secondSheetId = workspace.sheetOrder[1];
+
+    workspace = renameSheetInWorkspace(workspace, sourceSheetId, "Prio");
+
+    const result = createSheetWithTrackingIdsInWorkspace(
+      workspace,
+      ["P2606001"],
+      { sourceSheetId }
+    );
+
+    expect(result.workspaceState.sheetMetaById[result.sheetId]?.name).toBe("Prio - 1");
+    expect(result.workspaceState.sheetOrder).toEqual([
+      sourceSheetId,
+      result.sheetId,
+      secondSheetId,
+    ]);
   });
 });

@@ -26,6 +26,7 @@ type SheetTabsProps = {
   tabs: SheetTabItem[];
   activeSheetId: string;
   displayScale: "small" | "medium" | "large";
+  settingsOpenRequestToken?: number;
   recentDocuments?: Array<{ path: string; name: string }>;
   canUseAutosave?: boolean;
   isAutosaveEnabled?: boolean;
@@ -76,12 +77,35 @@ function resolveDropTransferMode(
     "altKey" | "ctrlKey" | "metaKey" | "dataTransfer"
   >
 ): SheetDropTransferMode {
-  if (
-    event.altKey ||
-    event.ctrlKey ||
-    event.metaKey ||
-    event.dataTransfer.dropEffect === "copy"
-  ) {
+  const platform = (() => {
+    if (typeof navigator === "undefined") {
+      return "";
+    }
+
+    const navigatorWithUserAgentData = navigator as Navigator & {
+      userAgentData?: { platform?: string };
+    };
+
+    return (
+      navigatorWithUserAgentData.userAgentData?.platform ??
+      navigator.platform ??
+      ""
+    ).toLowerCase();
+  })();
+
+  if (event.dataTransfer.dropEffect === "copy") {
+    return "copy";
+  }
+
+  if (platform.includes("mac")) {
+    return event.altKey ? "copy" : "move";
+  }
+
+  if (platform.includes("win")) {
+    return event.ctrlKey ? "copy" : "move";
+  }
+
+  if (event.altKey || event.ctrlKey) {
     return "copy";
   }
 
@@ -92,6 +116,7 @@ export function SheetTabs({
   tabs,
   activeSheetId,
   displayScale,
+  settingsOpenRequestToken = 0,
   recentDocuments = [],
   canUseAutosave = false,
   isAutosaveEnabled = false,
@@ -132,14 +157,14 @@ export function SheetTabs({
   onDropSelectionToSheet,
   onDropSelectionToNewSheet,
 }: SheetTabsProps) {
-  const activeTab = useMemo(
-    () => tabs.find((tab) => tab.id === activeSheetId) ?? tabs[0] ?? null,
-    [activeSheetId, tabs]
-  );
   const [editingSheetId, setEditingSheetId] = useState<string | null>(null);
   const [sheetNameDraft, setSheetNameDraft] = useState("");
   const [deleteArmedSheetId, setDeleteArmedSheetId] = useState<string | null>(null);
-  const [hoveredSheetId, setHoveredSheetId] = useState<string | null>(null);
+  const [openSheetMenuSheetId, setOpenSheetMenuSheetId] = useState<string | null>(null);
+  const [sheetMenuPosition, setSheetMenuPosition] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isConfirmingSettings, setIsConfirmingSettings] = useState(false);
   const [isFileMenuOpen, setIsFileMenuOpen] = useState(false);
@@ -147,10 +172,9 @@ export function SheetTabs({
   const [dropTargetMode, setDropTargetMode] = useState<SheetDropTransferMode>("move");
   const [isAddButtonDropActive, setIsAddButtonDropActive] = useState(false);
   const settingsModalRef = useRef<HTMLDivElement | null>(null);
-  const hoveredSheetTimeoutRef = useRef<number | null>(null);
+  const sheetMenuRef = useRef<HTMLDivElement | null>(null);
   const fileMenuTimeoutRef = useRef<number | null>(null);
   const fileMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const sheetTabRefs = useRef(new Map<string, HTMLDivElement | null>());
 
   useEffect(() => {
     if (editingSheetId && !tabs.some((tab) => tab.id === editingSheetId)) {
@@ -161,9 +185,6 @@ export function SheetTabs({
 
   useEffect(() => {
     return () => {
-      if (hoveredSheetTimeoutRef.current !== null) {
-        window.clearTimeout(hoveredSheetTimeoutRef.current);
-      }
       if (fileMenuTimeoutRef.current !== null) {
         window.clearTimeout(fileMenuTimeoutRef.current);
       }
@@ -178,7 +199,8 @@ export function SheetTabs({
       return;
     }
 
-    setHoveredSheetId(null);
+    setOpenSheetMenuSheetId(null);
+    setSheetMenuPosition(null);
     setDeleteArmedSheetId(null);
   }, [isSelectionDragActive]);
 
@@ -187,9 +209,47 @@ export function SheetTabs({
       return;
     }
 
-    setHoveredSheetId(null);
+    setOpenSheetMenuSheetId(null);
+    setSheetMenuPosition(null);
     setDeleteArmedSheetId(null);
   }, [isFileMenuOpen]);
+
+  useEffect(() => {
+    if (!openSheetMenuSheetId) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (sheetMenuRef.current?.contains(target)) {
+        return;
+      }
+
+      setOpenSheetMenuSheetId(null);
+      setSheetMenuPosition(null);
+      setDeleteArmedSheetId(null);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpenSheetMenuSheetId(null);
+        setSheetMenuPosition(null);
+        setDeleteArmedSheetId(null);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [openSheetMenuSheetId]);
 
   useEffect(() => {
     if (!isFileMenuOpen) {
@@ -235,6 +295,18 @@ export function SheetTabs({
 
     setIsFileMenuOpen(false);
   }, [isSettingsOpen]);
+
+  useEffect(() => {
+    if (settingsOpenRequestToken === 0) {
+      return;
+    }
+
+    setOpenSheetMenuSheetId(null);
+    setSheetMenuPosition(null);
+    setDeleteArmedSheetId(null);
+    setIsFileMenuOpen(false);
+    setIsSettingsOpen(true);
+  }, [settingsOpenRequestToken]);
 
   useEffect(() => {
     if (!isSettingsOpen) {
@@ -300,7 +372,8 @@ export function SheetTabs({
     }
 
     setDeleteArmedSheetId(null);
-    setHoveredSheetId(null);
+    setOpenSheetMenuSheetId(null);
+    setSheetMenuPosition(null);
     setEditingSheetId(targetTab.id);
     setSheetNameDraft(targetTab.name);
   };
@@ -335,14 +408,16 @@ export function SheetTabs({
     }
 
     onDeleteSheet(targetTab.id);
-    setHoveredSheetId(null);
+    setOpenSheetMenuSheetId(null);
+    setSheetMenuPosition(null);
     setDeleteArmedSheetId(null);
   };
 
   const handleActivateSheet = (sheetId: string) => {
     setDeleteArmedSheetId(null);
     setEditingSheetId(null);
-    setHoveredSheetId(null);
+    setOpenSheetMenuSheetId(null);
+    setSheetMenuPosition(null);
     onActivateSheet(sheetId);
   };
 
@@ -353,6 +428,8 @@ export function SheetTabs({
     setDeleteArmedSheetId(null);
     setEditingSheetId(null);
     setSheetNameDraft("");
+    setOpenSheetMenuSheetId(null);
+    setSheetMenuPosition(null);
     onCancelSettings();
     setIsSettingsOpen(false);
     onCreateSheet();
@@ -362,7 +439,8 @@ export function SheetTabs({
     setDeleteArmedSheetId(null);
     setEditingSheetId(null);
     setSheetNameDraft("");
-    setHoveredSheetId(null);
+    setOpenSheetMenuSheetId(null);
+    setSheetMenuPosition(null);
     onCancelSettings();
     setIsSettingsOpen(false);
     onDuplicateSheet(sheetId);
@@ -378,6 +456,9 @@ export function SheetTabs({
       window.clearTimeout(fileMenuTimeoutRef.current);
       fileMenuTimeoutRef.current = null;
     }
+    setOpenSheetMenuSheetId(null);
+    setSheetMenuPosition(null);
+    setDeleteArmedSheetId(null);
     setIsFileMenuOpen(true);
   };
 
@@ -398,37 +479,10 @@ export function SheetTabs({
 
   const openSettings = () => {
     setIsFileMenuOpen(false);
+    setOpenSheetMenuSheetId(null);
+    setSheetMenuPosition(null);
+    setDeleteArmedSheetId(null);
     setIsSettingsOpen(true);
-  };
-
-  const clearHoveredSheet = () => {
-    if (hoveredSheetTimeoutRef.current !== null) {
-      window.clearTimeout(hoveredSheetTimeoutRef.current);
-      hoveredSheetTimeoutRef.current = null;
-    }
-    setHoveredSheetId(null);
-  };
-
-  const scheduleClearHoveredSheet = () => {
-    if (hoveredSheetTimeoutRef.current !== null) {
-      window.clearTimeout(hoveredSheetTimeoutRef.current);
-    }
-    hoveredSheetTimeoutRef.current = window.setTimeout(() => {
-      setHoveredSheetId(null);
-      hoveredSheetTimeoutRef.current = null;
-    }, 120);
-  };
-
-  const activateHoveredSheet = (sheetId: string) => {
-    if (isSelectionDragActive) {
-      return;
-    }
-
-    if (hoveredSheetTimeoutRef.current !== null) {
-      window.clearTimeout(hoveredSheetTimeoutRef.current);
-      hoveredSheetTimeoutRef.current = null;
-    }
-    setHoveredSheetId(sheetId);
   };
 
   const confirmSettings = async () => {
@@ -444,22 +498,31 @@ export function SheetTabs({
     }
   };
 
-  const hoveredSheetMenuStyle = useMemo(() => {
-    if (!hoveredSheetId || editingSheetId) {
-      return null;
+  const openSheetMenu = (
+    sheetId: string,
+    options?: {
+      clientPosition?: { left: number; top: number };
     }
+  ) => {
+    const menuWidth = 188;
+    const viewportPadding = 12;
+    const left = options?.clientPosition
+      ? Math.min(
+          Math.max(viewportPadding, options.clientPosition.left),
+          window.innerWidth - menuWidth - viewportPadding
+        )
+      : viewportPadding;
+    const top = options?.clientPosition
+      ? Math.min(options.clientPosition.top, window.innerHeight - viewportPadding)
+      : viewportPadding;
 
-    const target = sheetTabRefs.current.get(hoveredSheetId);
-    if (!target) {
-      return null;
-    }
-
-    const rect = target.getBoundingClientRect();
-    return {
-      top: rect.bottom + 6,
-      left: rect.left,
-    };
-  }, [editingSheetId, hoveredSheetId, tabs, activeSheetId]);
+    setDeleteArmedSheetId(null);
+    setOpenSheetMenuSheetId(sheetId);
+    setSheetMenuPosition({
+      top,
+      left,
+    });
+  };
 
   const fileMenuStyle = useMemo(() => {
     if (!isFileMenuOpen) {
@@ -504,7 +567,8 @@ export function SheetTabs({
     event.dataTransfer.dropEffect = nextMode;
     setDropTargetSheetId(targetSheetId);
     setDropTargetMode(nextMode);
-    setHoveredSheetId(null);
+    setOpenSheetMenuSheetId(null);
+    setSheetMenuPosition(null);
   };
 
   const clearSheetDropHover = (event: ReactDragEvent<HTMLDivElement>, targetSheetId: string) => {
@@ -569,7 +633,6 @@ export function SheetTabs({
         <div className="sheet-tabs-list" role="tablist" aria-label="Workspace sheets">
           {tabs.map((tab) => {
             const isEditing = editingSheetId === tab.id;
-            const isHovered = hoveredSheetId === tab.id;
             const isDropTarget =
               isSelectionDragActive &&
               dropTargetSheetId === tab.id &&
@@ -582,17 +645,11 @@ export function SheetTabs({
                   "sheet-tab",
                   tab.isActive ? "sheet-tab-active" : "",
                   isEditing ? "sheet-tab-editing" : "",
-                  isHovered ? "sheet-tab-hovered" : "",
                   isDropTarget ? "is-drop-target" : "",
                   isDropTarget && dropTargetMode === "copy" ? "is-drop-copy" : "",
                 ]
                   .filter(Boolean)
                   .join(" ")}
-                ref={(element) => {
-                  sheetTabRefs.current.set(tab.id, element);
-                }}
-                onMouseEnter={() => activateHoveredSheet(tab.id)}
-                onMouseLeave={scheduleClearHoveredSheet}
                 onDragEnter={(event) => handleSheetDropHover(event, tab.id)}
                 onDragOver={(event) => handleSheetDropHover(event, tab.id)}
                 onDragLeave={(event) => clearSheetDropHover(event, tab.id)}
@@ -615,16 +672,31 @@ export function SheetTabs({
                     />
                   </form>
                 ) : (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={tab.isActive}
-                    className="sheet-tab-button"
-                    onClick={() => handleActivateSheet(tab.id)}
-                    title={tab.name}
-                  >
-                    <span className="sheet-tab-label">{tab.name}</span>
-                  </button>
+                  <div className="sheet-tab-main">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={tab.isActive}
+                      className="sheet-tab-button"
+                      onClick={() => handleActivateSheet(tab.id)}
+                      onContextMenu={(event) => {
+                        if (isSelectionDragActive || isEditing) {
+                          return;
+                        }
+
+                        event.preventDefault();
+                        openSheetMenu(tab.id, {
+                          clientPosition: {
+                            left: event.clientX,
+                            top: event.clientY,
+                          },
+                        });
+                      }}
+                      title={tab.name}
+                    >
+                      <span className="sheet-tab-label">{tab.name}</span>
+                    </button>
+                  </div>
                 )}
               </div>
             );
@@ -729,29 +801,28 @@ export function SheetTabs({
           tambah untuk sheet baru.
         </div>
       ) : null}
-      {hoveredSheetId &&
-      hoveredSheetMenuStyle &&
+      {openSheetMenuSheetId &&
+      sheetMenuPosition &&
       !editingSheetId &&
       !isSelectionDragActive
         ? createPortal(
             <div
+              ref={sheetMenuRef}
               className="sheet-tab-hover-menu"
               style={{
-                top: hoveredSheetMenuStyle.top,
-                left: hoveredSheetMenuStyle.left,
+                top: sheetMenuPosition.top,
+                left: sheetMenuPosition.left,
               }}
               role="menu"
               aria-label={`${
-                tabs.find((tab) => tab.id === hoveredSheetId)?.name ?? "Sheet"
+                tabs.find((tab) => tab.id === openSheetMenuSheetId)?.name ?? "Sheet"
               } actions`}
-              onMouseEnter={() => activateHoveredSheet(hoveredSheetId)}
-              onMouseLeave={scheduleClearHoveredSheet}
             >
               <button
                 type="button"
                 className="sheet-tab-hover-menu-button"
                 role="menuitem"
-                onClick={() => handleDuplicateSheet(hoveredSheetId)}
+                onClick={() => handleDuplicateSheet(openSheetMenuSheetId)}
                 disabled={isRenaming}
               >
                 Duplikat
@@ -760,7 +831,7 @@ export function SheetTabs({
                 type="button"
                 className="sheet-tab-hover-menu-button"
                 role="menuitem"
-                onClick={() => beginRename(hoveredSheetId)}
+                onClick={() => beginRename(openSheetMenuSheetId)}
               >
                 Ganti Nama
               </button>
@@ -771,10 +842,10 @@ export function SheetTabs({
                   "is-danger",
                 ].join(" ")}
                 role="menuitem"
-                onClick={() => handleDeleteSheet(hoveredSheetId)}
+                onClick={() => handleDeleteSheet(openSheetMenuSheetId)}
                 disabled={!canDeleteSheet || isRenaming}
               >
-                {deleteArmedSheetId === hoveredSheetId
+                {deleteArmedSheetId === openSheetMenuSheetId
                   ? "Konfirmasi Hapus"
                   : "Hapus"}
               </button>

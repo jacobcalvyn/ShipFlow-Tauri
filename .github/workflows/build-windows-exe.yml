@@ -39,7 +39,7 @@ jobs:
         run: npm run build
 
       - name: Build Windows executable bundle
-        run: npm run tauri build -- --bundles nsis
+        run: npm run build:bundle:nsis
 
       - name: Upload portable executable
         uses: actions/upload-artifact@v6

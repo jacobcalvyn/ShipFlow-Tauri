@@ -4,6 +4,12 @@ Desktop shipment tracking workspace built with Tauri, Rust, React, and Vite.
 
 The app is optimized for spreadsheet-style operational analysis. Each row represents one shipment. The first data column accepts a shipment ID, then the app asks `ShipFlow Service` for tracking data and fills the rest of the row. A sheet is treated as one independent workspace.
 
+Architecture references:
+
+- [docs/runtime-architecture.md](./docs/runtime-architecture.md)
+- [docs/refactor-audit.md](./docs/refactor-audit.md)
+- [docs/native-platform-architecture.md](./docs/native-platform-architecture.md)
+
 ## What The App Does
 
 - Runs as a desktop app with Tauri
@@ -71,7 +77,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 
 - Spreadsheet-style table with `50` initial rows
 - Multi-sheet workspace with create / rename / duplicate / delete sheet
-- Sheet tabs use a `+` button for new sheets, and sheet-specific actions are exposed from a hover menu on each tab
+- Sheet tabs use a `+` button for new sheets, and sheet-specific actions are exposed from a right-click context menu on each tab
 - Sticky selector column and sticky `Nomor Kiriman`
 - Keyboard row navigation in `Nomor Kiriman` with `Enter`, `ArrowUp`, and `ArrowDown`
 - Row checkbox selection for copy/delete actions
@@ -157,29 +163,37 @@ The main table currently focuses on:
 
 ### Frontend
 
-- [src/App.tsx](./src/App.tsx): main state orchestration and app flow
-- [src/features/service/components/ServiceSettingsWindow.tsx](./src/features/service/components/ServiceSettingsWindow.tsx): companion service settings window UI
-- [src/features/sheet/columns.ts](./src/features/sheet/columns.ts): spreadsheet column definitions
-- [src/features/sheet/types.ts](./src/features/sheet/types.ts): sheet-level UI types
-- [src/features/sheet/utils.ts](./src/features/sheet/utils.ts): formatting and table helpers
-- [src/features/sheet/state.ts](./src/features/sheet/state.ts): pure state helpers for filter/pin/hide logic
+- [src/App.tsx](./src/App.tsx): entry shell that routes between workspace and service-settings windows
+- [src/features/workspace/WorkspaceApp.tsx](./src/features/workspace/WorkspaceApp.tsx): workspace container
+- [src/features/workspace/useWorkspaceAppController.ts](./src/features/workspace/useWorkspaceAppController.ts): workspace composition root
+- [src/features/workspace/components/WorkspaceShellView.tsx](./src/features/workspace/components/WorkspaceShellView.tsx): workspace render shell
+- [src/features/service/ServiceSettingsApp.tsx](./src/features/service/ServiceSettingsApp.tsx): service-settings window app shell
+- [src/features/service/useServiceSettingsController.ts](./src/features/service/useServiceSettingsController.ts): service-settings controller
+- [src/features/service/components/ServiceSettingsWindow.tsx](./src/features/service/components/ServiceSettingsWindow.tsx): service-settings window UI
 - [src/features/sheet/components](./src/features/sheet/components): table, header, row, and action bar components
-- [src/features/workspace](./src/features/workspace): multi-sheet workspace state and tabs
+- [src/features/workspace](./src/features/workspace): workspace controllers, adapters, dialogs, and shell components
 
 ### Backend
 
-- [src-tauri/src/lib.rs](./src-tauri/src/lib.rs): app startup and Tauri wiring
-- [src-tauri/src/service.rs](./src-tauri/src/service.rs): companion service runtime, tray, and external API controller
-- [src-tauri/src/tracking/model.rs](./src-tauri/src/tracking/model.rs): tracking response models
-- [src-tauri/src/tracking/upstream.rs](./src-tauri/src/tracking/upstream.rs): upstream request and URL building
-- [src-tauri/src/tracking/parser.rs](./src-tauri/src/tracking/parser.rs): POS HTML parsing
+- [src-tauri/src/lib.rs](./src-tauri/src/lib.rs): Tauri command composition layer
+- [src-tauri/src/app_runtime.rs](./src-tauri/src/app_runtime.rs): desktop bootstrap and runtime setup
+- [src-tauri/src/app_menu_runtime.rs](./src-tauri/src/app_menu_runtime.rs): desktop app menu wiring
+- [src-tauri/src/os_bridge.rs](./src-tauri/src/os_bridge.rs): clipboard, URL, and native file-picker bridge
+- [src-tauri/src/window_runtime.rs](./src-tauri/src/window_runtime.rs): window/document registry runtime
+- [src-tauri/src/workspace_document.rs](./src-tauri/src/workspace_document.rs): workspace document read/write helpers
+- [src-tauri/src/service.rs](./src-tauri/src/service.rs): service controller composition layer
+- [src-tauri/src/service](./src-tauri/src/service): service runtime modules for HTTP API, config, state store, process runtime, and tray runtime
+- [crates/shipflow-core](./crates/shipflow-core): shared tracking core for parser, upstream logic, and tracking models
+- [src-tauri/src/tracking/mod.rs](./src-tauri/src/tracking/mod.rs): Tauri-side compatibility module that re-exports the shared tracking core
 - [src-tauri/src/fixtures](./src-tauri/src/fixtures): parser fixtures used by Rust tests
 
 ### Runtime Split
 
 - `ShipFlow Desktop`: document workspace, sheet management, and table UI
 - `ShipFlow Service`: tracking runtime, source selection, service token, tray/background lifecycle, and external API access
-- Desktop and service are installed together, but run as separate apps/processes
+- `shipflow-core`: shared tracking engine used by desktop/service Rust code
+- Desktop and service are installed together as one product bundle, but run as separate executables/processes
+- `shipflow-core` is linked into the Rust binaries and is not packaged as a standalone app
 
 ### Reference Only
 
@@ -231,6 +245,12 @@ Prepare the bundled service binary:
 npm run prepare:service-binary
 ```
 
+Build the bundled desktop installer with the companion service binary included:
+
+```bash
+npm run build:bundle
+```
+
 ## GitHub Actions Windows Build
 
 The repository includes a Windows build workflow at:
@@ -242,7 +262,7 @@ What it does:
 - runs on `windows-latest`
 - installs Node.js and Rust
 - runs frontend tests
-- builds the Tauri Windows app
+- builds the NSIS installer through the bundled-service config so `ShipFlow Service` is included
 - uploads two artifacts:
   - portable app executable: `shipflow-desktop-windows-portable`
   - NSIS installer executable: `shipflow-desktop-windows-installer`
@@ -256,6 +276,32 @@ The uploaded Windows outputs are:
 
 - `src-tauri/target/release/shipflow3-tauri.exe`
 - `src-tauri/target/release/bundle/nsis/*.exe`
+
+## GitHub Actions macOS Build
+
+The repository also includes a macOS build workflow at:
+
+- `.github/workflows/build-macos-app.yml`
+
+What it does:
+
+- runs on `macos-latest`
+- installs Node.js and Rust
+- runs frontend tests
+- builds the macOS app bundle through the bundled-service config so `ShipFlow Service` is included
+- uploads two artifacts:
+  - macOS app bundle: `shipflow-desktop-macos-app`
+  - macOS DMG installer: `shipflow-desktop-macos-dmg`
+
+Triggers:
+
+- manual run via `workflow_dispatch`
+- no automatic push trigger by default
+
+The uploaded macOS outputs are:
+
+- `src-tauri/target/release/bundle/macos/*.app`
+- `src-tauri/target/release/bundle/dmg/*.dmg`
 
 ## Tests
 
@@ -282,7 +328,7 @@ Current frontend tests cover:
 
 The table benchmark is kept separate from the normal test suite so regular checks stay fast. It renders `1000` rows, verifies virtualization is still active, and logs baseline render / scroll timings for the table body.
 
-Rust tests live in [src-tauri/src/lib.rs](./src-tauri/src/lib.rs) and cover:
+Rust tests are now split by domain and cover:
 
 - Base64 + percent-encoded tracking URL generation
 - embedded API bearer-auth validation
@@ -297,10 +343,26 @@ Rust tests live in [src-tauri/src/lib.rs](./src-tauri/src/lib.rs) and cover:
 - latest-runsheet `FAILEDTODELIVERED` parsing with `keterangan_status`
 - latest-effective-update-only runsheet parsing
 
+Main Rust test locations:
+
+- [crates/shipflow-core/src/parser.rs](./crates/shipflow-core/src/parser.rs)
+- [crates/shipflow-core/src/upstream.rs](./crates/shipflow-core/src/upstream.rs)
+- [src-tauri/src/service/runtime_config.rs](./src-tauri/src/service/runtime_config.rs)
+- [src-tauri/src/service/http_api.rs](./src-tauri/src/service/http_api.rs)
+- [src-tauri/src/service/process_runtime.rs](./src-tauri/src/service/process_runtime.rs)
+- [src-tauri/src/service/state_store.rs](./src-tauri/src/service/state_store.rs)
+- [src-tauri/src/workspace_document.rs](./src-tauri/src/workspace_document.rs)
+
 Run Rust tests with:
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+Run shared core Rust tests with:
+
+```bash
+cargo test --manifest-path crates/shipflow-core/Cargo.toml
 ```
 
 ## Notes

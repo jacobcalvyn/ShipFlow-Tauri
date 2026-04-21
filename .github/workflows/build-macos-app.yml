@@ -1,0 +1,56 @@
+name: Build macOS App
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend tests
+        run: npm test
+
+      - name: Build macOS frontend bundle
+        run: npm run build
+
+      - name: Build macOS application bundle
+        run: npm run build:bundle
+
+      - name: Upload macOS app bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: shipflow-desktop-macos-app
+          path: src-tauri/target/release/bundle/macos/*.app
+          if-no-files-found: error
+
+      - name: Upload macOS DMG installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: shipflow-desktop-macos-dmg
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error

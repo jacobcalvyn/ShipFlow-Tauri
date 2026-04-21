@@ -3387,6 +3387,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "shipflow-core"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "reqwest 0.12.28",
+ "scraper",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "shipflow3-tauri"
 version = "0.1.0"
 dependencies = [
@@ -3397,6 +3409,7 @@ dependencies = [
  "scraper",
  "serde",
  "serde_json",
+ "shipflow-core",
  "tao",
  "tauri",
  "tauri-build",

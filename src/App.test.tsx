@@ -103,14 +103,13 @@ function expectInvokeCount(command: string, count: number) {
   expect(getInvokeCalls(command)).toHaveLength(count);
 }
 
-function hoverSheetTab(name: string) {
+function openSheetTabMenu(name: string) {
   const tab = screen.getByRole("tab", { name });
-  const wrapper = tab.closest(".sheet-tab");
-  if (!wrapper) {
-    throw new Error(`Sheet tab wrapper not found for ${name}`);
-  }
-  fireEvent.mouseEnter(wrapper);
-  return wrapper;
+  fireEvent.contextMenu(tab, {
+    clientX: 24,
+    clientY: 24,
+  });
+  return tab;
 }
 
 function openFileMenu() {
@@ -396,7 +395,7 @@ describe("App workspace isolation", () => {
       expectInvokeCount("track_shipment", 1);
     });
 
-    hoverSheetTab("Sheet 2");
+    openSheetTabMenu("Sheet 2");
     fireEvent.click(screen.getByRole("menuitem", { name: "Hapus" }));
     fireEvent.click(
       screen.getByRole("menuitem", { name: "Konfirmasi Hapus" })
@@ -459,7 +458,7 @@ describe("App workspace isolation", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Salin" }));
 
     await waitFor(() => {
-      expect(screen.getByRole("tab", { name: "Sheet 2" })).toHaveAttribute(
+      expect(screen.getByRole("tab", { name: "Sheet 1 - 1" })).toHaveAttribute(
         "aria-selected",
         "true"
       );
@@ -499,7 +498,7 @@ describe("App workspace isolation", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Pindahkan" }));
 
     await waitFor(() => {
-      expect(screen.getByRole("tab", { name: "Sheet 2" })).toHaveAttribute(
+      expect(screen.getByRole("tab", { name: "Sheet 1 - 1" })).toHaveAttribute(
         "aria-selected",
         "true"
       );
@@ -1310,7 +1309,7 @@ describe("App workspace isolation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
 
-    hoverSheetTab("Sheet 2");
+    openSheetTabMenu("Sheet 2");
     fireEvent.click(screen.getByRole("menuitem", { name: "Ganti Nama" }));
 
     const renameInput = screen.getByDisplayValue("Sheet 2");
@@ -1320,7 +1319,7 @@ describe("App workspace isolation", () => {
     expect(screen.getByRole("tab", { name: "Sheet Renamed" })).toBeInTheDocument();
     expect(screen.queryByText("Nama sheet berhasil diperbarui.")).not.toBeInTheDocument();
 
-    hoverSheetTab("Sheet Renamed");
+    openSheetTabMenu("Sheet Renamed");
     fireEvent.click(screen.getByRole("menuitem", { name: "Hapus" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Konfirmasi Hapus" }));
 

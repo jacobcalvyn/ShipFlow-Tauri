@@ -2,14 +2,14 @@ use std::collections::HashMap;
 
 use scraper::{Html as ScraperHtml, Selector};
 
-use super::model::{
+use crate::model::{
     Actors, BaggingUnbaggingEvent, BaggingUnbaggingSummary, BillingDetail, ContactDetail,
     DeliveryRunsheetSummary, DeliveryRunsheetUpdate, HistorySummary, IrregularitySummary,
     ManifestR7Summary, OriginDetail, PackageDetail, PerformanceDetail, ShipmentHeader,
     StatusAkhirParts, TrackCodDetail, TrackDetail, TrackHistoryEntry, TrackPod, TrackResponse,
     TrackStatusAkhir, TrackingError,
 };
-use super::upstream::resolve_pos_href;
+use crate::upstream::resolve_pos_href;
 
 #[derive(Default)]
 struct ProsesAntaranDetail {
@@ -1275,5 +1275,279 @@ fn parse_proses_antaran_status(raw: &str) -> ProsesAntaranDetail {
         petugas,
         status: None,
         keterangan_status: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::parse_tracking_html;
+    use crate::model::TrackingError;
+
+    const SAMPLE_HTML: &str =
+        include_str!("../../../src-tauri/src/fixtures/pos_tracking_sample.html");
+    const NULLABLE_NUMERIC_HTML: &str =
+        include_str!("../../../src-tauri/src/fixtures/pos_tracking_nullable_numeric.html");
+    const REORDERED_TABLES_HTML: &str =
+        include_str!("../../../src-tauri/src/fixtures/pos_tracking_reordered_tables.html");
+    const RUNSHEET_FAILEDTODELIVERED_HTML: &str = include_str!(
+        "../../../src-tauri/src/fixtures/pos_tracking_runsheet_failedtoddelivered.html"
+    );
+
+    #[test]
+    fn parse_tracking_html_matches_track_response_shape() {
+        let response = parse_tracking_html(
+            "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=UDI2MDMzMTAxMTQyOTE%3D",
+            SAMPLE_HTML,
+        )
+        .expect("sample should parse");
+
+        assert_eq!(
+            response.detail.header.nomor_kiriman.as_deref(),
+            Some("P2603310114291")
+        );
+        assert_eq!(
+            response.detail.package.jenis_layanan.as_deref(),
+            Some("PKH")
+        );
+        assert_eq!(response.status_akhir.status.as_deref(), Some("INVEHICLE"));
+        assert_eq!(
+            response.pod.photo1_url.as_deref(),
+            Some("https://apistorage.mile.app/v2-public/prod/pos/2026/04/13/sample-photo.jpg")
+        );
+        assert_eq!(
+            response.pod.coordinate_map_url.as_deref(),
+            Some(
+                "https://pid.posindonesia.co.id/lacak/admin/mapnya.php?id=LTIuNTQyNTU2NiwxNDAuNzA3MDQwNQ%3D%3D"
+            )
+        );
+        assert_eq!(response.history.len(), 2);
+        assert_eq!(response.history[0].tanggal_update, "2026-04-13 11:01:13");
+        assert_eq!(response.history_summary.delivery_runsheet.len(), 1);
+        assert_eq!(
+            response.history_summary.delivery_runsheet[0].updates.len(),
+            1
+        );
+    }
+
+    #[test]
+    fn parse_tracking_html_returns_not_found_when_shipment_header_missing() {
+        let html = r#"
+            <html>
+              <body>
+                <div>Data tidak ditemukan untuk kiriman ini.</div>
+              </body>
+            </html>
+        "#;
+
+        let error = parse_tracking_html("https://example.test", html)
+            .expect_err("missing details should fail");
+
+        assert!(matches!(error, TrackingError::NotFound(_)));
+    }
+
+    #[test]
+    fn parse_tracking_html_returns_upstream_error_for_invalid_numeric_fields() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2603310114291</td></tr>
+              <tr><td>Bea Dasar</td><td>Rp not-a-number</td></tr>
+            </table>
+        "#;
+
+        let error = parse_tracking_html("https://example.test", html)
+            .expect_err("invalid numeric values should fail loudly");
+
+        assert!(matches!(error, TrackingError::Upstream(_)));
+    }
+
+    #[test]
+    fn parse_tracking_html_keeps_nullable_numeric_fields_as_none() {
+        let response = parse_tracking_html("https://example.test", NULLABLE_NUMERIC_HTML)
+            .expect("nullable numeric sample should parse");
+
+        assert_eq!(response.detail.package.berat_actual, None);
+        assert_eq!(response.detail.package.berat_volumetric, None);
+        assert_eq!(response.detail.billing.bea_dasar, None);
+        assert_eq!(response.detail.billing.nilai_barang, None);
+        assert_eq!(response.detail.billing.htnb, None);
+        assert_eq!(response.detail.billing.cod.total_cod, None);
+    }
+
+    #[test]
+    fn parse_tracking_html_survives_reordered_tables() {
+        let response = parse_tracking_html("https://example.test", REORDERED_TABLES_HTML)
+            .expect("reordered tables sample should parse");
+
+        assert_eq!(
+            response.detail.header.nomor_kiriman.as_deref(),
+            Some("P2603310116000")
+        );
+        assert_eq!(response.history.len(), 2);
+        assert_eq!(
+            response.pod.photo1_url.as_deref(),
+            Some("https://apistorage.mile.app/v2-public/prod/pos/2026/04/14/sample-photo.jpg")
+        );
+    }
+
+    #[test]
+    fn parse_tracking_html_selected_fields_match_snapshot() {
+        let response =
+            parse_tracking_html("https://example.test", SAMPLE_HTML).expect("sample should parse");
+
+        let snapshot = json!({
+            "nomor_kiriman": response.detail.header.nomor_kiriman,
+            "jenis_layanan": response.detail.package.jenis_layanan,
+            "status_akhir": response.status_akhir.status,
+            "history_count": response.history.len(),
+            "delivery_runsheet_count": response.history_summary.delivery_runsheet.len(),
+        });
+
+        assert_eq!(
+            snapshot,
+            json!({
+                "nomor_kiriman": "P2603310114291",
+                "jenis_layanan": "PKH",
+                "status_akhir": "INVEHICLE",
+                "history_count": 2,
+                "delivery_runsheet_count": 1
+            })
+        );
+    }
+
+    #[test]
+    fn parse_tracking_html_distinguishes_partial_upstream_from_not_found() {
+        let html = r#"
+            <html>
+              <body>
+                <div>Halaman tracking POS aktif tetapi struktur detail berubah total.</div>
+              </body>
+            </html>
+        "#;
+
+        let error = parse_tracking_html("https://example.test", html)
+            .expect_err("partial upstream html should not be treated as not found");
+
+        assert!(matches!(error, TrackingError::Upstream(_)));
+    }
+
+    #[test]
+    fn parse_tracking_html_maps_failedtoddelivered_as_single_runsheet_update() {
+        let response = parse_tracking_html("https://example.test", RUNSHEET_FAILEDTODELIVERED_HTML)
+            .expect("failedtoddelivered runsheet sample should parse");
+
+        let runsheet = &response.history_summary.delivery_runsheet[0];
+        assert_eq!(runsheet.updates.len(), 1);
+        assert_eq!(
+            runsheet.updates[0].status.as_deref(),
+            Some("FAILEDTODELIVERED")
+        );
+        assert_eq!(
+            runsheet.updates[0].keterangan_status.as_deref(),
+            Some("YANG BERSANGKUTAN TIDAK DITEMPAT")
+        );
+    }
+
+    #[test]
+    fn parse_tracking_html_keeps_synthetic_delivered_for_exact_delivered_status() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2603310999999</td></tr>
+              <tr><td>Status Akhir</td><td>DELIVERED di DC JAYAPURA 9910A [Kurir/9910bkurir] [2026-04-15 11:51:34]</td></tr>
+            </table>
+            <table>
+              <tr><td>TANGGAL UPDATE</td><td>DETAIL HISTORY</td></tr>
+              <tr>
+                <td>2026-04-15 11:40:47</td>
+                <td>Barang P2603310999999 anda telah melewati proses DeliveryRunsheet oleh Akbar di DC JAYAPURA 9910A diterima oleh Kurir</td>
+              </tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("synthetic delivered sample should parse");
+
+        let runsheet = &response.history_summary.delivery_runsheet[0];
+        assert_eq!(runsheet.updates.len(), 1);
+        assert_eq!(runsheet.updates[0].status.as_deref(), Some("DELIVERED"));
+        assert_eq!(runsheet.updates[0].keterangan_status, None);
+    }
+
+    #[test]
+    fn parse_tracking_html_keeps_only_latest_effective_update_per_runsheet() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2603310888888</td></tr>
+              <tr><td>Status Akhir</td><td>FAILEDTODELIVERED di DC JAYAPURA 9910A [Kurir/9910bkurir] [2026-04-15 14:50:02]</td></tr>
+            </table>
+            <table>
+              <tr><td>TANGGAL UPDATE</td><td>DETAIL HISTORY</td></tr>
+              <tr>
+                <td>2026-04-15 11:40:47</td>
+                <td>Barang P2603310888888 anda telah melewati proses DeliveryRunsheet oleh Akbar di DC JAYAPURA 9910A diterima oleh Kurir</td>
+              </tr>
+              <tr>
+                <td>2026-04-15 14:00:00</td>
+                <td>Barang P2603310888888 anda telah melewati proses antaran oleh Gabriel Erick Taurui dengan keterangan (ALAMAT TIDAK DITEMUKAN)</td>
+              </tr>
+              <tr>
+                <td>2026-04-15 14:50:02</td>
+                <td>Barang P2603310888888 anda telah melewati proses antaran oleh Gabriel Erick Taurui dengan keterangan (YANG BERSANGKUTAN TIDAK DITEMPAT)</td>
+              </tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("multi-update runsheet sample should parse");
+
+        let runsheet = &response.history_summary.delivery_runsheet[0];
+        assert_eq!(runsheet.updates.len(), 1);
+        assert_eq!(
+            runsheet.updates[0].status.as_deref(),
+            Some("FAILEDTODELIVERED")
+        );
+        assert_eq!(
+            runsheet.updates[0].keterangan_status.as_deref(),
+            Some("YANG BERSANGKUTAN TIDAK DITEMPAT")
+        );
+    }
+
+    #[test]
+    fn parse_tracking_html_keeps_data_image_pod_src_as_is() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2603310114291</td></tr>
+              <tr><td>Status Akhir</td><td>DELIVERED - DC JAYAPURA [Kurir/9910bkurir] [2026-04-15 11:51:34]</td></tr>
+            </table>
+            <table>
+              <tr>
+                <th>POD</th>
+                <th>Photo</th>
+                <th>Photo2</th>
+                <th>signature</th>
+                <th>coordinate</th>
+              </tr>
+              <tr>
+                <td></td>
+                <td><img src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD" /></td>
+                <td><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB" /></td>
+                <td></td>
+                <td>-2.5,140.7</td>
+              </tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("data image pod sample should parse");
+
+        assert_eq!(
+            response.pod.photo1_url.as_deref(),
+            Some("data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD")
+        );
+        assert_eq!(
+            response.pod.photo2_url.as_deref(),
+            Some("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB")
+        );
     }
 }

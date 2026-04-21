@@ -1,13 +1,12 @@
 use std::time::Duration;
 
-use axum::http::StatusCode;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use reqwest::{Client, Response, Url};
+use reqwest::{Client, Response, StatusCode, Url};
 use serde::Deserialize;
 
-use super::model::{TrackResponse, TrackingError, TrackingSource, TrackingSourceConfig};
-use super::parser::parse_tracking_html;
+use crate::model::{TrackResponse, TrackingError, TrackingSource, TrackingSourceConfig};
+use crate::parser::parse_tracking_html;
 
 pub const POS_TRACKING_ENDPOINT: &str =
     "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php";
@@ -290,7 +289,7 @@ pub async fn fetch_tracking_response(
                     } else {
                         format!("Tracking request failed: {error}")
                     };
-                    return Err(TrackingError::Upstream(format!("{message}")));
+                    return Err(TrackingError::Upstream(message));
                 }
             }
         }
@@ -390,5 +389,65 @@ async fn read_external_api_error_message(response: Response) -> String {
             }
         }
         Err(_) => format!("External API returned HTTP {status}."),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_tracking_url, normalize_and_validate_shipment_id, validate_tracking_source_config,
+        POS_TRACKING_ENDPOINT,
+    };
+    use crate::model::{TrackingError, TrackingSource, TrackingSourceConfig};
+
+    #[test]
+    fn build_tracking_url_percent_encodes_base64_payload() {
+        let url = build_tracking_url(POS_TRACKING_ENDPOINT, "P2603310114291");
+
+        assert_eq!(
+            url,
+            "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=UDI2MDMzMTAxMTQyOTE%3D"
+        );
+    }
+
+    #[test]
+    fn normalize_and_validate_shipment_id_matches_frontend_constraints() {
+        assert_eq!(
+            normalize_and_validate_shipment_id(" p2603310114291 ")
+                .expect("valid shipment id should normalize"),
+            "P2603310114291"
+        );
+        assert!(matches!(
+            normalize_and_validate_shipment_id("   "),
+            Err(TrackingError::BadRequest(_))
+        ));
+        assert!(matches!(
+            normalize_and_validate_shipment_id(&format!("P{}", "1".repeat(80))),
+            Err(TrackingError::BadRequest(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_insecure_external_api_base_url_without_opt_in() {
+        let error = validate_tracking_source_config(&TrackingSourceConfig {
+            tracking_source: TrackingSource::ExternalApi,
+            external_api_base_url: "http://shipflow.internal".into(),
+            external_api_auth_token: "sf_token".into(),
+            allow_insecure_external_api_http: false,
+        })
+        .expect_err("http external API should be rejected by default");
+
+        assert!(matches!(error, TrackingError::BadRequest(message) if message.contains("HTTPS")));
+    }
+
+    #[test]
+    fn allows_insecure_external_api_base_url_only_with_explicit_opt_in() {
+        validate_tracking_source_config(&TrackingSourceConfig {
+            tracking_source: TrackingSource::ExternalApi,
+            external_api_base_url: "http://shipflow.internal".into(),
+            external_api_auth_token: "sf_token".into(),
+            allow_insecure_external_api_http: true,
+        })
+        .expect("http external API should be allowed only with explicit opt-in");
     }
 }

@@ -19,14 +19,10 @@ function createServiceConfig(overrides: Partial<ServiceConfig> = {}): ServiceCon
   };
 }
 
-function hoverSheetTab(name: string) {
-  const tab = screen.getByRole("tab", { name });
-  const wrapper = tab.closest(".sheet-tab");
-  if (!wrapper) {
-    throw new Error(`Sheet tab wrapper not found for ${name}`);
-  }
-  fireEvent.mouseEnter(wrapper);
-  return wrapper;
+function openSheetTabMenu(name: string) {
+  const tabTrigger = screen.getByRole("tab", { name });
+  fireEvent.contextMenu(tabTrigger);
+  return tabTrigger;
 }
 
 function createServiceStatus(
@@ -84,7 +80,7 @@ describe("SheetTabs", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
     expect(onCreateSheet).toHaveBeenCalled();
 
-    hoverSheetTab("Sheet 1");
+    openSheetTabMenu("Sheet 1");
     fireEvent.click(screen.getByRole("menuitem", { name: "Duplikat" }));
     expect(onDuplicateSheet).toHaveBeenCalledWith("sheet-1");
     expect(screen.queryByLabelText("Sheet style presets")).not.toBeInTheDocument();
@@ -92,14 +88,14 @@ describe("SheetTabs", () => {
       screen.queryByRole("menuitem", { name: "Gabungkan ke Sheet Lain" })
     ).not.toBeInTheDocument();
 
-    hoverSheetTab("Sheet 1");
+    openSheetTabMenu("Sheet 1");
     fireEvent.click(screen.getByRole("menuitem", { name: "Ganti Nama" }));
     const renameInput = screen.getByDisplayValue("Sheet 1");
     fireEvent.change(renameInput, { target: { value: "Case COD" } });
     fireEvent.blur(renameInput);
     expect(onRenameSheet).toHaveBeenCalledWith("sheet-1", "Case COD");
 
-    hoverSheetTab("Sheet 1");
+    openSheetTabMenu("Sheet 1");
     fireEvent.click(screen.getByRole("menuitem", { name: "Hapus" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Konfirmasi Hapus" }));
     expect(onDeleteSheet).toHaveBeenCalledWith("sheet-1");
@@ -133,7 +129,7 @@ describe("SheetTabs", () => {
       />
     );
 
-    hoverSheetTab("Sheet 1");
+    openSheetTabMenu("Sheet 1");
     fireEvent.click(screen.getByRole("menuitem", { name: "Ganti Nama" }));
 
     expect(screen.getByRole("button", { name: "Sheet Baru" })).toBeDisabled();
@@ -141,7 +137,7 @@ describe("SheetTabs", () => {
     expect(screen.queryByRole("menuitem", { name: "Hapus" })).not.toBeInTheDocument();
   });
 
-  it("renames an inactive sheet from its hover menu without activating it first", () => {
+  it("renames an inactive sheet from its action menu without activating it first", () => {
     const onActivateSheet = vi.fn();
     const onRenameSheet = vi.fn();
 
@@ -172,7 +168,7 @@ describe("SheetTabs", () => {
       />
     );
 
-    hoverSheetTab("Sheet 2");
+    openSheetTabMenu("Sheet 2");
     fireEvent.click(screen.getByRole("menuitem", { name: "Ganti Nama" }));
 
     const renameInput = screen.getByDisplayValue("Sheet 2");

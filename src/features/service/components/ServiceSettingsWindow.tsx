@@ -1,11 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ServiceConfig, ServiceMode, TrackingSource } from "../../../types";
-
-type ActionNotice = {
-  id: string;
-  tone: "success" | "error" | "info";
-  message: string;
-};
+import type { ServiceSettingsNotice } from "../useServiceSettingsController";
 
 type ServiceSettingsWindowProps = {
   serviceConfig: ServiceConfig;
@@ -24,15 +19,8 @@ type ServiceSettingsWindowProps = {
   onTestExternalTrackingSource: (config: ServiceConfig) => Promise<string>;
   onConfirmSettings: () => Promise<boolean> | boolean;
   onCancelSettings: () => void;
+  onShowNotice?: (notice: ServiceSettingsNotice) => void;
 };
-
-function createNoticeId() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-
-  return `notice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
 
 export function ServiceSettingsWindow({
   serviceConfig,
@@ -51,6 +39,7 @@ export function ServiceSettingsWindow({
   onTestExternalTrackingSource,
   onConfirmSettings,
   onCancelSettings,
+  onShowNotice,
 }: ServiceSettingsWindowProps) {
   const [activeView, setActiveView] = useState<"runtime" | "api">("runtime");
   const [isTokenVisible, setIsTokenVisible] = useState(false);
@@ -63,17 +52,6 @@ export function ServiceSettingsWindow({
     message: string;
   } | null>(null);
   const [portDraft, setPortDraft] = useState(String(serviceConfig.port));
-  const [actionNotices, setActionNotices] = useState<ActionNotice[]>([]);
-  const actionNoticeTimeoutsRef = useRef(new Map<string, number>());
-
-  useEffect(() => {
-    return () => {
-      actionNoticeTimeoutsRef.current.forEach((timeoutId) => {
-        window.clearTimeout(timeoutId);
-      });
-      actionNoticeTimeoutsRef.current.clear();
-    };
-  }, []);
 
   useEffect(() => {
     setPortDraft(String(serviceConfig.port));
@@ -86,21 +64,6 @@ export function ServiceSettingsWindow({
     serviceConfig.externalApiBaseUrl,
     serviceConfig.externalApiAuthToken,
   ]);
-
-  const showActionNotice = (
-    tone: ActionNotice["tone"],
-    message: string
-  ) => {
-    const id = createNoticeId();
-    setActionNotices((current) => [...current, { id, tone, message }].slice(-4));
-
-    const timeoutId = window.setTimeout(() => {
-      setActionNotices((current) => current.filter((notice) => notice.id !== id));
-      actionNoticeTimeoutsRef.current.delete(id);
-    }, 2200);
-
-    actionNoticeTimeoutsRef.current.set(id, timeoutId);
-  };
 
   const normalizedPort = Number.parseInt(portDraft, 10);
   const isPortValid =
@@ -158,45 +121,48 @@ export function ServiceSettingsWindow({
       const didSave = await onConfirmSettings();
       if (didSave !== false) {
         setIsRegenerateTokenArmed(false);
-        showActionNotice("success", "Pengaturan service tersimpan.");
+        onShowNotice?.({
+          tone: "success",
+          message: "Pengaturan service tersimpan.",
+        });
       }
     } catch (error) {
-      showActionNotice(
-        "error",
-        error instanceof Error ? error.message : "Gagal menyimpan pengaturan service."
-      );
+      onShowNotice?.({
+        tone: "error",
+        message: error instanceof Error ? error.message : "Gagal menyimpan pengaturan service.",
+      });
     } finally {
       setIsSaving(false);
     }
   };
 
-  return (
-    <>
-      {actionNotices.length > 0 ? (
-        <div className="action-toast-stack" aria-live="polite">
-          {actionNotices.map((notice) => (
-            <div
-              key={notice.id}
-              className={`action-notice action-notice-${notice.tone}`}
-              role="status"
-            >
-              {notice.message}
-            </div>
-          ))}
-        </div>
-      ) : null}
-      <main className="shell service-settings-shell display-scale-small">
-        <section className="sheet-panel service-settings-panel">
-          <div className="sheet-head service-settings-head">
-            <div className="service-settings-title">
-              <span className="muted-label">Service</span>
-              <h2>ShipFlow Service</h2>
-            </div>
-          </div>
+  const activeViewTitle = activeView === "runtime" ? "Runtime Internal" : "API Endpoint";
+  const activeViewDescription =
+    activeView === "runtime"
+      ? "Pilih sumber tracking utama yang dipakai oleh service lokal."
+      : "Atur endpoint lokal, mode jaringan, dan token autentikasi untuk klien lain.";
 
-          <div className="service-settings-tabs" role="tablist" aria-label="Service sections">
+  return (
+    <main className="shell service-settings-shell display-scale-small">
+      <section className="sheet-panel service-settings-panel">
+        <div className="sheet-head service-settings-head">
+          <div className="service-settings-title">
+            <span className="muted-label">Service</span>
+            <h2>ShipFlow Service</h2>
+            <p>Konfigurasi runtime tracking dan endpoint lokal untuk integrasi desktop.</p>
+          </div>
+        </div>
+
+        <div className="service-settings-workbench">
+          <div
+            className="service-settings-tabs"
+            role="tablist"
+            aria-label="Service sections"
+            aria-orientation="vertical"
+          >
             <button
               type="button"
+              id="service-settings-runtime-tab"
               role="tab"
               aria-selected={activeView === "runtime"}
               className={[
@@ -211,6 +177,7 @@ export function ServiceSettingsWindow({
             </button>
             <button
               type="button"
+              id="service-settings-api-tab"
               role="tab"
               aria-selected={activeView === "api"}
               className={[
@@ -223,9 +190,18 @@ export function ServiceSettingsWindow({
             >
               API
             </button>
+            {hasPendingServiceConfigChanges ? (
+              <div className="service-settings-sidebar-note" role="status" aria-live="polite">
+                Ada perubahan lokal yang belum disimpan.
+              </div>
+            ) : null}
           </div>
 
           <div className="service-settings-layout">
+            <div className="service-settings-section-header">
+              <h3>{activeViewTitle}</h3>
+              <p>{activeViewDescription}</p>
+            </div>
             <section
               className={[
                 "settings-pane",
@@ -234,6 +210,8 @@ export function ServiceSettingsWindow({
               ]
                 .filter(Boolean)
                 .join(" ")}
+              role="tabpanel"
+              aria-labelledby="service-settings-runtime-tab"
               hidden={activeView !== "runtime"}
             >
               <div className="service-settings-stack">
@@ -348,6 +326,8 @@ export function ServiceSettingsWindow({
               ]
                 .filter(Boolean)
                 .join(" ")}
+              role="tabpanel"
+              aria-labelledby="service-settings-api-tab"
               hidden={activeView !== "api"}
             >
               <div className="service-settings-stack">
@@ -492,29 +472,29 @@ export function ServiceSettingsWindow({
               ) : null}
             </section>
           </div>
+        </div>
 
-          <div className="settings-modal-footer service-settings-footer">
-            <button
-              type="button"
-              className="sheet-tab-action settings-modal-cancel"
-              onClick={handleReset}
-              disabled={isSaving}
-            >
-              Reset Perubahan
-            </button>
-            <button
-              type="button"
-              className="sheet-tab-action settings-modal-ok"
-              onClick={() => {
-                void handleSave();
-              }}
-              disabled={!isPortValid || isSaving}
-            >
-              {isSaving ? "Menyimpan..." : "Simpan"}
-            </button>
-          </div>
-        </section>
-      </main>
-    </>
+        <div className="settings-modal-footer service-settings-footer">
+          <button
+            type="button"
+            className="sheet-tab-action settings-modal-cancel"
+            onClick={handleReset}
+            disabled={isSaving}
+          >
+            Reset Perubahan
+          </button>
+          <button
+            type="button"
+            className="sheet-tab-action settings-modal-ok"
+            onClick={() => {
+              void handleSave();
+            }}
+            disabled={!isPortValid || isSaving}
+          >
+            {isSaving ? "Menyimpan..." : "Simpan"}
+          </button>
+        </div>
+      </section>
+    </main>
   );
 }
