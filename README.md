@@ -251,6 +251,12 @@ Build the bundled desktop installer with the companion service binary included:
 npm run build:bundle
 ```
 
+Build the macOS app bundle only, with the companion service binary included:
+
+```bash
+npm run build:bundle:macos
+```
+
 ## GitHub Actions Windows Build
 
 The repository includes a Windows build workflow at:
@@ -288,10 +294,11 @@ What it does:
 - runs on `macos-latest`
 - installs Node.js and Rust
 - runs frontend tests
+- optionally uses Apple signing and notarization credentials when the corresponding `APPLE_*` repository secrets are configured
+- otherwise falls back to Tauri ad-hoc signing (`bundle.macOS.signingIdentity = "-"`) so the app bundle is still signed for local validation
 - builds the macOS app bundle through the bundled-service config so `ShipFlow Service` is included
-- uploads two artifacts:
-  - macOS app bundle: `shipflow-desktop-macos-app`
-  - macOS DMG installer: `shipflow-desktop-macos-dmg`
+- verifies the generated `.app` bundle signature with `codesign --verify --deep --strict`
+- archives the `.app` bundle as a `.zip` artifact to preserve the macOS bundle structure during download
 
 Triggers:
 
@@ -300,8 +307,13 @@ Triggers:
 
 The uploaded macOS outputs are:
 
-- `src-tauri/target/release/bundle/macos/*.app`
-- `src-tauri/target/release/bundle/dmg/*.dmg`
+- `src-tauri/target/release/bundle/macos/ShipFlow-Desktop-macos-app.zip`
+
+Important notes:
+
+- A browser-downloaded macOS app should be signed to avoid the broken-app warning from Gatekeeper.
+- Ad-hoc signing is sufficient for local/manual validation, especially on Apple Silicon, but it is not a substitute for a Developer ID Application certificate plus notarization.
+- For distribution to other users, configure the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and notarization credentials (`APPLE_API_*` or `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`) as described in the Tauri macOS signing documentation.
 
 ## Tests
 

@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "prepare:service-binary": "node ./scripts/prepare-service-binary.mjs",
     "build:bundle": "npm run prepare:service-binary && tauri build --config src-tauri/tauri.bundle.conf.json",
+    "build:bundle:macos": "npm run prepare:service-binary && tauri build --config src-tauri/tauri.bundle.conf.json --bundles app",
     "build:bundle:nsis": "npm run prepare:service-binary && tauri build --config src-tauri/tauri.bundle.conf.json --bundles nsis",
     "test": "vitest run --exclude src/features/sheet/components/SheetTable.benchmark.test.tsx",
     "bench:table": "vitest run src/features/sheet/components/SheetTable.benchmark.test.tsx --environment jsdom --reporter=verbose",
