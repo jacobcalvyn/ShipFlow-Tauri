@@ -94,6 +94,36 @@ fn tracking_error_message(error: tracking::model::TrackingError) -> String {
     }
 }
 
+fn extract_service_error_message(status: reqwest::StatusCode, raw_body: Option<&str>) -> String {
+    if let Some(body) = raw_body.map(str::trim).filter(|value| !value.is_empty()) {
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(body) {
+            if let Some(message) = payload
+                .get("error")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return message.to_string();
+            }
+        }
+
+        return format!("ShipFlow Service returned HTTP {}: {}", status, body);
+    }
+
+    format!("ShipFlow Service returned HTTP {}.", status)
+}
+
+fn build_service_lookup_endpoint(port: u16, route: &str, lookup_id: &str) -> String {
+    let mut endpoint = reqwest::Url::parse(&format!("http://127.0.0.1:{port}/"))
+        .expect("service lookup base url must be valid");
+    endpoint
+        .path_segments_mut()
+        .expect("service lookup base url must allow path segments")
+        .push(route)
+        .push(lookup_id.trim());
+    endpoint.into()
+}
+
 pub(crate) async fn track_shipment_via_service(
     client: &reqwest::Client,
     config: &ApiServiceConfig,
@@ -125,7 +155,7 @@ async fn fetch_lookup_via_service<T: DeserializeOwned>(
     lookup_id: &str,
     label: &str,
 ) -> Result<T, tracking::model::TrackingError> {
-    let endpoint = format!("http://127.0.0.1:{}/{route}/{}", config.port, lookup_id.trim());
+    let endpoint = build_service_lookup_endpoint(config.port, route, lookup_id);
     let response = client
         .get(endpoint)
         .bearer_auth(config.auth_token.trim())
@@ -153,16 +183,7 @@ async fn fetch_lookup_via_service<T: DeserializeOwned>(
 
     let status = response.status();
     let raw_body = response.text().await.ok();
-    let payload = raw_body
-        .as_deref()
-        .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok());
-    let message = payload
-        .as_ref()
-        .and_then(|value| value.get("error"))
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("ShipFlow Service lookup request failed.");
+    let message = extract_service_error_message(status, raw_body.as_deref());
 
     match status.as_u16() {
         400 => Err(tracking::model::TrackingError::BadRequest(message.into())),
@@ -261,4 +282,35 @@ pub(crate) fn validate_tracking_source_config_runtime(
 ) -> Result<(), String> {
     validate_tracking_source_settings(&config.tracking_source_config())
         .map_err(tracking_error_message)
+}
+
+#[cfg(test)]
+mod tests {
+    use reqwest::StatusCode;
+
+    use super::{build_service_lookup_endpoint, extract_service_error_message};
+
+    #[test]
+    fn prefers_json_error_payload_message() {
+        let message = extract_service_error_message(
+            StatusCode::BAD_GATEWAY,
+            Some(r#"{"error":"Bag endpoint returned HTTP 404."}"#),
+        );
+
+        assert_eq!(message, "Bag endpoint returned HTTP 404.");
+    }
+
+    #[test]
+    fn falls_back_to_plain_text_response_body() {
+        let message = extract_service_error_message(StatusCode::NOT_FOUND, Some("Not Found"));
+
+        assert_eq!(message, "ShipFlow Service returned HTTP 404 Not Found: Not Found");
+    }
+
+    #[test]
+    fn encodes_lookup_ids_when_building_service_endpoint() {
+        let endpoint = build_service_lookup_endpoint(18422, "bag", "PID 123/456");
+
+        assert_eq!(endpoint, "http://127.0.0.1:18422/bag/PID%20123%2F456");
+    }
 }

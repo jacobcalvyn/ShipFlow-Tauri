@@ -59,6 +59,29 @@ export function createStorageSafeWorkspaceState(
           deleteAllArmed: false,
           openColumnMenuPath: null,
           highlightedColumnPath: null,
+          importSourceModalKind: null,
+          importSourceDrafts: {
+            bag: "",
+            manifest: "",
+          },
+          importSourceLookupStates: {
+            bag: {
+              loading: false,
+              rawResponse: "",
+              error: "",
+              trackingIds: [],
+              requestKey: null,
+              manifestBagStates: [],
+            },
+            manifest: {
+              loading: false,
+              rawResponse: "",
+              error: "",
+              trackingIds: [],
+              requestKey: null,
+              manifestBagStates: [],
+            },
+          },
           rows: sheetState.rows.map((row) => ({
             ...row,
             loading: false,
@@ -249,6 +272,29 @@ export function normalizePersistedWorkspaceState(
         openColumnMenuPath: null,
         highlightedColumnPath: null,
         deleteAllArmed: false,
+        importSourceModalKind: null,
+        importSourceDrafts: {
+          bag: "",
+          manifest: "",
+        },
+        importSourceLookupStates: {
+          bag: {
+            loading: false,
+            rawResponse: "",
+            error: "",
+            trackingIds: [],
+            requestKey: null,
+            manifestBagStates: [],
+          },
+          manifest: {
+            loading: false,
+            rawResponse: "",
+            error: "",
+            trackingIds: [],
+            requestKey: null,
+            manifestBagStates: [],
+          },
+        },
       };
 
       return [

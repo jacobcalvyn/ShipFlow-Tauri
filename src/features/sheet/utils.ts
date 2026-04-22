@@ -259,22 +259,26 @@ export function getLatestBagId(historySummary: unknown) {
   return getLatestBagStatusDetails(historySummary)?.bagId ?? null;
 }
 
-function getLatestManifestText(historySummary: unknown) {
+export function getLatestManifestId(historySummary: unknown) {
   if (!historySummary || typeof historySummary !== "object") {
-    return "-";
+    return null;
   }
 
   const rawValue = (historySummary as Record<string, unknown>).manifest_r7;
   if (!Array.isArray(rawValue) || rawValue.length === 0) {
-    return "-";
+    return null;
   }
 
   const latest = rawValue[rawValue.length - 1];
   if (!latest || typeof latest !== "object") {
-    return "-";
+    return null;
   }
 
-  return getRecordValue(latest as Record<string, unknown>, "nomor_r7") ?? "-";
+  return getRecordValue(latest as Record<string, unknown>, "nomor_r7");
+}
+
+function getLatestManifestText(historySummary: unknown) {
+  return getLatestManifestId(historySummary) ?? "-";
 }
 
 function getLatestDeliveryText(historySummary: unknown) {

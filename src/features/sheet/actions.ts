@@ -3,7 +3,7 @@ import {
   INITIAL_ROW_COUNT,
   TRACKING_COLUMN_PATH,
 } from "./columns";
-import { SheetState } from "./types";
+import { ImportSourceModalKind, SheetState } from "./types";
 import {
   createEmptyRows,
   ensureRowCapacity,
@@ -461,6 +461,205 @@ export function clearSelectionInSheet(sheetState: SheetState) {
   };
 }
 
+export function openImportSourceModalInSheet(
+  sheetState: SheetState,
+  kind: ImportSourceModalKind
+) {
+  if (sheetState.importSourceModalKind === kind) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    importSourceModalKind: kind,
+  };
+}
+
+export function closeImportSourceModalInSheet(sheetState: SheetState) {
+  if (sheetState.importSourceModalKind === null) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    importSourceModalKind: null,
+  };
+}
+
+export function setImportSourceDraftInSheet(
+  sheetState: SheetState,
+  kind: ImportSourceModalKind,
+  value: string
+) {
+  if (sheetState.importSourceDrafts[kind] === value) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    importSourceDrafts: {
+      ...sheetState.importSourceDrafts,
+      [kind]: value,
+    },
+    importSourceLookupStates: {
+      ...sheetState.importSourceLookupStates,
+      [kind]: {
+        loading: false,
+        rawResponse: "",
+        error: "",
+        trackingIds: [],
+        requestKey: null,
+        manifestBagStates: [],
+      },
+    },
+  };
+}
+
+export function startImportSourceLookupInSheet(
+  sheetState: SheetState,
+  kind: ImportSourceModalKind,
+  requestKey: string
+) {
+  return {
+    ...sheetState,
+    importSourceLookupStates: {
+      ...sheetState.importSourceLookupStates,
+      [kind]: {
+        loading: true,
+        rawResponse: "",
+        error: "",
+        trackingIds: [],
+        requestKey,
+        manifestBagStates: [],
+      },
+    },
+  };
+}
+
+export function setImportSourceLookupSuccessInSheet(
+  sheetState: SheetState,
+  kind: ImportSourceModalKind,
+  rawResponse: string,
+  trackingIds: string[],
+  requestKey: string,
+  manifestBagStates: NonNullable<
+    SheetState["importSourceLookupStates"]["manifest"]["manifestBagStates"]
+  > = []
+) {
+  if (sheetState.importSourceLookupStates[kind].requestKey !== requestKey) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    importSourceLookupStates: {
+      ...sheetState.importSourceLookupStates,
+      [kind]: {
+        loading: false,
+        rawResponse,
+        error: "",
+        trackingIds,
+        requestKey,
+        manifestBagStates,
+      },
+    },
+  };
+}
+
+export function setImportSourceLookupErrorInSheet(
+  sheetState: SheetState,
+  kind: ImportSourceModalKind,
+  error: string,
+  requestKey: string
+) {
+  if (sheetState.importSourceLookupStates[kind].requestKey !== requestKey) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    importSourceLookupStates: {
+      ...sheetState.importSourceLookupStates,
+      [kind]: {
+        loading: false,
+        rawResponse: "",
+        error,
+        trackingIds: [],
+        requestKey,
+        manifestBagStates: [],
+      },
+    },
+  };
+}
+
+export function setManifestBagLookupSuccessInSheet(
+  sheetState: SheetState,
+  bagId: string,
+  trackingIds: string[],
+  requestKey: string
+) {
+  if (sheetState.importSourceLookupStates.manifest.requestKey !== requestKey) {
+    return sheetState;
+  }
+
+  const currentStates =
+    sheetState.importSourceLookupStates.manifest.manifestBagStates ?? [];
+
+  return {
+    ...sheetState,
+    importSourceLookupStates: {
+      ...sheetState.importSourceLookupStates,
+      manifest: {
+        ...sheetState.importSourceLookupStates.manifest,
+        manifestBagStates: currentStates.map((state) =>
+          state.bagId === bagId
+            ? {
+                ...state,
+                loading: false,
+                error: "",
+                trackingIds,
+              }
+            : state
+        ),
+      },
+    },
+  };
+}
+
+export function setManifestBagLookupErrorInSheet(
+  sheetState: SheetState,
+  bagId: string,
+  error: string,
+  requestKey: string
+) {
+  if (sheetState.importSourceLookupStates.manifest.requestKey !== requestKey) {
+    return sheetState;
+  }
+
+  const currentStates =
+    sheetState.importSourceLookupStates.manifest.manifestBagStates ?? [];
+
+  return {
+    ...sheetState,
+    importSourceLookupStates: {
+      ...sheetState.importSourceLookupStates,
+      manifest: {
+        ...sheetState.importSourceLookupStates.manifest,
+        manifestBagStates: currentStates.map((state) =>
+          state.bagId === bagId
+            ? {
+                ...state,
+                loading: false,
+                error,
+                trackingIds: [],
+              }
+            : state
+        ),
+      },
+    },
+  };
+}
+
 export function clearFiltersInSheet(sheetState: SheetState) {
   return {
     ...sheetState,
@@ -518,6 +717,47 @@ export function clearAllDataInSheet(sheetState: SheetState) {
     openColumnMenuPath: null,
     highlightedColumnPath: null,
     deleteAllArmed: false,
+    importSourceModalKind: null,
+    importSourceDrafts: {
+      bag: "",
+      manifest: "",
+    },
+    importSourceLookupStates: {
+      bag: {
+        loading: false,
+        rawResponse: "",
+        error: "",
+        trackingIds: [],
+        requestKey: null,
+        manifestBagStates: [],
+      },
+      manifest: {
+        loading: false,
+        rawResponse: "",
+        error: "",
+        trackingIds: [],
+        requestKey: null,
+        manifestBagStates: [],
+      },
+    },
+  };
+}
+
+export function clearSheetDataPreservingImportStateInSheet(sheetState: SheetState) {
+  return {
+    ...sheetState,
+    rows: createEmptyRows(INITIAL_ROW_COUNT),
+    filters: {},
+    valueFilters: {},
+    sortState: {
+      path: null,
+      direction: "asc" as const,
+    },
+    selectedRowKeys: [],
+    selectionFollowsVisibleRows: false,
+    openColumnMenuPath: null,
+    highlightedColumnPath: null,
+    deleteAllArmed: false,
   };
 }
 
@@ -527,6 +767,29 @@ export function armDeleteAllInSheet(sheetState: SheetState) {
     selectionFollowsVisibleRows: false,
     selectedRowKeys: [],
     deleteAllArmed: true,
+    importSourceModalKind: null,
+    importSourceDrafts: {
+      bag: "",
+      manifest: "",
+    },
+    importSourceLookupStates: {
+      bag: {
+        loading: false,
+        rawResponse: "",
+        error: "",
+        trackingIds: [],
+        requestKey: null,
+        manifestBagStates: [],
+      },
+      manifest: {
+        loading: false,
+        rawResponse: "",
+        error: "",
+        trackingIds: [],
+        requestKey: null,
+        manifestBagStates: [],
+      },
+    },
   };
 }
 

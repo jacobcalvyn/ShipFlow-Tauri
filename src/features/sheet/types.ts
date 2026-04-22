@@ -34,6 +34,31 @@ export type SortState = {
   direction: "asc" | "desc";
 };
 
+export type ImportSourceModalKind = "bag" | "manifest";
+
+export type ImportSourceDrafts = Record<ImportSourceModalKind, string>;
+
+export type ManifestBagLookupState = {
+  bagId: string;
+  loading: boolean;
+  error: string;
+  trackingIds: string[];
+};
+
+export type ImportSourceLookupState = {
+  loading: boolean;
+  rawResponse: string;
+  error: string;
+  trackingIds: string[];
+  requestKey?: string | null;
+  manifestBagStates?: ManifestBagLookupState[];
+};
+
+export type ImportSourceLookupStates = Record<
+  ImportSourceModalKind,
+  ImportSourceLookupState
+>;
+
 export type SheetState = {
   rows: SheetRow[];
   filters: Record<string, string>;
@@ -47,6 +72,9 @@ export type SheetState = {
   openColumnMenuPath: string | null;
   highlightedColumnPath: string | null;
   deleteAllArmed: boolean;
+  importSourceModalKind: ImportSourceModalKind | null;
+  importSourceDrafts: ImportSourceDrafts;
+  importSourceLookupStates: ImportSourceLookupStates;
 };
 
 export type ColumnShortcut = {

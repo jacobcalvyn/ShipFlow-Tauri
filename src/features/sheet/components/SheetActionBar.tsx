@@ -1,11 +1,17 @@
 import { createPortal } from "react-dom";
 import {
   DragEvent as ReactDragEvent,
+  ChangeEvent,
   ReactNode,
   useEffect,
   useRef,
   useState,
 } from "react";
+import {
+  ImportSourceDrafts,
+  ImportSourceLookupStates,
+  ImportSourceModalKind,
+} from "../types";
 
 type TransferMode = "copy" | "move";
 
@@ -44,6 +50,15 @@ type SheetActionBarProps = {
   onDeleteSelectedRows: () => void;
   onClearHiddenFilters: () => void;
   onScrollToColumn: (path: string) => void;
+  importSourceModalKind: ImportSourceModalKind | null;
+  importSourceDrafts: ImportSourceDrafts;
+  importSourceLookupStates: ImportSourceLookupStates;
+  onOpenImportSourceModal: (kind: ImportSourceModalKind) => void;
+  onCloseImportSourceModal: () => void;
+  onSetImportSourceDraft: (kind: ImportSourceModalKind, value: string) => void;
+  onImportBagTrackingIds: (mode: "replace" | "append") => void;
+  onImportManifestTrackingIds: (mode: "replace" | "append") => void;
+  onRunImportSourceLookup: (kind: ImportSourceModalKind) => void;
   onStartSelectedIdsDrag?: (event: ReactDragEvent<HTMLButtonElement>) => void;
   onEndSelectedIdsDrag?: () => void;
 };
@@ -54,6 +69,326 @@ function ActionIcon({ children }: { children: ReactNode }) {
 
 function ActionLabel({ children }: { children: ReactNode }) {
   return <span className="action-button-label">{children}</span>;
+}
+
+function parseManifestBagIds(rawResponse: string) {
+  if (!rawResponse) {
+    return [] as string[];
+  }
+
+  try {
+    const parsed = JSON.parse(rawResponse) as {
+      items?: Array<{ nomor_kantung?: string }>;
+    };
+
+    if (!Array.isArray(parsed.items)) {
+      return [] as string[];
+    }
+
+    const seen = new Set<string>();
+    const bagIds: string[] = [];
+
+    parsed.items.forEach((item) => {
+      const bagId = item.nomor_kantung?.trim() ?? "";
+      if (!bagId || seen.has(bagId)) {
+        return;
+      }
+
+      seen.add(bagId);
+      bagIds.push(bagId);
+    });
+
+    return bagIds;
+  } catch {
+    return [] as string[];
+  }
+}
+
+function getManifestBagStatusClass(loading: boolean, error: string) {
+  if (loading) {
+    return "status-loading";
+  }
+
+  if (error.trim() !== "") {
+    return "status-error";
+  }
+
+  return "status-ready";
+}
+
+function getManifestCompletedBagCount(
+  manifestBagStates: NonNullable<
+    ImportSourceLookupStates["manifest"]["manifestBagStates"]
+  >
+) {
+  return manifestBagStates.filter((state) => !state.loading).length;
+}
+
+function getManifestTrackingIds(
+  manifestBagStates: NonNullable<
+    ImportSourceLookupStates["manifest"]["manifestBagStates"]
+  >
+) {
+  const trackingIds = new Set<string>();
+
+  manifestBagStates.forEach((state) => {
+    state.trackingIds.forEach((trackingId) => {
+      const normalizedTrackingId = trackingId.trim();
+      if (normalizedTrackingId !== "") {
+        trackingIds.add(normalizedTrackingId);
+      }
+    });
+  });
+
+  return Array.from(trackingIds);
+}
+
+function getManifestTrackingIdTotal(
+  manifestBagStates: NonNullable<
+    ImportSourceLookupStates["manifest"]["manifestBagStates"]
+  >
+) {
+  return getManifestTrackingIds(manifestBagStates).length;
+}
+
+function getManifestResultLabel(
+  manifestBagStates: NonNullable<
+    ImportSourceLookupStates["manifest"]["manifestBagStates"]
+  >
+) {
+  const totalBagCount = manifestBagStates.length;
+  const completedBagCount = getManifestCompletedBagCount(manifestBagStates);
+
+  if (manifestBagStates.some((state) => state.loading)) {
+    return `Nomor Kantung (${totalBagCount}) - Proses ambil id kiriman dari ${completedBagCount}/${totalBagCount} kantung`;
+  }
+
+  return `Nomor Kantung (${totalBagCount}) - ${getManifestTrackingIdTotal(
+    manifestBagStates
+  )} Kiriman`;
+}
+
+function getManifestBagItemLabel(
+  state: NonNullable<ImportSourceLookupStates["manifest"]["manifestBagStates"]>[number]
+) {
+  if (state.loading) {
+    return state.bagId;
+  }
+
+  if (state.error.trim() !== "") {
+    return `${state.bagId} - Gagal ambil data`;
+  }
+
+  return `${state.bagId} - ${state.trackingIds.length} Kiriman`;
+}
+
+function ImportSourceModal({
+  kind,
+  value,
+  lookupState,
+  onValueChange,
+  onImportBagTrackingIds,
+  onImportManifestTrackingIds,
+  onSubmit,
+  onClose,
+}: {
+  kind: ImportSourceModalKind;
+  value: string;
+  lookupState: ImportSourceLookupStates[ImportSourceModalKind];
+  onValueChange: (value: string) => void;
+  onImportBagTrackingIds: (mode: "replace" | "append") => void;
+  onImportManifestTrackingIds: (mode: "replace" | "append") => void;
+  onSubmit: () => void;
+  onClose: () => void;
+}) {
+  const title =
+    kind === "bag"
+      ? "Import ID Kiriman dari Bag"
+      : "Import ID Kiriman dari Manifest";
+  const inputLabel = kind === "bag" ? "ID Bag" : "ID Manifest";
+  const inputPlaceholder =
+    kind === "bag" ? "Masukkan ID Bag" : "Masukkan ID Manifest";
+  const inputId = `import-source-input-${kind}`;
+  const isBagModal = kind === "bag";
+  const manifestBagStates = !isBagModal
+    ? lookupState.manifestBagStates?.length
+      ? lookupState.manifestBagStates
+      : parseManifestBagIds(lookupState.rawResponse).map((bagId) => ({
+          bagId,
+          loading: false,
+          error: "",
+          trackingIds: [],
+        }))
+    : [];
+  const manifestTrackingIds = !isBagModal
+    ? getManifestTrackingIds(manifestBagStates)
+    : [];
+  const manifestHasPendingBagLookups = manifestBagStates.some((state) => state.loading);
+
+  return (
+    <div className="import-source-modal-backdrop">
+      <div
+        className="import-source-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-source-modal-title"
+      >
+        <div className="import-source-modal-header">
+          <div>
+            <h3 id="import-source-modal-title">{title}</h3>
+          </div>
+        </div>
+        <div className="import-source-modal-body">
+          <div className="import-source-modal-field">
+            <label htmlFor={inputId} className="import-source-modal-label">
+              {inputLabel}
+            </label>
+            <input
+              id={inputId}
+              type="text"
+              className="import-source-modal-input"
+              value={value}
+              placeholder={inputPlaceholder}
+              autoFocus
+              onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                onValueChange(event.target.value);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !lookupState.loading) {
+                  event.preventDefault();
+                  onSubmit();
+                }
+              }}
+            />
+          </div>
+          {lookupState.error ? (
+            <p className="import-source-modal-error" role="alert">
+              {lookupState.error}
+            </p>
+          ) : null}
+          {isBagModal && lookupState.trackingIds.length > 0 ? (
+            <div className="import-source-modal-result">
+              <span className="import-source-modal-result-label">
+                Nomor Kiriman ({lookupState.trackingIds.length})
+              </span>
+              <div className="import-source-modal-id-list">
+                {lookupState.trackingIds.map((trackingId) => (
+                  <div key={trackingId} className="import-source-modal-id-item">
+                    {trackingId}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {isBagModal && lookupState.rawResponse && lookupState.trackingIds.length === 0 ? (
+            <p className="import-source-modal-empty">
+              Tidak ada nomor kiriman yang ditemukan pada hasil Bag.
+            </p>
+          ) : null}
+          {!isBagModal && manifestBagStates.length > 0 ? (
+            <div className="import-source-modal-result">
+              <span className="import-source-modal-result-label">
+                {getManifestResultLabel(manifestBagStates)}
+              </span>
+              <div className="import-source-modal-id-list">
+                {manifestBagStates.map((state) => (
+                  <div
+                    key={state.bagId}
+                    className="import-source-modal-id-item import-source-modal-id-item-with-status"
+                    title={
+                      state.error
+                        ? `${state.bagId}: ${state.error}`
+                        : state.loading
+                          ? `${state.bagId}: sedang dilacak`
+                          : `${state.bagId}: ${state.trackingIds.length} nomor kiriman`
+                    }
+                  >
+                    <span
+                      className={`row-status-dot ${getManifestBagStatusClass(
+                        state.loading,
+                        state.error
+                      )}`}
+                      aria-hidden="true"
+                    />
+                    <span>{getManifestBagItemLabel(state)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {!isBagModal && lookupState.rawResponse && manifestBagStates.length === 0 ? (
+            <p className="import-source-modal-empty">
+              Tidak ada nomor kantung yang ditemukan pada hasil Manifest.
+            </p>
+          ) : null}
+        </div>
+        <div className="import-source-modal-footer">
+          {isBagModal ? (
+            <>
+              <button
+                type="button"
+                className="action-button"
+                onClick={() => onImportBagTrackingIds("replace")}
+                disabled={lookupState.loading || lookupState.trackingIds.length === 0}
+              >
+                Ganti Semua
+              </button>
+              <button
+                type="button"
+                className="action-button"
+                onClick={() => onImportBagTrackingIds("append")}
+                disabled={lookupState.loading || lookupState.trackingIds.length === 0}
+              >
+                Tambah Data
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="action-button"
+                onClick={() => onImportManifestTrackingIds("replace")}
+                disabled={
+                  lookupState.loading ||
+                  manifestHasPendingBagLookups ||
+                  manifestTrackingIds.length === 0
+                }
+              >
+                Ganti Semua
+              </button>
+              <button
+                type="button"
+                className="action-button"
+                onClick={() => onImportManifestTrackingIds("append")}
+                disabled={
+                  lookupState.loading ||
+                  manifestHasPendingBagLookups ||
+                  manifestTrackingIds.length === 0
+                }
+              >
+                Tambah Data
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            className="action-button action-button-accent"
+            onClick={onSubmit}
+            disabled={lookupState.loading || value.trim() === ""}
+          >
+            {lookupState.loading ? "Memuat..." : "Ambil Data"}
+          </button>
+          <button
+            type="button"
+            className="action-button"
+            onClick={onClose}
+          >
+            Tutup
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function SheetTransferMenuAction({
@@ -476,6 +811,15 @@ export function SheetActionBar({
   onDeleteSelectedRows,
   onClearHiddenFilters,
   onScrollToColumn,
+  importSourceModalKind,
+  importSourceDrafts,
+  importSourceLookupStates,
+  onOpenImportSourceModal,
+  onCloseImportSourceModal,
+  onSetImportSourceDraft,
+  onImportBagTrackingIds,
+  onImportManifestTrackingIds,
+  onRunImportSourceLookup,
   onStartSelectedIdsDrag,
   onEndSelectedIdsDrag,
 }: SheetActionBarProps) {
@@ -488,201 +832,240 @@ export function SheetActionBar({
       : `Total ${totalShipmentCount} kiriman`;
 
   return (
-    <>
-      <div className="selection-actions">
-        <div className="selection-actions-row">
-          <span className="selection-count">{progressLabel}</span>
-          <span className="action-divider" aria-hidden="true" />
-          <button
-            type="button"
-            className="action-button"
-            onClick={onRetrackAll}
-            disabled={retrackableRowsCount === 0}
-            title="Lacak Ulang"
-          >
-            <ActionIcon>
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M16 10a6 6 0 1 1-1.757-4.243" />
-                <path d="M16 4v4h-4" />
-              </svg>
-            </ActionIcon>
-            <ActionLabel>Lacak Ulang</ActionLabel>
-          </button>
-          <button
-            type="button"
-            className="action-button"
-            onClick={onRetryFailedRows}
-            disabled={retryFailedRowsCount === 0}
-            title="Retry Gagal"
-          >
-            <ActionIcon>
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M5 10a5 5 0 1 1 1.35 3.42" />
-                <path d="M5 6v4h4" />
-                <path d="m11.5 7.75 1 1.25 2-2.5" />
-              </svg>
-            </ActionIcon>
-            <ActionLabel>Retry Gagal</ActionLabel>
-          </button>
-          <button
-            type="button"
-            className="action-button"
-            onClick={onExportCsv}
-            disabled={exportableRowsCount === 0}
-            title="Export CSV"
-          >
-            <ActionIcon>
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M10 3v8" />
-                <path d="m6.5 8.5 3.5 3.5 3.5-3.5" />
-                <path d="M4 15.5h12" />
-              </svg>
-            </ActionIcon>
-            <ActionLabel>Export CSV</ActionLabel>
-          </button>
-          <button
-            type="button"
-            className="action-button"
-            onClick={onCopyAllIds}
-            disabled={retrackableRowsCount === 0}
-            title="Copy ID Kiriman"
-          >
-            <ActionIcon>
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <rect x="7" y="5" width="8" height="10" rx="1.8" />
-                <path d="M5 11V5.8A1.8 1.8 0 0 1 6.8 4H12" />
-              </svg>
-            </ActionIcon>
-            <ActionLabel>Copy ID Kiriman</ActionLabel>
-          </button>
-          <button
-            type="button"
-            className="action-button"
-            onClick={onClearFilter}
-            disabled={!hasFilterState}
-            title="Clear Filter"
-          >
-            <ActionIcon>
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M3.5 4.5h13l-5.2 5.8v4.2l-2.6 1v-5.2z" />
-                <path d="m5 15 10-10" />
-              </svg>
-            </ActionIcon>
-            Clear Filter
-          </button>
-          <button
-            type="button"
-            className="action-button action-button-danger"
-            onClick={onDeleteAllRows}
-            disabled={retrackableRowsCount === 0}
-            title={deleteAllArmed ? "Konfirmasi Hapus Semua" : "Hapus Semua"}
-          >
-            <ActionIcon>
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M4.5 6h11" />
-                <path d="M7.5 6V4.5h5V6" />
-                <path d="M6.5 6l.7 9h5.6l.7-9" />
-              </svg>
-            </ActionIcon>
-            {deleteAllArmed ? "Konfirmasi Hapus Semua" : "Hapus Semua"}
-          </button>
+    <div className="sheet-action-layout">
+      <aside className="sheet-action-side-panel" aria-label="Import sources">
+        <div className="sheet-action-side-panel-content">
+          <span className="sheet-action-side-panel-heading">Import From</span>
+          <div className="sheet-action-side-panel-actions">
+            <button
+              type="button"
+              className="sheet-action-side-button"
+              onClick={() => onOpenImportSourceModal("bag")}
+            >
+              Bag
+            </button>
+            <button
+              type="button"
+              className="sheet-action-side-button"
+              onClick={() => onOpenImportSourceModal("manifest")}
+            >
+              Manifest
+            </button>
+          </div>
+        </div>
+      </aside>
 
-          {ignoredHiddenFilterCount > 0 ? (
-            <div className="selection-meta">
+      <div className="sheet-action-main-panels">
+        <div className="selection-actions">
+          <div className="selection-actions-row">
+            <span className="selection-count">{progressLabel}</span>
+            <span className="action-divider" aria-hidden="true" />
+            <button
+              type="button"
+              className="action-button"
+              onClick={onRetrackAll}
+              disabled={retrackableRowsCount === 0}
+              title="Lacak Ulang"
+            >
+              <ActionIcon>
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M16 10a6 6 0 1 1-1.757-4.243" />
+                  <path d="M16 4v4h-4" />
+                </svg>
+              </ActionIcon>
+              <ActionLabel>Lacak Ulang</ActionLabel>
+            </button>
+            <button
+              type="button"
+              className="action-button"
+              onClick={onRetryFailedRows}
+              disabled={retryFailedRowsCount === 0}
+              title="Retry Gagal"
+            >
+              <ActionIcon>
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M5 10a5 5 0 1 1 1.35 3.42" />
+                  <path d="M5 6v4h4" />
+                  <path d="m11.5 7.75 1 1.25 2-2.5" />
+                </svg>
+              </ActionIcon>
+              <ActionLabel>Retry Gagal</ActionLabel>
+            </button>
+            <button
+              type="button"
+              className="action-button"
+              onClick={onExportCsv}
+              disabled={exportableRowsCount === 0}
+              title="Export CSV"
+            >
+              <ActionIcon>
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M10 3v8" />
+                  <path d="m6.5 8.5 3.5 3.5 3.5-3.5" />
+                  <path d="M4 15.5h12" />
+                </svg>
+              </ActionIcon>
+              <ActionLabel>Export CSV</ActionLabel>
+            </button>
+            <button
+              type="button"
+              className="action-button"
+              onClick={onCopyAllIds}
+              disabled={retrackableRowsCount === 0}
+              title="Copy ID Kiriman"
+            >
+              <ActionIcon>
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <rect x="7" y="5" width="8" height="10" rx="1.8" />
+                  <path d="M5 11V5.8A1.8 1.8 0 0 1 6.8 4H12" />
+                </svg>
+              </ActionIcon>
+              <ActionLabel>Copy ID Kiriman</ActionLabel>
+            </button>
+            <button
+              type="button"
+              className="action-button"
+              onClick={onClearFilter}
+              disabled={!hasFilterState}
+              title="Clear Filter"
+            >
+              <ActionIcon>
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M3.5 4.5h13l-5.2 5.8v4.2l-2.6 1v-5.2z" />
+                  <path d="m5 15 10-10" />
+                </svg>
+              </ActionIcon>
+              Clear Filter
+            </button>
+            <button
+              type="button"
+              className="action-button action-button-danger"
+              onClick={onDeleteAllRows}
+              disabled={retrackableRowsCount === 0}
+              title={deleteAllArmed ? "Konfirmasi Hapus Semua" : "Hapus Semua"}
+            >
+              <ActionIcon>
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M4.5 6h11" />
+                  <path d="M7.5 6V4.5h5V6" />
+                  <path d="M6.5 6l.7 9h5.6l.7-9" />
+                </svg>
+              </ActionIcon>
+              {deleteAllArmed ? "Konfirmasi Hapus Semua" : "Hapus Semua"}
+            </button>
+
+            {ignoredHiddenFilterCount > 0 ? (
+              <div className="selection-meta">
+                <button
+                  type="button"
+                  className="sheet-chip chip-button"
+                  onClick={onClearHiddenFilters}
+                >
+                  Filter tersembunyi diabaikan: {ignoredHiddenFilterCount}
+                </button>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="selection-actions-row selection-actions-row-secondary">
+            <span className="selection-count">{selectedRowCount} row dipilih</span>
+            <span className="action-divider" aria-hidden="true" />
+            <button
+              type="button"
+              className="action-button"
+              onClick={onClearSelection}
+              disabled={!hasSelection}
+              title="Clear Selection"
+            >
+              <ActionIcon>
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <rect x="4.5" y="4.5" width="11" height="11" rx="2" />
+                  <path d="m7 7 6 6" />
+                </svg>
+              </ActionIcon>
+              <ActionLabel>Clear Selection</ActionLabel>
+            </button>
+            <SheetTransferMenuAction
+              disabled={!hasSelection}
+              label="ID Terselect ke Sheet Baru"
+              toneClassName="action-button-accent"
+              onSelect={onTransferSelectedIdsToNewSheet}
+            />
+            <SheetTargetHoverAction
+              disabled={!hasSelection || !hasAppendTarget}
+              options={targetSheetOptions}
+              onSelect={onTransferSelectedIdsToSheet}
+              onDragStart={onStartSelectedIdsDrag}
+              onDragEnd={onEndSelectedIdsDrag}
+            />
+            <button
+              type="button"
+              className="action-button"
+              onClick={onCopySelectedIds}
+              disabled={!hasSelection}
+              title="Copy ID Kiriman Terselect"
+            >
+              <ActionIcon>
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <rect x="7" y="5" width="8" height="10" rx="1.8" />
+                  <path d="M5 11V5.8A1.8 1.8 0 0 1 6.8 4H12" />
+                </svg>
+              </ActionIcon>
+              Copy ID Kiriman Terselect
+            </button>
+            <button
+              type="button"
+              className="action-button action-button-danger"
+              onClick={onDeleteSelectedRows}
+              disabled={!hasSelection}
+              title={deleteSelectedArmed ? "Konfirmasi Hapus Terselect" : "Hapus Terselect"}
+            >
+              <ActionIcon>
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M4.5 6h11" />
+                  <path d="M7.5 6V4.5h5V6" />
+                  <path d="M6.5 6l.7 9h5.6l.7-9" />
+                </svg>
+              </ActionIcon>
+              {deleteSelectedArmed ? "Konfirmasi Hapus Terselect" : "Hapus Terselect"}
+            </button>
+          </div>
+        </div>
+
+        <div className="sheet-action-shortcuts-panel">
+          <div className="column-shortcuts" aria-label="Column shortcuts">
+            {columnShortcuts.map((shortcut) => (
               <button
+                key={shortcut.path}
                 type="button"
-                className="sheet-chip chip-button"
-                onClick={onClearHiddenFilters}
+                className={[
+                  "column-shortcut-button",
+                  shortcut.toneClass,
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                onClick={() => onScrollToColumn(shortcut.path)}
+                disabled={shortcut.disabled}
               >
-                Filter tersembunyi diabaikan: {ignoredHiddenFilterCount}
+                {shortcut.label}
               </button>
-            </div>
-          ) : null}
-        </div>
-
-        <div className="selection-actions-row selection-actions-row-secondary">
-          <span className="selection-count">{selectedRowCount} row dipilih</span>
-          <span className="action-divider" aria-hidden="true" />
-          <button
-            type="button"
-            className="action-button"
-            onClick={onClearSelection}
-            disabled={!hasSelection}
-            title="Clear Selection"
-          >
-            <ActionIcon>
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <rect x="4.5" y="4.5" width="11" height="11" rx="2" />
-                <path d="m7 7 6 6" />
-              </svg>
-            </ActionIcon>
-            <ActionLabel>Clear Selection</ActionLabel>
-          </button>
-          <SheetTransferMenuAction
-            disabled={!hasSelection}
-            label="ID Terselect ke Sheet Baru"
-            toneClassName="action-button-accent"
-            onSelect={onTransferSelectedIdsToNewSheet}
-          />
-          <SheetTargetHoverAction
-            disabled={!hasSelection || !hasAppendTarget}
-            options={targetSheetOptions}
-            onSelect={onTransferSelectedIdsToSheet}
-            onDragStart={onStartSelectedIdsDrag}
-            onDragEnd={onEndSelectedIdsDrag}
-          />
-          <button
-            type="button"
-            className="action-button"
-            onClick={onCopySelectedIds}
-            disabled={!hasSelection}
-            title="Copy ID Kiriman Terselect"
-          >
-            <ActionIcon>
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <rect x="7" y="5" width="8" height="10" rx="1.8" />
-                <path d="M5 11V5.8A1.8 1.8 0 0 1 6.8 4H12" />
-              </svg>
-            </ActionIcon>
-            Copy ID Kiriman Terselect
-          </button>
-          <button
-            type="button"
-            className="action-button action-button-danger"
-            onClick={onDeleteSelectedRows}
-            disabled={!hasSelection}
-            title={deleteSelectedArmed ? "Konfirmasi Hapus Terselect" : "Hapus Terselect"}
-          >
-            <ActionIcon>
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M4.5 6h11" />
-                <path d="M7.5 6V4.5h5V6" />
-                <path d="M6.5 6l.7 9h5.6l.7-9" />
-              </svg>
-            </ActionIcon>
-            {deleteSelectedArmed ? "Konfirmasi Hapus Terselect" : "Hapus Terselect"}
-          </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      <div className="column-shortcuts" aria-label="Column shortcuts">
-        {columnShortcuts.map((shortcut) => (
-          <button
-            key={shortcut.path}
-            type="button"
-            className={[
-              "column-shortcut-button",
-              shortcut.toneClass,
-            ]
-              .filter(Boolean)
-              .join(" ")}
-            onClick={() => onScrollToColumn(shortcut.path)}
-            disabled={shortcut.disabled}
-          >
-            {shortcut.label}
-          </button>
-        ))}
-      </div>
-    </>
+      {importSourceModalKind ? (
+        <ImportSourceModal
+          kind={importSourceModalKind}
+          value={importSourceDrafts[importSourceModalKind]}
+          lookupState={importSourceLookupStates[importSourceModalKind]}
+          onValueChange={(value) => onSetImportSourceDraft(importSourceModalKind, value)}
+          onImportBagTrackingIds={onImportBagTrackingIds}
+          onImportManifestTrackingIds={onImportManifestTrackingIds}
+          onSubmit={() => onRunImportSourceLookup(importSourceModalKind)}
+          onClose={onCloseImportSourceModal}
+        />
+      ) : null}
+    </div>
   );
 }

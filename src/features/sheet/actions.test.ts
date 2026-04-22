@@ -3,8 +3,11 @@ import { createDefaultSheetState } from "./default-state";
 import {
   armDeleteAllInSheet,
   clearAllDataInSheet,
+  closeImportSourceModalInSheet,
   deleteRowsInSheet,
   forceSelectionToVisibleRowsInSheet,
+  openImportSourceModalInSheet,
+  setImportSourceDraftInSheet,
   setRowErrorInSheet,
   setRowLoadingInSheet,
   setRowSuccessInSheet,
@@ -196,5 +199,31 @@ describe("sheet actions", () => {
 
     expect(next.selectionFollowsVisibleRows).toBe(false);
     expect(next.selectedRowKeys).toEqual(["row-2", "row-4"]);
+  });
+
+  it("opens and closes import source modals per sheet", () => {
+    const initial = createDefaultSheetState();
+
+    const opened = openImportSourceModalInSheet(initial, "bag");
+    const closed = closeImportSourceModalInSheet(opened);
+
+    expect(opened.importSourceModalKind).toBe("bag");
+    expect(closed.importSourceModalKind).toBeNull();
+  });
+
+  it("stores import source drafts by modal kind", async () => {
+    const initial = createDefaultSheetState();
+
+    const withBagDraft = setImportSourceDraftInSheet(initial, "bag", "PID123");
+    const withManifestDraft = setImportSourceDraftInSheet(
+      withBagDraft,
+      "manifest",
+      "MNF456"
+    );
+
+    expect(withManifestDraft.importSourceDrafts).toEqual({
+      bag: "PID123",
+      manifest: "MNF456",
+    });
   });
 });

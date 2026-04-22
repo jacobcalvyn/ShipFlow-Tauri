@@ -37,6 +37,25 @@ describe("useWorkspaceShellViewController", () => {
       valueFilters: { courier: ["JNE"] },
       openColumnMenuPath: "status",
       highlightedColumnPath: "trackingId",
+      importSourceModalKind: "bag",
+      importSourceDrafts: {
+        bag: "PID123",
+        manifest: "",
+      },
+      importSourceLookupStates: {
+        bag: {
+          loading: false,
+          rawResponse: "{\"nomor_kantung\":\"PID123\"}",
+          error: "",
+          trackingIds: ["P260000000001"],
+        },
+        manifest: {
+          loading: false,
+          rawResponse: "",
+          error: "",
+          trackingIds: [],
+        },
+      },
     };
     const surface = {
       actionNotices: [{ tone: "info", message: "Ready" }],
@@ -136,6 +155,12 @@ describe("useWorkspaceShellViewController", () => {
       deleteSelectedRows: vi.fn(),
       clearHiddenFilters: vi.fn(),
       scrollToColumn: vi.fn(),
+      openImportSourceModal: vi.fn(),
+      closeImportSourceModal: vi.fn(),
+      setImportSourceDraft: vi.fn(),
+      importBagTrackingIds: vi.fn(),
+      importManifestTrackingIds: vi.fn(),
+      runImportSourceLookup: vi.fn(),
       beginSelectedIdsDrag: vi.fn(),
       endSelectedIdsDrag: vi.fn(),
       handleSheetScroll: vi.fn(),
@@ -217,6 +242,15 @@ describe("useWorkspaceShellViewController", () => {
         deleteSelectedArmed: true,
         retrackAllRows: interactionRuntime.retrackAllRows,
         appendTargetSheets: interactionRuntime.appendTargetSheets,
+        importSourceModalKind: activeSheet.importSourceModalKind,
+        importSourceDrafts: activeSheet.importSourceDrafts,
+        importSourceLookupStates: activeSheet.importSourceLookupStates,
+        openImportSourceModal: interactionRuntime.openImportSourceModal,
+        closeImportSourceModal: interactionRuntime.closeImportSourceModal,
+        setImportSourceDraft: interactionRuntime.setImportSourceDraft,
+        importBagTrackingIds: interactionRuntime.importBagTrackingIds,
+        importManifestTrackingIds: interactionRuntime.importManifestTrackingIds,
+        runImportSourceLookup: interactionRuntime.runImportSourceLookup,
       })
     );
     expect(mocks.useWorkspaceTablePropsMock).toHaveBeenCalledWith(

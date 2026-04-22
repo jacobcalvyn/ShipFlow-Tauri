@@ -3,7 +3,7 @@ import {
   MutableRefObject,
   SetStateAction,
   useCallback,
-  useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -45,33 +45,37 @@ export function useWorkspaceStateController(): UseWorkspaceStateControllerResult
 
   const updateActiveSheet = useCallback(
     (updater: (sheetState: SheetState) => SheetState) => {
-      setWorkspaceState((current) =>
-        updateActiveSheetInWorkspace(current, (sheetState) => {
+      setWorkspaceState((current) => {
+        const nextWorkspace = updateActiveSheetInWorkspace(current, (sheetState) => {
           const nextSheetState = updater(sheetState);
           return shouldAssertSheetState()
             ? assertValidSheetState(nextSheetState)
             : nextSheetState;
-        })
-      );
+        });
+        workspaceRef.current = nextWorkspace;
+        return nextWorkspace;
+      });
     },
     []
   );
 
   const updateSheet = useCallback(
     (sheetId: string, updater: (sheetState: SheetState) => SheetState) => {
-      setWorkspaceState((current) =>
-        updateSheetInWorkspace(current, sheetId, (sheetState) => {
+      setWorkspaceState((current) => {
+        const nextWorkspace = updateSheetInWorkspace(current, sheetId, (sheetState) => {
           const nextSheetState = updater(sheetState);
           return shouldAssertSheetState()
             ? assertValidSheetState(nextSheetState)
             : nextSheetState;
-        })
-      );
+        });
+        workspaceRef.current = nextWorkspace;
+        return nextWorkspace;
+      });
     },
     []
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     workspaceRef.current = workspaceState;
   }, [workspaceState]);
 

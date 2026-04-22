@@ -105,8 +105,26 @@ async fn track_bag(
             format!("{context} {message}")
         })?;
 
-    let track_result =
-        track_bag_via_service(&client_state.client, &runtime_config, bag_id.trim()).await;
+    let track_result = match track_bag_via_service(&client_state.client, &runtime_config, bag_id.trim()).await {
+        Ok(response) => Ok(response),
+        Err(tracking::model::TrackingError::BadRequest(message)) => {
+            Err(tracking::model::TrackingError::BadRequest(message))
+        }
+        Err(service_error) => {
+            let service_message = match &service_error {
+                tracking::model::TrackingError::BadRequest(message)
+                | tracking::model::TrackingError::NotFound(message)
+                | tracking::model::TrackingError::Upstream(message) => message.as_str(),
+            };
+            log_runtime_event(
+                "WARN",
+                format!(
+                    "[ShipFlowBackend] {context} bag lookup via ShipFlow Service failed, falling back to direct POS lookup: {service_message}"
+                ),
+            );
+            tracking::upstream::resolve_bag_request(&client_state.client, bag_id.trim()).await
+        }
+    };
 
     track_result.map_err(|error| match error {
         tracking::model::TrackingError::BadRequest(message)
@@ -140,9 +158,33 @@ async fn track_manifest(
             format!("{context} {message}")
         })?;
 
-    let track_result =
-        track_manifest_via_service(&client_state.client, &runtime_config, manifest_id.trim())
-            .await;
+    let track_result = match track_manifest_via_service(
+        &client_state.client,
+        &runtime_config,
+        manifest_id.trim(),
+    )
+    .await
+    {
+        Ok(response) => Ok(response),
+        Err(tracking::model::TrackingError::BadRequest(message)) => {
+            Err(tracking::model::TrackingError::BadRequest(message))
+        }
+        Err(service_error) => {
+            let service_message = match &service_error {
+                tracking::model::TrackingError::BadRequest(message)
+                | tracking::model::TrackingError::NotFound(message)
+                | tracking::model::TrackingError::Upstream(message) => message.as_str(),
+            };
+            log_runtime_event(
+                "WARN",
+                format!(
+                    "[ShipFlowBackend] {context} manifest lookup via ShipFlow Service failed, falling back to direct POS lookup: {service_message}"
+                ),
+            );
+            tracking::upstream::resolve_manifest_request(&client_state.client, manifest_id.trim())
+                .await
+        }
+    };
 
     track_result.map_err(|error| match error {
         tracking::model::TrackingError::BadRequest(message)

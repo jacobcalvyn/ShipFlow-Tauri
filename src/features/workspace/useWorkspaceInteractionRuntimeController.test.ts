@@ -28,6 +28,24 @@ describe("useWorkspaceInteractionRuntimeController", () => {
       selectionFollowsVisibleRows: false,
       hiddenColumnPaths: [],
       pinnedColumnPaths: [],
+      importSourceDrafts: {
+        bag: "",
+        manifest: "",
+      },
+      importSourceLookupStates: {
+        bag: {
+          loading: false,
+          rawResponse: "",
+          error: "",
+          trackingIds: [],
+        },
+        manifest: {
+          loading: false,
+          rawResponse: "",
+          error: "",
+          trackingIds: [],
+        },
+      },
     };
     const options = {
       activeSheet: activeSheet as never,
@@ -73,6 +91,8 @@ describe("useWorkspaceInteractionRuntimeController", () => {
       fetchRow: vi.fn(),
       copySelectedTrackingIds: vi.fn(),
       createSheet: vi.fn(),
+      invalidateSheetTrackingWork: vi.fn(),
+      runBulkPasteFetches: vi.fn(),
     };
     const tableControllers = {
       handleSheetScroll: vi.fn(),
@@ -147,6 +167,12 @@ describe("useWorkspaceInteractionRuntimeController", () => {
     expect(result.current).toEqual({
       ...runtimeCommands,
       ...tableControllers,
+      closeImportSourceModal: expect.any(Function),
+      importBagTrackingIds: expect.any(Function),
+      importManifestTrackingIds: expect.any(Function),
+      openImportSourceModal: expect.any(Function),
+      runImportSourceLookup: expect.any(Function),
+      setImportSourceDraft: expect.any(Function),
     });
   });
 });

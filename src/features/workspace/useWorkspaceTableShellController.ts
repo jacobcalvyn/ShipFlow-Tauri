@@ -63,6 +63,12 @@ export function useWorkspaceTableShellController({
   updateSheet,
   copySelectedTrackingIds,
 }: UseWorkspaceTableShellControllerOptions) {
+  const hasBlockingModalOpen = () =>
+    Boolean(
+      document.querySelector('.settings-modal[role="dialog"][aria-modal="true"]') ||
+        document.querySelector('.import-source-modal[role="dialog"][aria-modal="true"]')
+    );
+
   useEffect(() => {
     const scrollContainer = sheetScrollRef.current;
     if (!scrollContainer) {
@@ -321,7 +327,7 @@ export function useWorkspaceTableShellController({
 
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       const isDeleteKey = event.key === "Delete" || event.key === "Backspace";
-      if (document.querySelector('.settings-modal[role="dialog"][aria-modal="true"]')) {
+      if (hasBlockingModalOpen()) {
         if (isDeleteKey) {
           event.preventDefault();
         }
@@ -385,7 +391,7 @@ export function useWorkspaceTableShellController({
     };
 
     const handleCopy = (event: globalThis.ClipboardEvent) => {
-      if (document.querySelector('.settings-modal[role="dialog"][aria-modal="true"]')) {
+      if (hasBlockingModalOpen()) {
         return;
       }
 

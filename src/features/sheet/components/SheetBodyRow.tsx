@@ -12,13 +12,18 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import QRCode from "qrcode";
-import { LATEST_BAG_STATUS_COLUMN_PATH, TRACKING_COLUMN_PATH } from "../columns";
+import {
+  LATEST_BAG_STATUS_COLUMN_PATH,
+  LATEST_MANIFEST_COLUMN_PATH,
+  TRACKING_COLUMN_PATH,
+} from "../columns";
 import { ColumnDefinition, SheetRow } from "../types";
 import { MAX_TRACKING_INPUT_LENGTH } from "../utils";
 import {
   formatHistorySummaryPreview,
   formatColumnValue,
   getLatestBagId,
+  getLatestManifestId,
   getLatestBagPrintUrl,
   getColumnToneClass,
   getColumnTypeClass,
@@ -683,6 +688,58 @@ export const SheetBodyRow = memo(function SheetBodyRow({
                         strokeLinejoin="round"
                       />
                       <circle cx="13.5" cy="9.5" r="0.75" fill="currentColor" />
+                    </svg>
+                  </button>
+                ) : null}
+              </div>
+            </td>
+          );
+        }
+
+        if (column.path === LATEST_MANIFEST_COLUMN_PATH) {
+          const manifestId = row.shipment
+            ? getLatestManifestId(row.shipment.history_summary)
+            : null;
+
+          return (
+            <td
+              key={`${row.key}-${column.path}`}
+              style={{
+                width,
+                minWidth: width,
+                maxWidth: width,
+                left: isPinned ? pinnedLeftMap[column.path] : undefined,
+              }}
+              className={className}
+            >
+              <div className="bag-status-cell">
+                <div className="cell-text" title={formattedValue}>
+                  {formattedValue}
+                </div>
+                {manifestId ? (
+                  <button
+                    type="button"
+                    className="tracking-copy-link"
+                    title="Salin ID manifest"
+                    aria-label={`Salin ID manifest ${manifestId}`}
+                    onClick={() => onCopyTrackingId(manifestId)}
+                  >
+                    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                      <rect
+                        x="7"
+                        y="4"
+                        width="9"
+                        height="11"
+                        rx="2"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                      />
+                      <path
+                        d="M5.5 12.5H5A2 2 0 0 1 3 10.5v-6A2 2 0 0 1 5 2.5h5A2 2 0 0 1 12 4.5V5"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                      />
                     </svg>
                   </button>
                 ) : null}

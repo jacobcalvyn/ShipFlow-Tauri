@@ -31,5 +31,28 @@ export function createDefaultSheetState(): SheetState {
     openColumnMenuPath: null,
     highlightedColumnPath: null,
     deleteAllArmed: false,
+    importSourceModalKind: null,
+    importSourceDrafts: {
+      bag: "",
+      manifest: "",
+    },
+    importSourceLookupStates: {
+      bag: {
+        loading: false,
+        rawResponse: "",
+        error: "",
+        trackingIds: [],
+        requestKey: null,
+        manifestBagStates: [],
+      },
+      manifest: {
+        loading: false,
+        rawResponse: "",
+        error: "",
+        trackingIds: [],
+        requestKey: null,
+        manifestBagStates: [],
+      },
+    },
   };
 }

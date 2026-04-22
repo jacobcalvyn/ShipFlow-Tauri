@@ -147,6 +147,8 @@ describe("useWorkspaceRuntimeCommandsController", () => {
       handleTrackingInputBlur: trackingRuntime.handleTrackingInputBlur,
       handleTrackingInputChange: trackingRuntime.handleTrackingInputChange,
       handleTrackingInputPaste: trackingRuntime.handleTrackingInputPaste,
+      invalidateSheetTrackingWork: trackingRuntime.invalidateSheetTrackingWork,
+      runBulkPasteFetches: trackingRuntime.runBulkPasteFetches,
       ...selectionTransfer,
       ...workspaceCommands,
     });

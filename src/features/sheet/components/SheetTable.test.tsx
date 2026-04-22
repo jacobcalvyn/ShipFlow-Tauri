@@ -21,7 +21,11 @@ vi.mock("qrcode", () => ({
 
 import { SheetTable } from "./SheetTable";
 import { getPreviewPortalLayout } from "./SheetBodyRow";
-import { COLUMNS, LATEST_BAG_STATUS_COLUMN_PATH } from "../columns";
+import {
+  COLUMNS,
+  LATEST_BAG_STATUS_COLUMN_PATH,
+  LATEST_MANIFEST_COLUMN_PATH,
+} from "../columns";
 import { SheetRow } from "../types";
 
 const visibleColumns = COLUMNS.slice(0, 2);
@@ -445,6 +449,100 @@ describe("SheetTable", () => {
     expect(onOpenSourceLink).toHaveBeenCalledWith(
       "https://apiexpos.mile.app/api/v1/print-bag?bag_id=PID89477731_5f9fae9b5fbe9d6e401ad0c5&oid=NWY5ZmFlOWI1ZmJlOWQ2ZTQwMWFkMGM1"
     );
+  });
+
+  it("supports copying the latest manifest id", () => {
+    const onCopyTrackingId = vi.fn();
+    const manifestColumns = COLUMNS.filter((column) =>
+      [LATEST_MANIFEST_COLUMN_PATH].includes(column.path)
+    );
+    const manifestColumnWidths = Object.fromEntries(
+      manifestColumns.map((column) => [column.path, column.defaultWidth])
+    );
+    const manifestRow: SheetRow = {
+      key: "row-manifest-1",
+      trackingInput: "P2603310114291",
+      shipment: {
+        url: "",
+        detail: {
+          shipment_header: {
+            nomor_kiriman: "P2603310114291",
+          },
+        },
+        status_akhir: {
+          status: "READY",
+        },
+        pod: {},
+        history: [],
+        history_summary: {
+          irregularity: [],
+          bagging_unbagging: [],
+          manifest_r7: [
+            {
+              nomor_r7: "P20260315094706101",
+            },
+          ],
+          delivery_runsheet: [],
+        },
+      } as never,
+      loading: false,
+      stale: false,
+      dirty: false,
+      error: "",
+    };
+
+    render(
+      <SheetTable
+        sheetId="sheet-1"
+        displayScale="small"
+        displayedRows={[manifestRow]}
+        visibleColumns={manifestColumns}
+        hiddenColumns={[]}
+        columnWidths={manifestColumnWidths}
+        pinnedColumnSet={new Set()}
+        pinnedLeftMap={{}}
+        hoveredColumn={null}
+        allVisibleSelected={false}
+        selectedRowKeySet={new Set()}
+        filters={{}}
+        valueFilters={{}}
+        valueOptionsByPath={{}}
+        openColumnMenuPath={null}
+        highlightedColumnPath={null}
+        scrollContainerRef={createRef<HTMLDivElement>()}
+        onScrollContainer={vi.fn()}
+        sortDirectionForPath={() => null}
+        onMouseLeaveTable={vi.fn()}
+        onHoverColumn={vi.fn()}
+        onToggleVisibleSelection={vi.fn()}
+        onToggleRowSelection={vi.fn()}
+        onOpenSourceLink={vi.fn()}
+        onCopyTrackingId={onCopyTrackingId}
+        onClearTrackingCell={vi.fn()}
+        onTrackingInputChange={vi.fn()}
+        onTrackingInputBlur={vi.fn()}
+        onTrackingInputKeyDown={vi.fn()}
+        onTrackingInputPaste={vi.fn()}
+        onFilterChange={vi.fn()}
+        onResizeStart={vi.fn()}
+        onToggleColumnMenu={vi.fn()}
+        onSetColumnSort={vi.fn()}
+        onTogglePinnedColumn={vi.fn()}
+        onToggleColumnVisibility={vi.fn()}
+        onToggleValueFilter={vi.fn()}
+        onClearValueFilter={vi.fn()}
+        onCloseColumnMenu={vi.fn()}
+        onColumnMenuRef={vi.fn()}
+      />
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Salin ID manifest P20260315094706101",
+      })
+    );
+
+    expect(onCopyTrackingId).toHaveBeenCalledWith("P20260315094706101");
   });
 
   it("virtualizes large row sets instead of rendering every row at once", async () => {

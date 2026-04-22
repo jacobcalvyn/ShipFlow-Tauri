@@ -28,6 +28,15 @@ type UseWorkspaceActionBarPropsOptions = {
   deleteSelectedRows: ComponentProps<typeof SheetActionBar>["onDeleteSelectedRows"];
   clearHiddenFilters: ComponentProps<typeof SheetActionBar>["onClearHiddenFilters"];
   scrollToColumn: ComponentProps<typeof SheetActionBar>["onScrollToColumn"];
+  importSourceModalKind: ComponentProps<typeof SheetActionBar>["importSourceModalKind"];
+  importSourceDrafts: ComponentProps<typeof SheetActionBar>["importSourceDrafts"];
+  importSourceLookupStates: ComponentProps<typeof SheetActionBar>["importSourceLookupStates"];
+  openImportSourceModal: ComponentProps<typeof SheetActionBar>["onOpenImportSourceModal"];
+  closeImportSourceModal: ComponentProps<typeof SheetActionBar>["onCloseImportSourceModal"];
+  setImportSourceDraft: ComponentProps<typeof SheetActionBar>["onSetImportSourceDraft"];
+  importBagTrackingIds: ComponentProps<typeof SheetActionBar>["onImportBagTrackingIds"];
+  importManifestTrackingIds: ComponentProps<typeof SheetActionBar>["onImportManifestTrackingIds"];
+  runImportSourceLookup: ComponentProps<typeof SheetActionBar>["onRunImportSourceLookup"];
   beginSelectedIdsDrag: NonNullable<ComponentProps<typeof SheetActionBar>["onStartSelectedIdsDrag"]>;
   endSelectedIdsDrag: NonNullable<ComponentProps<typeof SheetActionBar>["onEndSelectedIdsDrag"]>;
 };
@@ -59,6 +68,15 @@ export function useWorkspaceActionBarProps({
   deleteSelectedRows,
   clearHiddenFilters,
   scrollToColumn,
+  importSourceModalKind,
+  importSourceDrafts,
+  importSourceLookupStates,
+  openImportSourceModal,
+  closeImportSourceModal,
+  setImportSourceDraft,
+  importBagTrackingIds,
+  importManifestTrackingIds,
+  runImportSourceLookup,
   beginSelectedIdsDrag,
   endSelectedIdsDrag,
 }: UseWorkspaceActionBarPropsOptions): ComponentProps<typeof SheetActionBar> {
@@ -89,6 +107,15 @@ export function useWorkspaceActionBarProps({
     onDeleteSelectedRows: deleteSelectedRows,
     onClearHiddenFilters: clearHiddenFilters,
     onScrollToColumn: scrollToColumn,
+    importSourceModalKind,
+    importSourceDrafts,
+    importSourceLookupStates,
+    onOpenImportSourceModal: openImportSourceModal,
+    onCloseImportSourceModal: closeImportSourceModal,
+    onSetImportSourceDraft: setImportSourceDraft,
+    onImportBagTrackingIds: importBagTrackingIds,
+    onImportManifestTrackingIds: importManifestTrackingIds,
+    onRunImportSourceLookup: runImportSourceLookup,
     onStartSelectedIdsDrag: beginSelectedIdsDrag,
     onEndSelectedIdsDrag: endSelectedIdsDrag,
   };

@@ -211,8 +211,10 @@ export function useWorkspaceRuntimeCommandsController({
     deleteSelectedRows,
     duplicateSheet,
     exportCsv,
+    invalidateSheetTrackingWork,
     renameActiveSheet,
     retrackAllRows,
     retryFailedRows,
+    runBulkPasteFetches,
   };
 }

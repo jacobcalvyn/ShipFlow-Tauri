@@ -4,7 +4,7 @@ Desktop shipment tracking workspace built with Tauri, Rust, React, and Vite.
 
 The app is optimized for spreadsheet-style operational analysis. Each row represents one shipment. The first data column accepts a shipment ID, then the app asks `ShipFlow Service` for tracking data and fills the rest of the row. A sheet is treated as one independent workspace.
 
-The runtime foundation now also supports POS bag and manifest lookups through the shared Rust core and the local service API, but the current desktop workspace UI is still shipment-first.
+The runtime foundation now supports POS bag and manifest lookups through the shared Rust core and the local service API. The desktop workspace still stays shipment-first, but each sheet can now import shipment IDs from bag and manifest lookups through sheet-local modal flows.
 
 Architecture references:
 
@@ -20,6 +20,7 @@ Architecture references:
 - Supports both internal POS scraping and external ShipFlow API source selection from `ShipFlow Service`
 - Supports three lookup kinds in the runtime layer: `track`, `bag`, and `manifest`
 - Shows shipment detail and `status_akhir` fields in a wide spreadsheet-style table
+- Supports importing shipment IDs from bag and manifest lookups into the active sheet
 - Supports bulk paste, row selection, CSV export, column pin/hide, sorting, and filtering
 - Supports both text filters and per-column multi-select value filters
 - Supports retracking all current shipments from the action bar
@@ -128,6 +129,10 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
   - copy selected shipment IDs
   - delete selected rows
 - The action bar keeps a dedicated second row for selection actions and disables those buttons when nothing is selected, so the layout stays stable
+- The action bar now includes a dedicated `Import From` panel with `Bag` and `Manifest` entry points
+- `Bag` import opens a sheet-local modal that can fetch a bag, show the shipment ID list, and either `Ganti Semua` or `Tambah Data` into the current sheet
+- `Manifest` import opens a sheet-local modal that fetches manifest bag IDs first, then resolves each bag to shipment IDs in parallel before allowing `Ganti Semua` or `Tambah Data`
+- Bag and manifest import results are cached per sheet, so reopening the modal restores the latest lookup draft and result for that sheet only
 - CSV export follows the visible table schema but intentionally skips heavy/non-tabular fields such as POD image URLs and raw `history_summary` arrays
 - Column shortcut buttons that horizontally scroll to key columns
 - Temporary header highlight when a shortcut scroll target is reached
@@ -141,7 +146,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
   - service-generated bearer token
 - `Nomor Kiriman` rows include per-row QR preview, copy ID, and source-link actions
 - `PID/Kantong Terakhir` is derived from the latest `bagging` / `unbagging` event and includes QR preview, copy ID, and print actions for the latest bag/PID
-- `Manifest Terakhir` is derived from the latest `history_summary.manifest_r7` entry
+- `Manifest Terakhir` is derived from the latest `history_summary.manifest_r7` entry and includes a copy-ID action
 - `Delivery Terakhir` is derived from the latest `history_summary.delivery_runsheet` entry
 - QR previews are generated locally in-app and do not rely on an external QR image service
 - `POD Photo 1` and `POD Photo 2` render as image thumbnails with hover preview
@@ -185,6 +190,9 @@ The main table currently focuses on:
 - Shipment IDs are sanitized before tracking and rejected when they exceed `64` characters.
 - The backend now applies the same shipment-ID validation rules as the frontend, including embedded API requests.
 - Duplicate in-flight requests for the same `sheetId + rowKey + shipmentId` are skipped.
+- Bag and manifest import modal state is isolated per sheet, including the current draft, lookup cache, and open/closed modal state.
+- Manifest-to-bag fan-out now uses capped parallel lookup workers and ignores stale downstream results when a manifest lookup is replaced or rerun.
+- Manifest and bag imports auto-close the modal after `Ganti Semua` or `Tambah Data`, then immediately start shipment tracking in the target sheet.
 - Active, dirty, and loading rows remain visible even while filters are active.
 - Filtered views now force selection to exactly the currently visible shipment IDs, and clearing filters stops that auto-follow mode before normal manual selection resumes.
 - Request telemetry is emitted for `start`, `success`, `fail`, and `abort` with `sheetId`, `rowKey`, and `shipmentId`.
@@ -194,6 +202,7 @@ The main table currently focuses on:
 - The service companion always keeps tray/background behavior enabled; it is no longer exposed as a user-facing desktop setting.
 - Desktop startup now proactively checks whether `ShipFlow Service` is already running and starts the companion runtime when needed.
 - Desktop and service runtime events are written to per-process log files under the shared runtime state directory.
+- ShipFlow Service lookup endpoints now percent-encode bag and manifest IDs before issuing local HTTP requests.
 
 ## Project Structure
 
@@ -372,6 +381,8 @@ Current frontend tests cover:
 - `SheetTable` interaction smoke test
 - `SheetActionBar` interaction smoke test
 - multi-sheet app-level isolation and stress scenarios
+- per-sheet bag / manifest modal isolation, cache, append, replace, and auto-track flows
+- concurrent manifest lookups across multiple sheets with stale-result protection
 - tracking telemetry and malformed-response guards
 
 The table benchmark is kept separate from the normal test suite so regular checks stay fast. It renders `1000` rows, verifies virtualization is still active, and logs baseline render / scroll timings for the table body.
@@ -382,6 +393,7 @@ Rust tests are now split by domain and cover:
 - embedded API bearer-auth validation
 - backend shipment-ID normalization and validation
 - backend bag-ID and manifest-ID normalization and validation
+- service-side bag / manifest lookup endpoint encoding and error-message parsing
 - sample HTML parsing
 - bag HTML parsing
 - manifest HTML parsing
