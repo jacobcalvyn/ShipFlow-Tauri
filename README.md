@@ -144,6 +144,8 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
   - external API access mode (`localhost` or `LAN`)
   - external API port
   - service-generated bearer token
+- `ShipFlow Service` is laid out as a compact desktop preference window with a stable full-height content panel, persistent footer actions, and tighter control alignment across macOS and Windows
+- The external API `Base URL` field no longer ships with a hard-coded example endpoint placeholder
 - `Nomor Kiriman` rows include per-row QR preview, copy ID, and source-link actions
 - `PID/Kantong Terakhir` is derived from the latest `bagging` / `unbagging` event and includes QR preview, copy ID, and print actions for the latest bag/PID
 - `Manifest Terakhir` is derived from the latest `history_summary.manifest_r7` entry and includes a copy-ID action
@@ -203,6 +205,7 @@ The main table currently focuses on:
 - Desktop startup now proactively checks whether `ShipFlow Service` is already running and starts the companion runtime when needed.
 - Desktop and service runtime events are written to per-process log files under the shared runtime state directory.
 - ShipFlow Service lookup endpoints now percent-encode bag and manifest IDs before issuing local HTTP requests.
+- The service-settings UI is tuned to keep the main content panel height stable across view switches so the window does not expose large empty gaps.
 
 ## Project Structure
 

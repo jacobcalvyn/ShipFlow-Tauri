@@ -160,36 +160,38 @@ export function ServiceSettingsWindow({
             aria-label="Service sections"
             aria-orientation="vertical"
           >
-            <button
-              type="button"
-              id="service-settings-runtime-tab"
-              role="tab"
-              aria-selected={activeView === "runtime"}
-              className={[
-                "service-settings-tab",
-                activeView === "runtime" ? "is-active" : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
-              onClick={() => setActiveView("runtime")}
-            >
-              Runtime Internal
-            </button>
-            <button
-              type="button"
-              id="service-settings-api-tab"
-              role="tab"
-              aria-selected={activeView === "api"}
-              className={[
-                "service-settings-tab",
-                activeView === "api" ? "is-active" : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
-              onClick={() => setActiveView("api")}
-            >
-              API
-            </button>
+            <div className="service-settings-tab-list">
+              <button
+                type="button"
+                id="service-settings-runtime-tab"
+                role="tab"
+                aria-selected={activeView === "runtime"}
+                className={[
+                  "service-settings-tab",
+                  activeView === "runtime" ? "is-active" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                onClick={() => setActiveView("runtime")}
+              >
+                Runtime Internal
+              </button>
+              <button
+                type="button"
+                id="service-settings-api-tab"
+                role="tab"
+                aria-selected={activeView === "api"}
+                className={[
+                  "service-settings-tab",
+                  activeView === "api" ? "is-active" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                onClick={() => setActiveView("api")}
+              >
+                API
+              </button>
+            </div>
             {hasPendingServiceConfigChanges ? (
               <div className="service-settings-sidebar-note" role="status" aria-live="polite">
                 Ada perubahan lokal yang belum disimpan.

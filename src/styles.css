@@ -1638,22 +1638,29 @@ button {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 6px;
+  justify-content: space-between;
+  gap: 12px;
   padding-right: 18px;
   border-right: 1px solid #e8eef5;
+}
+
+.service-settings-tab-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .service-settings-tab {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  min-height: 38px;
+  min-height: 40px;
   border: 1px solid transparent;
   background: transparent;
   color: #475569;
-  border-radius: 10px;
-  padding: 8px 12px;
-  font-size: 0.8rem;
+  border-radius: 11px;
+  padding: 9px 14px;
+  font-size: 0.82rem;
   font-weight: 700;
   transition:
     border-color 140ms ease,
@@ -1675,10 +1682,16 @@ button {
 }
 
 .service-settings-sidebar-note {
-  margin-top: 10px;
-  color: #64748b;
+  margin-top: auto;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+  color: #475569;
   font-size: 0.76rem;
+  font-weight: 600;
   line-height: 1.45;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
 }
 
 .service-settings-layout {
@@ -1696,8 +1709,8 @@ button {
 .service-settings-section-header {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-bottom: 10px;
+  gap: 6px;
+  padding-bottom: 12px;
   border-bottom: 1px solid #e8eef5;
 }
 
@@ -1718,7 +1731,7 @@ button {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
-  gap: 12px;
+  gap: 14px;
   min-height: 0;
   padding: 0;
   border: 0;
@@ -1739,7 +1752,8 @@ button {
 }
 
 .service-settings-segmented-group {
-  gap: 12px 18px;
+  gap: 12px 22px;
+  padding-top: 2px;
 }
 
 .service-settings-segmented-option {
@@ -1784,6 +1798,8 @@ button {
 
 .service-settings-checkbox-row {
   gap: 10px;
+  min-height: 40px;
+  align-items: center;
   font-weight: 700;
 }
 
@@ -1812,10 +1828,10 @@ button {
 .service-settings-endpoint-code {
   display: flex;
   align-items: center;
-  min-height: 40px;
+  min-height: 42px;
   padding: 9px 11px;
   border: 1px solid #d6e0ea;
-  border-radius: 10px;
+  border-radius: 11px;
   background: #ffffff;
   color: #0f172a;
   font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
@@ -1826,7 +1842,7 @@ button {
 .service-settings-field-row {
   display: flex;
   align-items: end;
-  gap: 12px;
+  gap: 10px;
 }
 
 .service-settings-token-field {
@@ -1835,7 +1851,22 @@ button {
 }
 
 .service-settings-field-actions {
+  display: flex;
+  align-items: flex-end;
   flex: 0 0 auto;
+}
+
+.service-settings-field-actions .sheet-tab-action,
+.service-settings-endpoint-row .sheet-tab-action {
+  min-height: 42px;
+  padding: 9px 14px;
+  border-radius: 11px;
+  font-weight: 700;
+}
+
+.service-settings-pane .settings-text-field input {
+  min-height: 42px;
+  border-radius: 11px;
 }
 
 .settings-pane {
@@ -2310,10 +2341,21 @@ button {
   .service-settings-tabs {
     flex-direction: row;
     flex-wrap: wrap;
+    justify-content: flex-start;
     padding-right: 0;
     padding-bottom: 14px;
     border-right: 0;
     border-bottom: 1px solid #e2e8f0;
+  }
+
+  .service-settings-tab-list {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .service-settings-sidebar-note {
+    margin-top: 0;
+    width: 100%;
   }
 
   .service-settings-sidebar-note {
