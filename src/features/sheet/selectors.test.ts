@@ -2,6 +2,7 @@ import { createDefaultSheetState } from "./default-state";
 import { setSortInSheet, setTextFilterInSheet, setTrackingInputInSheet } from "./actions";
 import {
   getActiveFilterCount,
+  getColumnShortcuts,
   getDisplayedRows,
   getEffectiveColumnWidths,
   getLoadedCount,
@@ -148,5 +149,36 @@ describe("sheet selectors", () => {
 
     expect(widths["detail.shipment_header.nomor_kiriman"]).toBeGreaterThan(200);
     expect(widths["detail.shipment_header.nomor_kiriman"]).toBeLessThan(800);
+  });
+
+  it("places the PID/Kantong shortcut before Status Akhir", () => {
+    const visibleColumns = getVisibleColumns(createDefaultSheetState());
+    const visiblePathSet = getVisibleColumnPathSet(visibleColumns);
+    const shortcuts = getColumnShortcuts(visiblePathSet);
+    const pidShortcutIndex = shortcuts.findIndex(
+      (shortcut) => shortcut.path === "history_summary.latest_bagging_status"
+    );
+    const statusShortcutIndex = shortcuts.findIndex(
+      (shortcut) => shortcut.path === "status_akhir.status"
+    );
+
+    expect(pidShortcutIndex).toBeGreaterThanOrEqual(0);
+    expect(statusShortcutIndex).toBeGreaterThan(pidShortcutIndex);
+  });
+
+  it("places the Kantor Kirim shortcut before Jenis Layanan", () => {
+    const visibleColumns = getVisibleColumns(createDefaultSheetState());
+    const visiblePathSet = getVisibleColumnPathSet(visibleColumns);
+    const shortcuts = getColumnShortcuts(visiblePathSet);
+    const officeShortcutIndex = shortcuts.findIndex(
+      (shortcut) => shortcut.path === "detail.origin_detail.nama_kantor"
+    );
+    const serviceShortcutIndex = shortcuts.findIndex(
+      (shortcut) => shortcut.path === "detail.package_detail.jenis_layanan"
+    );
+
+    expect(officeShortcutIndex).toBeGreaterThanOrEqual(0);
+    expect(serviceShortcutIndex).toBeGreaterThan(officeShortcutIndex);
+    expect(shortcuts[officeShortcutIndex]?.label).toBe("Kantor Kirim");
   });
 });

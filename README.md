@@ -106,7 +106,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 
 - Spreadsheet-style table with `50` initial rows
 - Multi-sheet workspace with create / rename / duplicate / delete sheet
-- Sheet tabs use a `+` button for new sheets, and sheet-specific actions are exposed from a right-click context menu on each tab
+- Sheet tabs use a `+` button for new sheets, keep full sheet names visible, horizontally scroll when needed, and expose sheet-specific actions from a right-click context menu on each tab
 - Sticky selector column and sticky `Nomor Kiriman`
 - Keyboard row navigation in `Nomor Kiriman` with `Enter`, `ArrowUp`, and `ArrowDown`
 - Row checkbox selection for copy/delete actions
@@ -135,6 +135,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - Bag and manifest import results are cached per sheet, so reopening the modal restores the latest lookup draft and result for that sheet only
 - CSV export follows the visible table schema but intentionally skips heavy/non-tabular fields such as POD image URLs and raw `history_summary` arrays
 - Column shortcut buttons that horizontally scroll to key columns
+- Shortcut badges now include operational jump targets such as `PID/Kantong`, `Status Akhir`, and `Kantor Kirim`
 - Temporary header highlight when a shortcut scroll target is reached
 - Sheet-specific scroll position, request state, and notices
 - Toast notifications are shown as a fixed top-center queue and do not shift the sheet layout
@@ -145,6 +146,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
   - external API port
   - service-generated bearer token
 - `ShipFlow Service` is laid out as a compact desktop preference window with a stable full-height content panel, persistent footer actions, and tighter control alignment across macOS and Windows
+- The `ShipFlow Service` footer now keeps `Reset Perubahan`, `Sembunyikan`, and `Simpan`; `Sembunyikan` hides the service window without discarding unsaved local draft changes
 - The external API `Base URL` field no longer ships with a hard-coded example endpoint placeholder
 - `Nomor Kiriman` rows include per-row QR preview, copy ID, and source-link actions
 - `PID/Kantong Terakhir` is derived from the latest `bagging` / `unbagging` event and includes QR preview, copy ID, and print actions for the latest bag/PID
@@ -205,6 +207,7 @@ The main table currently focuses on:
 - Desktop startup now proactively checks whether `ShipFlow Service` is already running and starts the companion runtime when needed.
 - Desktop and service runtime events are written to per-process log files under the shared runtime state directory.
 - ShipFlow Service lookup endpoints now percent-encode bag and manifest IDs before issuing local HTTP requests.
+- Windows native URL launching now keeps full query strings intact, so bag print URLs preserve both `bag_id` and `oid`.
 - The service-settings UI is tuned to keep the main content panel height stable across view switches so the window does not expose large empty gaps.
 
 ## Project Structure

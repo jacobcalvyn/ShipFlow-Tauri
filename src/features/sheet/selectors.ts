@@ -1,5 +1,6 @@
 import {
   COLUMNS,
+  LATEST_BAG_STATUS_COLUMN_PATH,
   SELECTOR_COLUMN_WIDTH,
   TRACKING_COLUMN_PATH,
 } from "./columns";
@@ -15,9 +16,11 @@ import {
 import { countActiveTextFilters, countActiveValueFilters } from "./state";
 
 const COLUMN_SHORTCUTS = [
+  { path: LATEST_BAG_STATUS_COLUMN_PATH, label: "PID/Kantong" },
   { path: "status_akhir.status", label: "Status Akhir" },
   { path: "detail.actors.pengirim.nama", label: "Nama Pengirim" },
   { path: "detail.actors.penerima.nama", label: "Nama Penerima" },
+  { path: "detail.origin_detail.nama_kantor", label: "Kantor Kirim" },
   { path: "detail.package_detail.jenis_layanan", label: "Jenis Layanan" },
   { path: "detail.package_detail.isi_kiriman", label: "Isi Kiriman" },
   { path: "detail.billing_detail.cod_info.is_cod", label: "Is COD" },

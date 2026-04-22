@@ -8,7 +8,8 @@ import {
 } from "./types";
 import { WorkspaceDocumentFile } from "./features/workspace/document";
 
-const { mockedInvoke } = vi.hoisted(() => ({
+const { mockedHideWindow, mockedInvoke } = vi.hoisted(() => ({
+  mockedHideWindow: vi.fn<() => Promise<void>>(),
   mockedInvoke: vi.fn<
     (
       command: string,
@@ -34,6 +35,12 @@ const { mockedInvoke } = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: mockedInvoke,
+}));
+
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    hide: mockedHideWindow,
+  }),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -215,6 +222,7 @@ describe("App workspace isolation", () => {
     pendingRequests.clear();
     pendingBagRequests.clear();
     pendingManifestRequests.clear();
+    mockedHideWindow.mockReset();
     persistedServiceConfig = null;
     window.localStorage.clear();
     setShipFlowWindowKind("workspace");
@@ -2500,6 +2508,29 @@ describe("App workspace isolation", () => {
 
     expect(screen.getByRole("checkbox", { name: "Buka Akses API Eksternal" })).not.toBeChecked();
     expect((screen.getByLabelText("Token API") as HTMLInputElement).value).toBe("");
+  });
+
+  it("hides the ShipFlow Service window without discarding draft changes", async () => {
+    mockedHideWindow.mockResolvedValue(undefined);
+    setShipFlowWindowKind("service-settings");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Runtime Internal" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "API ShipFlow Eksternal" }));
+    fireEvent.change(screen.getByLabelText("External API Base URL"), {
+      target: { value: "https://internal-shipflow.test" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Sembunyikan" }));
+
+    await waitFor(() => {
+      expect(mockedHideWindow).toHaveBeenCalledTimes(1);
+    });
+
+    expect(getInvokeCalls("configure_api_service")).toHaveLength(0);
+    expect(screen.getByLabelText("External API Base URL")).toHaveValue(
+      "https://internal-shipflow.test"
+    );
   });
 
   it("persists external tracking source settings after confirmation in the service window", async () => {

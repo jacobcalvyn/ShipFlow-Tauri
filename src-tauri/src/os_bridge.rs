@@ -240,6 +240,11 @@ pub(crate) fn pick_workspace_document_path_runtime(
     }
 }
 
+#[cfg(target_os = "windows")]
+fn quote_windows_start_target(value: &str) -> String {
+    format!("\"{value}\"")
+}
+
 pub(crate) fn open_external_url_runtime(url: &str) -> Result<(), String> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
@@ -260,7 +265,7 @@ pub(crate) fn open_external_url_runtime(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let mut command = {
         let mut command = Command::new("cmd");
-        command.args(["/C", "start", "", trimmed]);
+        command.args(["/C", "start", "", &quote_windows_start_target(trimmed)]);
         command
     };
 
@@ -277,4 +282,23 @@ pub(crate) fn open_external_url_runtime(url: &str) -> Result<(), String> {
         .map_err(|error| format!("Unable to open external URL: {error}"))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "windows")]
+    use super::quote_windows_start_target;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn quote_windows_start_target_preserves_query_string_separators() {
+        let quoted = quote_windows_start_target(
+            "https://apiexpos.mile.app/api/v1/print-bag?bag_id=PID89885610_5f9fae9b5fbe9d6e401ad0c5&oid=NWY5ZmFlOWI1ZmJlOWQ2ZTQwMWFkMGM1",
+        );
+
+        assert_eq!(
+            quoted,
+            "\"https://apiexpos.mile.app/api/v1/print-bag?bag_id=PID89885610_5f9fae9b5fbe9d6e401ad0c5&oid=NWY5ZmFlOWI1ZmJlOWQ2ZTQwMWFkMGM1\""
+        );
+    }
 }

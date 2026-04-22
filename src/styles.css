@@ -402,7 +402,8 @@ button {
 .sheet-tab {
   display: flex;
   align-items: center;
-  min-width: 0;
+  min-width: max-content;
+  flex: 0 0 auto;
   position: relative;
 }
 
@@ -505,7 +506,8 @@ button {
   display: inline-flex;
   align-items: center;
   min-width: var(--tab-min-width);
-  max-width: 260px;
+  max-width: none;
+  flex: 0 0 auto;
   padding: var(--tab-padding-y) calc(var(--tab-padding-x) - 2px);
   text-align: left;
   line-height: 1;
@@ -542,9 +544,9 @@ button {
 }
 
 .sheet-tab-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: max-content;
+  overflow: visible;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -2260,6 +2262,11 @@ button {
 
 .settings-modal-cancel {
   min-width: 82px;
+  justify-content: center;
+}
+
+.settings-modal-secondary {
+  min-width: 108px;
   justify-content: center;
 }
 
