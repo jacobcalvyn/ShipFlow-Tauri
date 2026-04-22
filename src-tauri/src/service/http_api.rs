@@ -8,10 +8,12 @@ use reqwest::Client;
 use serde_json::{json, Value};
 
 use super::{runtime_config::validate_service_config, ApiServiceConfig, ApiServiceMode};
-use crate::tracking::{
-    model::{BagResponse, ManifestResponse, TrackResponse, TrackingError},
-    upstream::{resolve_bag_request, resolve_manifest_request, resolve_tracking_request},
+use crate::lookup_runtime::{
+    resolve_bag_request_cached, resolve_manifest_request_cached, resolve_tracking_request_cached,
+    LookupCacheState, LookupRequestOptions,
 };
+use crate::service_runtime::FORCE_REFRESH_HEADER_NAME;
+use crate::tracking::model::{BagResponse, ManifestResponse, TrackResponse, TrackingError};
 
 #[derive(Clone)]
 pub(crate) struct HttpApiState {
@@ -21,6 +23,7 @@ pub(crate) struct HttpApiState {
     pub(crate) bind_address: String,
     pub(crate) port: u16,
     pub(crate) tracking_source: crate::tracking::model::TrackingSourceConfig,
+    pub(crate) lookup_cache: LookupCacheState,
 }
 
 pub(crate) async fn run_service_process(config: ApiServiceConfig) -> Result<(), String> {
@@ -45,6 +48,7 @@ pub(crate) async fn run_service_process(config: ApiServiceConfig) -> Result<(), 
         bind_address,
         port: config.port,
         tracking_source,
+        lookup_cache: LookupCacheState::default(),
     };
     let router = build_router(app_state);
 
@@ -87,11 +91,18 @@ async fn track_handler(
     Path(shipment_id): Path<String>,
 ) -> Result<Json<TrackResponse>, (StatusCode, Json<Value>)> {
     authorize_request(&headers, &state.auth_token)?;
+    let request_options = read_lookup_request_options(&headers);
 
-    resolve_tracking_request(&state.client, &state.tracking_source, shipment_id.trim())
-        .await
-        .map(Json)
-        .map_err(map_tracking_error)
+    resolve_tracking_request_cached(
+        &state.lookup_cache,
+        &state.client,
+        &state.tracking_source,
+        shipment_id.trim(),
+        request_options,
+    )
+    .await
+    .map(Json)
+    .map_err(map_tracking_error)
 }
 
 async fn bag_handler(
@@ -100,11 +111,17 @@ async fn bag_handler(
     Path(bag_id): Path<String>,
 ) -> Result<Json<BagResponse>, (StatusCode, Json<Value>)> {
     authorize_request(&headers, &state.auth_token)?;
+    let request_options = read_lookup_request_options(&headers);
 
-    resolve_bag_request(&state.client, bag_id.trim())
-        .await
-        .map(Json)
-        .map_err(map_tracking_error)
+    resolve_bag_request_cached(
+        &state.lookup_cache,
+        &state.client,
+        bag_id.trim(),
+        request_options,
+    )
+    .await
+    .map(Json)
+    .map_err(map_tracking_error)
 }
 
 async fn manifest_handler(
@@ -113,11 +130,17 @@ async fn manifest_handler(
     Path(manifest_id): Path<String>,
 ) -> Result<Json<ManifestResponse>, (StatusCode, Json<Value>)> {
     authorize_request(&headers, &state.auth_token)?;
+    let request_options = read_lookup_request_options(&headers);
 
-    resolve_manifest_request(&state.client, manifest_id.trim())
-        .await
-        .map(Json)
-        .map_err(map_tracking_error)
+    resolve_manifest_request_cached(
+        &state.lookup_cache,
+        &state.client,
+        manifest_id.trim(),
+        request_options,
+    )
+    .await
+    .map(Json)
+    .map_err(map_tracking_error)
 }
 
 fn authorize_request(
@@ -163,6 +186,15 @@ fn map_tracking_error(error: TrackingError) -> (StatusCode, Json<Value>) {
     }
 }
 
+fn read_lookup_request_options(headers: &HeaderMap) -> LookupRequestOptions {
+    let force_refresh = headers
+        .get(FORCE_REFRESH_HEADER_NAME)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"));
+
+    LookupRequestOptions { force_refresh }
+}
+
 fn error_response(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
     (
         status,
@@ -176,7 +208,8 @@ fn error_response(status: StatusCode, message: &str) -> (StatusCode, Json<Value>
 mod tests {
     use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
 
-    use super::authorize_request;
+    use super::{authorize_request, read_lookup_request_options};
+    use crate::service_runtime::FORCE_REFRESH_HEADER_NAME;
 
     #[test]
     fn rejects_missing_authorization_header() {
@@ -193,5 +226,15 @@ mod tests {
         let result = authorize_request(&headers, "secret-token");
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn reads_force_refresh_lookup_option_from_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(FORCE_REFRESH_HEADER_NAME, "true".parse().unwrap());
+
+        let options = read_lookup_request_options(&headers);
+
+        assert!(options.force_refresh);
     }
 }

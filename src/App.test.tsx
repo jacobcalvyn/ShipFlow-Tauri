@@ -17,6 +17,7 @@ const { mockedHideWindow, mockedInvoke } = vi.hoisted(() => ({
         shipmentId?: string;
         bagId?: string;
         manifestId?: string;
+        forceRefresh?: boolean;
         sheetId?: string;
         rowKey?: string;
         imageSource?: string;
@@ -541,6 +542,7 @@ describe("App workspace isolation", () => {
         expectInvokeCount("track_bag", 1);
         expect(screen.getByRole("button", { name: "Memuat..." })).toBeDisabled();
       });
+      expect(getInvokeCalls("track_bag")[0]?.[1]?.forceRefresh).toBe(true);
 
       resolveBagRequest("PID-SHEET-1");
 
@@ -577,6 +579,7 @@ describe("App workspace isolation", () => {
         expectInvokeCount("track_manifest", 1);
         expect(screen.getByRole("button", { name: "Memuat..." })).toBeDisabled();
       });
+      expect(getInvokeCalls("track_manifest")[0]?.[1]?.forceRefresh).toBe(true);
 
       resolveManifestRequest("MNF-SHEET-2");
 
@@ -727,6 +730,8 @@ describe("App workspace isolation", () => {
     await waitFor(() => {
       expectInvokeCount("track_bag", 1);
     });
+    expect(getInvokeCalls("track_bag")[0]?.[1]?.forceRefresh).toBe(true);
+    expect(getInvokeCalls("track_bag")[0]?.[1]?.forceRefresh).toBe(true);
 
     resolveBagRequest("PID-REPLACE");
 
@@ -837,6 +842,7 @@ describe("App workspace isolation", () => {
     await waitFor(() => {
       expectInvokeCount("track_manifest", 1);
     });
+    expect(getInvokeCalls("track_manifest")[0]?.[1]?.forceRefresh).toBe(true);
 
     resolveManifestRequest("MNF-APPEND");
 

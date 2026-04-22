@@ -70,6 +70,7 @@ Current ownership:
 
 - `shipflow-core` parses all three kinds
 - `ShipFlow Service` exposes all three kinds from the local API
+- Desktop and service runtime paths now share one lookup cache facade for `track`, `bag`, and `manifest`
 - `ShipFlow Desktop` currently renders only shipment rows in the workspace table
 
 Current local service routes:
@@ -197,6 +198,9 @@ The main table currently focuses on:
 - Bag and manifest import modal state is isolated per sheet, including the current draft, lookup cache, and open/closed modal state.
 - Manifest-to-bag fan-out now uses capped parallel lookup workers and ignores stale downstream results when a manifest lookup is replaced or rerun.
 - Manifest and bag imports auto-close the modal after `Ganti Semua` or `Tambah Data`, then immediately start shipment tracking in the target sheet.
+- Runtime lookup results for `track`, `bag`, and `manifest` now use one in-memory cache with in-flight coalescing, kind-specific TTL, and short negative-cache protection.
+- Manual refresh flows such as `Lacak Ulang`, `Retry Gagal`, and bag/manifest modal fetches can explicitly bypass cache when the user intends a fresh lookup.
+- Runtime startup and source/config refresh paths now invalidate lookup cache explicitly before using the refreshed tracking configuration.
 - Active, dirty, and loading rows remain visible even while filters are active.
 - Filtered views now force selection to exactly the currently visible shipment IDs, and clearing filters stops that auto-follow mode before normal manual selection resumes.
 - Request telemetry is emitted for `start`, `success`, `fail`, and `abort` with `sheetId`, `rowKey`, and `shipmentId`.
@@ -206,9 +210,11 @@ The main table currently focuses on:
 - The service companion always keeps tray/background behavior enabled; it is no longer exposed as a user-facing desktop setting.
 - Desktop startup now proactively checks whether `ShipFlow Service` is already running and starts the companion runtime when needed.
 - Desktop and service runtime events are written to per-process log files under the shared runtime state directory.
+- Runtime log files now also emit `[ShipFlowCacheMetrics]` summary lines with per-kind cache ratios and counters for operator audit.
 - ShipFlow Service lookup endpoints now percent-encode bag and manifest IDs before issuing local HTTP requests.
 - Windows native URL launching now keeps full query strings intact, so bag print URLs preserve both `bag_id` and `oid`.
 - The service-settings UI is tuned to keep the main content panel height stable across view switches so the window does not expose large empty gaps.
+- Lookup cache remains in-memory only for now; cache persistence across restart is intentionally not enabled yet.
 
 ## Project Structure
 
@@ -229,6 +235,7 @@ The main table currently focuses on:
 - [src-tauri/src/lib.rs](./src-tauri/src/lib.rs): Tauri command composition layer
 - [src-tauri/src/app_runtime.rs](./src-tauri/src/app_runtime.rs): desktop bootstrap and runtime setup
 - [src-tauri/src/app_menu_runtime.rs](./src-tauri/src/app_menu_runtime.rs): desktop app menu wiring
+- [src-tauri/src/lookup_runtime.rs](./src-tauri/src/lookup_runtime.rs): shared runtime lookup cache, coalescing, invalidation, and cache-metrics logging
 - [src-tauri/src/os_bridge.rs](./src-tauri/src/os_bridge.rs): clipboard, URL, and native file-picker bridge
 - [src-tauri/src/window_runtime.rs](./src-tauri/src/window_runtime.rs): window/document registry runtime
 - [src-tauri/src/workspace_document.rs](./src-tauri/src/workspace_document.rs): workspace document read/write helpers

@@ -310,11 +310,13 @@ export function useWorkspaceInteractionRuntimeController({
           kind === "bag"
             ? await invoke<BagResponse>("track_bag", {
                 bagId: lookupValue,
+                forceRefresh: true,
                 sheetId: targetSheetId,
                 rowKey: "__import_source_bag__",
               })
             : await invoke<ManifestResponse>("track_manifest", {
                 manifestId: lookupValue,
+                forceRefresh: true,
                 sheetId: targetSheetId,
                 rowKey: "__import_source_manifest__",
               });
@@ -378,6 +380,7 @@ export function useWorkspaceInteractionRuntimeController({
               try {
                 const bagResponse = await invoke<BagResponse>("track_bag", {
                   bagId,
+                  forceRefresh: true,
                   sheetId: targetSheetId,
                   rowKey: `__manifest_bag_lookup__:${lookupValue}:${bagId}`,
                 });

@@ -44,6 +44,10 @@ type UseTrackingRuntimeControllerOptions = {
   disarmDeleteAll: () => void;
 };
 
+type FetchRuntimeOptions = {
+  forceRefresh?: boolean;
+};
+
 function getSheetRequestKey(sheetId: string, rowKey: string) {
   return `${sheetId}:${rowKey}`;
 }
@@ -262,7 +266,12 @@ export function useTrackingRuntimeController({
   );
 
   const fetchShipmentIntoRow = useCallback(
-    async (sheetId: string, rowKey: string, shipmentId: string) => {
+    async (
+      sheetId: string,
+      rowKey: string,
+      shipmentId: string,
+      options?: FetchRuntimeOptions
+    ) => {
       const normalizedId = sanitizeTrackingInput(shipmentId);
       const requestKey = getSheetRequestKey(sheetId, rowKey);
       const requestEpoch = getSheetEpoch(requestEpochBySheetRef, sheetId);
@@ -325,6 +334,7 @@ export function useTrackingRuntimeController({
         const result = (await Promise.race([
           invoke<TrackResponse>("track_shipment", {
             shipmentId: normalizedId,
+            forceRefresh: options?.forceRefresh === true,
             sheetId,
             rowKey,
           }),
@@ -412,7 +422,12 @@ export function useTrackingRuntimeController({
   );
 
   const fetchRow = useCallback(
-    async (sheetId: string, rowKey: string, shipmentIdOverride?: string) => {
+    async (
+      sheetId: string,
+      rowKey: string,
+      shipmentIdOverride?: string,
+      options?: FetchRuntimeOptions
+    ) => {
       const shipmentId =
         shipmentIdOverride !== undefined
           ? sanitizeTrackingInput(shipmentIdOverride)
@@ -423,7 +438,7 @@ export function useTrackingRuntimeController({
         return;
       }
 
-      await fetchShipmentIntoRow(sheetId, rowKey, shipmentId);
+      await fetchShipmentIntoRow(sheetId, rowKey, shipmentId, options);
     },
     [fetchShipmentIntoRow, workspaceRef]
   );
@@ -444,7 +459,11 @@ export function useTrackingRuntimeController({
   );
 
   const runBulkPasteFetches = useCallback(
-    async (sheetId: string, entries: Array<{ key: string; value: string }>) => {
+    async (
+      sheetId: string,
+      entries: Array<{ key: string; value: string }>,
+      options?: FetchRuntimeOptions
+    ) => {
       const runEpoch = bumpSheetEpoch(bulkRunEpochBySheetRef, sheetId);
       const queue = [...entries];
       const workerCount = Math.min(MAX_CONCURRENT_BULK_REQUESTS, queue.length);
@@ -460,7 +479,7 @@ export function useTrackingRuntimeController({
             return;
           }
 
-          await fetchShipmentIntoRow(sheetId, next.key, next.value);
+          await fetchShipmentIntoRow(sheetId, next.key, next.value, options);
         }
       });
 

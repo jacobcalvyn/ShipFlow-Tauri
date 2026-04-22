@@ -9,12 +9,24 @@ pub struct TrackingClientState {
 }
 
 impl TrackingClientState {
-    pub fn update_source_config(&self, config: TrackingSourceConfig) {
+    pub fn update_source_config(&self, config: TrackingSourceConfig) -> bool {
         let mut source_config = self
             .source_config
             .lock()
             .expect("tracking source config lock poisoned");
+        if *source_config == config {
+            return false;
+        }
+
         *source_config = config;
+        true
+    }
+
+    pub fn current_source_config(&self) -> TrackingSourceConfig {
+        self.source_config
+            .lock()
+            .expect("tracking source config lock poisoned")
+            .clone()
     }
 }
 
@@ -25,7 +37,7 @@ pub enum TrackingSource {
     ExternalApi,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LookupKind {
     Track,
@@ -39,7 +51,7 @@ impl Default for TrackingSource {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackingSourceConfig {
     pub tracking_source: TrackingSource,

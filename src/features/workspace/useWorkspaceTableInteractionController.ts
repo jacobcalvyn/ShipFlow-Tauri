@@ -31,7 +31,12 @@ type UseWorkspaceTableInteractionControllerOptions = {
   resizeStateRef: MutableRefObject<ResizeState>;
   sheetScrollRef: MutableRefObject<HTMLDivElement | null>;
   updateActiveSheet: (updater: (sheetState: SheetState) => SheetState) => void;
-  fetchRow: (sheetId: string, rowKey: string, shipmentIdOverride?: string) => Promise<void>;
+  fetchRow: (
+    sheetId: string,
+    rowKey: string,
+    shipmentIdOverride?: string,
+    options?: { forceRefresh?: boolean }
+  ) => Promise<void>;
   showNotice: (notice: WorkspaceTableInteractionNotice) => void;
 };
 

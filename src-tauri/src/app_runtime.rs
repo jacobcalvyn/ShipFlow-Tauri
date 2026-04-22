@@ -6,11 +6,12 @@ use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
 use tauri::webview::PageLoadEvent;
 use tauri::{App, Emitter, Manager, Runtime, WebviewUrl, Window, WindowEvent};
 
+use crate::lookup_runtime::LookupCacheState;
 use crate::runtime_log::log_runtime_event;
 use crate::service;
 use crate::service::{ApiServiceConfig, ApiServiceController};
 use crate::service_runtime::{default_tray_service_config, sync_service_tray, TrayState};
-use crate::tracking::model::TrackingClientState;
+use crate::tracking::model::{TrackingClientState, TrackingSourceConfig};
 use crate::window_runtime::{
     WindowCloseGuardState, WindowCloseRequestPayload, WindowDocumentState,
     WorkspaceDocumentRegistryState,
@@ -36,7 +37,7 @@ impl MainWebviewNavigationGuard {
             log_runtime_event(
                 "INFO",
                 format!(
-                "[ShipFlowTauri] observed top-level navigation for webview '{label}' to {url}"
+                    "[ShipFlowTauri] observed top-level navigation for webview '{label}' to {url}"
                 ),
             );
         }
@@ -69,7 +70,6 @@ fn initialize_tracking_source_state<R: Runtime>(
     sync_error_label: &str,
 ) -> Option<ApiServiceConfig> {
     let service_controller = app.state::<ApiServiceController>();
-    let tracking_client_state = app.state::<TrackingClientState>();
     let tray_state = app.state::<TrayState>();
     let saved_config = service_controller
         .load_saved_config()
@@ -78,9 +78,15 @@ fn initialize_tracking_source_state<R: Runtime>(
             None
         });
 
-    if let Some(config) = saved_config.as_ref() {
-        tracking_client_state.update_source_config(config.tracking_source_config());
-    }
+    let initial_tracking_source_config = saved_config
+        .as_ref()
+        .map(ApiServiceConfig::tracking_source_config)
+        .unwrap_or_else(TrackingSourceConfig::default);
+    sync_tracking_source_state(
+        app,
+        initial_tracking_source_config,
+        "startup_saved_config_load",
+    );
 
     let status = service_controller.status();
     let tray_config = saved_config
@@ -94,14 +100,37 @@ fn initialize_tracking_source_state<R: Runtime>(
     saved_config
 }
 
-fn ensure_desktop_tracking_runtime<R: Runtime>(app: &App<R>, saved_config: Option<ApiServiceConfig>) {
+fn sync_tracking_source_state<R: Runtime>(
+    app: &App<R>,
+    next_config: TrackingSourceConfig,
+    reason: &str,
+) {
     let tracking_client_state = app.state::<TrackingClientState>();
+    let lookup_cache = app.state::<LookupCacheState>();
+
+    if tracking_client_state.update_source_config(next_config) {
+        lookup_cache.invalidate_all(reason);
+        log_runtime_event(
+            "INFO",
+            format!("[ShipFlowCache] source_config_refresh reason={reason}"),
+        );
+    }
+}
+
+fn ensure_desktop_tracking_runtime<R: Runtime>(
+    app: &App<R>,
+    saved_config: Option<ApiServiceConfig>,
+) {
     let service_controller = app.state::<ApiServiceController>();
     let tray_state = app.state::<TrayState>();
 
     match service::ensure_tracking_service_runtime(saved_config.clone()) {
         Ok(runtime_config) => {
-            tracking_client_state.update_source_config(runtime_config.tracking_source_config());
+            sync_tracking_source_state(
+                app,
+                runtime_config.tracking_source_config(),
+                "desktop_runtime_ensure",
+            );
             log_runtime_event(
                 "INFO",
                 format!(

@@ -71,7 +71,8 @@ type UseWorkspaceCommandsControllerOptions = {
   forgetSheetTrackingRuntime: (sheetId: string) => void;
   runBulkPasteFetches: (
     sheetId: string,
-    entries: Array<{ key: string; value: string }>
+    entries: Array<{ key: string; value: string }>,
+    options?: { forceRefresh?: boolean }
   ) => Promise<void>;
 };
 
@@ -169,7 +170,9 @@ export function useWorkspaceCommandsController({
     }
 
     disarmDeleteAll();
-    void runBulkPasteFetches(activeSheetId, retryFailedEntries);
+    void runBulkPasteFetches(activeSheetId, retryFailedEntries, {
+      forceRefresh: true,
+    });
     showNotice({
       tone: "info",
       message: "Proses lacak ulang dimulai.",
@@ -294,7 +297,9 @@ export function useWorkspaceCommandsController({
       message: "Proses lacak ulang dimulai.",
     });
 
-    void runBulkPasteFetches(targetSheetId, retrackableRows).then(() => {
+    void runBulkPasteFetches(targetSheetId, retrackableRows, {
+      forceRefresh: true,
+    }).then(() => {
       const refreshedRows =
         workspaceRef.current.sheetsById[targetSheetId]?.rows.filter((row) =>
           retrackableKeySet.has(row.key)

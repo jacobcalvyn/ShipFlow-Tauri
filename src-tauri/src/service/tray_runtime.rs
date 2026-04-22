@@ -10,7 +10,6 @@ use tray_icon::{
     Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
 
-use crate::runtime_log::log_runtime_event;
 use super::{
     process_runtime::{
         build_service_endpoint, format_service_status_label, launch_shipflow_desktop_companion,
@@ -23,6 +22,7 @@ use super::{
     SERVICE_TRAY_STOP_SERVICE_ID,
 };
 use crate::os_bridge::copy_text_to_clipboard;
+use crate::runtime_log::log_runtime_event;
 use crate::service::state_store::clear_recorded_tray_pid;
 
 enum ServiceTrayUserEvent {

@@ -118,6 +118,7 @@ function createRow(): SheetRow {
 }
 
 function buildOptions() {
+  const row = createRow();
   const visibleColumns = COLUMNS.filter((column) =>
     [
       TRACKING_COLUMN_PATH,
@@ -138,15 +139,23 @@ function buildOptions() {
     activeSheetId: "sheet-1",
     activeSheetDeleteAllArmed: false,
     allTrackingIds: ["P2603310114291"],
-    exportableRows: [createRow()],
-    retrackableRows: [],
-    retryFailedEntries: [],
+    exportableRows: [row],
+    retrackableRows: [] as Array<{ key: string; value: string }>,
+    retryFailedEntries: [] as Array<{ key: string; value: string }>,
     selectedTrackingIds: [],
     selectedVisibleRowKeys: [],
     deleteSelectedArmedSheetId: null,
     visibleColumns,
     visibleColumnPathSet: new Set(visibleColumns.map((column) => column.path)),
-    workspaceRef: { current: {} },
+    workspaceRef: {
+      current: {
+        sheetsById: {
+          "sheet-1": {
+            rows: [row],
+          },
+        },
+      },
+    },
     sheetScrollPositionsRef: { current: new Map() },
     highlightedColumnTimeoutRef: { current: null },
     highlightedColumnSheetIdRef: { current: null },
@@ -168,7 +177,7 @@ function buildOptions() {
     abortRowTrackingWork: vi.fn(),
     invalidateSheetTrackingWork: vi.fn(),
     forgetSheetTrackingRuntime: vi.fn(),
-    runBulkPasteFetches: vi.fn(),
+    runBulkPasteFetches: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -223,5 +232,46 @@ describe("useWorkspaceCommandsController", () => {
     expect(csvContent).not.toContain("History Summary Bagging Unbagging");
     expect(csvContent).not.toContain("History Summary Manifest R7");
     expect(csvContent).not.toContain("History Summary Delivery Runsheet");
+  });
+
+  it("forces refresh when retrying failed rows", async () => {
+    const options = buildOptions();
+    options.retryFailedEntries = [
+      { key: "row-1", value: "P2603310114291" },
+    ];
+    const { result } = renderHook(() =>
+      useWorkspaceCommandsController(options as never)
+    );
+
+    await act(async () => {
+      result.current.retryFailedRows();
+    });
+
+    expect(options.runBulkPasteFetches).toHaveBeenCalledWith(
+      "sheet-1",
+      options.retryFailedEntries,
+      { forceRefresh: true }
+    );
+  });
+
+  it("forces refresh when retracking all rows", async () => {
+    const options = buildOptions();
+    options.retrackableRows = [
+      { key: "row-1", value: "P2603310114291" },
+    ];
+    const { result } = renderHook(() =>
+      useWorkspaceCommandsController(options as never)
+    );
+
+    await act(async () => {
+      result.current.retrackAllRows();
+      await Promise.resolve();
+    });
+
+    expect(options.runBulkPasteFetches).toHaveBeenCalledWith(
+      "sheet-1",
+      options.retrackableRows,
+      { forceRefresh: true }
+    );
   });
 });

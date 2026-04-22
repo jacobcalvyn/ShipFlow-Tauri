@@ -45,7 +45,8 @@ type UseSelectionTransferControllerOptions = {
   ) => void;
   runBulkPasteFetches: (
     sheetId: string,
-    entries: Array<{ key: string; value: string }>
+    entries: Array<{ key: string; value: string }>,
+    options?: { forceRefresh?: boolean }
   ) => Promise<void>;
   showNotice: (notice: SelectionTransferNotice) => void;
 };

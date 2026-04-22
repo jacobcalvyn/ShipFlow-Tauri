@@ -22,7 +22,10 @@ fn runtime_log_dir() -> PathBuf {
 fn runtime_log_path() -> PathBuf {
     let process_name = env::current_exe()
         .ok()
-        .and_then(|path| path.file_stem().map(|name| name.to_string_lossy().into_owned()))
+        .and_then(|path| {
+            path.file_stem()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| "shipflow-runtime".into());
 
@@ -61,7 +64,12 @@ fn append_runtime_log_line(level: &str, message: &str) -> Result<(), String> {
         .create(true)
         .append(true)
         .open(&log_path)
-        .map_err(|error| format!("Unable to open runtime log file {}: {error}", log_path.display()))?;
+        .map_err(|error| {
+            format!(
+                "Unable to open runtime log file {}: {error}",
+                log_path.display()
+            )
+        })?;
 
     file.write_all(line.as_bytes())
         .map_err(|error| format!("Unable to write runtime log line: {error}"))
@@ -92,7 +100,10 @@ pub(crate) fn install_runtime_logging() {
                 "non-string panic payload".into()
             };
 
-            log_runtime_event("PANIC", format!("[ShipFlowRuntime] panic at {location}: {payload}"));
+            log_runtime_event(
+                "PANIC",
+                format!("[ShipFlowRuntime] panic at {location}: {payload}"),
+            );
             default_hook(panic_info);
         }));
     });
@@ -137,8 +148,8 @@ mod tests {
             append_runtime_log_line("INFO", "[ShipFlowRuntimeTest] runtime log smoke test")
                 .expect("runtime log append should succeed");
 
-            let log_contents =
-                fs::read_to_string(runtime_log_path()).expect("runtime log file should be readable");
+            let log_contents = fs::read_to_string(runtime_log_path())
+                .expect("runtime log file should be readable");
 
             assert!(log_contents.contains("[ShipFlowRuntimeTest] runtime log smoke test"));
             assert!(log_contents.contains("[INFO]"));
