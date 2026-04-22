@@ -1590,14 +1590,17 @@ button {
 }
 
 .service-settings-shell {
-  overflow: auto;
+  overflow: hidden;
   padding: 12px;
 }
 
 .service-settings-panel {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  width: min(100%, 1040px);
   max-width: 1040px;
   margin: 0 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
 .service-settings-title {
@@ -1627,6 +1630,7 @@ button {
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr);
   gap: 22px;
+  flex: 1 1 auto;
   min-height: 0;
 }
 
@@ -1680,12 +1684,13 @@ button {
 .service-settings-layout {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   min-height: 0;
   gap: 16px;
 }
 
 .service-settings-footer {
-  margin-top: 8px;
+  margin-top: auto;
 }
 
 .service-settings-section-header {
@@ -1712,7 +1717,9 @@ button {
 .service-settings-pane {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: 12px;
+  min-height: 0;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -1728,6 +1735,7 @@ button {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 0;
 }
 
 .service-settings-segmented-group {

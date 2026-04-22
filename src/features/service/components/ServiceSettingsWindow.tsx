@@ -251,7 +251,6 @@ export function ServiceSettingsWindow({
                         type="url"
                         aria-label="External API Base URL"
                         value={serviceConfig.externalApiBaseUrl}
-                        placeholder="https://scrappid3.jacobcalvyn.io"
                         onChange={(event) => onPreviewExternalApiBaseUrl(event.target.value)}
                       />
                     </label>

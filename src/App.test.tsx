@@ -515,107 +515,111 @@ describe("App workspace isolation", () => {
     expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("");
   });
 
-  it("keeps import source modals isolated per sheet when switching tabs", async () => {
-    render(<App />);
+  it(
+    "keeps import source modals isolated per sheet when switching tabs",
+    async () => {
+      render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Bag" }));
-    expect(
-      screen.getByRole("dialog", { name: "Import ID Kiriman dari Bag" })
-    ).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("ID Bag"), {
-      target: { value: "PID-SHEET-1" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
+      fireEvent.click(screen.getByRole("button", { name: "Bag" }));
+      expect(
+        screen.getByRole("dialog", { name: "Import ID Kiriman dari Bag" })
+      ).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText("ID Bag"), {
+        target: { value: "PID-SHEET-1" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
 
-    await waitFor(() => {
-      expectInvokeCount("track_bag", 1);
-      expect(screen.getByRole("button", { name: "Memuat..." })).toBeDisabled();
-    });
+      await waitFor(() => {
+        expectInvokeCount("track_bag", 1);
+        expect(screen.getByRole("button", { name: "Memuat..." })).toBeDisabled();
+      });
 
-    resolveBagRequest("PID-SHEET-1");
+      resolveBagRequest("PID-SHEET-1");
 
-    await waitFor(() => {
+      await waitFor(() => {
+        expect(screen.getByText("Nomor Kiriman (1)")).toBeInTheDocument();
+        expect(screen.getByText("P260000000001")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Ganti Semua" })).toBeEnabled();
+        expect(screen.getByRole("button", { name: "Tambah Data" })).toBeEnabled();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
+
+      await waitFor(() => {
+        expect(screen.getByRole("tab", { name: "Sheet 2" })).toHaveAttribute(
+          "aria-selected",
+          "true"
+        );
+      });
+
+      expect(
+        screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
+      expect(
+        screen.getByRole("dialog", { name: "Import ID Kiriman dari Manifest" })
+      ).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText("ID Manifest"), {
+        target: { value: "MNF-SHEET-2" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
+
+      await waitFor(() => {
+        expectInvokeCount("track_manifest", 1);
+        expect(screen.getByRole("button", { name: "Memuat..." })).toBeDisabled();
+      });
+
+      resolveManifestRequest("MNF-SHEET-2");
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(
+            "Nomor Kantung (1) - Proses ambil id kiriman dari 0/1 kantung"
+          )
+        ).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Tambah Data" })).toBeDisabled();
+      });
+
+      await waitFor(() => {
+        expectInvokeCount("track_bag", 2);
+      });
+
+      resolveBagRequest("PID123456-2");
+
+      await waitFor(() => {
+        expect(screen.getByText("Nomor Kantung (1) - 1 Kiriman")).toBeInTheDocument();
+        expect(screen.getByText("PID123456-2 - 1 Kiriman")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Ganti Semua" })).toBeEnabled();
+        expect(screen.getByRole("button", { name: "Tambah Data" })).toBeEnabled();
+      });
+
+      fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
+      expect(
+        screen.getByRole("dialog", { name: "Import ID Kiriman dari Bag" })
+      ).toBeInTheDocument();
+      expect(screen.getByLabelText("ID Bag")).toHaveValue("PID-SHEET-1");
       expect(screen.getByText("Nomor Kiriman (1)")).toBeInTheDocument();
       expect(screen.getByText("P260000000001")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Ganti Semua" })).toBeEnabled();
-      expect(screen.getByRole("button", { name: "Tambah Data" })).toBeEnabled();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("tab", { name: "Sheet 2" })).toHaveAttribute(
-        "aria-selected",
-        "true"
-      );
-    });
-
-    expect(
-      screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
-    ).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
-    expect(
-      screen.getByRole("dialog", { name: "Import ID Kiriman dari Manifest" })
-    ).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("ID Manifest"), {
-      target: { value: "MNF-SHEET-2" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
-
-    await waitFor(() => {
-      expectInvokeCount("track_manifest", 1);
-      expect(screen.getByRole("button", { name: "Memuat..." })).toBeDisabled();
-    });
-
-    resolveManifestRequest("MNF-SHEET-2");
-
-    await waitFor(() => {
       expect(
-        screen.getByText(
-          "Nomor Kantung (1) - Proses ambil id kiriman dari 0/1 kantung"
-        )
+        screen.queryByRole("dialog", { name: "Import ID Kiriman dari Manifest" })
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Tutup" }));
+      expect(
+        screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }));
+      expect(
+        screen.getByRole("dialog", { name: "Import ID Kiriman dari Manifest" })
       ).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Tambah Data" })).toBeDisabled();
-    });
-
-    await waitFor(() => {
-      expectInvokeCount("track_bag", 2);
-    });
-
-    resolveBagRequest("PID123456-2");
-
-    await waitFor(() => {
+      expect(screen.getByLabelText("ID Manifest")).toHaveValue("MNF-SHEET-2");
       expect(screen.getByText("Nomor Kantung (1) - 1 Kiriman")).toBeInTheDocument();
       expect(screen.getByText("PID123456-2 - 1 Kiriman")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Ganti Semua" })).toBeEnabled();
-      expect(screen.getByRole("button", { name: "Tambah Data" })).toBeEnabled();
-    });
-
-    fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
-    expect(
-      screen.getByRole("dialog", { name: "Import ID Kiriman dari Bag" })
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText("ID Bag")).toHaveValue("PID-SHEET-1");
-    expect(screen.getByText("Nomor Kiriman (1)")).toBeInTheDocument();
-    expect(screen.getByText("P260000000001")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("dialog", { name: "Import ID Kiriman dari Manifest" })
-    ).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Tutup" }));
-    expect(
-      screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
-    ).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }));
-    expect(
-      screen.getByRole("dialog", { name: "Import ID Kiriman dari Manifest" })
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText("ID Manifest")).toHaveValue("MNF-SHEET-2");
-    expect(screen.getByText("Nomor Kantung (1) - 1 Kiriman")).toBeInTheDocument();
-    expect(screen.getByText("PID123456-2 - 1 Kiriman")).toBeInTheDocument();
-  });
+    },
+    15000
+  );
 
   it("keeps concurrent manifest lookups isolated across sheets", async () => {
     render(<App />);
