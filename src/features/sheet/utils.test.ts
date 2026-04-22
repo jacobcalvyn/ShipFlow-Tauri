@@ -146,6 +146,9 @@ describe("sheet utils", () => {
     const latestManifestColumn = COLUMNS.find(
       (column) => column.path === "history_summary.latest_manifest_r7"
     )!;
+    const latestDeliveryColumn = COLUMNS.find(
+      (column) => column.path === "history_summary.latest_delivery_runsheet"
+    )!;
     const baggingColumn = COLUMNS.find(
       (column) => column.path === "history_summary.bagging_unbagging"
     )!;
@@ -167,6 +170,9 @@ describe("sheet utils", () => {
     );
     expect(formatColumnValue(row, latestManifestColumn)).toBe(
       "P20260310064942110"
+    );
+    expect(formatColumnValue(row, latestDeliveryColumn)).toBe(
+      "FAILEDTODELIVERED (RUMAH/ALAMAT TIDAK DITEMUKAN) | Gabriel Erick Taurui (560000529) | 2026-04-15 14:50:02"
     );
     expect(formatColumnValue(row, baggingColumn)).toBe(
       "Bagging PID95084242 | DC JAYAPURA 9910A | 2026-04-15 16:33:20"

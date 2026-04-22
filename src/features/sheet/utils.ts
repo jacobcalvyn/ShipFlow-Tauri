@@ -2,6 +2,7 @@ import {
   COLUMNS,
   INITIAL_ROW_COUNT,
   LATEST_BAG_STATUS_COLUMN_PATH,
+  LATEST_DELIVERY_COLUMN_PATH,
   LATEST_MANIFEST_COLUMN_PATH,
   MIN_EMPTY_TRAILING_ROWS,
 } from "./columns";
@@ -147,6 +148,10 @@ export function getRawColumnValue(row: SheetRow, column: ColumnDefinition): unkn
     return getLatestManifestText(row.shipment.history_summary);
   }
 
+  if (column.path === LATEST_DELIVERY_COLUMN_PATH) {
+    return getLatestDeliveryText(row.shipment.history_summary);
+  }
+
   return getByPath(row.shipment, column.path);
 }
 
@@ -250,6 +255,10 @@ function getLatestBagStatusText(historySummary: unknown) {
   return `${latestBagStatus.bagId} - ${latestBagStatus.statusLabel}`;
 }
 
+export function getLatestBagId(historySummary: unknown) {
+  return getLatestBagStatusDetails(historySummary)?.bagId ?? null;
+}
+
 function getLatestManifestText(historySummary: unknown) {
   if (!historySummary || typeof historySummary !== "object") {
     return "-";
@@ -268,13 +277,26 @@ function getLatestManifestText(historySummary: unknown) {
   return getRecordValue(latest as Record<string, unknown>, "nomor_r7") ?? "-";
 }
 
+function getLatestDeliveryText(historySummary: unknown) {
+  if (!historySummary || typeof historySummary !== "object") {
+    return "-";
+  }
+
+  const rawValue = (historySummary as Record<string, unknown>).delivery_runsheet;
+  if (!Array.isArray(rawValue) || rawValue.length === 0) {
+    return "-";
+  }
+
+  return getHistorySummaryLatestText(rawValue, "history_summary.delivery_runsheet");
+}
+
 export function getLatestBagPrintUrl(historySummary: unknown) {
-  const latestBagStatus = getLatestBagStatusDetails(historySummary);
-  if (!latestBagStatus) {
+  const latestBagId = getLatestBagId(historySummary);
+  if (!latestBagId) {
     return null;
   }
 
-  const bagIdentifier = `${latestBagStatus.bagId}_${BAG_PRINT_SUFFIX}`;
+  const bagIdentifier = `${latestBagId}_${BAG_PRINT_SUFFIX}`;
   return `https://apiexpos.mile.app/api/v1/print-bag?bag_id=${encodeURIComponent(
     bagIdentifier
   )}&oid=${encodeURIComponent(BAG_PRINT_OID)}`;

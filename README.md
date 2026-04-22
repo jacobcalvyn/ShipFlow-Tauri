@@ -109,6 +109,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - Sticky selector column and sticky `Nomor Kiriman`
 - Keyboard row navigation in `Nomor Kiriman` with `Enter`, `ArrowUp`, and `ArrowDown`
 - Row checkbox selection for copy/delete actions
+- When any text or value filter is active, row selection automatically follows the visible filtered rows only
 - Column context menu for:
   - sort
   - pin / unpin
@@ -127,6 +128,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
   - copy selected shipment IDs
   - delete selected rows
 - The action bar keeps a dedicated second row for selection actions and disables those buttons when nothing is selected, so the layout stays stable
+- CSV export follows the visible table schema but intentionally skips heavy/non-tabular fields such as POD image URLs and raw `history_summary` arrays
 - Column shortcut buttons that horizontally scroll to key columns
 - Temporary header highlight when a shortcut scroll target is reached
 - Sheet-specific scroll position, request state, and notices
@@ -138,8 +140,9 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
   - external API port
   - service-generated bearer token
 - `Nomor Kiriman` rows include per-row QR preview, copy ID, and source-link actions
-- `PID/Kantong Terakhir` is derived from the latest `bagging` / `unbagging` event and includes a print action for the latest bag/PID
+- `PID/Kantong Terakhir` is derived from the latest `bagging` / `unbagging` event and includes QR preview, copy ID, and print actions for the latest bag/PID
 - `Manifest Terakhir` is derived from the latest `history_summary.manifest_r7` entry
+- `Delivery Terakhir` is derived from the latest `history_summary.delivery_runsheet` entry
 - QR previews are generated locally in-app and do not rely on an external QR image service
 - `POD Photo 1` and `POD Photo 2` render as image thumbnails with hover preview
 - `history_summary` cells open scrollable popup details inside the app
@@ -183,6 +186,7 @@ The main table currently focuses on:
 - The backend now applies the same shipment-ID validation rules as the frontend, including embedded API requests.
 - Duplicate in-flight requests for the same `sheetId + rowKey + shipmentId` are skipped.
 - Active, dirty, and loading rows remain visible even while filters are active.
+- Filtered views now force selection to exactly the currently visible shipment IDs, and clearing filters stops that auto-follow mode before normal manual selection resumes.
 - Request telemetry is emitted for `start`, `success`, `fail`, and `abort` with `sheetId`, `rowKey`, and `shipmentId`.
 - `Delete All` resets rows, filters, value filters, sort state, and in-flight tracking work so the table returns to a clean input state.
 - Delivery-runsheet parsing is hardened so `FAILEDTODELIVERED` cases are not incorrectly split into two updates on the latest runsheet.

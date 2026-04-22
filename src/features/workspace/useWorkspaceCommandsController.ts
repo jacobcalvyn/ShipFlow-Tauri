@@ -22,6 +22,15 @@ type WorkspaceCommandNotice = {
   message: string;
 };
 
+const CSV_EXCLUDED_COLUMN_PATHS = new Set([
+  "pod.photo1_url",
+  "pod.photo2_url",
+  "history_summary.irregularity",
+  "history_summary.bagging_unbagging",
+  "history_summary.manifest_r7",
+  "history_summary.delivery_runsheet",
+]);
+
 type UseWorkspaceCommandsControllerOptions = {
   activeSheetId: string;
   activeSheetDeleteAllArmed: boolean;
@@ -138,7 +147,7 @@ export function useWorkspaceCommandsController({
       void copyText(trackingId).catch(() =>
         showNotice({
           tone: "error",
-          message: "Gagal menyalin ID kiriman.",
+          message: "Gagal menyalin ID.",
         })
       );
     },
@@ -234,9 +243,17 @@ export function useWorkspaceCommandsController({
       return;
     }
 
-    const header = visibleColumns.map((column) => buildCsvValue(column.label));
+    const exportColumns = visibleColumns.filter(
+      (column) => !CSV_EXCLUDED_COLUMN_PATHS.has(column.path)
+    );
+
+    if (exportColumns.length === 0) {
+      return;
+    }
+
+    const header = exportColumns.map((column) => buildCsvValue(column.label));
     const lines = exportableRows.map((row) =>
-      visibleColumns
+      exportColumns
         .map((column) => buildCsvValue(formatColumnValue(row, column)))
         .join(",")
     );

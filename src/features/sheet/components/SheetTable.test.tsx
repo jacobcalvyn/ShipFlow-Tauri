@@ -327,8 +327,10 @@ describe("SheetTable", () => {
     expect(mockedInvoke).not.toHaveBeenCalled();
   });
 
-  it("opens the bag print URL from the latest PID column", () => {
+  it("supports QR, copy, and print actions from the latest PID column", async () => {
     const onOpenSourceLink = vi.fn();
+    const onCopyTrackingId = vi.fn();
+    mockedToDataUrl.mockClear();
     const bagColumns = COLUMNS.filter((column) =>
       [LATEST_BAG_STATUS_COLUMN_PATH].includes(column.path)
     );
@@ -403,7 +405,7 @@ describe("SheetTable", () => {
         onToggleVisibleSelection={vi.fn()}
         onToggleRowSelection={vi.fn()}
         onOpenSourceLink={onOpenSourceLink}
-        onCopyTrackingId={vi.fn()}
+        onCopyTrackingId={onCopyTrackingId}
         onClearTrackingCell={vi.fn()}
         onTrackingInputChange={vi.fn()}
         onTrackingInputBlur={vi.fn()}
@@ -420,6 +422,22 @@ describe("SheetTable", () => {
         onCloseColumnMenu={vi.fn()}
         onColumnMenuRef={vi.fn()}
       />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Salin ID kantong PID89477731" }));
+    expect(onCopyTrackingId).toHaveBeenCalledWith("PID89477731");
+
+    const qrButton = screen.getByRole("button", {
+      name: "Lihat QR code untuk PID89477731",
+    });
+    fireEvent.mouseEnter(qrButton.parentElement as HTMLElement);
+
+    await screen.findByText("QR Code");
+    expect(mockedToDataUrl).toHaveBeenCalledWith(
+      "PID89477731",
+      expect.objectContaining({
+        width: 240,
+      })
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Cetak PID/Kantong PID89477731" }));

@@ -26,6 +26,7 @@ type UseWorkspaceTableControllersOptions = {
   columnMenuRefs: MutableRefObject<Map<string, HTMLDivElement | null>>;
   highlightedColumnTimeoutRef: MutableRefObject<number | null>;
   highlightedColumnSheetIdRef: MutableRefObject<string | null>;
+  hasActiveFilters: boolean;
   visibleSelectableKeys: string[];
   selectedVisibleRowKeys: string[];
   selectedTrackingIds: string[];
@@ -49,6 +50,7 @@ export function useWorkspaceTableControllers({
   columnMenuRefs,
   highlightedColumnTimeoutRef,
   highlightedColumnSheetIdRef,
+  hasActiveFilters,
   visibleSelectableKeys,
   selectedVisibleRowKeys,
   selectedTrackingIds,
@@ -74,6 +76,7 @@ export function useWorkspaceTableControllers({
     activeSheetSelectionFollowsVisibleRows: activeSheet.selectionFollowsVisibleRows,
     hiddenColumnPaths: activeSheet.hiddenColumnPaths,
     pinnedColumnPaths: activeSheet.pinnedColumnPaths,
+    hasActiveFilters,
     visibleSelectableKeys,
     selectedVisibleRowKeys,
     selectedTrackingIds,

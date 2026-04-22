@@ -1,8 +1,10 @@
 import { HIDDEN_COLUMNS_STORAGE_KEY, PINNED_COLUMNS_STORAGE_KEY, SELECTOR_COLUMN_WIDTH } from "../sheet/columns";
 import {
+  forceSelectionToVisibleRowsInSheet,
   pruneSelectionToVisibleRowsInSheet,
   setHighlightedColumnInSheet,
   setOpenColumnMenuInSheet,
+  stopSelectionFollowingVisibleRowsInSheet,
   syncSelectionWithVisibleRowsInSheet,
   toggleColumnVisibilityInSheet,
   togglePinnedColumnInSheet,
@@ -22,6 +24,7 @@ type UseWorkspaceTableShellControllerOptions = {
   activeSheetSelectionFollowsVisibleRows: boolean;
   hiddenColumnPaths: string[];
   pinnedColumnPaths: string[];
+  hasActiveFilters: boolean;
   visibleSelectableKeys: string[];
   selectedVisibleRowKeys: string[];
   selectedTrackingIds: string[];
@@ -44,6 +47,7 @@ export function useWorkspaceTableShellController({
   activeSheetSelectionFollowsVisibleRows,
   hiddenColumnPaths,
   pinnedColumnPaths,
+  hasActiveFilters,
   visibleSelectableKeys,
   selectedVisibleRowKeys,
   selectedTrackingIds,
@@ -126,6 +130,17 @@ export function useWorkspaceTableShellController({
       }
     };
   }, [highlightedColumnTimeoutRef]);
+
+  useEffect(() => {
+    if (hasActiveFilters) {
+      updateActiveSheet((current) =>
+        forceSelectionToVisibleRowsInSheet(current, visibleSelectableKeys)
+      );
+      return;
+    }
+
+    updateActiveSheet((current) => stopSelectionFollowingVisibleRowsInSheet(current));
+  }, [hasActiveFilters, updateActiveSheet, visibleSelectableKeys]);
 
   useEffect(() => {
     if (!activeSheetSelectionFollowsVisibleRows) {

@@ -7,6 +7,7 @@ export const MAX_CONCURRENT_BULK_REQUESTS = 4;
 export const TRACKING_COLUMN_PATH = "detail.shipment_header.nomor_kiriman";
 export const LATEST_BAG_STATUS_COLUMN_PATH = "history_summary.latest_bagging_status";
 export const LATEST_MANIFEST_COLUMN_PATH = "history_summary.latest_manifest_r7";
+export const LATEST_DELIVERY_COLUMN_PATH = "history_summary.latest_delivery_runsheet";
 export const HIDDEN_COLUMNS_STORAGE_KEY = "shipflow-hidden-columns";
 export const PINNED_COLUMNS_STORAGE_KEY = "shipflow-pinned-columns";
 
@@ -32,6 +33,13 @@ export const COLUMNS: ColumnDefinition[] = [
     type: "text",
     defaultWidth: 190,
     minWidth: 160,
+  },
+  {
+    path: LATEST_DELIVERY_COLUMN_PATH,
+    label: "Delivery Terakhir",
+    type: "text",
+    defaultWidth: 320,
+    minWidth: 240,
   },
   {
     path: "status_akhir.status",

@@ -47,6 +47,7 @@ export function useWorkspaceAppController(): ComponentProps<
     columnMenuRefs: interactionRefs.columnMenuRefs,
     highlightedColumnTimeoutRef: interactionRefs.highlightedColumnTimeoutRef,
     highlightedColumnSheetIdRef: interactionRefs.highlightedColumnSheetIdRef,
+    activeFilterCount: sheetViewModel.activeFilterCount,
     allTrackingIds: sheetViewModel.allTrackingIds,
     exportableRows: sheetViewModel.exportableRows,
     retrackableRows: sheetViewModel.retrackableRows,

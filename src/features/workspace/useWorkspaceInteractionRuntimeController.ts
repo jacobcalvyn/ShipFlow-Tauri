@@ -41,6 +41,7 @@ type UseWorkspaceInteractionRuntimeControllerOptions = {
   columnMenuRefs: MutableRefObject<Map<string, HTMLDivElement | null>>;
   highlightedColumnTimeoutRef: MutableRefObject<number | null>;
   highlightedColumnSheetIdRef: MutableRefObject<string | null>;
+  activeFilterCount: number;
   allTrackingIds: string[];
   exportableRows: SheetState["rows"];
   retrackableRows: Array<{ key: string; value: string }>;
@@ -81,6 +82,7 @@ export function useWorkspaceInteractionRuntimeController({
   columnMenuRefs,
   highlightedColumnTimeoutRef,
   highlightedColumnSheetIdRef,
+  activeFilterCount,
   allTrackingIds,
   exportableRows,
   retrackableRows,
@@ -140,6 +142,7 @@ export function useWorkspaceInteractionRuntimeController({
     columnMenuRefs,
     highlightedColumnTimeoutRef,
     highlightedColumnSheetIdRef,
+    hasActiveFilters: activeFilterCount > 0,
     visibleSelectableKeys,
     selectedVisibleRowKeys,
     selectedTrackingIds,

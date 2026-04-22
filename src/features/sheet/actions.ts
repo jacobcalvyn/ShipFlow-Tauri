@@ -399,6 +399,38 @@ export function syncSelectionWithVisibleRowsInSheet(
   };
 }
 
+export function forceSelectionToVisibleRowsInSheet(
+  sheetState: SheetState,
+  visibleSelectableKeys: string[]
+) {
+  if (
+    sheetState.selectionFollowsVisibleRows &&
+    sheetState.selectedRowKeys.length === visibleSelectableKeys.length &&
+    sheetState.selectedRowKeys.every(
+      (key, index) => key === visibleSelectableKeys[index]
+    )
+  ) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    selectionFollowsVisibleRows: true,
+    selectedRowKeys: visibleSelectableKeys,
+  };
+}
+
+export function stopSelectionFollowingVisibleRowsInSheet(sheetState: SheetState) {
+  if (!sheetState.selectionFollowsVisibleRows) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    selectionFollowsVisibleRows: false,
+  };
+}
+
 export function pruneSelectionToVisibleRowsInSheet(
   sheetState: SheetState,
   visibleSelectableKeys: string[]

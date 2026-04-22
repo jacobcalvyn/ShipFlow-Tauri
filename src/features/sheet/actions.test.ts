@@ -4,10 +4,12 @@ import {
   armDeleteAllInSheet,
   clearAllDataInSheet,
   deleteRowsInSheet,
+  forceSelectionToVisibleRowsInSheet,
   setRowErrorInSheet,
   setRowLoadingInSheet,
   setRowSuccessInSheet,
   setTrackingInputInSheet,
+  stopSelectionFollowingVisibleRowsInSheet,
   toggleRowSelectionInSheet,
 } from "./actions";
 import { assertValidSheetState } from "./utils";
@@ -168,5 +170,31 @@ describe("sheet actions", () => {
       error: "",
     });
     expect(() => assertValidSheetState(clearedState)).not.toThrow();
+  });
+
+  it("forces selection to match visible rows when filter-driven selection is active", () => {
+    const initial = {
+      ...createDefaultSheetState(),
+      selectedRowKeys: ["row-9"],
+      selectionFollowsVisibleRows: false,
+    };
+
+    const next = forceSelectionToVisibleRowsInSheet(initial, ["row-2", "row-4"]);
+
+    expect(next.selectionFollowsVisibleRows).toBe(true);
+    expect(next.selectedRowKeys).toEqual(["row-2", "row-4"]);
+  });
+
+  it("stops selection following visible rows without changing selected keys", () => {
+    const initial = {
+      ...createDefaultSheetState(),
+      selectedRowKeys: ["row-2", "row-4"],
+      selectionFollowsVisibleRows: true,
+    };
+
+    const next = stopSelectionFollowingVisibleRowsInSheet(initial);
+
+    expect(next.selectionFollowsVisibleRows).toBe(false);
+    expect(next.selectedRowKeys).toEqual(["row-2", "row-4"]);
   });
 });
