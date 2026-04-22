@@ -240,7 +240,6 @@ mod tests {
     use std::{
         fs,
         panic::{self, AssertUnwindSafe},
-        sync::{Mutex, OnceLock},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -251,12 +250,8 @@ mod tests {
         ApiServiceConfig, DesktopActivationRequest,
     };
     use crate::service::ApiServiceMode;
+    use crate::test_support::runtime_state_dir_test_lock;
     use crate::tracking::model::TrackingSource;
-
-    fn state_dir_test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
         let timestamp = SystemTime::now()
@@ -267,7 +262,7 @@ mod tests {
     }
 
     fn with_state_dir<T>(prefix: &str, run: impl FnOnce() -> T) -> T {
-        let _guard = state_dir_test_lock()
+        let _guard = runtime_state_dir_test_lock()
             .lock()
             .expect("state dir test lock should not be poisoned");
         let state_dir = unique_temp_dir(prefix);

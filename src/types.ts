@@ -151,6 +151,45 @@ export type TrackResponse = {
   history_summary: HistorySummary;
 };
 
+export type BagItem = {
+  no?: string;
+  no_resi?: string;
+  no_resi_url?: string;
+  kantor_kirim?: string;
+  tanggal_kirim?: string;
+  posisi_akhir?: string;
+  status?: string;
+  tanggal_update?: string;
+  jatuh_tempo?: string;
+  petugas_update?: string;
+};
+
+export type BagResponse = {
+  url: string;
+  nomor_kantung?: string;
+  items: BagItem[];
+};
+
+export type ManifestItem = {
+  no?: string;
+  nomor_kantung?: string;
+  nomor_kantung_url?: string;
+  jenis_layanan?: string;
+  berat?: string;
+  status?: string;
+  lokasi_akhir?: string;
+  tanggal?: string;
+};
+
+export type ManifestResponse = {
+  url: string;
+  total_berat?: string;
+  items: ManifestItem[];
+};
+
+export type LookupKind = "track" | "bag" | "manifest";
+export type LookupResponse = TrackResponse | BagResponse | ManifestResponse;
+
 export type ServiceMode = "local" | "lan";
 export type TrackingSource = "default" | "externalApi";
 

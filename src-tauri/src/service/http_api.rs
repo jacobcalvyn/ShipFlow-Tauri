@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 
 use super::{runtime_config::validate_service_config, ApiServiceConfig, ApiServiceMode};
 use crate::tracking::{
-    model::{TrackResponse, TrackingError},
-    upstream::resolve_tracking_request,
+    model::{BagResponse, ManifestResponse, TrackResponse, TrackingError},
+    upstream::{resolve_bag_request, resolve_manifest_request, resolve_tracking_request},
 };
 
 #[derive(Clone)]
@@ -58,6 +58,8 @@ fn build_router(app_state: HttpApiState) -> Router {
         .route("/health", get(health_handler))
         .route("/status", get(status_handler))
         .route("/track/:shipment_id", get(track_handler))
+        .route("/bag/:bag_id", get(bag_handler))
+        .route("/manifest/:manifest_id", get(manifest_handler))
         .with_state(app_state)
 }
 
@@ -87,6 +89,32 @@ async fn track_handler(
     authorize_request(&headers, &state.auth_token)?;
 
     resolve_tracking_request(&state.client, &state.tracking_source, shipment_id.trim())
+        .await
+        .map(Json)
+        .map_err(map_tracking_error)
+}
+
+async fn bag_handler(
+    State(state): State<HttpApiState>,
+    headers: HeaderMap,
+    Path(bag_id): Path<String>,
+) -> Result<Json<BagResponse>, (StatusCode, Json<Value>)> {
+    authorize_request(&headers, &state.auth_token)?;
+
+    resolve_bag_request(&state.client, bag_id.trim())
+        .await
+        .map(Json)
+        .map_err(map_tracking_error)
+}
+
+async fn manifest_handler(
+    State(state): State<HttpApiState>,
+    headers: HeaderMap,
+    Path(manifest_id): Path<String>,
+) -> Result<Json<ManifestResponse>, (StatusCode, Json<Value>)> {
+    authorize_request(&headers, &state.auth_token)?;
+
+    resolve_manifest_request(&state.client, manifest_id.trim())
         .await
         .map(Json)
         .map_err(map_tracking_error)

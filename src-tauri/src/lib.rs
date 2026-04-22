@@ -5,6 +5,8 @@ mod pod_preview;
 mod runtime_log;
 mod service;
 mod service_runtime;
+#[cfg(test)]
+mod test_support;
 mod tracking;
 mod window_runtime;
 mod workspace_document;
@@ -27,7 +29,8 @@ use service::{
 use service_runtime::{
     configure_api_service_runtime, get_api_service_status_runtime,
     load_saved_api_service_config_runtime, test_external_tracking_source_runtime,
-    track_shipment_via_service, validate_tracking_source_config_runtime, TrayState,
+    track_bag_via_service, track_manifest_via_service, track_shipment_via_service,
+    validate_tracking_source_config_runtime, TrayState,
 };
 use tracking::model::{TrackingClientState, TrackingSourceConfig};
 use window_runtime::{
@@ -69,6 +72,77 @@ async fn track_shipment(
 
     let track_result =
         track_shipment_via_service(&client_state.client, &runtime_config, shipment_id.trim()).await;
+
+    track_result.map_err(|error| match error {
+        tracking::model::TrackingError::BadRequest(message)
+        | tracking::model::TrackingError::NotFound(message)
+        | tracking::model::TrackingError::Upstream(message) => {
+            log_runtime_event("ERROR", format!("[ShipFlowBackend] {context} {message}"));
+            format!("{context} {message}")
+        }
+    })
+}
+
+#[tauri::command]
+async fn track_bag(
+    bag_id: String,
+    sheet_id: Option<String>,
+    row_key: Option<String>,
+    client_state: tauri::State<'_, TrackingClientState>,
+    service_controller: tauri::State<'_, ApiServiceController>,
+) -> Result<tracking::model::BagResponse, String> {
+    let context = format!(
+        "[sheetId={}, rowKey={}, bagId={}]",
+        sheet_id.as_deref().unwrap_or("-"),
+        row_key.as_deref().unwrap_or("-"),
+        bag_id.trim()
+    );
+
+    let saved_service_config = service_controller.load_saved_config().unwrap_or(None);
+    let runtime_config =
+        ensure_tracking_service_runtime(saved_service_config).map_err(|message| {
+            log_runtime_event("ERROR", format!("[ShipFlowBackend] {context} {message}"));
+            format!("{context} {message}")
+        })?;
+
+    let track_result =
+        track_bag_via_service(&client_state.client, &runtime_config, bag_id.trim()).await;
+
+    track_result.map_err(|error| match error {
+        tracking::model::TrackingError::BadRequest(message)
+        | tracking::model::TrackingError::NotFound(message)
+        | tracking::model::TrackingError::Upstream(message) => {
+            log_runtime_event("ERROR", format!("[ShipFlowBackend] {context} {message}"));
+            format!("{context} {message}")
+        }
+    })
+}
+
+#[tauri::command]
+async fn track_manifest(
+    manifest_id: String,
+    sheet_id: Option<String>,
+    row_key: Option<String>,
+    client_state: tauri::State<'_, TrackingClientState>,
+    service_controller: tauri::State<'_, ApiServiceController>,
+) -> Result<tracking::model::ManifestResponse, String> {
+    let context = format!(
+        "[sheetId={}, rowKey={}, manifestId={}]",
+        sheet_id.as_deref().unwrap_or("-"),
+        row_key.as_deref().unwrap_or("-"),
+        manifest_id.trim()
+    );
+
+    let saved_service_config = service_controller.load_saved_config().unwrap_or(None);
+    let runtime_config =
+        ensure_tracking_service_runtime(saved_service_config).map_err(|message| {
+            log_runtime_event("ERROR", format!("[ShipFlowBackend] {context} {message}"));
+            format!("{context} {message}")
+        })?;
+
+    let track_result =
+        track_manifest_via_service(&client_state.client, &runtime_config, manifest_id.trim())
+            .await;
 
     track_result.map_err(|error| match error {
         tracking::model::TrackingError::BadRequest(message)
@@ -308,6 +382,8 @@ pub fn run() {
         .plugin(build_main_webview_navigation_guard_plugin())
         .invoke_handler(tauri::generate_handler![
             track_shipment,
+            track_bag,
+            track_manifest,
             resolve_pod_image,
             open_external_url,
             copy_to_clipboard,
@@ -349,6 +425,8 @@ pub fn run_service_settings() {
         .setup(service_settings_setup)
         .on_window_event(handle_service_settings_window_event)
         .invoke_handler(tauri::generate_handler![
+            track_bag,
+            track_manifest,
             open_external_url,
             copy_to_clipboard,
             log_frontend_runtime_event,

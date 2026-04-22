@@ -103,19 +103,14 @@ mod tests {
     use std::{
         fs,
         panic::{self, AssertUnwindSafe},
-        sync::{Mutex, OnceLock},
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use super::{append_runtime_log_line, runtime_log_path};
-
-    fn runtime_log_test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
+    use crate::test_support::runtime_state_dir_test_lock;
 
     fn with_state_dir<T>(label: &str, operation: impl FnOnce() -> T) -> T {
-        let _guard = runtime_log_test_lock()
+        let _guard = runtime_state_dir_test_lock()
             .lock()
             .expect("runtime log test lock poisoned");
 

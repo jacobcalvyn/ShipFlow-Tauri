@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use serde::de::DeserializeOwned;
 use tauri::{AppHandle, Runtime};
 
 use crate::runtime_log::log_runtime_event;
@@ -7,7 +8,9 @@ use crate::service::{
     self, ApiServiceConfig, ApiServiceController, ApiServiceMode, ApiServiceStatus,
 };
 use crate::tracking;
-use crate::tracking::model::{TrackingClientState, TrackingSource};
+use crate::tracking::model::{
+    BagResponse, ManifestResponse, TrackingClientState, TrackingSource,
+};
 use crate::tracking::upstream::{
     probe_external_api_status, validate_tracking_source_config as validate_tracking_source_settings,
 };
@@ -96,11 +99,33 @@ pub(crate) async fn track_shipment_via_service(
     config: &ApiServiceConfig,
     shipment_id: &str,
 ) -> Result<tracking::model::TrackResponse, tracking::model::TrackingError> {
-    let endpoint = format!(
-        "http://127.0.0.1:{}/track/{}",
-        config.port,
-        shipment_id.trim()
-    );
+    fetch_lookup_via_service(client, config, "track", shipment_id, "tracking").await
+}
+
+pub(crate) async fn track_bag_via_service(
+    client: &reqwest::Client,
+    config: &ApiServiceConfig,
+    bag_id: &str,
+) -> Result<BagResponse, tracking::model::TrackingError> {
+    fetch_lookup_via_service(client, config, "bag", bag_id, "bag").await
+}
+
+pub(crate) async fn track_manifest_via_service(
+    client: &reqwest::Client,
+    config: &ApiServiceConfig,
+    manifest_id: &str,
+) -> Result<ManifestResponse, tracking::model::TrackingError> {
+    fetch_lookup_via_service(client, config, "manifest", manifest_id, "manifest").await
+}
+
+async fn fetch_lookup_via_service<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    config: &ApiServiceConfig,
+    route: &str,
+    lookup_id: &str,
+    label: &str,
+) -> Result<T, tracking::model::TrackingError> {
+    let endpoint = format!("http://127.0.0.1:{}/{route}/{}", config.port, lookup_id.trim());
     let response = client
         .get(endpoint)
         .bearer_auth(config.auth_token.trim())
@@ -115,17 +140,15 @@ pub(crate) async fn track_shipment_via_service(
     if response.status().is_success() {
         let raw_body = response.text().await.map_err(|error| {
             tracking::model::TrackingError::Upstream(format!(
-                "Unable to read ShipFlow Service tracking response: {error}"
+                "Unable to read ShipFlow Service {label} response: {error}"
             ))
         })?;
 
-        return serde_json::from_str::<tracking::model::TrackResponse>(&raw_body).map_err(
-            |error| {
-                tracking::model::TrackingError::Upstream(format!(
-                    "ShipFlow Service returned an invalid tracking response: {error}"
-                ))
-            },
-        );
+        return serde_json::from_str::<T>(&raw_body).map_err(|error| {
+            tracking::model::TrackingError::Upstream(format!(
+                "ShipFlow Service returned an invalid {label} response: {error}"
+            ))
+        });
     }
 
     let status = response.status();
@@ -139,7 +162,7 @@ pub(crate) async fn track_shipment_via_service(
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("ShipFlow Service tracking request failed.");
+        .unwrap_or("ShipFlow Service lookup request failed.");
 
     match status.as_u16() {
         400 => Err(tracking::model::TrackingError::BadRequest(message.into())),

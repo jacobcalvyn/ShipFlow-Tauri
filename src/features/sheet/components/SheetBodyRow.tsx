@@ -12,12 +12,13 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import QRCode from "qrcode";
-import { TRACKING_COLUMN_PATH } from "../columns";
+import { LATEST_BAG_STATUS_COLUMN_PATH, TRACKING_COLUMN_PATH } from "../columns";
 import { ColumnDefinition, SheetRow } from "../types";
 import { MAX_TRACKING_INPUT_LENGTH } from "../utils";
 import {
   formatHistorySummaryPreview,
   formatColumnValue,
+  getLatestBagPrintUrl,
   getColumnToneClass,
   getColumnTypeClass,
   getRawColumnValue,
@@ -597,6 +598,64 @@ export const SheetBodyRow = memo(function SheetBodyRow({
                   title={row.error || status}
                   aria-label={`Row status ${status}`}
                 />
+              </div>
+            </td>
+          );
+        }
+
+        if (column.path === LATEST_BAG_STATUS_COLUMN_PATH) {
+          const printUrl = row.shipment
+            ? getLatestBagPrintUrl(row.shipment.history_summary)
+            : null;
+
+          return (
+            <td
+              key={`${row.key}-${column.path}`}
+              style={{
+                width,
+                minWidth: width,
+                maxWidth: width,
+                left: isPinned ? pinnedLeftMap[column.path] : undefined,
+              }}
+              className={className}
+            >
+              <div className="bag-status-cell">
+                <div className="cell-text" title={formattedValue}>
+                  {formattedValue}
+                </div>
+                {printUrl ? (
+                  <button
+                    type="button"
+                    className="bag-print-link"
+                    title="Cetak PID/Kantong"
+                    aria-label={`Cetak PID/Kantong ${formattedValue.split(" - ")[0]}`}
+                    onClick={() => onOpenSourceLink(printUrl)}
+                  >
+                    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                      <path
+                        d="M6.25 6V4.75C6.25 4.05964 6.80964 3.5 7.5 3.5H12.5C13.1904 3.5 13.75 4.05964 13.75 4.75V6"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      <path
+                        d="M5.5 14.5H4.75C4.05964 14.5 3.5 13.9404 3.5 13.25V8.25C3.5 7.55964 4.05964 7 4.75 7H15.25C15.9404 7 16.5 7.55964 16.5 8.25V13.25C16.5 13.9404 15.9404 14.5 15.25 14.5H14.5"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      <path
+                        d="M6.25 11.5H13.75V15.25C13.75 15.9404 13.1904 16.5 12.5 16.5H7.5C6.80964 16.5 6.25 15.9404 6.25 15.25V11.5Z"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinejoin="round"
+                      />
+                      <circle cx="13.5" cy="9.5" r="0.75" fill="currentColor" />
+                    </svg>
+                  </button>
+                ) : null}
               </div>
             </td>
           );

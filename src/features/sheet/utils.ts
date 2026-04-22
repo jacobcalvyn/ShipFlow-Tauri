@@ -1,6 +1,8 @@
 import {
   COLUMNS,
   INITIAL_ROW_COUNT,
+  LATEST_BAG_STATUS_COLUMN_PATH,
+  LATEST_MANIFEST_COLUMN_PATH,
   MIN_EMPTY_TRAILING_ROWS,
 } from "./columns";
 import { ColumnDefinition, SheetRow, SheetState } from "./types";
@@ -8,6 +10,8 @@ import { ColumnDefinition, SheetRow, SheetState } from "./types";
 const ZERO_WIDTH_CHARACTERS_REGEX = /[\u200B-\u200D\uFEFF]/g;
 const NON_TRACKING_CHARACTERS_REGEX = /[^A-Z0-9-]/g;
 export const MAX_TRACKING_INPUT_LENGTH = 64;
+const BAG_PRINT_SUFFIX = "5f9fae9b5fbe9d6e401ad0c5";
+const BAG_PRINT_OID = "NWY5ZmFlOWI1ZmJlOWQ2ZTQwMWFkMGM1";
 const HISTORY_SUMMARY_PATHS = new Set([
   "history_summary.irregularity",
   "history_summary.bagging_unbagging",
@@ -135,6 +139,14 @@ export function getRawColumnValue(row: SheetRow, column: ColumnDefinition): unkn
     return undefined;
   }
 
+  if (column.path === LATEST_BAG_STATUS_COLUMN_PATH) {
+    return getLatestBagStatusText(row.shipment.history_summary);
+  }
+
+  if (column.path === LATEST_MANIFEST_COLUMN_PATH) {
+    return getLatestManifestText(row.shipment.history_summary);
+  }
+
   return getByPath(row.shipment, column.path);
 }
 
@@ -181,6 +193,91 @@ function getRecordValue(
 ): string | undefined {
   const value = source[key];
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+function getLatestBagStatusDetails(historySummary: unknown) {
+  if (!historySummary || typeof historySummary !== "object") {
+    return null;
+  }
+
+  const rawValue = (historySummary as Record<string, unknown>).bagging_unbagging;
+  if (!Array.isArray(rawValue) || rawValue.length === 0) {
+    return null;
+  }
+
+  let latestBagStatus:
+    | {
+        bagId: string;
+        statusLabel: "Bagging" | "Unbagging";
+      }
+    | null = null;
+
+  for (const item of rawValue) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const record = item as Record<string, unknown>;
+    const nomorKantung = getRecordValue(record, "nomor_kantung");
+    if (!nomorKantung) {
+      continue;
+    }
+
+    if (record.bagging && typeof record.bagging === "object") {
+      latestBagStatus = {
+        bagId: nomorKantung,
+        statusLabel: "Bagging",
+      };
+    }
+
+    if (record.unbagging && typeof record.unbagging === "object") {
+      latestBagStatus = {
+        bagId: nomorKantung,
+        statusLabel: "Unbagging",
+      };
+    }
+  }
+
+  return latestBagStatus;
+}
+
+function getLatestBagStatusText(historySummary: unknown) {
+  const latestBagStatus = getLatestBagStatusDetails(historySummary);
+  if (!latestBagStatus) {
+    return "-";
+  }
+
+  return `${latestBagStatus.bagId} - ${latestBagStatus.statusLabel}`;
+}
+
+function getLatestManifestText(historySummary: unknown) {
+  if (!historySummary || typeof historySummary !== "object") {
+    return "-";
+  }
+
+  const rawValue = (historySummary as Record<string, unknown>).manifest_r7;
+  if (!Array.isArray(rawValue) || rawValue.length === 0) {
+    return "-";
+  }
+
+  const latest = rawValue[rawValue.length - 1];
+  if (!latest || typeof latest !== "object") {
+    return "-";
+  }
+
+  return getRecordValue(latest as Record<string, unknown>, "nomor_r7") ?? "-";
+}
+
+export function getLatestBagPrintUrl(historySummary: unknown) {
+  const latestBagStatus = getLatestBagStatusDetails(historySummary);
+  if (!latestBagStatus) {
+    return null;
+  }
+
+  const bagIdentifier = `${latestBagStatus.bagId}_${BAG_PRINT_SUFFIX}`;
+  return `https://apiexpos.mile.app/api/v1/print-bag?bag_id=${encodeURIComponent(
+    bagIdentifier
+  )}&oid=${encodeURIComponent(BAG_PRINT_OID)}`;
 }
 
 function getHistorySummaryLatestText(rawValue: unknown, path: string) {

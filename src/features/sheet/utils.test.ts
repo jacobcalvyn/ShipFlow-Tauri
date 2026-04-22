@@ -5,6 +5,7 @@ import {
   compareRows,
   ensureTrailingEmptyRows,
   formatColumnValue,
+  getLatestBagPrintUrl,
   getRowStatus,
   sanitizeTrackingInput,
   sanitizeTrackingPasteValues,
@@ -139,6 +140,12 @@ describe("sheet utils", () => {
     const irregularityColumn = COLUMNS.find(
       (column) => column.path === "history_summary.irregularity"
     )!;
+    const latestBagStatusColumn = COLUMNS.find(
+      (column) => column.path === "history_summary.latest_bagging_status"
+    )!;
+    const latestManifestColumn = COLUMNS.find(
+      (column) => column.path === "history_summary.latest_manifest_r7"
+    )!;
     const baggingColumn = COLUMNS.find(
       (column) => column.path === "history_summary.bagging_unbagging"
     )!;
@@ -154,6 +161,12 @@ describe("sheet utils", () => {
     expect(formatColumnValue(row, podColumn)).toBe("https://example.test/photo-1.jpg");
     expect(formatColumnValue(row, irregularityColumn)).toBe(
       "FAILED | DC JAYAPURA 9910A | 2026-04-15 16:17:07"
+    );
+    expect(formatColumnValue(row, latestBagStatusColumn)).toBe(
+      "PID95084242 - Bagging"
+    );
+    expect(formatColumnValue(row, latestManifestColumn)).toBe(
+      "P20260310064942110"
     );
     expect(formatColumnValue(row, baggingColumn)).toBe(
       "Bagging PID95084242 | DC JAYAPURA 9910A | 2026-04-15 16:33:20"
@@ -204,6 +217,60 @@ describe("sheet utils", () => {
     ).toBe("Ready");
     expect(getRowStatus(createRow({ trackingInput: "P2601" }))).toBe("Pending");
     expect(getRowStatus(createRow())).toBe("Draft");
+  });
+
+  it("prefers the latest unbagging status for the dedicated PID column", () => {
+    const latestBagStatusColumn = COLUMNS.find(
+      (column) => column.path === "history_summary.latest_bagging_status"
+    )!;
+    const row = createRow({
+      shipment: {
+        url: "https://example.test",
+        detail: {
+          shipment_header: {},
+          origin_detail: {},
+          package_detail: { berat_actual: 0, berat_volumetric: 0 },
+          billing_detail: {
+            bea_dasar: 0,
+            nilai_barang: 0,
+            htnb: 0,
+            cod_info: { is_cod: false, total_cod: 0 },
+          },
+          actors: { pengirim: {}, penerima: {} },
+          performance_detail: {},
+        },
+        status_akhir: {},
+        pod: {},
+        history: [],
+        history_summary: {
+          irregularity: [],
+          bagging_unbagging: [
+            {
+              nomor_kantung: "PID95180533",
+              bagging: {
+                lokasi: "DC JAYAPURA 9910A",
+                tanggal: "2026-04-21",
+                waktu: "09:00:00",
+              },
+              unbagging: {
+                lokasi: "SPP JAYAPURA",
+                tanggal: "2026-04-21",
+                waktu: "10:00:00",
+              },
+            },
+          ],
+          manifest_r7: [],
+          delivery_runsheet: [],
+        },
+      },
+    });
+
+    expect(formatColumnValue(row, latestBagStatusColumn)).toBe(
+      "PID95180533 - Unbagging"
+    );
+    expect(getLatestBagPrintUrl(row.shipment?.history_summary)).toBe(
+      "https://apiexpos.mile.app/api/v1/print-bag?bag_id=PID95180533_5f9fae9b5fbe9d6e401ad0c5&oid=NWY5ZmFlOWI1ZmJlOWQ2ZTQwMWFkMGM1"
+    );
   });
 
   it("sorts rows using comparable values from the column", () => {

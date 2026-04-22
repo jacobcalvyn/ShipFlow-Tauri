@@ -5,15 +5,24 @@ use base64::Engine as _;
 use reqwest::{Client, Response, StatusCode, Url};
 use serde::Deserialize;
 
-use crate::model::{TrackResponse, TrackingError, TrackingSource, TrackingSourceConfig};
+use crate::bag::parse_bag_html;
+use crate::manifest::parse_manifest_html;
+use crate::model::{
+    BagResponse, LookupKind, ManifestResponse, TrackResponse, TrackingError, TrackingSource,
+    TrackingSourceConfig,
+};
 use crate::parser::parse_tracking_html;
 
 pub const POS_TRACKING_ENDPOINT: &str =
     "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php";
 pub const POS_TRACKING_BASE_URL: &str = "https://pid.posindonesia.co.id/lacak/admin/";
+pub const POS_BAG_ENDPOINT: &str =
+    "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak_bag.php";
+pub const POS_MANIFEST_ENDPOINT: &str =
+    "https://pid.posindonesia.co.id/lacak/admin/GetManifestR7_detil.php";
 const TRACKING_MAX_ATTEMPTS: u32 = 3;
 const TRACKING_RETRY_BASE_DELAY_MS: u64 = 250;
-pub const MAX_SHIPMENT_ID_LENGTH: usize = 64;
+pub const MAX_LOOKUP_ID_LENGTH: usize = 64;
 
 #[derive(Debug, Deserialize)]
 struct ExternalApiErrorResponse {
@@ -51,9 +60,9 @@ pub fn normalize_and_validate_shipment_id(input: &str) -> Result<String, Trackin
         return Err(TrackingError::BadRequest("Shipment ID is required.".into()));
     }
 
-    if normalized.len() > MAX_SHIPMENT_ID_LENGTH {
+    if normalized.len() > MAX_LOOKUP_ID_LENGTH {
         return Err(TrackingError::BadRequest(format!(
-            "Shipment ID exceeds {MAX_SHIPMENT_ID_LENGTH} characters."
+            "Shipment ID exceeds {MAX_LOOKUP_ID_LENGTH} characters."
         )));
     }
 
@@ -67,7 +76,7 @@ pub async fn scrape_pos_tracking(
     let normalized_shipment_id = normalize_and_validate_shipment_id(shipment_id)?;
 
     let request_url = build_tracking_url(POS_TRACKING_ENDPOINT, &normalized_shipment_id);
-    let response = fetch_tracking_response(client, &request_url).await?;
+    let response = fetch_lookup_response(client, &request_url).await?;
 
     if !response.status().is_success() {
         return Err(TrackingError::Upstream(format!(
@@ -81,6 +90,47 @@ pub async fn scrape_pos_tracking(
     })?;
 
     parse_tracking_html(&request_url, &html)
+}
+
+pub async fn scrape_pos_bag(client: &Client, bag_id: &str) -> Result<BagResponse, TrackingError> {
+    let normalized_bag_id = normalize_and_validate_bag_id(bag_id)?;
+    let request_url = build_tracking_url(POS_BAG_ENDPOINT, &normalized_bag_id);
+    let response = fetch_lookup_response(client, &request_url).await?;
+
+    if !response.status().is_success() {
+        return Err(TrackingError::Upstream(format!(
+            "Bag endpoint returned HTTP {}.",
+            response.status()
+        )));
+    }
+
+    let html = response.text().await.map_err(|error| {
+        TrackingError::Upstream(format!("Bag response could not be read: {error}"))
+    })?;
+
+    Ok(parse_bag_html(&html, &request_url))
+}
+
+pub async fn scrape_pos_manifest(
+    client: &Client,
+    manifest_id: &str,
+) -> Result<ManifestResponse, TrackingError> {
+    let normalized_manifest_id = normalize_and_validate_manifest_id(manifest_id)?;
+    let request_url = build_tracking_url(POS_MANIFEST_ENDPOINT, &normalized_manifest_id);
+    let response = fetch_lookup_response(client, &request_url).await?;
+
+    if !response.status().is_success() {
+        return Err(TrackingError::Upstream(format!(
+            "Manifest endpoint returned HTTP {}.",
+            response.status()
+        )));
+    }
+
+    let html = response.text().await.map_err(|error| {
+        TrackingError::Upstream(format!("Manifest response could not be read: {error}"))
+    })?;
+
+    Ok(parse_manifest_html(&html, &request_url))
 }
 
 pub fn validate_tracking_source_config(
@@ -122,6 +172,28 @@ pub async fn resolve_tracking_request(
             .await
         }
     }
+}
+
+pub async fn resolve_bag_request(
+    client: &Client,
+    bag_id: &str,
+) -> Result<BagResponse, TrackingError> {
+    scrape_pos_bag(client, bag_id).await
+}
+
+pub async fn resolve_manifest_request(
+    client: &Client,
+    manifest_id: &str,
+) -> Result<ManifestResponse, TrackingError> {
+    scrape_pos_manifest(client, manifest_id).await
+}
+
+pub fn normalize_and_validate_bag_id(input: &str) -> Result<String, TrackingError> {
+    normalize_lookup_id(input, LookupKind::Bag)
+}
+
+pub fn normalize_and_validate_manifest_id(input: &str) -> Result<String, TrackingError> {
+    normalize_lookup_id(input, LookupKind::Manifest)
 }
 
 pub async fn fetch_external_api_tracking(
@@ -263,7 +335,7 @@ pub async fn probe_external_api_status(
     ))
 }
 
-pub async fn fetch_tracking_response(
+pub async fn fetch_lookup_response(
     client: &Client,
     request_url: &str,
 ) -> Result<Response, TrackingError> {
@@ -301,8 +373,29 @@ pub async fn fetch_tracking_response(
     }
 
     Err(TrackingError::Upstream(
-        "Tracking request exhausted retries.".into(),
+        "Lookup request exhausted retries.".into(),
     ))
+}
+
+fn normalize_lookup_id(input: &str, kind: LookupKind) -> Result<String, TrackingError> {
+    let normalized = sanitize_shipment_id(input.trim());
+    let label = match kind {
+        LookupKind::Track => "Shipment ID",
+        LookupKind::Bag => "Bag ID",
+        LookupKind::Manifest => "Manifest ID",
+    };
+
+    if normalized.is_empty() {
+        return Err(TrackingError::BadRequest(format!("{label} is required.")));
+    }
+
+    if normalized.len() > MAX_LOOKUP_ID_LENGTH {
+        return Err(TrackingError::BadRequest(format!(
+            "{label} exceeds {MAX_LOOKUP_ID_LENGTH} characters."
+        )));
+    }
+
+    Ok(normalized)
 }
 
 pub fn is_retryable_status(status: StatusCode) -> bool {
@@ -395,8 +488,8 @@ async fn read_external_api_error_message(response: Response) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_tracking_url, normalize_and_validate_shipment_id, validate_tracking_source_config,
-        POS_TRACKING_ENDPOINT,
+        build_tracking_url, normalize_and_validate_bag_id, normalize_and_validate_manifest_id,
+        normalize_and_validate_shipment_id, validate_tracking_source_config, POS_TRACKING_ENDPOINT,
     };
     use crate::model::{TrackingError, TrackingSource, TrackingSourceConfig};
 
@@ -423,6 +516,27 @@ mod tests {
         ));
         assert!(matches!(
             normalize_and_validate_shipment_id(&format!("P{}", "1".repeat(80))),
+            Err(TrackingError::BadRequest(_))
+        ));
+    }
+
+    #[test]
+    fn normalize_and_validate_bag_and_manifest_ids_reuse_lookup_guardrails() {
+        assert_eq!(
+            normalize_and_validate_bag_id(" bag-001 ").expect("valid bag id should normalize"),
+            "BAG-001"
+        );
+        assert_eq!(
+            normalize_and_validate_manifest_id(" r7-001 ")
+                .expect("valid manifest id should normalize"),
+            "R7-001"
+        );
+        assert!(matches!(
+            normalize_and_validate_bag_id("   "),
+            Err(TrackingError::BadRequest(_))
+        ));
+        assert!(matches!(
+            normalize_and_validate_manifest_id(&format!("M{}", "1".repeat(80))),
             Err(TrackingError::BadRequest(_))
         ));
     }

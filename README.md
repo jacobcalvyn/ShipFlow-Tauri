@@ -4,6 +4,8 @@ Desktop shipment tracking workspace built with Tauri, Rust, React, and Vite.
 
 The app is optimized for spreadsheet-style operational analysis. Each row represents one shipment. The first data column accepts a shipment ID, then the app asks `ShipFlow Service` for tracking data and fills the rest of the row. A sheet is treated as one independent workspace.
 
+The runtime foundation now also supports POS bag and manifest lookups through the shared Rust core and the local service API, but the current desktop workspace UI is still shipment-first.
+
 Architecture references:
 
 - [docs/runtime-architecture.md](./docs/runtime-architecture.md)
@@ -16,6 +18,7 @@ Architecture references:
 - Uses a document-style desktop workspace with open / save / save as
 - Uses `ShipFlow Service` as the runtime that owns tracking configuration and API access
 - Supports both internal POS scraping and external ShipFlow API source selection from `ShipFlow Service`
+- Supports three lookup kinds in the runtime layer: `track`, `bag`, and `manifest`
 - Shows shipment detail and `status_akhir` fields in a wide spreadsheet-style table
 - Supports bulk paste, row selection, CSV export, column pin/hide, sorting, and filtering
 - Supports both text filters and per-column multi-select value filters
@@ -53,6 +56,31 @@ Example generated upstream URL:
 ```text
 https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=UDI2MDMzMTAxMTQyOTE%3D
 ```
+
+## Lookup Kinds
+
+The runtime now distinguishes between:
+
+- `track`: shipment / resi detail
+- `bag`: bag detail plus the shipment list inside the bag
+- `manifest`: manifest detail plus the bag list inside the manifest
+
+Current ownership:
+
+- `shipflow-core` parses all three kinds
+- `ShipFlow Service` exposes all three kinds from the local API
+- `ShipFlow Desktop` currently renders only shipment rows in the workspace table
+
+Current local service routes:
+
+- `GET /track/:shipment_id`
+- `GET /bag/:bag_id`
+- `GET /manifest/:manifest_id`
+
+Important note:
+
+- external API source selection currently applies to shipment tracking
+- bag and manifest lookups currently use the internal POS scraper path
 
 ## JSON Shape
 
@@ -110,6 +138,8 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
   - external API port
   - service-generated bearer token
 - `Nomor Kiriman` rows include per-row QR preview, copy ID, and source-link actions
+- `PID/Kantong Terakhir` is derived from the latest `bagging` / `unbagging` event and includes a print action for the latest bag/PID
+- `Manifest Terakhir` is derived from the latest `history_summary.manifest_r7` entry
 - QR previews are generated locally in-app and do not rely on an external QR image service
 - `POD Photo 1` and `POD Photo 2` render as image thumbnails with hover preview
 - `history_summary` cells open scrollable popup details inside the app
@@ -158,6 +188,8 @@ The main table currently focuses on:
 - Delivery-runsheet parsing is hardened so `FAILEDTODELIVERED` cases are not incorrectly split into two updates on the latest runsheet.
 - Delivery-runsheet parsing now keeps only the latest effective update for a runsheet summary.
 - The service companion always keeps tray/background behavior enabled; it is no longer exposed as a user-facing desktop setting.
+- Desktop startup now proactively checks whether `ShipFlow Service` is already running and starts the companion runtime when needed.
+- Desktop and service runtime events are written to per-process log files under the shared runtime state directory.
 
 ## Project Structure
 
@@ -183,15 +215,15 @@ The main table currently focuses on:
 - [src-tauri/src/workspace_document.rs](./src-tauri/src/workspace_document.rs): workspace document read/write helpers
 - [src-tauri/src/service.rs](./src-tauri/src/service.rs): service controller composition layer
 - [src-tauri/src/service](./src-tauri/src/service): service runtime modules for HTTP API, config, state store, process runtime, and tray runtime
-- [crates/shipflow-core](./crates/shipflow-core): shared tracking core for parser, upstream logic, and tracking models
+- [crates/shipflow-core](./crates/shipflow-core): shared lookup core for shipment, bag, and manifest parser/upstream logic and models
 - [src-tauri/src/tracking/mod.rs](./src-tauri/src/tracking/mod.rs): Tauri-side compatibility module that re-exports the shared tracking core
 - [src-tauri/src/fixtures](./src-tauri/src/fixtures): parser fixtures used by Rust tests
 
 ### Runtime Split
 
 - `ShipFlow Desktop`: document workspace, sheet management, and table UI
-- `ShipFlow Service`: tracking runtime, source selection, service token, tray/background lifecycle, and external API access
-- `shipflow-core`: shared tracking engine used by desktop/service Rust code
+- `ShipFlow Service`: runtime lookup API, source selection, service token, tray/background lifecycle, and external API access
+- `shipflow-core`: shared lookup engine used by desktop/service Rust code
 - Desktop and service are installed together as one product bundle, but run as separate executables/processes
 - `shipflow-core` is linked into the Rust binaries and is not packaged as a standalone app
 
@@ -345,7 +377,10 @@ Rust tests are now split by domain and cover:
 - Base64 + percent-encoded tracking URL generation
 - embedded API bearer-auth validation
 - backend shipment-ID normalization and validation
+- backend bag-ID and manifest-ID normalization and validation
 - sample HTML parsing
+- bag HTML parsing
+- manifest HTML parsing
 - not-found parser behavior
 - invalid numeric parser behavior
 - nullable numeric parsing
@@ -357,6 +392,8 @@ Rust tests are now split by domain and cover:
 
 Main Rust test locations:
 
+- [crates/shipflow-core/src/bag.rs](./crates/shipflow-core/src/bag.rs)
+- [crates/shipflow-core/src/manifest.rs](./crates/shipflow-core/src/manifest.rs)
 - [crates/shipflow-core/src/parser.rs](./crates/shipflow-core/src/parser.rs)
 - [crates/shipflow-core/src/upstream.rs](./crates/shipflow-core/src/upstream.rs)
 - [src-tauri/src/service/runtime_config.rs](./src-tauri/src/service/runtime_config.rs)
@@ -384,3 +421,4 @@ cargo test --manifest-path crates/shipflow-core/Cargo.toml
 - Hidden columns are stored in browser/webview local storage
 - Pinned columns are stored in browser/webview local storage
 - Workspace and sheet state are persisted in browser/webview local storage with a storage-safe fallback snapshot
+- Service runtime state, PID markers, pending activation requests, and runtime logs are stored under the temporary `shipflow-service-runtime` state directory

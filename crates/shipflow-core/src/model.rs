@@ -25,6 +25,14 @@ pub enum TrackingSource {
     ExternalApi,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LookupKind {
+    Track,
+    Bag,
+    Manifest,
+}
+
 impl Default for TrackingSource {
     fn default() -> Self {
         Self::Default
@@ -214,6 +222,46 @@ pub struct TrackResponse {
     pub pod: TrackPod,
     pub history: Vec<TrackHistoryEntry>,
     pub history_summary: HistorySummary,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct BagItem {
+    pub no: Option<String>,
+    pub no_resi: Option<String>,
+    pub no_resi_url: Option<String>,
+    pub kantor_kirim: Option<String>,
+    pub tanggal_kirim: Option<String>,
+    pub posisi_akhir: Option<String>,
+    pub status: Option<String>,
+    pub tanggal_update: Option<String>,
+    pub jatuh_tempo: Option<String>,
+    pub petugas_update: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct BagResponse {
+    pub url: String,
+    pub nomor_kantung: Option<String>,
+    pub items: Vec<BagItem>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ManifestItem {
+    pub no: Option<String>,
+    pub nomor_kantung: Option<String>,
+    pub nomor_kantung_url: Option<String>,
+    pub jenis_layanan: Option<String>,
+    pub berat: Option<String>,
+    pub status: Option<String>,
+    pub lokasi_akhir: Option<String>,
+    pub tanggal: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ManifestResponse {
+    pub url: String,
+    pub total_berat: Option<String>,
+    pub items: Vec<ManifestItem>,
 }
 
 #[derive(Debug)]

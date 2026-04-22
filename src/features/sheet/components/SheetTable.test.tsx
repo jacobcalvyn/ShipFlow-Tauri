@@ -21,7 +21,7 @@ vi.mock("qrcode", () => ({
 
 import { SheetTable } from "./SheetTable";
 import { getPreviewPortalLayout } from "./SheetBodyRow";
-import { COLUMNS } from "../columns";
+import { COLUMNS, LATEST_BAG_STATUS_COLUMN_PATH } from "../columns";
 import { SheetRow } from "../types";
 
 const visibleColumns = COLUMNS.slice(0, 2);
@@ -325,6 +325,108 @@ describe("SheetTable", () => {
     fireEvent.mouseLeave(screen.getAllByAltText("POD Photo 1")[0].parentElement as HTMLElement);
     fireEvent.mouseEnter(screen.getAllByAltText("POD Photo 1")[0].parentElement as HTMLElement);
     expect(mockedInvoke).not.toHaveBeenCalled();
+  });
+
+  it("opens the bag print URL from the latest PID column", () => {
+    const onOpenSourceLink = vi.fn();
+    const bagColumns = COLUMNS.filter((column) =>
+      [LATEST_BAG_STATUS_COLUMN_PATH].includes(column.path)
+    );
+    const bagColumnWidths = Object.fromEntries(
+      bagColumns.map((column) => [column.path, column.defaultWidth])
+    );
+    const bagRow: SheetRow = {
+      key: "row-bag-1",
+      trackingInput: "P2603310114291",
+      shipment: {
+        url: "",
+        detail: {
+          shipment_header: {
+            nomor_kiriman: "P2603310114291",
+          },
+        },
+        status_akhir: {
+          status: "READY",
+        },
+        pod: {},
+        history: [],
+        history_summary: {
+          irregularity: [],
+          bagging_unbagging: [
+            {
+              nomor_kantung: "PID89477731",
+              bagging: {
+                lokasi: "DC JAYAPURA 9910A",
+                tanggal: "2026-04-22",
+                waktu: "12:00:00",
+              },
+              unbagging: {
+                lokasi: "SPP JAYAPURA",
+                tanggal: "2026-04-22",
+                waktu: "12:30:00",
+              },
+            },
+          ],
+          manifest_r7: [],
+          delivery_runsheet: [],
+        },
+      } as never,
+      loading: false,
+      stale: false,
+      dirty: false,
+      error: "",
+    };
+
+    render(
+      <SheetTable
+        sheetId="sheet-1"
+        displayScale="small"
+        displayedRows={[bagRow]}
+        visibleColumns={bagColumns}
+        hiddenColumns={[]}
+        columnWidths={bagColumnWidths}
+        pinnedColumnSet={new Set()}
+        pinnedLeftMap={{}}
+        hoveredColumn={null}
+        allVisibleSelected={false}
+        selectedRowKeySet={new Set()}
+        filters={{}}
+        valueFilters={{}}
+        valueOptionsByPath={{}}
+        openColumnMenuPath={null}
+        highlightedColumnPath={null}
+        scrollContainerRef={createRef<HTMLDivElement>()}
+        onScrollContainer={vi.fn()}
+        sortDirectionForPath={() => null}
+        onMouseLeaveTable={vi.fn()}
+        onHoverColumn={vi.fn()}
+        onToggleVisibleSelection={vi.fn()}
+        onToggleRowSelection={vi.fn()}
+        onOpenSourceLink={onOpenSourceLink}
+        onCopyTrackingId={vi.fn()}
+        onClearTrackingCell={vi.fn()}
+        onTrackingInputChange={vi.fn()}
+        onTrackingInputBlur={vi.fn()}
+        onTrackingInputKeyDown={vi.fn()}
+        onTrackingInputPaste={vi.fn()}
+        onFilterChange={vi.fn()}
+        onResizeStart={vi.fn()}
+        onToggleColumnMenu={vi.fn()}
+        onSetColumnSort={vi.fn()}
+        onTogglePinnedColumn={vi.fn()}
+        onToggleColumnVisibility={vi.fn()}
+        onToggleValueFilter={vi.fn()}
+        onClearValueFilter={vi.fn()}
+        onCloseColumnMenu={vi.fn()}
+        onColumnMenuRef={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Cetak PID/Kantong PID89477731" }));
+
+    expect(onOpenSourceLink).toHaveBeenCalledWith(
+      "https://apiexpos.mile.app/api/v1/print-bag?bag_id=PID89477731_5f9fae9b5fbe9d6e401ad0c5&oid=NWY5ZmFlOWI1ZmJlOWQ2ZTQwMWFkMGM1"
+    );
   });
 
   it("virtualizes large row sets instead of rendering every row at once", async () => {

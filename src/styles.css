@@ -2263,6 +2263,12 @@ button {
   background: #ecfeff;
 }
 
+.sheet-table th.tone-status,
+.sheet-table td.tone-status {
+  background: #eef2ff;
+  color: #3730a3;
+}
+
 .sheet-table th.tone-layanan,
 .sheet-table td.tone-layanan {
   background: #eff6ff;
@@ -2279,6 +2285,10 @@ button {
 
 .sheet-table tbody tr:hover td.tone-penerima {
   background: #c7f9ff;
+}
+
+.sheet-table tbody tr:hover td.tone-status {
+  background: #e0e7ff;
 }
 
 .sheet-table tbody tr:hover td.tone-layanan {
@@ -2555,6 +2565,41 @@ button {
 .tracking-cell .sheet-input {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.bag-status-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.bag-status-cell .cell-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.bag-print-link {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #475569;
+  cursor: pointer;
+}
+
+.bag-print-link svg {
+  width: 16px;
+  height: 16px;
+}
+
+.bag-print-link:hover {
+  color: #0f172a;
 }
 
 .tracking-source-link {
