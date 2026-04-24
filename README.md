@@ -284,6 +284,19 @@ Use this checklist before publishing a runtime/security change:
 - Open normal POD previews, then confirm oversized `data:image` payloads, SVG payloads, and private/loopback remote URLs are rejected.
 - Save the same workspace repeatedly and confirm the existing file remains readable after each save.
 
+Latest CLI/runtime smoke baseline, verified on 2026-04-25:
+
+- `npm run build:service` builds the standalone service binary.
+- `cargo test --manifest-path src-tauri/Cargo.toml` passes the runtime hardening tests, including POD guardrails, custom service status identity checks, concurrent state writes, and workspace finalize failure preservation.
+- A standalone `ShipFlow Service` process can start on `127.0.0.1:19431` with a generated runtime config.
+- `GET /status` with the expected bearer token returns `200 OK` and the `product: "shipflow-service"` marker.
+- `GET /status` with the wrong bearer token returns `401 Unauthorized`.
+- `GET /health` returns `200 OK`.
+- Starting a second service process on the same port fails with `Address already in use`.
+- `npm run build` and `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` pass after the runtime smoke test.
+
+The CLI smoke test does not replace a visual Desktop smoke pass. Still verify the Tauri window flow for managed local service startup, custom service settings, POD hover previews, and native workspace save dialogs before a user-facing release.
+
 ### Reference Only
 
 `EX-SCRAP/` is kept only as a reference. It is not part of the active app flow and must not be modified for app changes.
