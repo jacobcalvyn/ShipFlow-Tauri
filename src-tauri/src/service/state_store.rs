@@ -417,12 +417,14 @@ mod tests {
     use std::{
         fs,
         panic::{self, AssertUnwindSafe},
+        thread,
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use super::{
         load_runtime_config, load_saved_config, persist_desktop_activation_request,
-        persist_runtime_config, persist_saved_config, persist_service_settings_activation_request,
+        persist_runtime_config, persist_saved_config, persist_service_pid,
+        persist_service_settings_activation_request, read_recorded_pid, service_pid_path,
         take_pending_desktop_activation_request, take_pending_service_settings_activation_request,
         ApiServiceConfig, DesktopActivationRequest,
     };
@@ -506,6 +508,39 @@ mod tests {
                 .expect("runtime config should exist");
 
             assert_eq!(loaded, config);
+        });
+    }
+
+    #[test]
+    fn concurrent_state_writes_use_distinct_temp_paths() {
+        with_state_dir("shipflow-service-concurrent-state-test", || {
+            let candidate_pids: Vec<u32> = (20_000..20_016).collect();
+            let handles: Vec<_> = candidate_pids
+                .iter()
+                .copied()
+                .map(|pid| thread::spawn(move || persist_service_pid(pid)))
+                .collect();
+
+            for handle in handles {
+                handle
+                    .join()
+                    .expect("state writer thread should not panic")
+                    .expect("state writer should persist");
+            }
+
+            let recorded_pid = read_recorded_pid().expect("one PID should be recorded");
+            assert!(candidate_pids.contains(&recorded_pid));
+
+            let state_dir = service_pid_path()
+                .parent()
+                .expect("service pid path should have a parent")
+                .to_path_buf();
+            let leftover_temp_files = fs::read_dir(state_dir)
+                .expect("state dir should list")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+                .count();
+            assert_eq!(leftover_temp_files, 0);
         });
     }
 

@@ -206,8 +206,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        normalize_workspace_document_path, read_workspace_document_file,
-        write_workspace_document_file, WorkspaceDocumentFile,
+        finalize_workspace_document_write, normalize_workspace_document_path,
+        read_workspace_document_file, write_workspace_document_file, WorkspaceDocumentFile,
     };
 
     fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
@@ -301,6 +301,28 @@ mod tests {
         let error = read_workspace_document_file(target_path.to_string_lossy().to_string())
             .expect_err("invalid app signature should fail");
         assert!(error.contains("not a ShipFlow workspace"));
+
+        let _ = fs::remove_file(&target_path);
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn failed_workspace_finalize_keeps_existing_file() {
+        let temp_dir = unique_temp_dir("shipflow-doc-finalize-failure-test");
+        let _ = fs::create_dir_all(&temp_dir);
+        let target_path = temp_dir.join("workspace.shipflow");
+        let missing_temp_path = temp_dir.join("missing-temp-file.tmp");
+        let previous_payload = r#"{"version":1,"app":"shipflow-desktop","savedAt":"2026-04-18T16:00:00.000Z","workspace":{"rows":["old"]}}"#;
+
+        fs::write(&target_path, previous_payload).expect("existing workspace should write");
+
+        let error = finalize_workspace_document_write(&missing_temp_path, &target_path)
+            .expect_err("missing temp file should fail finalize");
+        assert!(error.contains("finalize workspace file"));
+
+        let restored_payload =
+            fs::read_to_string(&target_path).expect("existing workspace should remain readable");
+        assert_eq!(restored_payload, previous_payload);
 
         let _ = fs::remove_file(&target_path);
         let _ = fs::remove_dir_all(&temp_dir);
