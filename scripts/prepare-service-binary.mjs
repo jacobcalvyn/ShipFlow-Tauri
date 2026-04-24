@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(scriptDir);
 const tauriDir = join(repoRoot, "src-tauri");
+const serviceDir = join(repoRoot, "apps", "service");
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -50,13 +51,13 @@ const bundledName = isWindows
 run("cargo", [
   "build",
   "--manifest-path",
-  "src-tauri/Cargo.toml",
+  "apps/service/Cargo.toml",
   "--release",
   "--bin",
   "shipflow-service",
 ]);
 
-const sourcePath = join(tauriDir, "target", "release", executableName);
+const sourcePath = join(serviceDir, "target", "release", executableName);
 const targetDir = join(tauriDir, "binaries");
 const targetPath = join(targetDir, bundledName);
 

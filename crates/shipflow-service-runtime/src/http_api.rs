@@ -1,0 +1,244 @@
+use axum::{
+    extract::{Path, State},
+    http::{header::AUTHORIZATION, HeaderMap, StatusCode},
+    routing::get,
+    Json, Router,
+};
+use reqwest::Client;
+use serde_json::{json, Value};
+use shipflow_core::model::{BagResponse, ManifestResponse, TrackResponse, TrackingError};
+
+use crate::lookup_cache::{
+    resolve_bag_request_cached, resolve_manifest_request_cached, resolve_tracking_request_cached,
+    LookupCacheState, LookupRequestOptions,
+};
+use crate::model::{
+    validate_service_runtime_config, ServiceRuntimeConfig, ServiceRuntimeMode,
+    SERVICE_STATUS_PRODUCT,
+};
+use crate::FORCE_REFRESH_HEADER_NAME;
+
+#[derive(Clone)]
+pub struct HttpApiState {
+    pub client: Client,
+    pub auth_token: String,
+    pub mode: ServiceRuntimeMode,
+    pub bind_address: String,
+    pub port: u16,
+    pub tracking_source: shipflow_core::model::TrackingSourceConfig,
+    pub lookup_cache: LookupCacheState,
+}
+
+pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), String> {
+    let bind_address = config.mode.bind_address_label().to_string();
+    validate_service_runtime_config(&config)?;
+
+    let tracking_source = config.tracking_source.clone();
+    let socket_addr = std::net::SocketAddr::new(config.mode.bind_address(), config.port);
+    let listener = tokio::net::TcpListener::bind(socket_addr)
+        .await
+        .map_err(|error| {
+            format!(
+                "Unable to start API service on {}:{}: {error}",
+                bind_address, config.port
+            )
+        })?;
+
+    let app_state = HttpApiState {
+        client: Client::new(),
+        auth_token: config.auth_token.clone(),
+        mode: config.mode,
+        bind_address,
+        port: config.port,
+        tracking_source,
+        lookup_cache: LookupCacheState::default(),
+    };
+    let router = build_router(app_state);
+
+    axum::serve(listener, router)
+        .await
+        .map_err(|error| format!("API service stopped unexpectedly: {error}"))
+}
+
+fn build_router(app_state: HttpApiState) -> Router {
+    Router::new()
+        .route("/health", get(health_handler))
+        .route("/status", get(status_handler))
+        .route("/track/:shipment_id", get(track_handler))
+        .route("/bag/:bag_id", get(bag_handler))
+        .route("/manifest/:manifest_id", get(manifest_handler))
+        .with_state(app_state)
+}
+
+async fn health_handler() -> Json<Value> {
+    Json(json!({ "ok": true }))
+}
+
+async fn status_handler(
+    State(state): State<HttpApiState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    authorize_request(&headers, &state.auth_token)?;
+
+    Ok(Json(json!({
+        "service": "running",
+        "product": SERVICE_STATUS_PRODUCT,
+        "mode": state.mode,
+        "bindAddress": state.bind_address,
+        "port": state.port,
+    })))
+}
+
+async fn track_handler(
+    State(state): State<HttpApiState>,
+    headers: HeaderMap,
+    Path(shipment_id): Path<String>,
+) -> Result<Json<TrackResponse>, (StatusCode, Json<Value>)> {
+    authorize_request(&headers, &state.auth_token)?;
+    let request_options = read_lookup_request_options(&headers);
+
+    resolve_tracking_request_cached(
+        &state.lookup_cache,
+        &state.client,
+        &state.tracking_source,
+        shipment_id.trim(),
+        request_options,
+    )
+    .await
+    .map(Json)
+    .map_err(map_tracking_error)
+}
+
+async fn bag_handler(
+    State(state): State<HttpApiState>,
+    headers: HeaderMap,
+    Path(bag_id): Path<String>,
+) -> Result<Json<BagResponse>, (StatusCode, Json<Value>)> {
+    authorize_request(&headers, &state.auth_token)?;
+    let request_options = read_lookup_request_options(&headers);
+
+    resolve_bag_request_cached(
+        &state.lookup_cache,
+        &state.client,
+        bag_id.trim(),
+        request_options,
+    )
+    .await
+    .map(Json)
+    .map_err(map_tracking_error)
+}
+
+async fn manifest_handler(
+    State(state): State<HttpApiState>,
+    headers: HeaderMap,
+    Path(manifest_id): Path<String>,
+) -> Result<Json<ManifestResponse>, (StatusCode, Json<Value>)> {
+    authorize_request(&headers, &state.auth_token)?;
+    let request_options = read_lookup_request_options(&headers);
+
+    resolve_manifest_request_cached(
+        &state.lookup_cache,
+        &state.client,
+        manifest_id.trim(),
+        request_options,
+    )
+    .await
+    .map(Json)
+    .map_err(map_tracking_error)
+}
+
+fn authorize_request(
+    headers: &HeaderMap,
+    expected_token: &str,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let Some(raw_header) = headers.get(AUTHORIZATION) else {
+        return Err(error_response(
+            StatusCode::UNAUTHORIZED,
+            "Authorization header is required.",
+        ));
+    };
+
+    let Ok(header_value) = raw_header.to_str() else {
+        return Err(error_response(
+            StatusCode::UNAUTHORIZED,
+            "Authorization header is invalid.",
+        ));
+    };
+
+    let Some(token) = header_value.strip_prefix("Bearer ") else {
+        return Err(error_response(
+            StatusCode::UNAUTHORIZED,
+            "Authorization header must use Bearer token.",
+        ));
+    };
+
+    if token != expected_token {
+        return Err(error_response(
+            StatusCode::UNAUTHORIZED,
+            "Bearer token is invalid.",
+        ));
+    }
+
+    Ok(())
+}
+
+fn map_tracking_error(error: TrackingError) -> (StatusCode, Json<Value>) {
+    match error {
+        TrackingError::BadRequest(message) => error_response(StatusCode::BAD_REQUEST, &message),
+        TrackingError::NotFound(message) => error_response(StatusCode::NOT_FOUND, &message),
+        TrackingError::Upstream(message) => error_response(StatusCode::BAD_GATEWAY, &message),
+    }
+}
+
+fn read_lookup_request_options(headers: &HeaderMap) -> LookupRequestOptions {
+    let force_refresh = headers
+        .get(FORCE_REFRESH_HEADER_NAME)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"));
+
+    LookupRequestOptions { force_refresh }
+}
+
+fn error_response(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
+    (
+        status,
+        Json(json!({
+            "error": message,
+        })),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
+
+    use super::{authorize_request, read_lookup_request_options};
+    use crate::FORCE_REFRESH_HEADER_NAME;
+
+    #[test]
+    fn rejects_missing_authorization_header() {
+        let result = authorize_request(&HeaderMap::new(), "secret-token");
+
+        assert!(matches!(result, Err((StatusCode::UNAUTHORIZED, _))));
+    }
+
+    #[test]
+    fn accepts_valid_bearer_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, "Bearer secret-token".parse().unwrap());
+
+        let result = authorize_request(&headers, "secret-token");
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn reads_force_refresh_lookup_option_from_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(FORCE_REFRESH_HEADER_NAME, "true".parse().unwrap());
+
+        let options = read_lookup_request_options(&headers);
+
+        assert!(options.force_refresh);
+    }
+}

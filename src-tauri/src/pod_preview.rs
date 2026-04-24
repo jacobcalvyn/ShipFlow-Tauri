@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD;
@@ -13,13 +13,19 @@ use scraper::{Html as ScraperHtml, Selector};
 use crate::tracking::upstream::resolve_pos_href;
 
 const MAX_POD_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+const MAX_POD_IMAGE_BASE64_CHARS: usize = MAX_POD_IMAGE_BYTES.div_ceil(3) * 4 + 4;
 
-fn build_pod_preview_client() -> Result<reqwest::Client, String> {
+fn build_pod_preview_client(
+    host: &str,
+    resolved_addrs: &[SocketAddr],
+) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .read_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(15))
         .redirect(Policy::none())
+        .no_proxy()
+        .resolve_to_addrs(host, resolved_addrs)
         .user_agent("ShipFlow Desktop POD Preview/0.1")
         .build()
         .map_err(|error| format!("Unable to create restricted POD client: {error}"))
@@ -44,7 +50,7 @@ fn is_forbidden_remote_ip(ip: IpAddr) -> bool {
     }
 }
 
-pub(crate) async fn validate_remote_pod_url(url: &Url) -> Result<(), String> {
+async fn resolve_remote_pod_url(url: &Url) -> Result<Vec<SocketAddr>, String> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err("POD image source must use HTTP(S).".into());
     }
@@ -57,31 +63,32 @@ pub(crate) async fn validate_remote_pod_url(url: &Url) -> Result<(), String> {
         return Err("POD image source host is not allowed.".into());
     }
 
+    let port = url.port_or_known_default().unwrap_or(443);
+
     if let Ok(ip) = host.parse::<IpAddr>() {
         if is_forbidden_remote_ip(ip) {
             return Err("POD image source host is not allowed.".into());
         }
-        return Ok(());
+        return Ok(vec![SocketAddr::new(ip, port)]);
     }
 
-    let port = url.port_or_known_default().unwrap_or(443);
-    let mut resolved_any = false;
+    let mut resolved_addrs = Vec::new();
     let resolved_hosts = tokio::net::lookup_host((host, port))
         .await
         .map_err(|error| format!("Unable to resolve POD image host: {error}"))?;
 
     for socket_addr in resolved_hosts {
-        resolved_any = true;
         if is_forbidden_remote_ip(socket_addr.ip()) {
             return Err("POD image source host is not allowed.".into());
         }
+        resolved_addrs.push(socket_addr);
     }
 
-    if !resolved_any {
+    if resolved_addrs.is_empty() {
         return Err("POD image source host did not resolve.".into());
     }
 
-    Ok(())
+    Ok(resolved_addrs)
 }
 
 fn normalize_remote_pod_url(image_source: &str) -> Result<Url, String> {
@@ -96,7 +103,6 @@ fn normalize_remote_pod_url(image_source: &str) -> Result<Url, String> {
 }
 
 async fn fetch_remote_pod_payload(
-    client: &reqwest::Client,
     url: &Url,
     depth: u8,
 ) -> Result<(Option<String>, Vec<u8>), String> {
@@ -104,7 +110,11 @@ async fn fetch_remote_pod_payload(
         return Err("POD image source redirected too many times.".into());
     }
 
-    validate_remote_pod_url(url).await?;
+    let Some(host) = url.host_str() else {
+        return Err("POD image source host is missing.".into());
+    };
+    let resolved_addrs = resolve_remote_pod_url(url).await?;
+    let client = build_pod_preview_client(host, &resolved_addrs)?;
 
     let response = client
         .get(url.clone())
@@ -122,7 +132,7 @@ async fn fetch_remote_pod_payload(
             .join(location)
             .map_err(|error| format!("POD image redirect URL is invalid: {error}"))?;
 
-        return Box::pin(fetch_remote_pod_payload(client, &next_url, depth + 1)).await;
+        return Box::pin(fetch_remote_pod_payload(&next_url, depth + 1)).await;
     }
 
     if !response.status().is_success() {
@@ -177,14 +187,13 @@ pub(crate) async fn resolve_pod_image_source(
         return validate_data_image_url(trimmed);
     }
 
-    if let Some(normalized) = normalize_base64_image(trimmed) {
+    if let Some(normalized) = normalize_base64_image_checked(trimmed)? {
         validate_base64_image_payload(&normalized)?;
         return Ok(base64_to_data_url(&normalized));
     }
 
     let url = normalize_remote_pod_url(trimmed)?;
-    let client = build_pod_preview_client()?;
-    let (content_type, bytes) = fetch_remote_pod_payload(&client, &url, depth).await?;
+    let (content_type, bytes) = fetch_remote_pod_payload(&url, depth).await?;
 
     if let Some(content_type) = content_type {
         let normalized_content_type = content_type.to_ascii_lowercase();
@@ -209,7 +218,7 @@ pub(crate) async fn resolve_pod_image_source(
         return validate_data_image_url(&data_image);
     }
 
-    if let Some(normalized) = normalize_base64_image(&body_text) {
+    if let Some(normalized) = normalize_base64_image_checked(&body_text)? {
         validate_base64_image_payload(&normalized)?;
         return Ok(base64_to_data_url(&normalized));
     }
@@ -249,7 +258,7 @@ fn validate_data_image_url(value: &str) -> Result<String, String> {
         return Err("POD data image must be base64 encoded.".into());
     }
 
-    let normalized_payload = normalize_base64_image(payload)
+    let normalized_payload = normalize_base64_image_checked(payload)?
         .ok_or_else(|| "POD data image payload is invalid.".to_string())?;
     validate_base64_image_payload(&normalized_payload)?;
 
@@ -257,6 +266,8 @@ fn validate_data_image_url(value: &str) -> Result<String, String> {
 }
 
 fn validate_base64_image_payload(normalized: &str) -> Result<(), String> {
+    ensure_base64_encoded_length(normalized)?;
+
     if normalized.starts_with("PHN2Zy") {
         return Err("SVG POD images are not supported.".into());
     }
@@ -267,6 +278,27 @@ fn validate_base64_image_payload(normalized: &str) -> Result<(), String> {
 
     if decoded.len() > MAX_POD_IMAGE_BYTES {
         return Err("POD image source is too large to preview safely.".into());
+    }
+
+    Ok(())
+}
+
+fn normalize_base64_image_checked(value: &str) -> Result<Option<String>, String> {
+    ensure_base64_encoded_length(value)?;
+    Ok(normalize_base64_image(value))
+}
+
+fn ensure_base64_encoded_length(value: &str) -> Result<(), String> {
+    let mut encoded_chars = 0usize;
+    for ch in value.chars() {
+        if ch.is_ascii_whitespace() || matches!(ch, '"' | '\'') {
+            continue;
+        }
+
+        encoded_chars = encoded_chars.saturating_add(1);
+        if encoded_chars > MAX_POD_IMAGE_BASE64_CHARS {
+            return Err("POD image source is too large to preview safely.".into());
+        }
     }
 
     Ok(())
@@ -304,9 +336,10 @@ fn extract_data_image_from_text(value: &str) -> Option<String> {
 pub(crate) fn normalize_base64_image(value: &str) -> Option<String> {
     let mut normalized = value.trim().to_string();
 
-    if normalized.len() > 3 && normalized.starts_with("b\"") && normalized.ends_with('"') {
-        normalized = normalized[2..normalized.len() - 1].to_string();
-    } else if normalized.len() > 3 && normalized.starts_with("b'") && normalized.ends_with('\'') {
+    if normalized.len() > 3
+        && ((normalized.starts_with("b\"") && normalized.ends_with('"'))
+            || (normalized.starts_with("b'") && normalized.ends_with('\'')))
+    {
         normalized = normalized[2..normalized.len() - 1].to_string();
     }
 
@@ -364,8 +397,8 @@ mod tests {
     use reqwest::Url;
 
     use super::{
-        base64_to_data_url, normalize_base64_image, validate_data_image_url,
-        validate_remote_pod_url, MAX_POD_IMAGE_BYTES,
+        base64_to_data_url, normalize_base64_image, resolve_remote_pod_url,
+        validate_data_image_url, MAX_POD_IMAGE_BASE64_CHARS, MAX_POD_IMAGE_BYTES,
     };
 
     #[test]
@@ -385,7 +418,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_private_loopback_pod_url() {
-        let error = validate_remote_pod_url(
+        let error = resolve_remote_pod_url(
             &Url::parse("http://127.0.0.1/internal-preview.jpg").expect("url should parse"),
         )
         .await
@@ -400,6 +433,15 @@ mod tests {
             base64::engine::general_purpose::STANDARD.encode(vec![0; MAX_POD_IMAGE_BYTES + 1]);
         let error = validate_data_image_url(&format!("data:image/png;base64,{oversized_payload}"))
             .expect_err("oversized data image should be rejected");
+
+        assert!(error.contains("too large"));
+    }
+
+    #[test]
+    fn rejects_excessive_data_image_encoded_length() {
+        let oversized_payload = "A".repeat(MAX_POD_IMAGE_BASE64_CHARS + 1);
+        let error = validate_data_image_url(&format!("data:image/png;base64,{oversized_payload}"))
+            .expect_err("oversized encoded data image should be rejected");
 
         assert!(error.contains("too large"));
     }

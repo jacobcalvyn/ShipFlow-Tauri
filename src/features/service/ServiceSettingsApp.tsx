@@ -16,6 +16,9 @@ export function ServiceSettingsApp() {
     hasLoadedServiceConfig,
     hasPendingServiceConfigChanges,
     previewAllowInsecureExternalApiHttp,
+    previewDesktopConnectionMode,
+    previewDesktopServiceAuthToken,
+    previewDesktopServiceUrl,
     previewExternalApiAuthToken,
     previewExternalApiBaseUrl,
     previewGenerateServiceToken,
@@ -24,6 +27,7 @@ export function ServiceSettingsApp() {
     previewServiceMode,
     previewServicePort,
     previewTrackingSource,
+    testApiServiceConnection,
     testExternalTrackingSource,
   } = useServiceSettingsController({
     copyText: writeClipboardText,
@@ -54,6 +58,9 @@ export function ServiceSettingsApp() {
       <ServiceSettingsWindow
         serviceConfig={effectiveServiceConfig}
         hasPendingServiceConfigChanges={hasPendingServiceConfigChanges}
+        onPreviewDesktopConnectionMode={previewDesktopConnectionMode}
+        onPreviewDesktopServiceUrl={previewDesktopServiceUrl}
+        onPreviewDesktopServiceAuthToken={previewDesktopServiceAuthToken}
         onPreviewServiceEnabled={previewServiceEnabled}
         onPreviewServiceMode={previewServiceMode}
         onPreviewServicePort={previewServicePort}
@@ -65,6 +72,7 @@ export function ServiceSettingsApp() {
         onRegenerateServiceToken={previewRegenerateServiceToken}
         onCopyServiceEndpoint={copyServiceEndpoint}
         onCopyServiceToken={copyServiceToken}
+        onTestApiServiceConnection={testApiServiceConnection}
         onTestExternalTrackingSource={testExternalTrackingSource}
         onConfirmSettings={confirmServiceConfig}
         onCancelSettings={cancelServiceConfigPreview}

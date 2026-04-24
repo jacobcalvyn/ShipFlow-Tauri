@@ -93,7 +93,7 @@ fn initialize_tracking_source_state<R: Runtime>(
         .clone()
         .unwrap_or_else(default_tray_service_config);
     tray_state.update_service(&tray_config, &status);
-    if let Err(error) = sync_service_tray(&app.handle(), &tray_state) {
+    if let Err(error) = sync_service_tray(app.handle(), &tray_state) {
         log_runtime_event("ERROR", format!("{sync_error_label} {error}"));
     }
 
@@ -131,18 +131,28 @@ fn ensure_desktop_tracking_runtime<R: Runtime>(
                 runtime_config.tracking_source_config(),
                 "desktop_runtime_ensure",
             );
-            log_runtime_event(
-                "INFO",
-                format!(
-                    "[ShipFlowDesktop] startup service runtime ready on port {} with source {:?}",
-                    runtime_config.port, runtime_config.tracking_source
-                ),
-            );
+            if runtime_config.uses_custom_desktop_service_connection() {
+                log_runtime_event(
+                    "INFO",
+                    format!(
+                        "[ShipFlowDesktop] startup using custom service connection at {}",
+                        runtime_config.service_client_base_url()
+                    ),
+                );
+            } else {
+                log_runtime_event(
+                    "INFO",
+                    format!(
+                        "[ShipFlowDesktop] startup service runtime ready on port {} with source {:?}",
+                        runtime_config.port, runtime_config.tracking_source
+                    ),
+                );
+            }
 
             let status = service_controller.status();
             let tray_config = saved_config.unwrap_or_else(default_tray_service_config);
             tray_state.update_service(&tray_config, &status);
-            if let Err(error) = sync_service_tray(&app.handle(), &tray_state) {
+            if let Err(error) = sync_service_tray(app.handle(), &tray_state) {
                 log_runtime_event(
                     "ERROR",
                     format!(

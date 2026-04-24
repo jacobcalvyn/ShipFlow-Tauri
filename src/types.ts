@@ -190,11 +190,15 @@ export type ManifestResponse = {
 export type LookupKind = "track" | "bag" | "manifest";
 export type LookupResponse = TrackResponse | BagResponse | ManifestResponse;
 
+export type DesktopServiceConnectionMode = "managedLocal" | "custom";
 export type ServiceMode = "local" | "lan";
 export type TrackingSource = "default" | "externalApi";
 
 export type ServiceConfig = {
   version: 1;
+  desktopConnectionMode: DesktopServiceConnectionMode;
+  desktopServiceUrl: string;
+  desktopServiceAuthToken: string;
   enabled: boolean;
   mode: ServiceMode;
   port: number;

@@ -5,6 +5,7 @@ mod os_bridge;
 mod pod_preview;
 mod runtime_log;
 mod service;
+mod service_client;
 mod service_runtime;
 #[cfg(test)]
 mod test_support;
@@ -19,10 +20,7 @@ use app_runtime::{
     build_main_webview_navigation_guard_plugin, build_tracking_client, desktop_setup,
     handle_desktop_window_event, handle_service_settings_window_event, service_settings_setup,
 };
-use lookup_runtime::{
-    resolve_bag_request_cached, resolve_manifest_request_cached, LookupCacheState,
-    LookupRequestOptions,
-};
+use lookup_runtime::LookupCacheState;
 use os_bridge::{
     copy_text_to_clipboard, open_external_url_runtime, pick_workspace_document_path_runtime,
 };
@@ -31,10 +29,13 @@ use runtime_log::log_runtime_event;
 use service::{
     ensure_tracking_service_runtime, ApiServiceConfig, ApiServiceController, ApiServiceStatus,
 };
+use service_client::{
+    test_api_service_connection as test_api_service_connection_client, track_bag_via_service,
+    track_manifest_via_service, track_shipment_via_service,
+};
 use service_runtime::{
     configure_api_service_runtime, get_api_service_status_runtime,
     load_saved_api_service_config_runtime, test_external_tracking_source_runtime,
-    track_bag_via_service, track_manifest_via_service, track_shipment_via_service,
     validate_tracking_source_config_runtime, TrayState,
 };
 use tracking::model::{TrackingClientState, TrackingSourceConfig};
@@ -102,7 +103,6 @@ async fn track_bag(
     row_key: Option<String>,
     client_state: tauri::State<'_, TrackingClientState>,
     service_controller: tauri::State<'_, ApiServiceController>,
-    lookup_cache: tauri::State<'_, LookupCacheState>,
 ) -> Result<tracking::model::BagResponse, String> {
     let context = format!(
         "[sheetId={}, rowKey={}, bagId={}]",
@@ -118,43 +118,13 @@ async fn track_bag(
             format!("{context} {message}")
         })?;
 
-    let request_options = LookupRequestOptions {
-        force_refresh: force_refresh.unwrap_or(false),
-    };
-
-    let track_result = match track_bag_via_service(
+    let track_result = track_bag_via_service(
         &client_state.client,
         &runtime_config,
         bag_id.trim(),
-        request_options.force_refresh,
+        force_refresh.unwrap_or(false),
     )
-    .await
-    {
-        Ok(response) => Ok(response),
-        Err(tracking::model::TrackingError::BadRequest(message)) => {
-            Err(tracking::model::TrackingError::BadRequest(message))
-        }
-        Err(service_error) => {
-            let service_message = match &service_error {
-                tracking::model::TrackingError::BadRequest(message)
-                | tracking::model::TrackingError::NotFound(message)
-                | tracking::model::TrackingError::Upstream(message) => message.as_str(),
-            };
-            log_runtime_event(
-                "WARN",
-                format!(
-                    "[ShipFlowBackend] {context} bag lookup via ShipFlow Service failed, falling back to direct POS lookup: {service_message}"
-                ),
-            );
-            resolve_bag_request_cached(
-                &lookup_cache,
-                &client_state.client,
-                bag_id.trim(),
-                request_options,
-            )
-            .await
-        }
-    };
+    .await;
 
     track_result.map_err(|error| match error {
         tracking::model::TrackingError::BadRequest(message)
@@ -174,7 +144,6 @@ async fn track_manifest(
     row_key: Option<String>,
     client_state: tauri::State<'_, TrackingClientState>,
     service_controller: tauri::State<'_, ApiServiceController>,
-    lookup_cache: tauri::State<'_, LookupCacheState>,
 ) -> Result<tracking::model::ManifestResponse, String> {
     let context = format!(
         "[sheetId={}, rowKey={}, manifestId={}]",
@@ -190,43 +159,13 @@ async fn track_manifest(
             format!("{context} {message}")
         })?;
 
-    let request_options = LookupRequestOptions {
-        force_refresh: force_refresh.unwrap_or(false),
-    };
-
-    let track_result = match track_manifest_via_service(
+    let track_result = track_manifest_via_service(
         &client_state.client,
         &runtime_config,
         manifest_id.trim(),
-        request_options.force_refresh,
+        force_refresh.unwrap_or(false),
     )
-    .await
-    {
-        Ok(response) => Ok(response),
-        Err(tracking::model::TrackingError::BadRequest(message)) => {
-            Err(tracking::model::TrackingError::BadRequest(message))
-        }
-        Err(service_error) => {
-            let service_message = match &service_error {
-                tracking::model::TrackingError::BadRequest(message)
-                | tracking::model::TrackingError::NotFound(message)
-                | tracking::model::TrackingError::Upstream(message) => message.as_str(),
-            };
-            log_runtime_event(
-                "WARN",
-                format!(
-                    "[ShipFlowBackend] {context} manifest lookup via ShipFlow Service failed, falling back to direct POS lookup: {service_message}"
-                ),
-            );
-            resolve_manifest_request_cached(
-                &lookup_cache,
-                &client_state.client,
-                manifest_id.trim(),
-                request_options,
-            )
-            .await
-        }
-    };
+    .await;
 
     track_result.map_err(|error| match error {
         tracking::model::TrackingError::BadRequest(message)
@@ -402,6 +341,14 @@ async fn test_external_tracking_source(
 }
 
 #[tauri::command]
+async fn test_api_service_connection(
+    config: ApiServiceConfig,
+    client_state: tauri::State<'_, TrackingClientState>,
+) -> Result<String, String> {
+    test_api_service_connection_client(&client_state.client, &config).await
+}
+
+#[tauri::command]
 fn validate_tracking_source_config(config: ApiServiceConfig) -> Result<(), String> {
     validate_tracking_source_config_runtime(config)
 }
@@ -461,7 +408,9 @@ pub fn run() {
             client: tracking_client,
             source_config: Arc::new(Mutex::new(TrackingSourceConfig::default())),
         })
-        .manage(LookupCacheState::default())
+        .manage(LookupCacheState::with_log_sink(|level, message| {
+            log_runtime_event(level, message)
+        }))
         .manage(ApiServiceController::default())
         .manage(TrayState::default())
         .manage(WorkspaceWindowLaunchState::default())
@@ -494,6 +443,7 @@ pub fn run() {
             configure_api_service,
             load_saved_api_service_config,
             get_api_service_status,
+            test_api_service_connection,
             test_external_tracking_source,
             validate_tracking_source_config
         ])
@@ -512,7 +462,9 @@ pub fn run_service_settings() {
             client: tracking_client,
             source_config: Arc::new(Mutex::new(TrackingSourceConfig::default())),
         })
-        .manage(LookupCacheState::default())
+        .manage(LookupCacheState::with_log_sink(|level, message| {
+            log_runtime_event(level, message)
+        }))
         .manage(ApiServiceController::default())
         .manage(TrayState::default())
         .setup(service_settings_setup)
@@ -526,6 +478,7 @@ pub fn run_service_settings() {
             configure_api_service,
             load_saved_api_service_config,
             get_api_service_status,
+            test_api_service_connection,
             test_external_tracking_source,
             validate_tracking_source_config
         ])

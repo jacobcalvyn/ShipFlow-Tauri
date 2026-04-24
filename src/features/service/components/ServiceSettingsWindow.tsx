@@ -1,10 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
-import { ServiceConfig, ServiceMode, TrackingSource } from "../../../types";
+import {
+  DesktopServiceConnectionMode,
+  ServiceConfig,
+  ServiceMode,
+  TrackingSource,
+} from "../../../types";
 import type { ServiceSettingsNotice } from "../useServiceSettingsController";
 
 type ServiceSettingsWindowProps = {
   serviceConfig: ServiceConfig;
   hasPendingServiceConfigChanges: boolean;
+  onPreviewDesktopConnectionMode: (mode: DesktopServiceConnectionMode) => void;
+  onPreviewDesktopServiceUrl: (url: string) => void;
+  onPreviewDesktopServiceAuthToken: (token: string) => void;
   onPreviewServiceEnabled: (enabled: boolean) => void;
   onPreviewServiceMode: (mode: ServiceMode) => void;
   onPreviewServicePort: (port: number) => void;
@@ -16,6 +24,7 @@ type ServiceSettingsWindowProps = {
   onRegenerateServiceToken: () => void;
   onCopyServiceEndpoint: (endpoint: string) => void;
   onCopyServiceToken: (token: string) => void;
+  onTestApiServiceConnection: (config: ServiceConfig) => Promise<string>;
   onTestExternalTrackingSource: (config: ServiceConfig) => Promise<string>;
   onConfirmSettings: () => Promise<boolean> | boolean;
   onCancelSettings: () => void;
@@ -26,6 +35,9 @@ type ServiceSettingsWindowProps = {
 export function ServiceSettingsWindow({
   serviceConfig,
   hasPendingServiceConfigChanges,
+  onPreviewDesktopConnectionMode,
+  onPreviewDesktopServiceUrl,
+  onPreviewDesktopServiceAuthToken,
   onPreviewServiceEnabled,
   onPreviewServiceMode,
   onPreviewServicePort,
@@ -37,6 +49,7 @@ export function ServiceSettingsWindow({
   onRegenerateServiceToken,
   onCopyServiceEndpoint,
   onCopyServiceToken,
+  onTestApiServiceConnection,
   onTestExternalTrackingSource,
   onConfirmSettings,
   onCancelSettings,
@@ -45,10 +58,16 @@ export function ServiceSettingsWindow({
 }: ServiceSettingsWindowProps) {
   const [activeView, setActiveView] = useState<"runtime" | "api">("runtime");
   const [isTokenVisible, setIsTokenVisible] = useState(false);
+  const [isDesktopTokenVisible, setIsDesktopTokenVisible] = useState(false);
   const [isExternalApiTokenVisible, setIsExternalApiTokenVisible] = useState(false);
   const [isRegenerateTokenArmed, setIsRegenerateTokenArmed] = useState(false);
+  const [isTestingServiceConnection, setIsTestingServiceConnection] = useState(false);
   const [isTestingExternalApi, setIsTestingExternalApi] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [serviceConnectionTestResult, setServiceConnectionTestResult] = useState<{
+    tone: "success" | "error" | "info";
+    message: string;
+  } | null>(null);
   const [externalApiTestResult, setExternalApiTestResult] = useState<{
     tone: "success" | "error" | "info";
     message: string;
@@ -65,6 +84,16 @@ export function ServiceSettingsWindow({
     serviceConfig.trackingSource,
     serviceConfig.externalApiBaseUrl,
     serviceConfig.externalApiAuthToken,
+  ]);
+
+  useEffect(() => {
+    setServiceConnectionTestResult(null);
+  }, [
+    serviceConfig.desktopConnectionMode,
+    serviceConfig.desktopServiceUrl,
+    serviceConfig.desktopServiceAuthToken,
+    serviceConfig.port,
+    serviceConfig.authToken,
   ]);
 
   const normalizedPort = Number.parseInt(portDraft, 10);
@@ -107,11 +136,37 @@ export function ServiceSettingsWindow({
     }
   };
 
+  const handleTestServiceConnection = async () => {
+    setIsTestingServiceConnection(true);
+    setServiceConnectionTestResult(null);
+
+    try {
+      const message = await onTestApiServiceConnection(serviceConfig);
+      setServiceConnectionTestResult({
+        tone: "success",
+        message,
+      });
+    } catch (error) {
+      setServiceConnectionTestResult({
+        tone: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menguji koneksi ShipFlow Service.",
+      });
+    } finally {
+      setIsTestingServiceConnection(false);
+    }
+  };
+
   const handleReset = () => {
     setIsTokenVisible(false);
+    setIsDesktopTokenVisible(false);
     setIsExternalApiTokenVisible(false);
     setIsRegenerateTokenArmed(false);
+    setIsTestingServiceConnection(false);
     setIsTestingExternalApi(false);
+    setServiceConnectionTestResult(null);
     setExternalApiTestResult(null);
     onCancelSettings();
   };
@@ -220,6 +275,108 @@ export function ServiceSettingsWindow({
             >
               <div className="service-settings-stack">
                 <div className="settings-field-block">
+                  <span className="settings-input-label">Koneksi Desktop</span>
+                  <div
+                    className="settings-radio-group service-settings-segmented-group"
+                    role="radiogroup"
+                    aria-label="Koneksi Desktop ke Service"
+                  >
+                    <label className="settings-radio-option service-settings-segmented-option">
+                      <input
+                        type="radio"
+                        name="desktop-service-connection"
+                        checked={serviceConfig.desktopConnectionMode === "managedLocal"}
+                        onChange={() => onPreviewDesktopConnectionMode("managedLocal")}
+                      />
+                      <span className="settings-radio-text">Service lokal terkelola</span>
+                    </label>
+                    <label className="settings-radio-option service-settings-segmented-option">
+                      <input
+                        type="radio"
+                        name="desktop-service-connection"
+                        checked={serviceConfig.desktopConnectionMode === "custom"}
+                        onChange={() => onPreviewDesktopConnectionMode("custom")}
+                      />
+                      <span className="settings-radio-text">Service custom</span>
+                    </label>
+                  </div>
+                </div>
+
+                {serviceConfig.desktopConnectionMode === "custom" ? (
+                  <>
+                    <label className="settings-text-field">
+                      <span className="settings-input-label">Service URL</span>
+                      <input
+                        type="url"
+                        aria-label="Desktop Service URL"
+                        value={serviceConfig.desktopServiceUrl}
+                        onChange={(event) =>
+                          onPreviewDesktopServiceUrl(event.target.value)
+                        }
+                      />
+                    </label>
+                    <label className="settings-text-field">
+                      <span className="settings-input-label">Service Token</span>
+                      <input
+                        type={isDesktopTokenVisible ? "text" : "password"}
+                        aria-label="Desktop Service Bearer Token"
+                        value={serviceConfig.desktopServiceAuthToken}
+                        onChange={(event) =>
+                          onPreviewDesktopServiceAuthToken(event.target.value)
+                        }
+                      />
+                    </label>
+                    <div className="settings-inline-actions service-settings-field-actions">
+                      <button
+                        type="button"
+                        className="sheet-tab-action"
+                        onClick={() => setIsDesktopTokenVisible((current) => !current)}
+                      >
+                        {isDesktopTokenVisible ? "Sembunyikan" : "Tampilkan"}
+                      </button>
+                      <button
+                        type="button"
+                        className="sheet-tab-action"
+                        onClick={() =>
+                          onCopyServiceToken(serviceConfig.desktopServiceAuthToken)
+                        }
+                        disabled={!serviceConfig.desktopServiceAuthToken}
+                      >
+                        Copy
+                      </button>
+                      <button
+                        type="button"
+                        className="sheet-tab-action"
+                        onClick={handleTestServiceConnection}
+                        disabled={
+                          isTestingServiceConnection ||
+                          !serviceConfig.desktopServiceUrl.trim() ||
+                          !serviceConfig.desktopServiceAuthToken.trim()
+                        }
+                      >
+                        {isTestingServiceConnection ? "Testing..." : "Tes Service"}
+                      </button>
+                    </div>
+                    {serviceConnectionTestResult ? (
+                      <div
+                        className={[
+                          "settings-field-help",
+                          `settings-field-help-${serviceConnectionTestResult.tone}`,
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        role="status"
+                        aria-live="polite"
+                      >
+                        {serviceConnectionTestResult.message}
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+
+                {serviceConfig.desktopConnectionMode === "managedLocal" ? (
+                  <>
+                <div className="settings-field-block">
                   <span className="settings-input-label">Sumber</span>
                   <div
                     className="settings-radio-group service-settings-segmented-group"
@@ -318,6 +475,12 @@ export function ServiceSettingsWindow({
                     ) : null}
                   </>
                 ) : null}
+                  </>
+                ) : (
+                  <div className="settings-field-help settings-field-help-info">
+                    Sumber tracking dan config scrap internal mengikuti ShipFlow Service yang dituju.
+                  </div>
+                )}
               </div>
             </section>
 
@@ -334,6 +497,12 @@ export function ServiceSettingsWindow({
               hidden={activeView !== "api"}
             >
               <div className="service-settings-stack">
+                {serviceConfig.desktopConnectionMode === "custom" ? (
+                  <div className="settings-field-help settings-field-help-info">
+                    Endpoint API dan lifecycle service mengikuti ShipFlow Service yang dituju.
+                  </div>
+                ) : (
+                  <>
                 <label className="settings-checkbox-option service-settings-checkbox-row">
                   <input
                     type="checkbox"
@@ -466,6 +635,8 @@ export function ServiceSettingsWindow({
                     Copy Endpoint
                   </button>
                 </div>
+                  </>
+                )}
               </div>
 
               {hasPendingServiceConfigChanges ? (
@@ -502,7 +673,10 @@ export function ServiceSettingsWindow({
             onClick={() => {
               void handleSave();
             }}
-            disabled={!isPortValid || isSaving}
+            disabled={
+              (serviceConfig.desktopConnectionMode === "managedLocal" && !isPortValid) ||
+              isSaving
+            }
           >
             {isSaving ? "Menyimpan..." : "Simpan"}
           </button>

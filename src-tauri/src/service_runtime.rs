@@ -1,22 +1,19 @@
 use std::sync::{Arc, Mutex};
 
-use serde::de::DeserializeOwned;
 use tauri::{AppHandle, Runtime};
 
 use crate::lookup_runtime::LookupCacheState;
 use crate::runtime_log::log_runtime_event;
 use crate::service::{
     self, ApiServiceConfig, ApiServiceController, ApiServiceMode, ApiServiceStatus,
+    DesktopServiceConnectionMode,
 };
+use crate::service_client::test_api_service_connection;
 use crate::tracking;
-use crate::tracking::model::{
-    BagResponse, ManifestResponse, TrackingClientState, TrackingSource, TrackingSourceConfig,
-};
+use crate::tracking::model::{TrackingClientState, TrackingSource, TrackingSourceConfig};
 use crate::tracking::upstream::{
     probe_external_api_status, validate_tracking_source_config as validate_tracking_source_settings,
 };
-
-pub(crate) const FORCE_REFRESH_HEADER_NAME: &str = "x-shipflow-force-refresh";
 
 #[derive(Clone)]
 struct TrayServiceSnapshot {
@@ -29,6 +26,9 @@ impl Default for TrayServiceSnapshot {
         Self {
             service_config: ApiServiceConfig {
                 version: 1,
+                desktop_connection_mode: DesktopServiceConnectionMode::ManagedLocal,
+                desktop_service_url: "http://127.0.0.1:18422".into(),
+                desktop_service_auth_token: String::new(),
                 enabled: false,
                 mode: ApiServiceMode::Local,
                 port: 18422,
@@ -97,133 +97,24 @@ fn tracking_error_message(error: tracking::model::TrackingError) -> String {
     }
 }
 
-fn extract_service_error_message(status: reqwest::StatusCode, raw_body: Option<&str>) -> String {
-    if let Some(body) = raw_body.map(str::trim).filter(|value| !value.is_empty()) {
-        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(body) {
-            if let Some(message) = payload
-                .get("error")
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                return message.to_string();
-            }
-        }
-
-        return format!("ShipFlow Service returned HTTP {}: {}", status, body);
-    }
-
-    format!("ShipFlow Service returned HTTP {}.", status)
-}
-
-fn build_service_lookup_endpoint(port: u16, route: &str, lookup_id: &str) -> String {
-    let mut endpoint = reqwest::Url::parse(&format!("http://127.0.0.1:{port}/"))
-        .expect("service lookup base url must be valid");
-    endpoint
-        .path_segments_mut()
-        .expect("service lookup base url must allow path segments")
-        .push(route)
-        .push(lookup_id.trim());
-    endpoint.into()
-}
-
-pub(crate) async fn track_shipment_via_service(
-    client: &reqwest::Client,
-    config: &ApiServiceConfig,
-    shipment_id: &str,
-    force_refresh: bool,
-) -> Result<tracking::model::TrackResponse, tracking::model::TrackingError> {
-    fetch_lookup_via_service(
-        client,
-        config,
-        "track",
-        shipment_id,
-        "tracking",
-        force_refresh,
-    )
-    .await
-}
-
-pub(crate) async fn track_bag_via_service(
-    client: &reqwest::Client,
-    config: &ApiServiceConfig,
-    bag_id: &str,
-    force_refresh: bool,
-) -> Result<BagResponse, tracking::model::TrackingError> {
-    fetch_lookup_via_service(client, config, "bag", bag_id, "bag", force_refresh).await
-}
-
-pub(crate) async fn track_manifest_via_service(
-    client: &reqwest::Client,
-    config: &ApiServiceConfig,
-    manifest_id: &str,
-    force_refresh: bool,
-) -> Result<ManifestResponse, tracking::model::TrackingError> {
-    fetch_lookup_via_service(
-        client,
-        config,
-        "manifest",
-        manifest_id,
-        "manifest",
-        force_refresh,
-    )
-    .await
-}
-
-async fn fetch_lookup_via_service<T: DeserializeOwned>(
-    client: &reqwest::Client,
-    config: &ApiServiceConfig,
-    route: &str,
-    lookup_id: &str,
-    label: &str,
-    force_refresh: bool,
-) -> Result<T, tracking::model::TrackingError> {
-    let endpoint = build_service_lookup_endpoint(config.port, route, lookup_id);
-    let mut request = client.get(endpoint).bearer_auth(config.auth_token.trim());
-    if force_refresh {
-        request = request.header(FORCE_REFRESH_HEADER_NAME, "true");
-    }
-    let response = request.send().await.map_err(|error| {
-        tracking::model::TrackingError::Upstream(format!(
-            "Unable to reach ShipFlow Service: {error}"
-        ))
-    })?;
-
-    if response.status().is_success() {
-        let raw_body = response.text().await.map_err(|error| {
-            tracking::model::TrackingError::Upstream(format!(
-                "Unable to read ShipFlow Service {label} response: {error}"
-            ))
-        })?;
-
-        return serde_json::from_str::<T>(&raw_body).map_err(|error| {
-            tracking::model::TrackingError::Upstream(format!(
-                "ShipFlow Service returned an invalid {label} response: {error}"
-            ))
-        });
-    }
-
-    let status = response.status();
-    let raw_body = response.text().await.ok();
-    let message = extract_service_error_message(status, raw_body.as_deref());
-
-    match status.as_u16() {
-        400 => Err(tracking::model::TrackingError::BadRequest(message.into())),
-        404 => Err(tracking::model::TrackingError::NotFound(message.into())),
-        _ => Err(tracking::model::TrackingError::Upstream(message.into())),
-    }
-}
-
 pub(crate) async fn configure_api_service_runtime<R: Runtime>(
     app_handle: AppHandle<R>,
-    config: ApiServiceConfig,
+    mut config: ApiServiceConfig,
     client_state: &TrackingClientState,
     service_controller: &ApiServiceController,
     tray_state: &TrayState,
     lookup_cache: &LookupCacheState,
 ) -> Result<ApiServiceStatus, String> {
+    if config.uses_custom_desktop_service_connection() {
+        config.enabled = false;
+        test_api_service_connection(&client_state.client, &config).await?;
+    }
+
     let tracking_source_config = config.tracking_source_config();
-    validate_tracking_source_settings(&tracking_source_config).map_err(tracking_error_message)?;
+    if !config.uses_custom_desktop_service_connection() {
+        validate_tracking_source_settings(&tracking_source_config)
+            .map_err(tracking_error_message)?;
+    }
 
     let result = service_controller.configure(config.clone()).await;
     let status = match &result {
@@ -311,38 +202,4 @@ pub(crate) fn validate_tracking_source_config_runtime(
 ) -> Result<(), String> {
     validate_tracking_source_settings(&config.tracking_source_config())
         .map_err(tracking_error_message)
-}
-
-#[cfg(test)]
-mod tests {
-    use reqwest::StatusCode;
-
-    use super::{build_service_lookup_endpoint, extract_service_error_message};
-
-    #[test]
-    fn prefers_json_error_payload_message() {
-        let message = extract_service_error_message(
-            StatusCode::BAD_GATEWAY,
-            Some(r#"{"error":"Bag endpoint returned HTTP 404."}"#),
-        );
-
-        assert_eq!(message, "Bag endpoint returned HTTP 404.");
-    }
-
-    #[test]
-    fn falls_back_to_plain_text_response_body() {
-        let message = extract_service_error_message(StatusCode::NOT_FOUND, Some("Not Found"));
-
-        assert_eq!(
-            message,
-            "ShipFlow Service returned HTTP 404 Not Found: Not Found"
-        );
-    }
-
-    #[test]
-    fn encodes_lookup_ids_when_building_service_endpoint() {
-        let endpoint = build_service_lookup_endpoint(18422, "bag", "PID 123/456");
-
-        assert_eq!(endpoint, "http://127.0.0.1:18422/bag/PID%20123%2F456");
-    }
 }

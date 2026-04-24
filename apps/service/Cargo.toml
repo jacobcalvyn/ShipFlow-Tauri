@@ -1,0 +1,13 @@
+[package]
+name = "shipflow-service"
+version = "0.1.0"
+description = "Standalone ShipFlow Service companion"
+authors = ["Codex"]
+edition = "2021"
+
+[[bin]]
+name = "shipflow-service"
+path = "src/main.rs"
+
+[dependencies]
+shipflow3_tauri_lib = { package = "shipflow3-tauri", path = "../../src-tauri" }

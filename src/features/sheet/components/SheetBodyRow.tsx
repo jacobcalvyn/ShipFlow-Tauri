@@ -35,8 +35,27 @@ import {
 
 const POD_PHOTO_COLUMN_PATHS = new Set(["pod.photo1_url", "pod.photo2_url"]);
 const MAX_POD_IMAGE_CACHE_ENTRIES = 50;
+const MAX_POD_IMAGE_CACHE_BYTES = 32 * 1024 * 1024;
 const podImageCache = new Map<string, string>();
+let podImageCacheBytes = 0;
 const qrImageCache = new Map<string, string>();
+
+function estimatePodImageCacheBytes(source: string, resolved: string) {
+  return (source.length + resolved.length) * 2;
+}
+
+function deleteCachedPodImage(source: string) {
+  if (!podImageCache.has(source)) {
+    return;
+  }
+
+  const cached = podImageCache.get(source);
+  podImageCacheBytes = Math.max(
+    0,
+    podImageCacheBytes - estimatePodImageCacheBytes(source, cached ?? "")
+  );
+  podImageCache.delete(source);
+}
 
 function getCachedPodImage(source: string) {
   const cached = podImageCache.get(source);
@@ -44,22 +63,31 @@ function getCachedPodImage(source: string) {
     return "";
   }
 
-  podImageCache.delete(source);
+  deleteCachedPodImage(source);
   podImageCache.set(source, cached);
   return cached;
 }
 
 function setCachedPodImage(source: string, resolved: string) {
-  podImageCache.delete(source);
-  podImageCache.set(source, resolved);
+  deleteCachedPodImage(source);
+  const entryBytes = estimatePodImageCacheBytes(source, resolved);
+  if (entryBytes > MAX_POD_IMAGE_CACHE_BYTES) {
+    return;
+  }
 
-  while (podImageCache.size > MAX_POD_IMAGE_CACHE_ENTRIES) {
+  podImageCache.set(source, resolved);
+  podImageCacheBytes += entryBytes;
+
+  while (
+    podImageCache.size > MAX_POD_IMAGE_CACHE_ENTRIES ||
+    podImageCacheBytes > MAX_POD_IMAGE_CACHE_BYTES
+  ) {
     const firstKey = podImageCache.keys().next().value;
     if (typeof firstKey !== "string") {
       break;
     }
 
-    podImageCache.delete(firstKey);
+    deleteCachedPodImage(firstKey);
   }
 }
 

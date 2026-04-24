@@ -193,7 +193,10 @@ fn service_tray_autostart_command() -> Result<String, String> {
 }
 
 fn sync_service_tray_autostart(config: &ApiServiceConfig) -> Result<(), String> {
-    if config.enabled && config.keep_running_in_tray {
+    if config.enabled
+        && config.keep_running_in_tray
+        && !config.uses_custom_desktop_service_connection()
+    {
         enable_service_tray_autostart()
     } else {
         disable_service_tray_autostart()
@@ -384,7 +387,7 @@ fn process_command_line(pid: u32) -> Option<String> {
         }
 
         let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        return (!value.is_empty()).then_some(value);
+        (!value.is_empty()).then_some(value)
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -399,7 +402,7 @@ fn process_command_line(pid: u32) -> Option<String> {
         }
 
         let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        return (!value.is_empty()).then_some(value);
+        (!value.is_empty()).then_some(value)
     }
 }
 
@@ -495,11 +498,11 @@ pub(crate) fn is_process_alive(pid: u32) -> bool {
 
     #[cfg(not(target_os = "windows"))]
     {
-        return Command::new("kill")
+        Command::new("kill")
             .args(["-0", &pid.to_string()])
             .status()
             .map(|status| status.success())
-            .unwrap_or(false);
+            .unwrap_or(false)
     }
 }
 
@@ -576,7 +579,10 @@ pub(crate) fn wait_for_service_runtime(config: &ApiServiceConfig, timeout: Durat
 pub fn sync_service_tray_companion(config: &ApiServiceConfig) -> Result<(), String> {
     sync_service_tray_autostart(config)?;
 
-    if config.enabled && config.keep_running_in_tray {
+    if config.enabled
+        && config.keep_running_in_tray
+        && !config.uses_custom_desktop_service_connection()
+    {
         ensure_service_tray_process_running()
     } else {
         stop_service_tray_process();
@@ -640,11 +646,15 @@ mod tests {
         command_line_matches_service_process, format_service_status_label, ApiServiceConfig,
         ApiServiceMode, ApiServiceStatus, ApiServiceStatusKind,
     };
+    use crate::service::DesktopServiceConnectionMode;
     use crate::tracking::model::TrackingSource;
 
     fn sample_config() -> ApiServiceConfig {
         ApiServiceConfig {
             version: 1,
+            desktop_connection_mode: DesktopServiceConnectionMode::ManagedLocal,
+            desktop_service_url: "http://127.0.0.1:18422".into(),
+            desktop_service_auth_token: String::new(),
             enabled: true,
             mode: ApiServiceMode::Local,
             port: 18422,

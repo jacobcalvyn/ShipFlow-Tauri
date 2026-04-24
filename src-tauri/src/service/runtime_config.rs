@@ -1,9 +1,12 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{ApiServiceConfig, ApiServiceMode, ApiServiceStatus, ApiServiceStatusKind};
-use crate::tracking::{
-    model::{TrackingError, TrackingSource},
-    upstream::validate_tracking_source_config,
+use super::{
+    ApiServiceConfig, ApiServiceMode, ApiServiceStatus, ApiServiceStatusKind,
+    DesktopServiceConnectionMode,
+};
+use crate::tracking::model::TrackingSource;
+use shipflow_service_runtime::{
+    validate_service_runtime_config, ServiceRuntimeConfig, ServiceRuntimeMode,
 };
 
 pub(crate) fn running_status(config: &ApiServiceConfig) -> ApiServiceStatus {
@@ -45,24 +48,45 @@ pub(crate) fn error_status(
 
 pub(crate) fn validate_service_config(
     config: &ApiServiceConfig,
-    bind_address: &str,
+    _bind_address: &str,
 ) -> Result<(), String> {
-    if config.auth_token.trim().is_empty() {
-        return Err("Auth token is required before enabling API service.".into());
+    validate_service_runtime_config(&ServiceRuntimeConfig {
+        mode: match config.mode {
+            ApiServiceMode::Local => ServiceRuntimeMode::Local,
+            ApiServiceMode::Lan => ServiceRuntimeMode::Lan,
+        },
+        port: config.port,
+        auth_token: config.auth_token.clone(),
+        tracking_source: config.tracking_source_config(),
+    })
+}
+
+pub(crate) fn validate_desktop_service_connection_config(
+    config: &ApiServiceConfig,
+) -> Result<(), String> {
+    if !config.uses_custom_desktop_service_connection() {
+        return Ok(());
     }
 
-    let tracking_source = config.tracking_source_config();
-    validate_tracking_source_config(&tracking_source).map_err(|error| match error {
-        TrackingError::BadRequest(message)
-        | TrackingError::NotFound(message)
-        | TrackingError::Upstream(message) => message,
-    })?;
+    let service_url = config.desktop_service_url.trim();
+    if service_url.is_empty() {
+        return Err("Desktop service URL is required for custom service connections.".into());
+    }
 
-    if config.port == 0 {
-        return Err(format!(
-            "Unable to start API service on {}:{}: invalid port.",
-            bind_address, config.port
-        ));
+    let parsed_url = reqwest::Url::parse(service_url)
+        .map_err(|error| format!("Desktop service URL is invalid: {error}"))?;
+    if !matches!(parsed_url.scheme(), "http" | "https") {
+        return Err("Desktop service URL must use HTTP or HTTPS.".into());
+    }
+    if parsed_url.host_str().is_none() {
+        return Err("Desktop service URL must include a host.".into());
+    }
+    if parsed_url.query().is_some() || parsed_url.fragment().is_some() {
+        return Err("Desktop service URL must not include query strings or fragments.".into());
+    }
+
+    if config.desktop_service_auth_token.trim().is_empty() {
+        return Err("Desktop service token is required for custom service connections.".into());
     }
 
     Ok(())
@@ -82,6 +106,9 @@ pub(crate) fn build_tracking_runtime_config(
 ) -> ApiServiceConfig {
     let base_config = saved_config.unwrap_or(ApiServiceConfig {
         version: 1,
+        desktop_connection_mode: DesktopServiceConnectionMode::ManagedLocal,
+        desktop_service_url: "http://127.0.0.1:18422".into(),
+        desktop_service_auth_token: String::new(),
         enabled: false,
         mode: ApiServiceMode::Local,
         port: 18422,
@@ -106,6 +133,9 @@ pub(crate) fn build_tracking_runtime_config(
 
     ApiServiceConfig {
         version: 1,
+        desktop_connection_mode: base_config.desktop_connection_mode,
+        desktop_service_url: base_config.desktop_service_url,
+        desktop_service_auth_token: base_config.desktop_service_auth_token,
         enabled: true,
         mode: if base_config.enabled {
             base_config.mode
@@ -135,18 +165,25 @@ pub(crate) fn tracking_runtime_matches(left: &ApiServiceConfig, right: &ApiServi
         && left.external_api_base_url == right.external_api_base_url
         && left.external_api_auth_token == right.external_api_auth_token
         && left.allow_insecure_external_api_http == right.allow_insecure_external_api_http
+        && left.desktop_connection_mode == right.desktop_connection_mode
+        && left.desktop_service_url == right.desktop_service_url
+        && left.desktop_service_auth_token == right.desktop_service_auth_token
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_tracking_runtime_config, validate_service_config, ApiServiceConfig, ApiServiceMode,
+        build_tracking_runtime_config, validate_desktop_service_connection_config,
+        validate_service_config, ApiServiceConfig, ApiServiceMode, DesktopServiceConnectionMode,
     };
     use crate::tracking::model::TrackingSource;
 
     fn sample_config() -> ApiServiceConfig {
         ApiServiceConfig {
             version: 1,
+            desktop_connection_mode: DesktopServiceConnectionMode::ManagedLocal,
+            desktop_service_url: "http://127.0.0.1:18422".into(),
+            desktop_service_auth_token: String::new(),
             enabled: false,
             mode: ApiServiceMode::Lan,
             port: 19422,
@@ -236,6 +273,41 @@ mod tests {
             error,
             "External API base URL must use HTTPS unless insecure HTTP is explicitly allowed."
         );
+    }
+
+    #[test]
+    fn validate_desktop_service_connection_rejects_custom_connection_without_token() {
+        let config = ApiServiceConfig {
+            desktop_connection_mode: DesktopServiceConnectionMode::Custom,
+            desktop_service_url: "http://127.0.0.1:18422".into(),
+            desktop_service_auth_token: String::new(),
+            ..sample_config()
+        };
+
+        let error = validate_desktop_service_connection_config(&config)
+            .expect_err("missing custom service token should fail validation");
+
+        assert_eq!(
+            error,
+            "Desktop service token is required for custom service connections."
+        );
+    }
+
+    #[test]
+    fn desktop_runtime_does_not_replace_custom_service_connection_fields() {
+        let runtime = build_tracking_runtime_config(
+            Some(ApiServiceConfig {
+                desktop_connection_mode: DesktopServiceConnectionMode::Custom,
+                desktop_service_url: "http://127.0.0.1:18423".into(),
+                desktop_service_auth_token: "sf_custom_service".into(),
+                ..sample_config()
+            }),
+            None,
+        );
+
+        assert!(runtime.uses_custom_desktop_service_connection());
+        assert_eq!(runtime.service_client_base_url(), "http://127.0.0.1:18423");
+        assert_eq!(runtime.service_client_auth_token(), "sf_custom_service");
     }
 
     #[test]

@@ -270,6 +270,17 @@ describe("App workspace isolation", () => {
         );
       }
 
+      if (command === "test_api_service_connection") {
+        const config = args?.config;
+        const baseUrl =
+          config?.desktopConnectionMode === "custom"
+            ? config.desktopServiceUrl
+            : `http://127.0.0.1:${config?.port ?? 18422}`;
+        return Promise.resolve(
+          `ShipFlow Service is reachable at ${baseUrl}.` as unknown as TrackResponse
+        );
+      }
+
       if (command === "validate_tracking_source_config") {
         const config = args?.config;
         if (
@@ -2313,6 +2324,10 @@ describe("App workspace isolation", () => {
         return Promise.resolve("OK");
       }
 
+      if (command === "test_api_service_connection") {
+        return Promise.resolve("OK");
+      }
+
       if (command === "create_workspace_window") {
         return Promise.resolve({
           status: "alreadyOpen",
@@ -2571,6 +2586,9 @@ describe("App workspace isolation", () => {
   it("restores external tracking source selection and base URL in the service window even when the bearer token is session-only", async () => {
     persistedServiceConfig = {
       version: 1,
+      desktopConnectionMode: "managedLocal",
+      desktopServiceUrl: "http://127.0.0.1:18422",
+      desktopServiceAuthToken: "",
       enabled: false,
       mode: "local",
       port: 18422,
@@ -2596,6 +2614,38 @@ describe("App workspace isolation", () => {
         "https://scrappid3.jacobcalvyn.io"
       );
       expect(screen.getByLabelText("External API Bearer Token")).toHaveValue("");
+    });
+  });
+
+  it("persists custom desktop service connection settings from the service window", async () => {
+    setShipFlowWindowKind("service-settings");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Runtime Internal" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Service custom" }));
+    fireEvent.change(screen.getByLabelText("Desktop Service URL"), {
+      target: { value: "http://127.0.0.1:18423" },
+    });
+    fireEvent.change(screen.getByLabelText("Desktop Service Bearer Token"), {
+      target: { value: "sf_custom_service_token" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Tes Service" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("test_api_service_connection")).toHaveLength(1);
+      expect(
+        screen.getByText("ShipFlow Service is reachable at http://127.0.0.1:18423.")
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("configure_api_service")).toHaveLength(1);
+      expect(persistedServiceConfig?.desktopConnectionMode).toBe("custom");
+      expect(persistedServiceConfig?.enabled).toBe(false);
+      expect(persistedServiceConfig?.desktopServiceUrl).toBe("http://127.0.0.1:18423");
+      expect(persistedServiceConfig?.desktopServiceAuthToken).toBe("sf_custom_service_token");
     });
   });
 

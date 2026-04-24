@@ -5,6 +5,9 @@ import { ApiServiceStatus, ServiceConfig } from "../../../types";
 function createServiceConfig(overrides: Partial<ServiceConfig> = {}): ServiceConfig {
   return {
     version: 1,
+    desktopConnectionMode: "managedLocal",
+    desktopServiceUrl: "http://127.0.0.1:18422",
+    desktopServiceAuthToken: "",
     enabled: false,
     mode: "local",
     port: 18422,

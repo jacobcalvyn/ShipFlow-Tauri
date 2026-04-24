@@ -1,9 +1,15 @@
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use serde::{Deserialize, Serialize};
 
 const WORKSPACE_DOCUMENT_EXTENSION: &str = "shipflow";
+
+static WORKSPACE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,6 +81,62 @@ pub(crate) fn validate_workspace_document(document: &WorkspaceDocumentFile) -> R
     Ok(())
 }
 
+fn unique_workspace_temp_path(path: &Path, suffix: &str) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "workspace.shipflow".into());
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let counter = WORKSPACE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    path.with_file_name(format!(
+        "{file_name}.{}.{}.{}.{}",
+        std::process::id(),
+        timestamp,
+        counter,
+        suffix
+    ))
+}
+
+fn finalize_workspace_document_write(temp_path: &Path, target_path: &Path) -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        fs::rename(temp_path, target_path)
+            .map_err(|error| format!("Unable to finalize workspace file: {error}"))?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if !target_path.exists() {
+            fs::rename(temp_path, target_path)
+                .map_err(|error| format!("Unable to finalize workspace file: {error}"))?;
+            return Ok(());
+        }
+
+        let backup_path = unique_workspace_temp_path(target_path, "bak");
+        fs::rename(target_path, &backup_path)
+            .map_err(|error| format!("Unable to prepare workspace file replacement: {error}"))?;
+
+        match fs::rename(temp_path, target_path) {
+            Ok(()) => {
+                let _ = fs::remove_file(&backup_path);
+                Ok(())
+            }
+            Err(error) => {
+                let _ = fs::rename(&backup_path, target_path);
+                Err(format!(
+                    "Unable to finalize workspace file; previous file was restored from {}: {error}",
+                    backup_path.to_string_lossy()
+                ))
+            }
+        }
+    }
+}
+
 pub(crate) fn write_workspace_document_to_path(
     path: &Path,
     document: &WorkspaceDocumentFile,
@@ -89,18 +151,12 @@ pub(crate) fn write_workspace_document_to_path(
 
     let serialized = serde_json::to_vec_pretty(document)
         .map_err(|error| format!("Unable to serialize workspace document: {error}"))?;
-    let temp_path = path.with_extension(format!("{WORKSPACE_DOCUMENT_EXTENSION}.tmp"));
+    let temp_path = unique_workspace_temp_path(path, "tmp");
 
     fs::write(&temp_path, serialized)
         .map_err(|error| format!("Unable to write workspace temp file: {error}"))?;
 
-    if path.exists() {
-        fs::remove_file(path)
-            .map_err(|error| format!("Unable to replace existing workspace file: {error}"))?;
-    }
-
-    fs::rename(&temp_path, path)
-        .map_err(|error| format!("Unable to finalize workspace file: {error}"))?;
+    finalize_workspace_document_write(&temp_path, path)?;
 
     Ok(())
 }

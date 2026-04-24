@@ -2,6 +2,8 @@ use std::{
     env, fs,
     io::ErrorKind,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(unix)]
@@ -13,6 +15,8 @@ use super::{
     SERVICE_SETTINGS_PID_FILE_NAME, SERVICE_SETTINGS_REQUEST_FILE_NAME, SERVICE_STATE_DIR_NAME,
     SERVICE_TRAY_PID_FILE_NAME,
 };
+
+static STATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(test)]
 fn state_dir_override() -> Option<PathBuf> {
@@ -166,16 +170,47 @@ fn write_state_file(path: PathBuf, payload: Vec<u8>, label: &str) -> Result<(), 
         .file_name()
         .map(|value| value.to_string_lossy().to_string())
         .unwrap_or_else(|| "state".into());
-    let temp_path = path.with_file_name(format!("{file_name}.{}.tmp", std::process::id()));
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let counter = STATE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_path = path.with_file_name(format!(
+        "{file_name}.{}.{}.{}.tmp",
+        std::process::id(),
+        timestamp,
+        counter
+    ));
 
     fs::write(&temp_path, payload)
         .map_err(|error| format!("Unable to write temporary {label}: {error}"))?;
     set_user_only_permissions(&temp_path, 0o600);
 
     #[cfg(target_os = "windows")]
-    if path.exists() {
-        fs::remove_file(&path)
-            .map_err(|error| format!("Unable to replace existing {label}: {error}"))?;
+    {
+        if path.exists() {
+            let backup_counter = STATE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let backup_path = path.with_file_name(format!(
+                "{file_name}.{}.{}.{}.bak",
+                std::process::id(),
+                timestamp,
+                backup_counter
+            ));
+            fs::rename(&path, &backup_path)
+                .map_err(|error| format!("Unable to prepare {label} replacement: {error}"))?;
+
+            return match fs::rename(&temp_path, &path) {
+                Ok(()) => {
+                    let _ = fs::remove_file(&backup_path);
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = fs::rename(&backup_path, &path);
+                    let _ = fs::remove_file(&temp_path);
+                    Err(format!("Unable to finalize {label}: {error}"))
+                }
+            };
+        }
     }
 
     fs::rename(&temp_path, &path).map_err(|error| {
@@ -391,7 +426,7 @@ mod tests {
         take_pending_desktop_activation_request, take_pending_service_settings_activation_request,
         ApiServiceConfig, DesktopActivationRequest,
     };
-    use crate::service::ApiServiceMode;
+    use crate::service::{ApiServiceMode, DesktopServiceConnectionMode};
     use crate::test_support::runtime_state_dir_test_lock;
     use crate::tracking::model::TrackingSource;
 
@@ -425,6 +460,9 @@ mod tests {
     fn sample_config() -> ApiServiceConfig {
         ApiServiceConfig {
             version: 1,
+            desktop_connection_mode: DesktopServiceConnectionMode::ManagedLocal,
+            desktop_service_url: "http://127.0.0.1:18422".into(),
+            desktop_service_auth_token: String::new(),
             enabled: true,
             mode: ApiServiceMode::Lan,
             port: 18422,

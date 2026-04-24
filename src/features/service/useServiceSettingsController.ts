@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiServiceStatus,
+  DesktopServiceConnectionMode,
   ServiceConfig,
   ServiceMode,
   TrackingSource,
@@ -15,6 +16,9 @@ export type ServiceSettingsNotice = {
 
 const DEFAULT_SERVICE_CONFIG: ServiceConfig = {
   version: 1,
+  desktopConnectionMode: "managedLocal",
+  desktopServiceUrl: "http://127.0.0.1:18422",
+  desktopServiceAuthToken: "",
   enabled: false,
   mode: "local",
   port: 18422,
@@ -63,6 +67,9 @@ function createServiceToken() {
 function areServiceConfigsEqual(left: ServiceConfig, right: ServiceConfig) {
   return (
     left.version === right.version &&
+    left.desktopConnectionMode === right.desktopConnectionMode &&
+    left.desktopServiceUrl === right.desktopServiceUrl &&
+    left.desktopServiceAuthToken === right.desktopServiceAuthToken &&
     left.enabled === right.enabled &&
     left.mode === right.mode &&
     left.port === right.port &&
@@ -74,6 +81,15 @@ function areServiceConfigsEqual(left: ServiceConfig, right: ServiceConfig) {
     left.keepRunningInTray === right.keepRunningInTray &&
     left.lastUpdatedAt === right.lastUpdatedAt
   );
+}
+
+function normalizeServiceConfig(config: ServiceConfig): ServiceConfig {
+  return {
+    ...DEFAULT_SERVICE_CONFIG,
+    ...config,
+    port: normalizeServicePort(config.port),
+    keepRunningInTray: true,
+  };
 }
 
 type UseServiceSettingsControllerOptions = {
@@ -105,12 +121,7 @@ export function useServiceSettingsController({
 
       try {
         const savedConfig = await invoke<ServiceConfig | null>("load_saved_api_service_config");
-        const nextConfig = savedConfig
-          ? {
-              ...savedConfig,
-              keepRunningInTray: true,
-            }
-          : DEFAULT_SERVICE_CONFIG;
+        const nextConfig = savedConfig ? normalizeServiceConfig(savedConfig) : DEFAULT_SERVICE_CONFIG;
 
         if (!preservePreview || serviceConfigPreview === null) {
           if (!areServiceConfigsEqual(serviceConfigRef.current, nextConfig)) {
@@ -216,6 +227,37 @@ export function useServiceSettingsController({
       previewServiceConfig((current) => ({
         ...current,
         mode,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewDesktopConnectionMode = useCallback(
+    (desktopConnectionMode: DesktopServiceConnectionMode) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        desktopConnectionMode,
+        enabled: desktopConnectionMode === "custom" ? false : current.enabled,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewDesktopServiceUrl = useCallback(
+    (desktopServiceUrl: string) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        desktopServiceUrl,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewDesktopServiceAuthToken = useCallback(
+    (desktopServiceAuthToken: string) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        desktopServiceAuthToken,
       }));
     },
     [previewServiceConfig]
@@ -330,7 +372,10 @@ export function useServiceSettingsController({
         }
       : null;
 
-    if (nextServiceConfig) {
+    if (
+      nextServiceConfig &&
+      (nextServiceConfig.desktopConnectionMode === "managedLocal" || nextServiceConfig.enabled)
+    ) {
       try {
         await invoke("validate_tracking_source_config", { config: nextServiceConfig });
       } catch (error) {
@@ -406,6 +451,10 @@ export function useServiceSettingsController({
     return invoke<string>("test_external_tracking_source", { config });
   }, []);
 
+  const testApiServiceConnection = useCallback(async (config: ServiceConfig) => {
+    return invoke<string>("test_api_service_connection", { config });
+  }, []);
+
   return {
     apiServiceStatus,
     cancelServiceConfigPreview,
@@ -416,6 +465,9 @@ export function useServiceSettingsController({
     hasLoadedServiceConfig,
     hasPendingServiceConfigChanges,
     previewAllowInsecureExternalApiHttp,
+    previewDesktopConnectionMode,
+    previewDesktopServiceAuthToken,
+    previewDesktopServiceUrl,
     previewExternalApiAuthToken,
     previewExternalApiBaseUrl,
     previewGenerateServiceToken,
@@ -424,6 +476,7 @@ export function useServiceSettingsController({
     previewServiceMode,
     previewServicePort,
     previewTrackingSource,
+    testApiServiceConnection,
     testExternalTrackingSource,
   };
 }

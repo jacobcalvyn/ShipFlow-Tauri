@@ -6,7 +6,6 @@ mod tray_runtime;
 
 use std::{
     env,
-    net::{IpAddr, Ipv4Addr},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -22,7 +21,7 @@ use self::process_runtime::{
 };
 use self::runtime_config::{
     build_tracking_runtime_config, error_status, running_status, stopped_status,
-    tracking_runtime_matches, validate_service_config,
+    tracking_runtime_matches, validate_desktop_service_connection_config, validate_service_config,
 };
 use self::state_store::{
     clear_recorded_desktop_pid, clear_recorded_service_settings_pid, load_runtime_config,
@@ -44,7 +43,7 @@ pub use self::state_store::{
 const SERVICE_PROCESS_FLAG: &str = "--shipflow-service-process";
 const SERVICE_TRAY_FLAG: &str = "--shipflow-service-tray";
 const SERVICE_CONFIG_ARG: &str = "--service-config-base64";
-pub(crate) const SERVICE_STATUS_PRODUCT: &str = "shipflow-service";
+pub(crate) use shipflow_service_runtime::SERVICE_STATUS_PRODUCT;
 pub(crate) const SERVICE_STATE_DIR_NAME: &str = "shipflow-service-runtime";
 const SERVICE_CONFIG_FILE_NAME: &str = "config.json";
 const SERVICE_RUNTIME_CONFIG_FILE_NAME: &str = "runtime-config.json";
@@ -76,13 +75,6 @@ pub enum ApiServiceMode {
 }
 
 impl ApiServiceMode {
-    fn bind_address(&self) -> IpAddr {
-        match self {
-            Self::Local => IpAddr::V4(Ipv4Addr::LOCALHOST),
-            Self::Lan => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        }
-    }
-
     pub fn bind_address_label(&self) -> &'static str {
         match self {
             Self::Local => "127.0.0.1",
@@ -91,10 +83,28 @@ impl ApiServiceMode {
     }
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DesktopServiceConnectionMode {
+    #[default]
+    ManagedLocal,
+    Custom,
+}
+
+fn default_desktop_service_url() -> String {
+    "http://127.0.0.1:18422".into()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiServiceConfig {
     pub version: u8,
+    #[serde(default)]
+    pub desktop_connection_mode: DesktopServiceConnectionMode,
+    #[serde(default = "default_desktop_service_url")]
+    pub desktop_service_url: String,
+    #[serde(default)]
+    pub desktop_service_auth_token: String,
     pub enabled: bool,
     pub mode: ApiServiceMode,
     pub port: u16,
@@ -158,6 +168,8 @@ pub struct ApiServiceController {
 impl ApiServiceController {
     pub async fn configure(&self, config: ApiServiceConfig) -> Result<ApiServiceStatus, String> {
         let bind_address = config.mode.bind_address_label().to_string();
+        validate_desktop_service_connection_config(&config)?;
+
         if !config.enabled {
             stop_service_process();
             persist_saved_config(&config)?;
@@ -255,6 +267,29 @@ impl ApiServiceConfig {
             allow_insecure_external_api_http: self.allow_insecure_external_api_http,
         }
     }
+
+    pub fn uses_custom_desktop_service_connection(&self) -> bool {
+        self.desktop_connection_mode == DesktopServiceConnectionMode::Custom
+    }
+
+    pub fn service_client_base_url(&self) -> String {
+        if self.uses_custom_desktop_service_connection() {
+            let trimmed_url = self.desktop_service_url.trim().trim_end_matches('/');
+            if !trimmed_url.is_empty() {
+                return trimmed_url.to_string();
+            }
+        }
+
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    pub fn service_client_auth_token(&self) -> &str {
+        if self.uses_custom_desktop_service_connection() {
+            return self.desktop_service_auth_token.trim();
+        }
+
+        self.auth_token.trim()
+    }
 }
 
 pub fn maybe_delegate_desktop_launch_to_existing_process() -> Result<bool, String> {
@@ -293,6 +328,11 @@ pub fn ensure_tracking_service_runtime(
     let current_runtime_config = load_runtime_config().unwrap_or(None);
     let desired_runtime_config =
         build_tracking_runtime_config(saved_config, current_runtime_config.as_ref());
+    validate_desktop_service_connection_config(&desired_runtime_config)?;
+
+    if desired_runtime_config.uses_custom_desktop_service_connection() {
+        return Ok(desired_runtime_config);
+    }
 
     if read_recorded_pid().is_some_and(|pid| {
         is_expected_service_process(pid, SERVICE_PROCESS_FLAG)
