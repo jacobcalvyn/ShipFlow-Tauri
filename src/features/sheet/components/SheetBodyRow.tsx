@@ -34,8 +34,34 @@ import {
 } from "../utils";
 
 const POD_PHOTO_COLUMN_PATHS = new Set(["pod.photo1_url", "pod.photo2_url"]);
+const MAX_POD_IMAGE_CACHE_ENTRIES = 50;
 const podImageCache = new Map<string, string>();
 const qrImageCache = new Map<string, string>();
+
+function getCachedPodImage(source: string) {
+  const cached = podImageCache.get(source);
+  if (!cached) {
+    return "";
+  }
+
+  podImageCache.delete(source);
+  podImageCache.set(source, cached);
+  return cached;
+}
+
+function setCachedPodImage(source: string, resolved: string) {
+  podImageCache.delete(source);
+  podImageCache.set(source, resolved);
+
+  while (podImageCache.size > MAX_POD_IMAGE_CACHE_ENTRIES) {
+    const firstKey = podImageCache.keys().next().value;
+    if (typeof firstKey !== "string") {
+      break;
+    }
+
+    podImageCache.delete(firstKey);
+  }
+}
 
 export function getPreviewPortalLayout(
   rect: Pick<DOMRect, "top" | "left" | "right" | "height">,
@@ -147,11 +173,11 @@ function PodPhotoPreview({
   label: string;
 }) {
   const anchorRef = useRef<HTMLDivElement | null>(null);
-  const [resolvedSrc, setResolvedSrc] = useState(() => podImageCache.get(source) ?? "");
+  const [resolvedSrc, setResolvedSrc] = useState(() => getCachedPodImage(source));
   const [isHovered, setIsHovered] = useState(false);
 
   useEffect(() => {
-    const cached = podImageCache.get(source);
+    const cached = getCachedPodImage(source);
     if (cached) {
       setResolvedSrc(cached);
     } else {
@@ -164,7 +190,7 @@ function PodPhotoPreview({
       return;
     }
 
-    const cached = podImageCache.get(source);
+    const cached = getCachedPodImage(source);
     if (cached) {
       setResolvedSrc(cached);
       return;
@@ -178,7 +204,7 @@ function PodPhotoPreview({
           return;
         }
 
-        podImageCache.set(source, resolved);
+        setCachedPodImage(source, resolved);
         setResolvedSrc(resolved);
       })
       .catch(() => {

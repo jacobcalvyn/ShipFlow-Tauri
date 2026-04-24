@@ -75,6 +75,7 @@ Current ownership:
 
 Current local service routes:
 
+- `GET /status`
 - `GET /track/:shipment_id`
 - `GET /bag/:bag_id`
 - `GET /manifest/:manifest_id`
@@ -155,6 +156,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - `Delivery Terakhir` is derived from the latest `history_summary.delivery_runsheet` entry
 - QR previews are generated locally in-app and do not rely on an external QR image service
 - `POD Photo 1` and `POD Photo 2` render as image thumbnails with hover preview
+- POD hover previews are resolved through the Tauri backend, cap remote/data-image payloads at `5 MB`, reject SVG payloads, and keep only a bounded in-memory frontend preview cache
 - `history_summary` cells open scrollable popup details inside the app
 - Value-filter popups for sender/recipient name and address columns use a wider panel for long values
 - The workspace layout is tuned to be more compact so tabs, actions, shortcuts, and the sheet grid fit more comfortably in one screen
@@ -209,6 +211,10 @@ The main table currently focuses on:
 - Delivery-runsheet parsing now keeps only the latest effective update for a runsheet summary.
 - The service companion always keeps tray/background behavior enabled; it is no longer exposed as a user-facing desktop setting.
 - Desktop startup now proactively checks whether `ShipFlow Service` is already running and starts the companion runtime when needed.
+- Desktop/service readiness checks now require an authenticated `GET /status` response from `ShipFlow Service`, including a ShipFlow-specific product marker, before reusing an existing runtime process.
+- Service configuration is validated before it is persisted, and enabled service configs are written only after the companion process has started and passed the authenticated readiness probe.
+- Service config, runtime config, PID markers, pending activation requests, and runtime logs are stored under the user app-data state directory, with legacy temp-dir reads kept only as a migration fallback.
+- PID-based shutdown now verifies the recorded process command line matches the expected ShipFlow service/tray process before attempting to terminate it.
 - Desktop and service runtime events are written to per-process log files under the shared runtime state directory.
 - Runtime log files now also emit `[ShipFlowCacheMetrics]` summary lines with per-kind cache ratios and counters for operator audit.
 - ShipFlow Service lookup endpoints now percent-encode bag and manifest IDs before issuing local HTTP requests.
@@ -326,6 +332,7 @@ What it does:
 - runs on `windows-latest`
 - installs Node.js and Rust
 - runs frontend tests
+- runs Tauri Rust tests and shared `shipflow-core` Rust tests
 - builds the NSIS installer through the bundled-service config so `ShipFlow Service` is included
 - uploads two artifacts:
   - portable app executable: `shipflow-desktop-windows-portable`
@@ -352,6 +359,7 @@ What it does:
 - runs on `macos-latest`
 - installs Node.js and Rust
 - runs frontend tests
+- runs Tauri Rust tests and shared `shipflow-core` Rust tests
 - optionally uses Apple signing and notarization credentials when the corresponding `APPLE_*` repository secrets are configured
 - otherwise falls back to Tauri ad-hoc signing (`bundle.macOS.signingIdentity = "-"`) so the app bundle is still signed for local validation
 - builds the macOS app bundle through the bundled-service config so `ShipFlow Service` is included
@@ -404,9 +412,12 @@ Rust tests are now split by domain and cover:
 
 - Base64 + percent-encoded tracking URL generation
 - embedded API bearer-auth validation
+- authenticated service readiness probing and ShipFlow service identity checks
 - backend shipment-ID normalization and validation
 - backend bag-ID and manifest-ID normalization and validation
 - service-side bag / manifest lookup endpoint encoding and error-message parsing
+- app-data service state persistence, legacy temp-dir migration fallback, and activation-request consumption
+- POD preview data-image size guardrails and SVG rejection
 - sample HTML parsing
 - bag HTML parsing
 - manifest HTML parsing
@@ -450,4 +461,4 @@ cargo test --manifest-path crates/shipflow-core/Cargo.toml
 - Hidden columns are stored in browser/webview local storage
 - Pinned columns are stored in browser/webview local storage
 - Workspace and sheet state are persisted in browser/webview local storage with a storage-safe fallback snapshot
-- Service runtime state, PID markers, pending activation requests, and runtime logs are stored under the temporary `shipflow-service-runtime` state directory
+- Service runtime state, PID markers, pending activation requests, and runtime logs are stored under the user app-data `shipflow-service-runtime` state directory; the old temp-dir location is read only as a migration fallback

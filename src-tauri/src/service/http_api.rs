@@ -7,7 +7,10 @@ use axum::{
 use reqwest::Client;
 use serde_json::{json, Value};
 
-use super::{runtime_config::validate_service_config, ApiServiceConfig, ApiServiceMode};
+use super::{
+    runtime_config::validate_service_config, ApiServiceConfig, ApiServiceMode,
+    SERVICE_STATUS_PRODUCT,
+};
 use crate::lookup_runtime::{
     resolve_bag_request_cached, resolve_manifest_request_cached, resolve_tracking_request_cached,
     LookupCacheState, LookupRequestOptions,
@@ -79,6 +82,7 @@ async fn status_handler(
 
     Ok(Json(json!({
         "service": "running",
+        "product": SERVICE_STATUS_PRODUCT,
         "mode": state.mode,
         "bindAddress": state.bind_address,
         "port": state.port,

@@ -174,10 +174,11 @@ pub(crate) async fn resolve_pod_image_source(
     }
 
     if trimmed.starts_with("data:image/") {
-        return Ok(trimmed.to_string());
+        return validate_data_image_url(trimmed);
     }
 
     if let Some(normalized) = normalize_base64_image(trimmed) {
+        validate_base64_image_payload(&normalized)?;
         return Ok(base64_to_data_url(&normalized));
     }
 
@@ -186,7 +187,12 @@ pub(crate) async fn resolve_pod_image_source(
     let (content_type, bytes) = fetch_remote_pod_payload(&client, &url, depth).await?;
 
     if let Some(content_type) = content_type {
-        if content_type.starts_with("image/") {
+        let normalized_content_type = content_type.to_ascii_lowercase();
+        if normalized_content_type.starts_with("image/svg+xml") {
+            return Err("SVG POD images are not supported.".into());
+        }
+
+        if normalized_content_type.starts_with("image/") {
             return Ok(format!(
                 "data:{content_type};base64,{}",
                 STANDARD.encode(&bytes)
@@ -196,14 +202,15 @@ pub(crate) async fn resolve_pod_image_source(
 
     let body_text = String::from_utf8_lossy(&bytes).trim().to_string();
     if body_text.starts_with("data:image/") {
-        return Ok(body_text);
+        return validate_data_image_url(&body_text);
     }
 
     if let Some(data_image) = extract_data_image_from_text(&body_text) {
-        return Ok(data_image);
+        return validate_data_image_url(&data_image);
     }
 
     if let Some(normalized) = normalize_base64_image(&body_text) {
+        validate_base64_image_payload(&normalized)?;
         return Ok(base64_to_data_url(&normalized));
     }
 
@@ -221,6 +228,48 @@ pub(crate) async fn resolve_pod_image_source(
     }
 
     Err("POD image source did not resolve to a valid image payload.".into())
+}
+
+fn validate_data_image_url(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    let Some((metadata, payload)) = trimmed.split_once(',') else {
+        return Err("POD data image payload is invalid.".into());
+    };
+    let normalized_metadata = metadata.to_ascii_lowercase();
+
+    if !normalized_metadata.starts_with("data:image/") {
+        return Err("POD data image must use an image media type.".into());
+    }
+
+    if normalized_metadata.starts_with("data:image/svg+xml") {
+        return Err("SVG POD images are not supported.".into());
+    }
+
+    if !normalized_metadata.contains(";base64") {
+        return Err("POD data image must be base64 encoded.".into());
+    }
+
+    let normalized_payload = normalize_base64_image(payload)
+        .ok_or_else(|| "POD data image payload is invalid.".to_string())?;
+    validate_base64_image_payload(&normalized_payload)?;
+
+    Ok(format!("{metadata},{normalized_payload}"))
+}
+
+fn validate_base64_image_payload(normalized: &str) -> Result<(), String> {
+    if normalized.starts_with("PHN2Zy") {
+        return Err("SVG POD images are not supported.".into());
+    }
+
+    let decoded = STANDARD
+        .decode(normalized)
+        .map_err(|error| format!("POD image payload is invalid base64: {error}"))?;
+
+    if decoded.len() > MAX_POD_IMAGE_BYTES {
+        return Err("POD image source is too large to preview safely.".into());
+    }
+
+    Ok(())
 }
 
 fn extract_image_source_from_html(html: &str) -> Option<String> {
@@ -311,9 +360,13 @@ pub(crate) fn base64_to_data_url(normalized: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine as _;
     use reqwest::Url;
 
-    use super::{base64_to_data_url, normalize_base64_image, validate_remote_pod_url};
+    use super::{
+        base64_to_data_url, normalize_base64_image, validate_data_image_url,
+        validate_remote_pod_url, MAX_POD_IMAGE_BYTES,
+    };
 
     #[test]
     fn resolve_pod_base64_into_data_url() {
@@ -339,5 +392,23 @@ mod tests {
         .expect_err("private loopback POD URL should be rejected");
 
         assert!(error.contains("not allowed"));
+    }
+
+    #[test]
+    fn rejects_oversized_data_image_payload() {
+        let oversized_payload =
+            base64::engine::general_purpose::STANDARD.encode(vec![0; MAX_POD_IMAGE_BYTES + 1]);
+        let error = validate_data_image_url(&format!("data:image/png;base64,{oversized_payload}"))
+            .expect_err("oversized data image should be rejected");
+
+        assert!(error.contains("too large"));
+    }
+
+    #[test]
+    fn rejects_svg_data_image_payload() {
+        let error = validate_data_image_url("data:image/svg+xml;base64,PHN2Zy8+")
+            .expect_err("svg data image should be rejected");
+
+        assert!(error.contains("SVG"));
     }
 }

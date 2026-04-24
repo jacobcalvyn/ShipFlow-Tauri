@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 
 use self::http_api::run_service_process;
 use self::process_runtime::{
-    is_process_alive, is_service_port_ready, spawn_service_process, stop_service_process,
-    wait_for_service_port,
+    is_expected_service_process, is_process_alive, is_service_runtime_ready, spawn_service_process,
+    stop_service_process, wait_for_service_runtime,
 };
 use self::runtime_config::{
     build_tracking_runtime_config, error_status, running_status, stopped_status,
@@ -44,6 +44,7 @@ pub use self::state_store::{
 const SERVICE_PROCESS_FLAG: &str = "--shipflow-service-process";
 const SERVICE_TRAY_FLAG: &str = "--shipflow-service-tray";
 const SERVICE_CONFIG_ARG: &str = "--service-config-base64";
+pub(crate) const SERVICE_STATUS_PRODUCT: &str = "shipflow-service";
 pub(crate) const SERVICE_STATE_DIR_NAME: &str = "shipflow-service-runtime";
 const SERVICE_CONFIG_FILE_NAME: &str = "config.json";
 const SERVICE_RUNTIME_CONFIG_FILE_NAME: &str = "runtime-config.json";
@@ -156,11 +157,10 @@ pub struct ApiServiceController {
 
 impl ApiServiceController {
     pub async fn configure(&self, config: ApiServiceConfig) -> Result<ApiServiceStatus, String> {
-        persist_saved_config(&config)?;
-
         let bind_address = config.mode.bind_address_label().to_string();
         if !config.enabled {
             stop_service_process();
+            persist_saved_config(&config)?;
             let status = stopped_status(&config);
             self.set_status(status.clone());
             return Ok(status);
@@ -170,10 +170,12 @@ impl ApiServiceController {
 
         if let Some(saved_config) = self.load_saved_config()? {
             if saved_config == config
-                && read_recorded_pid().is_some_and(is_process_alive)
-                && is_service_port_ready(config.port, Duration::from_millis(200))
+                && read_recorded_pid().is_some_and(|pid| {
+                    is_expected_service_process(pid, SERVICE_PROCESS_FLAG)
+                        && is_service_runtime_ready(&config, Duration::from_millis(200))
+                })
             {
-                let _ = persist_runtime_config(&config);
+                persist_runtime_config(&config)?;
                 let status = running_status(&config);
                 self.set_status(status.clone());
                 return Ok(status);
@@ -183,9 +185,10 @@ impl ApiServiceController {
         stop_service_process();
         let pid = spawn_service_process(&config)?;
         persist_service_pid(pid)?;
-        persist_runtime_config(&config)?;
 
-        if !wait_for_service_port(config.port, Duration::from_secs(5)) {
+        if !wait_for_service_runtime(&config, Duration::from_secs(5))
+            || !is_expected_service_process(pid, SERVICE_PROCESS_FLAG)
+        {
             stop_service_process();
             let status = error_status(
                 &config,
@@ -199,6 +202,8 @@ impl ApiServiceController {
                 .unwrap_or_else(|| "API service configuration failed.".into()));
         }
 
+        persist_runtime_config(&config)?;
+        persist_saved_config(&config)?;
         let status = running_status(&config);
         self.set_status(status.clone());
         Ok(status)
@@ -211,8 +216,8 @@ impl ApiServiceController {
                 let bind_address = config.mode.bind_address_label().to_string();
                 match read_recorded_pid() {
                     Some(pid)
-                        if is_process_alive(pid)
-                            && is_service_port_ready(config.port, Duration::from_millis(200)) =>
+                        if is_expected_service_process(pid, SERVICE_PROCESS_FLAG)
+                            && is_service_runtime_ready(&config, Duration::from_millis(200)) =>
                     {
                         running_status(&config)
                     }
@@ -289,11 +294,12 @@ pub fn ensure_tracking_service_runtime(
     let desired_runtime_config =
         build_tracking_runtime_config(saved_config, current_runtime_config.as_ref());
 
-    if read_recorded_pid().is_some_and(is_process_alive)
-        && is_service_port_ready(desired_runtime_config.port, Duration::from_millis(200))
-        && current_runtime_config
-            .as_ref()
-            .is_some_and(|config| tracking_runtime_matches(config, &desired_runtime_config))
+    if read_recorded_pid().is_some_and(|pid| {
+        is_expected_service_process(pid, SERVICE_PROCESS_FLAG)
+            && is_service_runtime_ready(&desired_runtime_config, Duration::from_millis(200))
+    }) && current_runtime_config
+        .as_ref()
+        .is_some_and(|config| tracking_runtime_matches(config, &desired_runtime_config))
     {
         return Ok(current_runtime_config.unwrap_or(desired_runtime_config));
     }
@@ -301,13 +307,15 @@ pub fn ensure_tracking_service_runtime(
     stop_service_process();
     let pid = spawn_service_process(&desired_runtime_config)?;
     persist_service_pid(pid)?;
-    persist_runtime_config(&desired_runtime_config)?;
 
-    if !wait_for_service_port(desired_runtime_config.port, Duration::from_secs(5)) {
+    if !wait_for_service_runtime(&desired_runtime_config, Duration::from_secs(5))
+        || !is_expected_service_process(pid, SERVICE_PROCESS_FLAG)
+    {
         stop_service_process();
         return Err("ShipFlow Service runtime failed to become ready.".into());
     }
 
+    persist_runtime_config(&desired_runtime_config)?;
     Ok(desired_runtime_config)
 }
 

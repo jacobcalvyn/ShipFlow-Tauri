@@ -1,4 +1,11 @@
-use std::{env, fs, io::ErrorKind, path::PathBuf};
+use std::{
+    env, fs,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use super::{
     ApiServiceConfig, DesktopActivationRequest, DESKTOP_PID_FILE_NAME, DESKTOP_REQUEST_FILE_NAME,
@@ -7,13 +14,68 @@ use super::{
     SERVICE_TRAY_PID_FILE_NAME,
 };
 
-fn service_state_dir() -> PathBuf {
-    #[cfg(test)]
-    if let Some(path) = env::var_os("SHIPFLOW_SERVICE_STATE_DIR_OVERRIDE") {
-        return PathBuf::from(path);
+#[cfg(test)]
+fn state_dir_override() -> Option<PathBuf> {
+    env::var_os("SHIPFLOW_SERVICE_STATE_DIR_OVERRIDE").map(PathBuf::from)
+}
+
+#[cfg(not(test))]
+fn state_dir_override() -> Option<PathBuf> {
+    None
+}
+
+fn legacy_service_state_dir() -> PathBuf {
+    env::temp_dir().join(SERVICE_STATE_DIR_NAME)
+}
+
+fn app_data_service_state_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        return env::var_os("HOME").map(PathBuf::from).map(|home| {
+            home.join("Library")
+                .join("Application Support")
+                .join("ShipFlow Desktop")
+                .join(SERVICE_STATE_DIR_NAME)
+        });
     }
 
-    env::temp_dir().join(SERVICE_STATE_DIR_NAME)
+    #[cfg(target_os = "windows")]
+    {
+        return env::var_os("APPDATA").map(PathBuf::from).map(|app_data| {
+            app_data
+                .join("ShipFlow Desktop")
+                .join(SERVICE_STATE_DIR_NAME)
+        });
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(xdg_data_home) = env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
+            return Some(
+                xdg_data_home
+                    .join("shipflow-desktop")
+                    .join(SERVICE_STATE_DIR_NAME),
+            );
+        }
+
+        return env::var_os("HOME").map(PathBuf::from).map(|home| {
+            home.join(".local")
+                .join("share")
+                .join("shipflow-desktop")
+                .join(SERVICE_STATE_DIR_NAME)
+        });
+    }
+
+    #[allow(unreachable_code)]
+    None
+}
+
+fn service_state_dir() -> PathBuf {
+    if let Some(path) = state_dir_override() {
+        return path;
+    }
+
+    app_data_service_state_dir().unwrap_or_else(legacy_service_state_dir)
 }
 
 fn service_config_path() -> PathBuf {
@@ -49,63 +111,137 @@ fn desktop_request_path() -> PathBuf {
 }
 
 fn ensure_service_state_dir() -> Result<(), String> {
-    fs::create_dir_all(service_state_dir())
-        .map_err(|error| format!("Unable to prepare service state directory: {error}"))
+    let state_dir = service_state_dir();
+    fs::create_dir_all(&state_dir)
+        .map_err(|error| format!("Unable to prepare service state directory: {error}"))?;
+    set_user_only_permissions(&state_dir, 0o700);
+    Ok(())
+}
+
+fn set_user_only_permissions(path: &Path, mode: u32) {
+    #[cfg(unix)]
+    {
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+    }
+}
+
+fn state_file_candidates(primary_path: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![primary_path.to_path_buf()];
+
+    if state_dir_override().is_none() {
+        if let Some(file_name) = primary_path.file_name() {
+            let legacy_path = legacy_service_state_dir().join(file_name);
+            if legacy_path != primary_path {
+                candidates.push(legacy_path);
+            }
+        }
+    }
+
+    candidates
+}
+
+fn read_first_state_file(
+    primary_path: PathBuf,
+    label: &str,
+) -> Result<Option<(PathBuf, Vec<u8>)>, String> {
+    for path in state_file_candidates(&primary_path) {
+        match fs::read(&path) {
+            Ok(bytes) => return Ok(Some((path, bytes))),
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Unable to read {label} from {}: {error}",
+                    path.to_string_lossy()
+                ))
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn write_state_file(path: PathBuf, payload: Vec<u8>, label: &str) -> Result<(), String> {
+    ensure_service_state_dir()?;
+    let file_name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "state".into());
+    let temp_path = path.with_file_name(format!("{file_name}.{}.tmp", std::process::id()));
+
+    fs::write(&temp_path, payload)
+        .map_err(|error| format!("Unable to write temporary {label}: {error}"))?;
+    set_user_only_permissions(&temp_path, 0o600);
+
+    #[cfg(target_os = "windows")]
+    if path.exists() {
+        fs::remove_file(&path)
+            .map_err(|error| format!("Unable to replace existing {label}: {error}"))?;
+    }
+
+    fs::rename(&temp_path, &path).map_err(|error| {
+        let _ = fs::remove_file(&temp_path);
+        format!("Unable to finalize {label}: {error}")
+    })
 }
 
 pub(crate) fn persist_saved_config(config: &ApiServiceConfig) -> Result<(), String> {
-    ensure_service_state_dir()?;
     let serialized = serde_json::to_vec_pretty(config)
         .map_err(|error| format!("Unable to serialize API service configuration: {error}"))?;
-    fs::write(service_config_path(), serialized)
-        .map_err(|error| format!("Unable to persist API service configuration: {error}"))
+    write_state_file(
+        service_config_path(),
+        serialized,
+        "API service configuration",
+    )
 }
 
 pub(crate) fn persist_runtime_config(config: &ApiServiceConfig) -> Result<(), String> {
-    ensure_service_state_dir()?;
     let serialized = serde_json::to_vec_pretty(config)
         .map_err(|error| format!("Unable to serialize runtime service configuration: {error}"))?;
-    fs::write(service_runtime_config_path(), serialized)
-        .map_err(|error| format!("Unable to persist runtime service configuration: {error}"))
+    write_state_file(
+        service_runtime_config_path(),
+        serialized,
+        "runtime service configuration",
+    )
 }
 
 pub(crate) fn load_saved_config() -> Result<Option<ApiServiceConfig>, String> {
-    let path = service_config_path();
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(format!(
-                "Unable to read persisted API service configuration: {error}"
-            ))
-        }
+    let primary_path = service_config_path();
+    let Some((source_path, bytes)) =
+        read_first_state_file(primary_path.clone(), "persisted API service configuration")?
+    else {
+        return Ok(None);
     };
 
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|error| format!("Unable to parse persisted API service configuration: {error}"))
+    let config = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Unable to parse persisted API service configuration: {error}"))?;
+
+    if source_path != primary_path {
+        let _ = persist_saved_config(&config);
+    }
+
+    Ok(Some(config))
 }
 
 pub(crate) fn load_runtime_config() -> Result<Option<ApiServiceConfig>, String> {
-    let path = service_runtime_config_path();
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(format!(
-                "Unable to read runtime service configuration: {error}"
-            ))
-        }
+    let primary_path = service_runtime_config_path();
+    let Some((source_path, bytes)) =
+        read_first_state_file(primary_path.clone(), "runtime service configuration")?
+    else {
+        return Ok(None);
     };
 
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|error| format!("Unable to parse runtime service configuration: {error}"))
+    let config = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Unable to parse runtime service configuration: {error}"))?;
+
+    if source_path != primary_path {
+        let _ = persist_runtime_config(&config);
+    }
+
+    Ok(Some(config))
 }
 
 fn persist_pid_file(path: PathBuf, pid: u32, label: &str) -> Result<(), String> {
-    ensure_service_state_dir()?;
-    fs::write(path, pid.to_string()).map_err(|error| format!("Unable to persist {label}: {error}"))
+    write_state_file(path, pid.to_string().into_bytes(), label)
 }
 
 pub(crate) fn persist_service_pid(pid: u32) -> Result<(), String> {
@@ -129,7 +265,8 @@ pub fn register_current_service_settings_process() -> Result<(), String> {
 }
 
 fn read_pid_file(path: PathBuf) -> Option<u32> {
-    let raw_value = fs::read_to_string(path).ok()?;
+    let (_, bytes) = read_first_state_file(path, "process id").ok()??;
+    let raw_value = String::from_utf8(bytes).ok()?;
     raw_value.trim().parse::<u32>().ok()
 }
 
@@ -150,7 +287,9 @@ pub(crate) fn read_recorded_desktop_pid() -> Option<u32> {
 }
 
 fn clear_path(path: PathBuf) {
-    let _ = fs::remove_file(path);
+    for candidate in state_file_candidates(&path) {
+        let _ = fs::remove_file(candidate);
+    }
 }
 
 pub(crate) fn clear_recorded_pid() {
@@ -184,35 +323,38 @@ pub fn clear_current_service_settings_process() {
 pub(crate) fn persist_service_settings_activation_request(
     request: &DesktopActivationRequest,
 ) -> Result<(), String> {
-    ensure_service_state_dir()?;
     let payload = serde_json::to_vec(request).map_err(|error| {
         format!("Unable to serialize service settings activation request: {error}")
     })?;
-    fs::write(service_settings_request_path(), payload)
-        .map_err(|error| format!("Unable to persist service settings activation request: {error}"))
+    write_state_file(
+        service_settings_request_path(),
+        payload,
+        "service settings activation request",
+    )
 }
 
 pub(crate) fn persist_desktop_activation_request(
     request: &DesktopActivationRequest,
 ) -> Result<(), String> {
-    ensure_service_state_dir()?;
     let payload = serde_json::to_vec(request)
         .map_err(|error| format!("Unable to serialize desktop activation request: {error}"))?;
-    fs::write(desktop_request_path(), payload)
-        .map_err(|error| format!("Unable to persist desktop activation request: {error}"))
+    write_state_file(
+        desktop_request_path(),
+        payload,
+        "desktop activation request",
+    )
 }
 
 fn take_pending_activation_request(
     path: PathBuf,
     label: &str,
 ) -> Result<Option<DesktopActivationRequest>, String> {
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("Unable to read pending {label}: {error}")),
+    let Some((source_path, bytes)) = read_first_state_file(path, &format!("pending {label}"))?
+    else {
+        return Ok(None);
     };
 
-    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&source_path);
     serde_json::from_slice(&bytes)
         .map(Some)
         .map_err(|error| format!("Unable to parse pending {label}: {error}"))

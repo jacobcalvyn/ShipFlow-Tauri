@@ -35,6 +35,12 @@ jobs:
       - name: Run frontend tests
         run: npm test
 
+      - name: Run Tauri Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Run shared core Rust tests
+        run: cargo test --manifest-path crates/shipflow-core/Cargo.toml
+
       - name: Build Windows frontend bundle
         run: npm run build
 

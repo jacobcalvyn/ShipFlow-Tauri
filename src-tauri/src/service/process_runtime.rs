@@ -1,5 +1,6 @@
 use std::{
     env,
+    io::{Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
     path::{Path as FsPath, PathBuf},
     process::{Command, Stdio},
@@ -22,7 +23,7 @@ use super::{
     },
     ApiServiceConfig, ApiServiceMode, ApiServiceStatus, ApiServiceStatusKind,
     DESKTOP_BINARY_BASENAME, DESKTOP_PRODUCT_BASENAME, SERVICE_COMPANION_BINARY_BASENAME,
-    SERVICE_PROCESS_FLAG, SERVICE_TRAY_FLAG,
+    SERVICE_PROCESS_FLAG, SERVICE_STATUS_PRODUCT, SERVICE_TRAY_FLAG,
 };
 
 #[cfg(target_os = "windows")]
@@ -58,7 +59,9 @@ pub(crate) fn spawn_service_process(config: &ApiServiceConfig) -> Result<u32, St
 }
 
 fn ensure_service_tray_process_running() -> Result<(), String> {
-    if read_recorded_tray_pid().is_some_and(is_process_alive) {
+    if read_recorded_tray_pid()
+        .is_some_and(|pid| is_expected_service_process(pid, SERVICE_TRAY_FLAG))
+    {
         return Ok(());
     }
 
@@ -341,7 +344,9 @@ fn xml_escape(value: &str) -> String {
 
 pub(crate) fn stop_service_process() {
     if let Some(pid) = read_recorded_pid() {
-        let _ = terminate_process(pid);
+        if is_expected_service_process(pid, SERVICE_PROCESS_FLAG) {
+            let _ = terminate_process(pid);
+        }
     }
 
     clear_recorded_pid();
@@ -350,10 +355,80 @@ pub(crate) fn stop_service_process() {
 
 pub(crate) fn stop_service_tray_process() {
     if let Some(pid) = read_recorded_tray_pid() {
-        let _ = terminate_process(pid);
+        if is_expected_service_process(pid, SERVICE_TRAY_FLAG) {
+            let _ = terminate_process(pid);
+        }
     }
 
     clear_recorded_tray_pid();
+}
+
+fn process_command_line(pid: u32) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new("powershell");
+        prepare_background_command(&mut command);
+        let output = command
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\" | Select-Object -ExpandProperty CommandLine"
+                ),
+            ])
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return (!value.is_empty()).then_some(value);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return (!value.is_empty()).then_some(value);
+    }
+}
+
+fn command_line_matches_service_process(command_line: &str, required_flag: &str) -> bool {
+    let normalized = command_line.to_ascii_lowercase();
+    let has_expected_binary =
+        command_line_contains_binary(&normalized, SERVICE_COMPANION_BINARY_BASENAME)
+            || command_line_contains_binary(&normalized, DESKTOP_BINARY_BASENAME)
+            || command_line_contains_binary(&normalized, DESKTOP_PRODUCT_BASENAME);
+
+    has_expected_binary && command_line.contains(required_flag)
+}
+
+fn command_line_contains_binary(normalized_command_line: &str, binary_name: &str) -> bool {
+    let binary_name = binary_name.to_ascii_lowercase();
+    normalized_command_line.starts_with(&binary_name)
+        || normalized_command_line.contains(&format!(" {binary_name}"))
+        || normalized_command_line.contains(&format!("\"{binary_name}"))
+        || normalized_command_line.contains(&format!("/{binary_name}"))
+        || normalized_command_line.contains(&format!("\\{binary_name}"))
+}
+
+pub(crate) fn is_expected_service_process(pid: u32, required_flag: &str) -> bool {
+    is_process_alive(pid)
+        && process_command_line(pid)
+            .as_deref()
+            .is_some_and(|command_line| {
+                command_line_matches_service_process(command_line, required_flag)
+            })
 }
 
 fn terminate_process(pid: u32) -> Result<(), String> {
@@ -432,14 +507,65 @@ fn service_probe_socket_addr(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
 }
 
-pub(crate) fn is_service_port_ready(port: u16, timeout: Duration) -> bool {
-    TcpStream::connect_timeout(&service_probe_socket_addr(port), timeout).is_ok()
+fn read_authenticated_service_status(
+    port: u16,
+    auth_token: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    let trimmed_token = auth_token.trim();
+    if trimmed_token.is_empty() {
+        return Err("Service status probe requires an auth token.".into());
+    }
+
+    let mut stream = TcpStream::connect_timeout(&service_probe_socket_addr(port), timeout)
+        .map_err(|error| {
+            format!("Unable to connect to ShipFlow Service status endpoint: {error}")
+        })?;
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+
+    let request = format!(
+        "GET /status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {trimmed_token}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("Unable to write ShipFlow Service status probe: {error}"))?;
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|error| format!("Unable to read ShipFlow Service status probe: {error}"))?;
+    Ok(response)
 }
 
-pub(crate) fn wait_for_service_port(port: u16, timeout: Duration) -> bool {
+fn authenticated_service_status_is_valid(response: &str) -> bool {
+    let mut parts = response.splitn(2, "\r\n\r\n");
+    let headers = parts.next().unwrap_or_default();
+    let body = parts.next().unwrap_or_default().trim();
+
+    let status_line = headers.lines().next().unwrap_or_default();
+    if !status_line.contains(" 200 ") {
+        return false;
+    }
+
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+
+    payload.get("service").and_then(|value| value.as_str()) == Some("running")
+        && payload.get("product").and_then(|value| value.as_str()) == Some(SERVICE_STATUS_PRODUCT)
+}
+
+pub(crate) fn is_service_runtime_ready(config: &ApiServiceConfig, timeout: Duration) -> bool {
+    read_authenticated_service_status(config.port, &config.auth_token, timeout)
+        .map(|response| authenticated_service_status_is_valid(&response))
+        .unwrap_or(false)
+}
+
+pub(crate) fn wait_for_service_runtime(config: &ApiServiceConfig, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if is_service_port_ready(port, Duration::from_millis(200)) {
+        if is_service_runtime_ready(config, Duration::from_millis(250)) {
             return true;
         }
         thread::sleep(Duration::from_millis(75));
@@ -510,8 +636,9 @@ pub(crate) fn launch_shipflow_service_settings_companion() -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::{
-        build_service_endpoint, format_service_status_label, ApiServiceConfig, ApiServiceMode,
-        ApiServiceStatus, ApiServiceStatusKind,
+        authenticated_service_status_is_valid, build_service_endpoint,
+        command_line_matches_service_process, format_service_status_label, ApiServiceConfig,
+        ApiServiceMode, ApiServiceStatus, ApiServiceStatusKind,
     };
     use crate::tracking::model::TrackingSource;
 
@@ -595,5 +722,33 @@ mod tests {
         );
 
         assert_eq!(label, "API Off");
+    }
+
+    #[test]
+    fn service_process_command_line_requires_shipflow_binary_and_flag() {
+        assert!(command_line_matches_service_process(
+            "/Applications/ShipFlow Desktop.app/Contents/MacOS/shipflow-service --shipflow-service-process",
+            super::SERVICE_PROCESS_FLAG
+        ));
+        assert!(!command_line_matches_service_process(
+            "/usr/bin/python other.py --shipflow-service-process",
+            super::SERVICE_PROCESS_FLAG
+        ));
+    }
+
+    #[test]
+    fn authenticated_status_probe_requires_shipflow_identity() {
+        let response = concat!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n",
+            r#"{"service":"running","product":"shipflow-service","mode":"local","port":18422}"#
+        );
+
+        assert!(authenticated_service_status_is_valid(response));
+        assert!(!authenticated_service_status_is_valid(
+            "HTTP/1.1 200 OK\r\n\r\n{\"service\":\"running\"}"
+        ));
+        assert!(!authenticated_service_status_is_valid(
+            "HTTP/1.1 401 Unauthorized\r\n\r\n{\"error\":\"bad token\"}"
+        ));
     }
 }
