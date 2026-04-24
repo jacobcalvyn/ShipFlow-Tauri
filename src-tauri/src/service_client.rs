@@ -115,7 +115,7 @@ async fn fetch_lookup_via_service<T: DeserializeOwned>(
         ));
     }
 
-    if config.uses_custom_desktop_service_connection() {
+    if should_verify_service_before_lookup(config) {
         verify_api_service_connection(client, config)
             .await
             .map_err(tracking::model::TrackingError::Upstream)?;
@@ -197,7 +197,17 @@ async fn verify_api_service_connection(
         return Err(extract_service_error_message(status, Some(&raw_body)));
     }
 
-    let payload = serde_json::from_str::<serde_json::Value>(&raw_body).map_err(|error| {
+    verify_service_status_payload(&raw_body)?;
+
+    Ok(())
+}
+
+fn should_verify_service_before_lookup(config: &ApiServiceConfig) -> bool {
+    config.uses_custom_desktop_service_connection()
+}
+
+fn verify_service_status_payload(raw_body: &str) -> Result<(), String> {
+    let payload = serde_json::from_str::<serde_json::Value>(raw_body).map_err(|error| {
         format!("ShipFlow Service returned an invalid status response: {error}")
     })?;
     let product = payload
@@ -223,9 +233,35 @@ async fn verify_api_service_connection(
 mod tests {
     use reqwest::StatusCode;
 
-    use super::{
-        build_service_lookup_endpoint, build_service_status_endpoint, extract_service_error_message,
+    use crate::{
+        service::{ApiServiceConfig, ApiServiceMode, DesktopServiceConnectionMode},
+        tracking::model::TrackingSource,
     };
+
+    use super::{
+        build_service_lookup_endpoint, build_service_status_endpoint,
+        extract_service_error_message, should_verify_service_before_lookup,
+        verify_service_status_payload,
+    };
+
+    fn sample_custom_service_config(base_url: String) -> ApiServiceConfig {
+        ApiServiceConfig {
+            version: 1,
+            desktop_connection_mode: DesktopServiceConnectionMode::Custom,
+            desktop_service_url: base_url,
+            desktop_service_auth_token: "sf_custom_service_token".into(),
+            enabled: false,
+            mode: ApiServiceMode::Local,
+            port: 18422,
+            auth_token: String::new(),
+            tracking_source: TrackingSource::Default,
+            external_api_base_url: String::new(),
+            external_api_auth_token: String::new(),
+            allow_insecure_external_api_http: false,
+            keep_running_in_tray: true,
+            last_updated_at: "2026-04-25T00:00:00.000Z".into(),
+        }
+    }
 
     #[test]
     fn prefers_json_error_payload_message() {
@@ -262,5 +298,34 @@ mod tests {
             .expect("status endpoint should build");
 
         assert_eq!(endpoint, "http://127.0.0.1:18423/api/status");
+    }
+
+    #[test]
+    fn custom_lookup_requires_status_verification_before_lookup() {
+        let custom_config = sample_custom_service_config("http://127.0.0.1:18423".into());
+        let managed_config = ApiServiceConfig {
+            desktop_connection_mode: DesktopServiceConnectionMode::ManagedLocal,
+            ..sample_custom_service_config("http://127.0.0.1:18423".into())
+        };
+
+        assert!(should_verify_service_before_lookup(&custom_config));
+        assert!(!should_verify_service_before_lookup(&managed_config));
+    }
+
+    #[test]
+    fn validates_shipflow_status_identity_payload() {
+        verify_service_status_payload(
+            r#"{"service":"running","product":"shipflow-service","mode":"local"}"#,
+        )
+        .expect("valid ShipFlow Service status should pass");
+
+        let error = verify_service_status_payload(r#"{"service":"running","product":"other"}"#)
+            .expect_err("wrong product marker should fail");
+        assert!(error.contains("not a ShipFlow Service"));
+
+        let error =
+            verify_service_status_payload(r#"{"service":"stopped","product":"shipflow-service"}"#)
+                .expect_err("non-running service should fail");
+        assert!(error.contains("not reporting a running status"));
     }
 }

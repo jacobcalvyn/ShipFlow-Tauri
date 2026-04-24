@@ -37,6 +37,8 @@ Desktop-to-Service HTTP calls now live behind `src-tauri/src/service_client.rs`.
 
 `crates/shipflow-service-runtime` now owns the service HTTP API server, authenticated route handling, lookup cache, force-refresh header semantics, and service runtime validation. `src-tauri/src/service/http_api.rs` is now only an adapter from Desktop config into that shared runtime crate.
 
+The repository now also has a standalone service binary workflow at `.github/workflows/build-service-binary.yml`. It builds `apps/service` on macOS and Windows and uploads service-only binary artifacts. This is not a full installer split yet, but it gives Service its own release artifact path before Desktop moves into a separate package.
+
 ## Service-Owned Config
 
 When Desktop uses `custom`, the target service owns its own runtime and scraping configuration:
@@ -57,7 +59,7 @@ Desktop only stores:
 1. Move service state/config/process lifecycle ownership out of `src-tauri/src/service` into service-owned crates or `apps/service`.
 2. Reduce `apps/service` dependency on the desktop crate once tray/settings UI boundaries are separated.
 3. Move Desktop into `apps/desktop` after service extraction is stable.
-4. Add independent Service and Desktop packaging jobs.
+4. Add independent Service and Desktop installer jobs on top of the service-only binary workflow.
 5. Add an optional combined installer only after both standalone installers are reliable.
 
 ## Recommended Monorepo Layout

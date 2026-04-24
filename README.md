@@ -340,6 +340,12 @@ Prepare the bundled service binary:
 npm run prepare:service-binary
 ```
 
+Build the standalone service binary:
+
+```bash
+npm run build:service
+```
+
 Build the bundled desktop installer with the companion service binary included:
 
 ```bash
@@ -413,6 +419,24 @@ Important notes:
 - A browser-downloaded macOS app should be signed to avoid the broken-app warning from Gatekeeper.
 - Ad-hoc signing is sufficient for local/manual validation, especially on Apple Silicon, but it is not a substitute for a Developer ID Application certificate plus notarization.
 - For distribution to other users, configure the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and notarization credentials (`APPLE_API_*` or `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`) as described in the Tauri macOS signing documentation.
+
+## GitHub Actions Service Binary Build
+
+The repository includes a standalone service binary workflow at:
+
+- `.github/workflows/build-service-binary.yml`
+
+What it does:
+
+- runs on `macos-latest` and `windows-latest`
+- installs Rust
+- runs service runtime and service package Rust tests
+- builds `apps/service` in release mode
+- uploads standalone service binary artifacts:
+  - `shipflow-service-macos`
+  - `shipflow-service-windows`
+
+This is the first packaging step toward separate Desktop and Service release artifacts. The bundled desktop installers still include the companion service binary for now.
 
 ## Tests
 

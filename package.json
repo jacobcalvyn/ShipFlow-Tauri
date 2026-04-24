@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "prepare:service-binary": "node ./scripts/prepare-service-binary.mjs",
+    "build:service": "cargo build --manifest-path apps/service/Cargo.toml --release",
     "build:bundle": "npm run prepare:service-binary && tauri build --config src-tauri/tauri.bundle.conf.json",
     "build:bundle:macos": "npm run prepare:service-binary && tauri build --config src-tauri/tauri.bundle.conf.json --bundles app",
     "build:bundle:nsis": "npm run prepare:service-binary && tauri build --config src-tauri/tauri.bundle.conf.json --bundles nsis",

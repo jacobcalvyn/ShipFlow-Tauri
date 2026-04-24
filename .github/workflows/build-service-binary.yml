@@ -1,0 +1,58 @@
+name: Build ShipFlow Service
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-service:
+    name: Build service on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            crates/shipflow-service-runtime -> target
+            apps/service -> target
+
+      - name: Run service runtime Rust tests
+        run: cargo test --manifest-path crates/shipflow-service-runtime/Cargo.toml
+
+      - name: Run service package Rust tests
+        run: cargo test --manifest-path apps/service/Cargo.toml
+
+      - name: Build standalone service binary
+        run: cargo build --manifest-path apps/service/Cargo.toml --release
+
+      - name: Upload macOS service binary
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v6
+        with:
+          name: shipflow-service-macos
+          path: apps/service/target/release/shipflow-service
+          if-no-files-found: error
+
+      - name: Upload Windows service binary
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v6
+        with:
+          name: shipflow-service-windows
+          path: apps/service/target/release/shipflow-service.exe
+          if-no-files-found: error
