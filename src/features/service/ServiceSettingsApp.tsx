@@ -3,7 +3,6 @@ import { readClipboardText, writeClipboardText } from "../clipboard";
 import { ServiceSettingsWindow } from "./components/ServiceSettingsWindow";
 import { useServiceSettingsController } from "./useServiceSettingsController";
 import { useActionNotices } from "../useActionNotices";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export function ServiceSettingsApp() {
   const { actionNotices, showActionNotice } = useActionNotices();
@@ -36,20 +35,6 @@ export function ServiceSettingsApp() {
     showNotice: showActionNotice,
     profile: "serviceRuntime",
   });
-
-  const hideServiceWindow = async () => {
-    try {
-      await getCurrentWindow().hide();
-    } catch (error) {
-      showActionNotice({
-        tone: "error",
-        message:
-          error instanceof Error
-            ? error.message
-            : "Gagal menyembunyikan window ShipFlow Service.",
-      });
-    }
-  };
 
   if (!hasLoadedServiceConfig) {
     return (
@@ -89,7 +74,6 @@ export function ServiceSettingsApp() {
         onTestExternalTrackingSource={testExternalTrackingSource}
         onConfirmSettings={confirmServiceConfig}
         onCancelSettings={cancelServiceConfigPreview}
-        onHideWindow={hideServiceWindow}
         onShowNotice={showActionNotice}
       />
     </>

@@ -30,7 +30,6 @@ type ServiceSettingsWindowProps = {
   onTestExternalTrackingSource: (config: ServiceConfig) => Promise<string>;
   onConfirmSettings: () => Promise<boolean> | boolean;
   onCancelSettings: () => void;
-  onHideWindow: () => Promise<void> | void;
   onShowNotice?: (notice: ServiceSettingsNotice) => void;
 };
 
@@ -56,7 +55,6 @@ export function ServiceSettingsWindow({
   onTestExternalTrackingSource,
   onConfirmSettings,
   onCancelSettings,
-  onHideWindow,
   onShowNotice,
 }: ServiceSettingsWindowProps) {
   const isServiceRuntimeProfile = profile === "serviceRuntime";
@@ -671,16 +669,6 @@ export function ServiceSettingsWindow({
             disabled={isSaving}
           >
             Reset Perubahan
-          </button>
-          <button
-            type="button"
-            className="sheet-tab-action settings-modal-secondary"
-            onClick={() => {
-              void onHideWindow();
-            }}
-            disabled={isSaving}
-          >
-            Sembunyikan
           </button>
           <button
             type="button"

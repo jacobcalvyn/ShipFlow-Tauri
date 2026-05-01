@@ -121,11 +121,13 @@ pub(crate) async fn configure_api_service_runtime<R: Runtime>(
             format!("[ShipFlowTray] failed to sync tray after configure: {error}"),
         );
     }
-    if let Err(error) = sync_service_tray_companion_for_config(&config) {
-        log_runtime_event(
-            "ERROR",
-            format!("[ShipFlowTray] failed to sync tray companion after configure: {error}"),
-        );
+    if !config.uses_custom_desktop_service_connection() {
+        if let Err(error) = sync_service_tray_companion_for_config(&config) {
+            log_runtime_event(
+                "ERROR",
+                format!("[ShipFlowTray] failed to sync tray companion after configure: {error}"),
+            );
+        }
     }
 
     if result.is_ok() && client_state.update_source_config(tracking_source_config) {

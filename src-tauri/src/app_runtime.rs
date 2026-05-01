@@ -368,16 +368,7 @@ pub(crate) fn service_settings_setup(
         "[ShipFlowService] failed to load persisted config:",
         "[ShipFlowService] failed to sync tray companion:",
     );
-    let tray_config = service::load_saved_api_service_config()
-        .unwrap_or_else(|error| {
-            log_runtime_event(
-                "ERROR",
-                format!("[ShipFlowService] failed to load tray config: {error}"),
-            );
-            None
-        })
-        .unwrap_or_else(default_tray_service_config);
-    if let Err(error) = service::sync_service_tray_companion_for_config(&tray_config) {
+    if let Err(error) = service::ensure_service_tray_companion_running() {
         log_runtime_event(
             "ERROR",
             format!("[ShipFlowService] failed to start tray companion: {error}"),
@@ -481,18 +472,7 @@ pub(crate) fn handle_service_settings_window_event<R: Runtime>(
                     format!("[ShipFlowService] failed to refresh service settings pid: {error}"),
                 );
             }
-            let tray_config = service::load_saved_api_service_config()
-                .unwrap_or_else(|error| {
-                    log_runtime_event(
-                        "ERROR",
-                        format!(
-                            "[ShipFlowService] failed to load tray config before hide: {error}"
-                        ),
-                    );
-                    None
-                })
-                .unwrap_or_else(default_tray_service_config);
-            if let Err(error) = service::sync_service_tray_companion_for_config(&tray_config) {
+            if let Err(error) = service::ensure_service_tray_companion_running() {
                 log_runtime_event(
                     "ERROR",
                     format!("[ShipFlowService] failed to keep tray companion alive: {error}"),

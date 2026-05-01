@@ -71,6 +71,23 @@ function createServiceToken() {
   return `sf_${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
 }
 
+function normalizeDesktopServiceUrlForLocalPort(serviceUrl: string, fallbackPort: number) {
+  try {
+    const parsedUrl = new URL(serviceUrl);
+    const port = parsedUrl.port
+      ? Number.parseInt(parsedUrl.port, 10)
+      : fallbackPort;
+
+    if (Number.isInteger(port) && port >= 1 && port <= 65535) {
+      return `http://127.0.0.1:${port}`;
+    }
+  } catch {
+    // Fall through to the validated fallback port.
+  }
+
+  return `http://127.0.0.1:${normalizeServicePort(fallbackPort)}`;
+}
+
 function areServiceConfigsEqual(left: ServiceConfig, right: ServiceConfig) {
   return (
     left.version === right.version &&
@@ -103,15 +120,28 @@ function normalizeServiceConfig(
   profile: ServiceSettingsProfile
 ): ServiceConfig {
   const defaultConfig = defaultServiceConfigForProfile(profile);
-  return {
+  const normalizedPort = normalizeServicePort(config.port);
+  const normalizedConfig: ServiceConfig = {
     ...defaultConfig,
     ...config,
     desktopConnectionMode:
       profile === "serviceRuntime" ? "managedLocal" : "custom",
     enabled: profile === "serviceRuntime" ? true : config.enabled,
-    port: normalizeServicePort(config.port),
+    port: normalizedPort,
     keepRunningInTray: true,
   };
+
+  if (profile === "desktopConnection") {
+    return {
+      ...normalizedConfig,
+      desktopServiceUrl: normalizeDesktopServiceUrlForLocalPort(
+        normalizedConfig.desktopServiceUrl,
+        normalizedPort
+      ),
+    };
+  }
+
+  return normalizedConfig;
 }
 
 type UseServiceSettingsControllerOptions = {

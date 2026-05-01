@@ -321,8 +321,8 @@ describe("SheetTabs", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
     expect(screen.getByText("Koneksi Service")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("ShipFlow Service URL"), {
-      target: { value: "http://127.0.0.1:18423" },
+    fireEvent.change(screen.getByLabelText("ShipFlow Service Port"), {
+      target: { value: "18423" },
     });
     fireEvent.change(screen.getByLabelText("ShipFlow Service Bearer Token"), {
       target: { value: "sf_desktop_token" },

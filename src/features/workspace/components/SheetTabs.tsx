@@ -75,6 +75,24 @@ type SheetTabsProps = {
 
 type SheetDropTransferMode = "copy" | "move";
 
+const DEFAULT_DESKTOP_SERVICE_PORT = 18422;
+
+function parseDesktopServicePortDraft(serviceUrl: string) {
+  try {
+    const parsedUrl = new URL(serviceUrl);
+    const port = parsedUrl.port
+      ? Number.parseInt(parsedUrl.port, 10)
+      : DEFAULT_DESKTOP_SERVICE_PORT;
+    return String(port);
+  } catch {
+    return String(DEFAULT_DESKTOP_SERVICE_PORT);
+  }
+}
+
+function buildDesktopServiceUrl(port: number) {
+  return `http://127.0.0.1:${port}`;
+}
+
 function resolveDropTransferMode(
   event: Pick<
     ReactDragEvent<HTMLElement>,
@@ -177,6 +195,9 @@ export function SheetTabs({
   const [isConfirmingSettings, setIsConfirmingSettings] = useState(false);
   const [isDesktopTokenVisible, setIsDesktopTokenVisible] = useState(false);
   const [isTestingServiceConnection, setIsTestingServiceConnection] = useState(false);
+  const [desktopServicePortDraft, setDesktopServicePortDraft] = useState(() =>
+    parseDesktopServicePortDraft(serviceConfig.desktopServiceUrl)
+  );
   const [serviceConnectionTestResult, setServiceConnectionTestResult] = useState<{
     tone: "success" | "error";
     message: string;
@@ -204,6 +225,10 @@ export function SheetTabs({
       }
     };
   }, []);
+
+  useEffect(() => {
+    setDesktopServicePortDraft(parseDesktopServicePortDraft(serviceConfig.desktopServiceUrl));
+  }, [serviceConfig.desktopServiceUrl]);
 
   useEffect(() => {
     if (!isSelectionDragActive) {
@@ -517,6 +542,22 @@ export function SheetTabs({
       });
     } finally {
       setIsTestingServiceConnection(false);
+    }
+  };
+
+  const normalizedDesktopServicePort = Number.parseInt(desktopServicePortDraft, 10);
+  const isDesktopServicePortValid =
+    Number.isInteger(normalizedDesktopServicePort) &&
+    normalizedDesktopServicePort >= 1 &&
+    normalizedDesktopServicePort <= 65535;
+
+  const handleDesktopServicePortDraftChange = (value: string) => {
+    setDesktopServicePortDraft(value);
+    setServiceConnectionTestResult(null);
+
+    const nextPort = Number.parseInt(value, 10);
+    if (Number.isInteger(nextPort) && nextPort >= 1 && nextPort <= 65535) {
+      onPreviewDesktopServiceUrl(buildDesktopServiceUrl(nextPort));
     }
   };
 
@@ -1055,24 +1096,31 @@ export function SheetTabs({
                       <div className="settings-service-launcher-copy">
                         <div className="settings-service-launcher-title">Koneksi Service</div>
                         <div className="settings-service-launcher-description">
-                          Atur port/URL dan token ShipFlow Service yang dipakai Desktop untuk
-                          lacak.
+                          Atur port localhost dan token ShipFlow Service yang dipakai Desktop
+                          untuk lacak.
                         </div>
                       </div>
                     </div>
                     <div className="service-settings-stack">
-                      <label className="settings-text-field">
-                        <span className="settings-input-label">ShipFlow Service URL</span>
+                      <label className="settings-text-field settings-text-field-port">
+                        <span className="settings-input-label">ShipFlow Service Port</span>
                         <input
-                          type="url"
-                          aria-label="ShipFlow Service URL"
-                          value={serviceConfig.desktopServiceUrl}
-                          onChange={(event) => {
-                            onPreviewDesktopServiceUrl(event.target.value);
-                            setServiceConnectionTestResult(null);
-                          }}
+                          type="number"
+                          min={1}
+                          max={65535}
+                          inputMode="numeric"
+                          aria-label="ShipFlow Service Port"
+                          value={desktopServicePortDraft}
+                          onChange={(event) =>
+                            handleDesktopServicePortDraftChange(event.target.value)
+                          }
                         />
                       </label>
+                      {!isDesktopServicePortValid ? (
+                        <div className="settings-field-help settings-field-help-error">
+                          Port harus antara 1 dan 65535.
+                        </div>
+                      ) : null}
                       <label className="settings-text-field">
                         <span className="settings-input-label">ShipFlow Service Token</span>
                         <input
@@ -1117,7 +1165,7 @@ export function SheetTabs({
                           onClick={handleTestServiceConnection}
                           disabled={
                             isTestingServiceConnection ||
-                            !serviceConfig.desktopServiceUrl.trim() ||
+                            !isDesktopServicePortValid ||
                             !serviceConfig.desktopServiceAuthToken.trim()
                           }
                         >
@@ -1156,7 +1204,7 @@ export function SheetTabs({
                     onClick={() => {
                       void confirmSettings();
                     }}
-                    disabled={isConfirmingSettings}
+                    disabled={isConfirmingSettings || !isDesktopServicePortValid}
                   >
                     {isConfirmingSettings ? "Menyimpan..." : "Simpan"}
                   </button>

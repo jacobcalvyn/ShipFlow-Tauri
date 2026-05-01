@@ -148,8 +148,8 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
   - service bind mode (`localhost` or `LAN`)
   - service API port
   - service-generated bearer token
-- Desktop stores only the service URL/port and bearer token it uses to call that separate service.
-- The Desktop connection panel keeps `Reset Perubahan`, `Sembunyikan`, and `Simpan`; `Sembunyikan` hides the panel without discarding unsaved local draft changes
+- Desktop stores only the localhost service port and bearer token it uses to call that separate service.
+- The Desktop connection panel asks for the service port, not a full service URL, because Desktop always connects to the local `ShipFlow Service` app.
 - The external API `Base URL` field no longer ships with a hard-coded example endpoint placeholder
 - `Nomor Kiriman` rows include per-row QR preview, copy ID, and source-link actions
 - `PID/Kantong Terakhir` is derived from the latest `bagging` / `unbagging` event and includes QR preview, copy ID, and print actions for the latest bag/PID
@@ -191,7 +191,7 @@ The main table currently focuses on:
 - `ShipFlow Desktop` does not scrape directly. Tracking is resolved by `ShipFlow Service`.
 - `ShipFlow Service` is the single source of truth for tracking source and external API access.
 - Desktop `Setting` only edits the Desktop-to-Service URL/port/token. It does not edit service-owned tracking source configuration.
-- Desktop always uses the configured standalone service URL/token for tracking.
+- Desktop always uses the configured standalone service port/token for tracking.
 - Desktop does not spawn a managed tracking runtime and the target service owns its own scraper/internal API config.
 - Custom Desktop-to-Service settings are saved only after an authenticated `/status` response proves the endpoint is ShipFlow Service.
 - In custom Desktop-to-Service mode, Desktop does not enable or manage the Service API endpoint; the target service owns that endpoint and token.
@@ -216,11 +216,12 @@ The main table currently focuses on:
 - Delivery-runsheet parsing is hardened so `FAILEDTODELIVERED` cases are not incorrectly split into two updates on the latest runsheet.
 - Delivery-runsheet parsing now keeps only the latest effective update for a runsheet summary.
 - Desktop no longer manages service tray/background lifecycle.
-- Desktop startup no longer starts a service companion. Start the standalone service first, then configure Desktop with that service URL/token.
+- Desktop startup no longer starts a service companion. Start the standalone service first, then configure Desktop with that service port/token.
 - Desktop/service readiness checks now require an authenticated `GET /status` response from `ShipFlow Service`, including a ShipFlow-specific product marker, before reusing an existing runtime process.
 - Windows release builds of `ShipFlow Service` use the Windows subsystem, so launching the installed service app does not open a console window.
-- Closing the `ShipFlow Service` settings window hides it while the service tray companion remains available when `keep_running_in_tray` is enabled.
+- Closing the `ShipFlow Service` settings window hides it and keeps the service tray companion available.
 - Reopening `ShipFlow Service` focuses or recreates the existing settings window instead of starting a duplicate settings instance.
+- Desktop custom connection saves no longer start or stop the Service tray companion.
 - Windows Desktop and Service installers run shutdown hooks before install and uninstall replacement, so running ShipFlow processes are closed before files are overwritten.
 - Custom Desktop-to-Service lookups re-check the authenticated `/status` identity before sending shipment, bag, or manifest IDs to a custom endpoint.
 - Service configuration is validated before it is persisted, and enabled service configs are written only after the companion process has started and passed the authenticated readiness probe.
@@ -282,10 +283,10 @@ The main table currently focuses on:
 
 Use this checklist before publishing a runtime/security change:
 
-- Start standalone `ShipFlow Service` and configure Desktop with its localhost URL/token.
+- Start standalone `ShipFlow Service` and configure Desktop with its localhost port/token.
 - Confirm tracking, bag import, and manifest import all resolve through `ShipFlow Service`.
 - Start another process on the configured service port and confirm Desktop does not treat a plain open port as ShipFlow Service.
-- Confirm Desktop reports a clear configuration error when no standalone service URL/token is saved.
+- Confirm Desktop reports a clear configuration error when no standalone service port/token is saved.
 - Open normal POD previews, then confirm oversized `data:image` payloads, SVG payloads, and private/loopback remote URLs are rejected.
 - Save the same workspace repeatedly and confirm the existing file remains readable after each save.
 
@@ -353,9 +354,11 @@ cargo run --manifest-path apps/service/Cargo.toml -- --auth-token sf_dev_token -
 For CLI mode, configure Desktop with:
 
 ```text
-ShipFlow Service URL: http://127.0.0.1:18422
+ShipFlow Service Port: 18422
 ShipFlow Service Token: sf_dev_token
 ```
+
+In the Desktop settings UI, enter only the port, for example `18422`; Desktop builds the localhost endpoint internally.
 
 ## Build
 
@@ -473,7 +476,7 @@ What it does:
   - `shipflow-service-macos`
   - `shipflow-service-windows-installer`
 
-Desktop installers no longer include the service app. Install ShipFlow Service separately, then configure Desktop with the service URL and token.
+Desktop installers no longer include the service app. Install ShipFlow Service separately, then configure Desktop with the service port and token.
 
 ## Tests
 
@@ -574,4 +577,4 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 - Hidden columns are stored in browser/webview local storage
 - Pinned columns are stored in browser/webview local storage
 - Workspace and sheet state are persisted in browser/webview local storage with a storage-safe fallback snapshot
-- Desktop stores only the standalone ShipFlow Service URL/token it uses for lookups
+- Desktop stores only the standalone ShipFlow Service port/token it uses for lookups

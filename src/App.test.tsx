@@ -8,8 +8,7 @@ import {
 } from "./types";
 import { WorkspaceDocumentFile } from "./features/workspace/document";
 
-const { mockedHideWindow, mockedInvoke } = vi.hoisted(() => ({
-  mockedHideWindow: vi.fn<() => Promise<void>>(),
+const { mockedInvoke } = vi.hoisted(() => ({
   mockedInvoke: vi.fn<
     (
       command: string,
@@ -36,12 +35,6 @@ const { mockedHideWindow, mockedInvoke } = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: mockedInvoke,
-}));
-
-vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({
-    hide: mockedHideWindow,
-  }),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -223,7 +216,6 @@ describe("App workspace isolation", () => {
     pendingRequests.clear();
     pendingBagRequests.clear();
     pendingManifestRequests.clear();
-    mockedHideWindow.mockReset();
     persistedServiceConfig = null;
     window.localStorage.clear();
     setShipFlowWindowKind("workspace");
@@ -2095,7 +2087,7 @@ describe("App workspace isolation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
 
-    expect(screen.getByLabelText("ShipFlow Service URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("ShipFlow Service Port")).toBeInTheDocument();
     expect(screen.getByLabelText("ShipFlow Service Bearer Token")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Paste" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Tes Service" })).toBeInTheDocument();
@@ -2556,8 +2548,7 @@ describe("App workspace isolation", () => {
     expect(screen.getByLabelText("Token API Service")).toHaveValue(originalToken);
   });
 
-  it("hides the ShipFlow Service window without discarding draft changes", async () => {
-    mockedHideWindow.mockResolvedValue(undefined);
+  it("uses the window close button for hiding ShipFlow Service", async () => {
     setShipFlowWindowKind("service-settings");
     render(<App />);
 
@@ -2566,11 +2557,7 @@ describe("App workspace isolation", () => {
       target: { value: "19422" },
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Sembunyikan" }));
-
-    await waitFor(() => {
-      expect(mockedHideWindow).toHaveBeenCalledTimes(1);
-    });
+    expect(screen.queryByRole("button", { name: "Sembunyikan" })).not.toBeInTheDocument();
 
     expect(getInvokeCalls("configure_api_service")).toHaveLength(0);
     expect(screen.getByLabelText("Port")).toHaveValue(19422);

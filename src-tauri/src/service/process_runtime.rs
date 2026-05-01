@@ -60,7 +60,7 @@ pub(crate) fn spawn_service_process(config: &ApiServiceConfig) -> Result<u32, St
     Ok(child.id())
 }
 
-fn ensure_service_tray_process_running() -> Result<(), String> {
+pub(crate) fn ensure_service_tray_process_running() -> Result<(), String> {
     if read_recorded_tray_pid()
         .is_some_and(|pid| is_expected_service_process(pid, SERVICE_TRAY_FLAG))
     {

@@ -6,7 +6,7 @@ use tao::{
     event_loop::{ControlFlow, EventLoopBuilder},
 };
 use tray_icon::{
-    menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
     Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
 
@@ -17,9 +17,8 @@ use super::{
     },
     ApiServiceConfig, ApiServiceController, ApiServiceStatus, ApiServiceStatusKind,
     SERVICE_TRAY_COPY_ENDPOINT_ID, SERVICE_TRAY_COPY_TOKEN_ID, SERVICE_TRAY_ID,
-    SERVICE_TRAY_KEEP_RUNNING_ID, SERVICE_TRAY_OPEN_DESKTOP_ID, SERVICE_TRAY_OPEN_SETTINGS_ID,
-    SERVICE_TRAY_QUIT_ID, SERVICE_TRAY_REFRESH_INTERVAL, SERVICE_TRAY_STATUS_ID,
-    SERVICE_TRAY_STOP_SERVICE_ID,
+    SERVICE_TRAY_OPEN_DESKTOP_ID, SERVICE_TRAY_OPEN_SETTINGS_ID, SERVICE_TRAY_REFRESH_INTERVAL,
+    SERVICE_TRAY_STATUS_ID, SERVICE_TRAY_STOP_SERVICE_ID,
 };
 use crate::os_bridge::copy_text_to_clipboard;
 use crate::runtime_log::log_runtime_event;
@@ -37,7 +36,6 @@ struct ServiceTrayRuntime {
     open_desktop_item: MenuItem,
     copy_endpoint_item: MenuItem,
     copy_token_item: MenuItem,
-    keep_running_item: CheckMenuItem,
     stop_service_item: MenuItem,
     last_config: Option<ApiServiceConfig>,
 }
@@ -74,23 +72,13 @@ impl ServiceTrayRuntime {
             false,
             None,
         );
-        let keep_running_item = CheckMenuItem::with_id(
-            MenuId::new(SERVICE_TRAY_KEEP_RUNNING_ID),
-            "Keep Running in Tray",
-            true,
-            false,
-            None,
-        );
         let stop_service_item = MenuItem::with_id(
             MenuId::new(SERVICE_TRAY_STOP_SERVICE_ID),
             "Stop External API Access",
             false,
             None,
         );
-        let quit_item =
-            MenuItem::with_id(MenuId::new(SERVICE_TRAY_QUIT_ID), "Quit Tray", true, None);
         let separator_top = PredefinedMenuItem::separator();
-        let separator_bottom = PredefinedMenuItem::separator();
 
         let menu = Menu::new();
         menu.append_items(&[
@@ -100,10 +88,7 @@ impl ServiceTrayRuntime {
             &separator_top,
             &copy_endpoint_item,
             &copy_token_item,
-            &keep_running_item,
             &stop_service_item,
-            &separator_bottom,
-            &quit_item,
         ])
         .map_err(|error| format!("Unable to build service tray menu: {error}"))?;
 
@@ -134,7 +119,6 @@ impl ServiceTrayRuntime {
             open_desktop_item,
             copy_endpoint_item,
             copy_token_item,
-            keep_running_item,
             stop_service_item,
             last_config: None,
         })
@@ -166,14 +150,9 @@ impl ServiceTrayRuntime {
         );
         self.stop_service_item
             .set_enabled(saved_config.as_ref().is_some_and(|config| config.enabled));
-        self.keep_running_item.set_checked(
-            saved_config
-                .as_ref()
-                .is_some_and(|config| config.keep_running_in_tray),
-        );
     }
 
-    fn handle_menu_event(&mut self, event: MenuEvent, control_flow: &mut ControlFlow) {
+    fn handle_menu_event(&mut self, event: MenuEvent) {
         match event.id().as_ref() {
             SERVICE_TRAY_OPEN_SETTINGS_ID => {
                 let _ = launch_shipflow_service_settings_companion();
@@ -195,27 +174,11 @@ impl ServiceTrayRuntime {
                     }
                 }
             }
-            SERVICE_TRAY_KEEP_RUNNING_ID => {
-                if let Some(mut config) = self.last_config.clone() {
-                    config.keep_running_in_tray = !config.keep_running_in_tray;
-                    let _ = configure_service_blocking(config.clone());
-                    if !config.keep_running_in_tray {
-                        *control_flow = ControlFlow::Exit;
-                        return;
-                    }
-                }
-            }
             SERVICE_TRAY_STOP_SERVICE_ID => {
                 if let Some(mut config) = self.last_config.clone() {
                     config.enabled = false;
                     let _ = configure_service_blocking(config.clone());
-                    *control_flow = ControlFlow::Exit;
-                    return;
                 }
-            }
-            SERVICE_TRAY_QUIT_ID => {
-                *control_flow = ControlFlow::Exit;
-                return;
             }
             _ => {}
         }
@@ -272,7 +235,7 @@ pub(crate) fn run_service_tray_app() -> Result<bool, String> {
             }
             Event::UserEvent(ServiceTrayUserEvent::Menu(event)) => {
                 if let Some(runtime) = tray_runtime.as_mut() {
-                    runtime.handle_menu_event(event, control_flow);
+                    runtime.handle_menu_event(event);
                 }
             }
             Event::UserEvent(ServiceTrayUserEvent::Tray(event)) => {

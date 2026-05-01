@@ -16,9 +16,10 @@ use serde::{Deserialize, Serialize};
 
 use self::http_api::run_service_process;
 use self::process_runtime::{
-    is_expected_service_process, is_expected_service_settings_process, is_process_alive,
-    is_service_runtime_ready, spawn_service_process, stop_service_process,
-    sync_service_tray_companion, wait_for_service_runtime,
+    ensure_service_tray_process_running, is_expected_service_process,
+    is_expected_service_settings_process, is_process_alive, is_service_runtime_ready,
+    spawn_service_process, stop_service_process, sync_service_tray_companion,
+    wait_for_service_runtime,
 };
 use self::runtime_config::{
     error_status, running_status, stopped_status, validate_desktop_service_connection_config,
@@ -60,9 +61,7 @@ const SERVICE_TRAY_OPEN_SETTINGS_ID: &str = "service-tray-open-settings";
 const SERVICE_TRAY_OPEN_DESKTOP_ID: &str = "service-tray-open-desktop";
 const SERVICE_TRAY_COPY_ENDPOINT_ID: &str = "service-tray-copy-endpoint";
 const SERVICE_TRAY_COPY_TOKEN_ID: &str = "service-tray-copy-token";
-const SERVICE_TRAY_KEEP_RUNNING_ID: &str = "service-tray-keep-running";
 const SERVICE_TRAY_STOP_SERVICE_ID: &str = "service-tray-stop-service";
-const SERVICE_TRAY_QUIT_ID: &str = "service-tray-quit";
 const SERVICE_TRAY_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const SERVICE_SETTINGS_PID_FILE_NAME: &str = "service-settings.pid";
 const SERVICE_SETTINGS_REQUEST_FILE_NAME: &str = "service-settings-request.json";
@@ -369,6 +368,10 @@ pub fn maybe_run_service_tray_from_current_args() -> Result<bool, String> {
 
 pub fn sync_service_tray_companion_for_config(config: &ApiServiceConfig) -> Result<(), String> {
     sync_service_tray_companion(config)
+}
+
+pub fn ensure_service_tray_companion_running() -> Result<(), String> {
+    ensure_service_tray_process_running()
 }
 
 pub fn maybe_run_service_process_from_current_args() -> Result<bool, String> {
