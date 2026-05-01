@@ -3383,6 +3383,7 @@ dependencies = [
  "shipflow-core",
  "shipflow-service-runtime",
  "shipflow3-tauri",
+ "tauri-winres",
  "tokio",
 ]
 
