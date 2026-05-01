@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for the standalone ShipFlow Service settings app.",
+  "windows": ["service-settings"],
+  "permissions": ["core:default"]
+}

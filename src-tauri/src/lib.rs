@@ -467,9 +467,12 @@ pub fn run() {
 }
 
 pub fn run_service_settings() {
+    run_service_settings_with_context(build_base_context());
+}
+
+pub fn run_service_settings_with_context(mut context: tauri::Context<tauri::Wry>) {
     install_runtime_logging();
     let tracking_client = build_tracking_client("ShipFlow Service/0.1");
-    let mut context = build_base_context();
     match load_service_window_icon() {
         Ok(icon) => {
             context.set_default_window_icon(Some(icon.clone()));

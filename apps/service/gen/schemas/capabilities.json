@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default capability for the standalone ShipFlow Service settings app.","local":true,"windows":["service-settings"],"permissions":["core:default"]}}

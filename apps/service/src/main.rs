@@ -104,7 +104,7 @@ fn run_service_settings_app() {
         return;
     }
 
-    shipflow3_tauri_lib::run_service_settings();
+    shipflow3_tauri_lib::run_service_settings_with_context(tauri::generate_context!());
 }
 
 fn run_cli_service() {

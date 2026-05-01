@@ -1,16 +1,15 @@
 #[cfg(windows)]
 fn main() {
-    let mut resource = tauri_winres::WindowsResource::new();
-    resource
-        .set_icon("../../src-tauri/icons/service-icon.ico")
-        .set_manifest(include_str!("windows-app-manifest.xml"))
-        .set("ProductName", "ShipFlow Service")
-        .set("FileDescription", "Standalone ShipFlow Service");
+    let windows_attributes = tauri_build::WindowsAttributes::new()
+        .window_icon_path("../../src-tauri/icons/service-icon.ico")
+        .app_manifest(include_str!("windows-app-manifest.xml"));
+    let attributes = tauri_build::Attributes::new().windows_attributes(windows_attributes);
 
-    resource
-        .compile()
-        .expect("failed to embed ShipFlow Service Windows resources");
+    tauri_build::try_build(attributes).expect("failed to build ShipFlow Service Tauri context");
 }
 
 #[cfg(not(windows))]
-fn main() {}
+fn main() {
+    tauri_build::try_build(tauri_build::Attributes::new())
+        .expect("failed to build ShipFlow Service Tauri context");
+}
