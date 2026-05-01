@@ -367,13 +367,13 @@ Build the desktop app:
 npm run tauri build
 ```
 
-Build the standalone service binary:
+Build the standalone service app binary:
 
 ```bash
 npm run build:service
 ```
 
-This builds the portable Service binary with Tauri `custom-protocol` enabled, so the Service settings window uses embedded production assets instead of a localhost dev server.
+This builds the Service app binary with Tauri `custom-protocol` enabled, so the Service settings window uses embedded production assets instead of a localhost dev server. Windows distribution uses the Service installer produced by GitHub Actions, not this raw binary.
 
 Build the desktop installer:
 
@@ -449,9 +449,9 @@ Important notes:
 - Ad-hoc signing is sufficient for local/manual validation, especially on Apple Silicon, but it is not a substitute for a Developer ID Application certificate plus notarization.
 - For distribution to other users, configure the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and notarization credentials (`APPLE_API_*` or `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`) as described in the Tauri macOS signing documentation.
 
-## GitHub Actions Service Binary Build
+## GitHub Actions Service Build
 
-The repository includes a standalone service binary workflow at:
+The repository includes a standalone service workflow at:
 
 - `.github/workflows/build-service-binary.yml`
 
@@ -462,11 +462,12 @@ What it does:
 - builds the frontend assets embedded by the Service settings window
 - runs service runtime and service package Rust tests
 - builds `apps/service` in release mode with Tauri `custom-protocol` enabled
-- uploads standalone service binary artifacts:
+- builds a per-user Windows installer with NSIS
+- uploads service artifacts:
   - `shipflow-service-macos`
-  - `shipflow-service-windows`
+  - `shipflow-service-windows-installer`
 
-Desktop installers no longer include the service binary. Install or run the Service artifact separately, then configure Desktop with the service URL and token.
+Desktop installers no longer include the service app. Install ShipFlow Service separately, then configure Desktop with the service URL and token.
 
 ## Tests
 

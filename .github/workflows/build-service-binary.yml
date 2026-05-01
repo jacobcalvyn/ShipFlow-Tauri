@@ -50,8 +50,26 @@ jobs:
       - name: Run service package Rust tests
         run: cargo test --manifest-path apps/service/Cargo.toml
 
-      - name: Build standalone service binary
+      - name: Build service app binary
         run: cargo build --manifest-path apps/service/Cargo.toml --release --features custom-protocol
+
+      - name: Install NSIS
+        if: runner.os == 'Windows'
+        run: choco install nsis -y --no-progress
+
+      - name: Build Windows service installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $sourceExe = (Resolve-Path "apps/service/target/release/shipflow-service.exe").Path
+          $outputDir = (Resolve-Path "apps/service/target/release").Path
+          $outputExe = Join-Path $outputDir "ShipFlow-Service-Setup.exe"
+          $iconFile = (Resolve-Path "src-tauri/icons/service-icon.ico").Path
+          $makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+          if (-not $makensis) {
+            $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS/makensis.exe"
+          }
+          & $makensis "/DAPP_VERSION=0.1.0" "/DSOURCE_EXE=$sourceExe" "/DOUT_FILE=$outputExe" "/DICON_FILE=$iconFile" "scripts/windows/shipflow-service-installer.nsi"
 
       - name: Upload macOS service binary
         if: runner.os == 'macOS'
@@ -61,10 +79,10 @@ jobs:
           path: apps/service/target/release/shipflow-service
           if-no-files-found: error
 
-      - name: Upload Windows service binary
+      - name: Upload Windows service installer
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v6
         with:
-          name: shipflow-service-windows
-          path: apps/service/target/release/shipflow-service.exe
+          name: shipflow-service-windows-installer
+          path: apps/service/target/release/ShipFlow-Service-Setup.exe
           if-no-files-found: error
