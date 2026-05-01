@@ -61,3 +61,33 @@ pub fn validate_service_runtime_config(config: &ServiceRuntimeConfig) -> Result<
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use shipflow_core::model::TrackingSourceConfig;
+
+    use super::{validate_service_runtime_config, ServiceRuntimeConfig, ServiceRuntimeMode};
+
+    fn internal_scraper_config(auth_token: &str) -> ServiceRuntimeConfig {
+        ServiceRuntimeConfig {
+            mode: ServiceRuntimeMode::Local,
+            port: 18422,
+            auth_token: auth_token.into(),
+            tracking_source: TrackingSourceConfig::default(),
+        }
+    }
+
+    #[test]
+    fn rejects_internal_api_without_service_token() {
+        let error = validate_service_runtime_config(&internal_scraper_config(""))
+            .expect_err("internal service API should require a token");
+
+        assert_eq!(error, "Auth token is required before enabling API service.");
+    }
+
+    #[test]
+    fn accepts_internal_api_with_service_token() {
+        validate_service_runtime_config(&internal_scraper_config("sf_secret"))
+            .expect("internal service API should accept an explicit token");
+    }
+}

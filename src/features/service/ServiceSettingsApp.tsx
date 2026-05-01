@@ -1,5 +1,5 @@
 import { ActionNoticeStack } from "../components/ActionNoticeStack";
-import { writeClipboardText } from "../clipboard";
+import { readClipboardText, writeClipboardText } from "../clipboard";
 import { ServiceSettingsWindow } from "./components/ServiceSettingsWindow";
 import { useServiceSettingsController } from "./useServiceSettingsController";
 import { useActionNotices } from "../useActionNotices";
@@ -22,6 +22,7 @@ export function ServiceSettingsApp() {
     previewExternalApiAuthToken,
     previewExternalApiBaseUrl,
     previewGenerateServiceToken,
+    pasteDesktopServiceAuthToken,
     previewRegenerateServiceToken,
     previewServiceEnabled,
     previewServiceMode,
@@ -31,7 +32,9 @@ export function ServiceSettingsApp() {
     testExternalTrackingSource,
   } = useServiceSettingsController({
     copyText: writeClipboardText,
+    pasteText: readClipboardText,
     showNotice: showActionNotice,
+    profile: "serviceRuntime",
   });
 
   const hideServiceWindow = async () => {
@@ -49,7 +52,15 @@ export function ServiceSettingsApp() {
   };
 
   if (!hasLoadedServiceConfig) {
-    return <main className="shell service-settings-shell display-scale-small" />;
+    return (
+      <main className="shell service-settings-shell display-scale-small">
+        <section className="sheet-panel service-settings-panel">
+          <div className="settings-field-help settings-field-help-info" role="status">
+            Memuat pengaturan ShipFlow Service...
+          </div>
+        </section>
+      </main>
+    );
   }
 
   return (
@@ -58,9 +69,11 @@ export function ServiceSettingsApp() {
       <ServiceSettingsWindow
         serviceConfig={effectiveServiceConfig}
         hasPendingServiceConfigChanges={hasPendingServiceConfigChanges}
+        profile="serviceRuntime"
         onPreviewDesktopConnectionMode={previewDesktopConnectionMode}
         onPreviewDesktopServiceUrl={previewDesktopServiceUrl}
         onPreviewDesktopServiceAuthToken={previewDesktopServiceAuthToken}
+        onPasteDesktopServiceAuthToken={pasteDesktopServiceAuthToken}
         onPreviewServiceEnabled={previewServiceEnabled}
         onPreviewServiceMode={previewServiceMode}
         onPreviewServicePort={previewServicePort}

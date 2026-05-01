@@ -20,19 +20,18 @@ use self::process_runtime::{
     stop_service_process, wait_for_service_runtime,
 };
 use self::runtime_config::{
-    build_tracking_runtime_config, error_status, running_status, stopped_status,
-    tracking_runtime_matches, validate_desktop_service_connection_config, validate_service_config,
+    error_status, running_status, stopped_status, validate_desktop_service_connection_config,
+    validate_service_config,
 };
 use self::state_store::{
-    clear_recorded_desktop_pid, clear_recorded_service_settings_pid, load_runtime_config,
-    load_saved_config, persist_desktop_activation_request, persist_runtime_config,
-    persist_saved_config, persist_service_pid, persist_service_settings_activation_request,
-    read_recorded_desktop_pid, read_recorded_pid, read_recorded_service_settings_pid,
+    clear_recorded_desktop_pid, clear_recorded_service_settings_pid, load_saved_config,
+    persist_desktop_activation_request, persist_runtime_config, persist_saved_config,
+    persist_service_pid, persist_service_settings_activation_request, read_recorded_desktop_pid,
+    read_recorded_pid, read_recorded_service_settings_pid,
 };
 use self::tray_runtime::run_service_tray_app;
 use crate::tracking::model::{TrackingSource, TrackingSourceConfig};
 
-pub use self::process_runtime::{launch_shipflow_service_app, sync_service_tray_companion};
 pub use self::state_store::{
     clear_current_desktop_process, clear_current_service_settings_process,
     load_saved_api_service_config, register_current_desktop_process,
@@ -119,6 +118,7 @@ pub struct ApiServiceConfig {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum ApiServiceStatusKind {
     Stopped,
     Running,
@@ -170,6 +170,13 @@ impl ApiServiceController {
         let bind_address = config.mode.bind_address_label().to_string();
         validate_desktop_service_connection_config(&config)?;
 
+        if config.uses_custom_desktop_service_connection() {
+            persist_saved_config(&config)?;
+            let status = running_status(&config);
+            self.set_status(status.clone());
+            return Ok(status);
+        }
+
         if !config.enabled {
             stop_service_process();
             persist_saved_config(&config)?;
@@ -205,7 +212,7 @@ impl ApiServiceController {
             let status = error_status(
                 &config,
                 &bind_address,
-                "API service companion failed to become ready.".into(),
+                "API service failed to become ready.".into(),
             );
             self.set_status(status.clone());
             return Err(status
@@ -223,6 +230,11 @@ impl ApiServiceController {
 
     pub fn status(&self) -> ApiServiceStatus {
         let status = match self.load_saved_config() {
+            Ok(Some(config)) if config.uses_custom_desktop_service_connection() => error_status(
+                &config,
+                &config.service_client_base_url(),
+                "ShipFlow Service status has not been checked yet.".into(),
+            ),
             Ok(Some(config)) if !config.enabled => stopped_status(&config),
             Ok(Some(config)) => {
                 let bind_address = config.mode.bind_address_label().to_string();
@@ -236,7 +248,7 @@ impl ApiServiceController {
                     Some(_) => error_status(
                         &config,
                         &bind_address,
-                        "API service companion is not responding.".into(),
+                        "API service is not responding.".into(),
                     ),
                     None => stopped_status(&config),
                 }
@@ -325,38 +337,22 @@ pub fn maybe_delegate_service_settings_launch_to_existing_process() -> Result<bo
 pub fn ensure_tracking_service_runtime(
     saved_config: Option<ApiServiceConfig>,
 ) -> Result<ApiServiceConfig, String> {
-    let current_runtime_config = load_runtime_config().unwrap_or(None);
-    let desired_runtime_config =
-        build_tracking_runtime_config(saved_config, current_runtime_config.as_ref());
-    validate_desktop_service_connection_config(&desired_runtime_config)?;
+    let Some(config) = saved_config else {
+        return Err(
+            "ShipFlow Desktop requires a standalone ShipFlow Service URL and token before tracking."
+                .into(),
+        );
+    };
 
-    if desired_runtime_config.uses_custom_desktop_service_connection() {
-        return Ok(desired_runtime_config);
+    if !config.uses_custom_desktop_service_connection() {
+        return Err(
+            "ShipFlow Desktop no longer starts a bundled service. Configure a standalone ShipFlow Service URL and token."
+                .into(),
+        );
     }
 
-    if read_recorded_pid().is_some_and(|pid| {
-        is_expected_service_process(pid, SERVICE_PROCESS_FLAG)
-            && is_service_runtime_ready(&desired_runtime_config, Duration::from_millis(200))
-    }) && current_runtime_config
-        .as_ref()
-        .is_some_and(|config| tracking_runtime_matches(config, &desired_runtime_config))
-    {
-        return Ok(current_runtime_config.unwrap_or(desired_runtime_config));
-    }
-
-    stop_service_process();
-    let pid = spawn_service_process(&desired_runtime_config)?;
-    persist_service_pid(pid)?;
-
-    if !wait_for_service_runtime(&desired_runtime_config, Duration::from_secs(5))
-        || !is_expected_service_process(pid, SERVICE_PROCESS_FLAG)
-    {
-        stop_service_process();
-        return Err("ShipFlow Service runtime failed to become ready.".into());
-    }
-
-    persist_runtime_config(&desired_runtime_config)?;
-    Ok(desired_runtime_config)
+    validate_desktop_service_connection_config(&config)?;
+    Ok(config)
 }
 
 pub fn maybe_run_service_tray_from_current_args() -> Result<bool, String> {
@@ -404,4 +400,100 @@ pub fn maybe_run_service_process_from_current_args() -> Result<bool, String> {
         .map_err(|error| format!("Unable to create service runtime: {error}"))?;
     runtime.block_on(run_service_process(config))?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        panic::{self, AssertUnwindSafe},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::{
+        state_store::{load_runtime_config, persist_runtime_config},
+        ApiServiceConfig, ApiServiceController, ApiServiceMode, DesktopServiceConnectionMode,
+    };
+    use crate::test_support::runtime_state_dir_test_lock;
+    use crate::tracking::model::TrackingSource;
+
+    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{timestamp}-{}", std::process::id()))
+    }
+
+    fn with_state_dir<T>(prefix: &str, run: impl FnOnce() -> T) -> T {
+        let _guard = runtime_state_dir_test_lock()
+            .lock()
+            .expect("state dir test lock should not be poisoned");
+        let state_dir = unique_temp_dir(prefix);
+        let _ = fs::create_dir_all(&state_dir);
+        std::env::set_var("SHIPFLOW_SERVICE_STATE_DIR_OVERRIDE", &state_dir);
+
+        let result = panic::catch_unwind(AssertUnwindSafe(run));
+
+        std::env::remove_var("SHIPFLOW_SERVICE_STATE_DIR_OVERRIDE");
+        let _ = fs::remove_dir_all(&state_dir);
+
+        match result {
+            Ok(value) => value,
+            Err(panic_payload) => panic::resume_unwind(panic_payload),
+        }
+    }
+
+    fn service_runtime_config() -> ApiServiceConfig {
+        ApiServiceConfig {
+            version: 1,
+            desktop_connection_mode: DesktopServiceConnectionMode::ManagedLocal,
+            desktop_service_url: "http://127.0.0.1:18422".into(),
+            desktop_service_auth_token: String::new(),
+            enabled: true,
+            mode: ApiServiceMode::Local,
+            port: 18422,
+            auth_token: "sf_service_token".into(),
+            tracking_source: TrackingSource::Default,
+            external_api_base_url: String::new(),
+            external_api_auth_token: String::new(),
+            allow_insecure_external_api_http: false,
+            keep_running_in_tray: true,
+            last_updated_at: "2026-04-21T00:00:00.000Z".into(),
+        }
+    }
+
+    fn desktop_custom_connection_config() -> ApiServiceConfig {
+        ApiServiceConfig {
+            desktop_connection_mode: DesktopServiceConnectionMode::Custom,
+            desktop_service_url: "http://127.0.0.1:18422".into(),
+            desktop_service_auth_token: "sf_desktop_token".into(),
+            enabled: true,
+            auth_token: String::new(),
+            ..service_runtime_config()
+        }
+    }
+
+    #[test]
+    fn saving_custom_desktop_connection_preserves_service_runtime_config() {
+        with_state_dir("shipflow-custom-desktop-config-test", || {
+            let runtime_config = service_runtime_config();
+            persist_runtime_config(&runtime_config).expect("runtime config should persist");
+
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime should build");
+            runtime
+                .block_on(
+                    ApiServiceController::default().configure(desktop_custom_connection_config()),
+                )
+                .expect("custom desktop connection should save");
+
+            let loaded_runtime_config = load_runtime_config()
+                .expect("runtime config should load")
+                .expect("runtime config should still exist");
+            assert_eq!(loaded_runtime_config, runtime_config);
+        });
+    }
 }

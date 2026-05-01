@@ -20,7 +20,7 @@ describe("useWorkspaceServiceSurfaceController", () => {
     vi.clearAllMocks();
   });
 
-  it("composes service settings and opens the ShipFlow Service app", async () => {
+  it("composes service settings and opens service connection settings", async () => {
     const showNotice = vi.fn();
     const serviceSettings = {
       effectiveServiceConfig: { enabled: false },
@@ -36,6 +36,7 @@ describe("useWorkspaceServiceSurfaceController", () => {
 
     expect(mocks.useServiceSettingsControllerMock).toHaveBeenCalledWith({
       copyText: expect.any(Function),
+      pasteText: expect.any(Function),
       showNotice,
     });
     expect(result.current).toEqual({
@@ -51,7 +52,7 @@ describe("useWorkspaceServiceSurfaceController", () => {
     expect(showNotice).not.toHaveBeenCalled();
   });
 
-  it("shows an error notice when opening ShipFlow Service fails", async () => {
+  it("shows an error notice when opening service connection settings fails", async () => {
     const showNotice = vi.fn();
 
     mocks.useServiceSettingsControllerMock.mockReturnValue({});
@@ -67,7 +68,7 @@ describe("useWorkspaceServiceSurfaceController", () => {
 
     expect(showNotice).toHaveBeenCalledWith({
       tone: "error",
-      message: "Gagal membuka ShipFlow Service.",
+      message: "Gagal membuka pengaturan koneksi service.",
     });
   });
 });

@@ -3,18 +3,6 @@
 fn main() {
     shipflow3_tauri_lib::install_runtime_logging();
 
-    if shipflow3_tauri_lib::maybe_run_service_tray_from_current_args()
-        .expect("failed to initialize ShipFlow service tray process")
-    {
-        return;
-    }
-
-    if shipflow3_tauri_lib::maybe_run_service_process_from_current_args()
-        .expect("failed to initialize ShipFlow service process")
-    {
-        return;
-    }
-
     if shipflow3_tauri_lib::maybe_delegate_to_existing_desktop_process()
         .expect("failed to delegate to existing ShipFlow Desktop process")
     {

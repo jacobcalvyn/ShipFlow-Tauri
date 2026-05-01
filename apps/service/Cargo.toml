@@ -11,3 +11,6 @@ path = "src/main.rs"
 
 [dependencies]
 shipflow3_tauri_lib = { package = "shipflow3-tauri", path = "../../src-tauri" }
+shipflow-core = { path = "../../crates/shipflow-core" }
+shipflow-service-runtime = { path = "../../crates/shipflow-service-runtime" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

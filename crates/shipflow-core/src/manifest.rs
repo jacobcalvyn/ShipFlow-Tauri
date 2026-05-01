@@ -14,13 +14,8 @@ fn normalize_label(value: &str) -> String {
 }
 
 fn is_manifest_header(labels: &[String]) -> bool {
-    let required_fragments: &[&[&str]] = &[
-        &["NO"],
-        &["KANTUNG"],
-        &["LAYANAN"],
-        &["BERAT"],
-        &["STATUS"],
-    ];
+    let required_fragments: &[&[&str]] =
+        &[&["NO"], &["KANTUNG"], &["LAYANAN"], &["BERAT"], &["STATUS"]];
 
     required_fragments.iter().all(|parts| {
         labels

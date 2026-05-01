@@ -301,7 +301,7 @@ fn configure_service_blocking(config: ApiServiceConfig) -> Result<ApiServiceStat
 }
 
 fn load_service_tray_icon() -> Result<Option<Icon>, String> {
-    let decoder = PngDecoder::new(Cursor::new(include_bytes!("../../icons/icon.png")));
+    let decoder = PngDecoder::new(Cursor::new(include_bytes!("../../icons/service-icon.png")));
     let mut reader = decoder
         .read_info()
         .map_err(|error| format!("Unable to decode tray icon metadata: {error}"))?;

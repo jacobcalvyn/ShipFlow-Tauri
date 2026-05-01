@@ -5,7 +5,7 @@ use tauri::{AppHandle, Runtime};
 use crate::lookup_runtime::LookupCacheState;
 use crate::runtime_log::log_runtime_event;
 use crate::service::{
-    self, ApiServiceConfig, ApiServiceController, ApiServiceMode, ApiServiceStatus,
+    ApiServiceConfig, ApiServiceController, ApiServiceMode, ApiServiceStatus,
     DesktopServiceConnectionMode,
 };
 use crate::service_client::test_api_service_connection;
@@ -74,17 +74,11 @@ pub(crate) fn sync_service_tray<R: Runtime>(
     app: &AppHandle<R>,
     tray_state: &TrayState,
 ) -> tauri::Result<()> {
-    let config = tray_state.snapshot();
     if let Some(tray) = app.tray_by_id(crate::SERVICE_TRAY_ID) {
         let _ = tray.set_visible(false);
     }
 
-    if let Err(error) = service::sync_service_tray_companion(&config) {
-        log_runtime_event(
-            "ERROR",
-            format!("[ShipFlowTray] failed to sync service tray companion: {error}"),
-        );
-    }
+    let _ = tray_state;
 
     Ok(())
 }
@@ -106,16 +100,14 @@ pub(crate) async fn configure_api_service_runtime<R: Runtime>(
     lookup_cache: &LookupCacheState,
 ) -> Result<ApiServiceStatus, String> {
     if config.uses_custom_desktop_service_connection() {
-        config.enabled = false;
+        config.enabled = true;
         test_api_service_connection(&client_state.client, &config).await?;
-    }
-
-    let tracking_source_config = config.tracking_source_config();
-    if !config.uses_custom_desktop_service_connection() {
-        validate_tracking_source_settings(&tracking_source_config)
+    } else {
+        validate_tracking_source_settings(&config.tracking_source_config())
             .map_err(tracking_error_message)?;
     }
 
+    let tracking_source_config = config.tracking_source_config();
     let result = service_controller.configure(config.clone()).await;
     let status = match &result {
         Ok(status) => status.clone(),
@@ -186,6 +178,67 @@ pub(crate) fn get_api_service_status_runtime<R: Runtime>(
         );
     }
     status
+}
+
+fn custom_service_status_from_config(
+    config: &ApiServiceConfig,
+    status: crate::service::ApiServiceStatusKind,
+    error_message: Option<String>,
+) -> ApiServiceStatus {
+    let base_url = config.service_client_base_url();
+    let parsed_url = reqwest::Url::parse(&base_url).ok();
+
+    ApiServiceStatus {
+        status,
+        enabled: true,
+        mode: Some(config.mode.clone()),
+        bind_address: parsed_url
+            .as_ref()
+            .and_then(|url| url.host_str())
+            .map(ToOwned::to_owned)
+            .or(Some(base_url)),
+        port: parsed_url
+            .as_ref()
+            .and_then(|url| url.port_or_known_default()),
+        error_message,
+    }
+}
+
+pub(crate) async fn get_api_service_status_checked_runtime<R: Runtime>(
+    service_controller: &ApiServiceController,
+    client_state: &TrackingClientState,
+    app_handle: AppHandle<R>,
+    tray_state: &TrayState,
+) -> ApiServiceStatus {
+    match service_controller.load_saved_config() {
+        Ok(Some(config)) if config.uses_custom_desktop_service_connection() => {
+            let status = match test_api_service_connection(&client_state.client, &config).await {
+                Ok(_) => custom_service_status_from_config(
+                    &config,
+                    crate::service::ApiServiceStatusKind::Running,
+                    None,
+                ),
+                Err(error) => custom_service_status_from_config(
+                    &config,
+                    crate::service::ApiServiceStatusKind::Error,
+                    Some(error),
+                ),
+            };
+
+            tray_state.update_service(&config, &status);
+            if let Err(error) = sync_service_tray(&app_handle, tray_state) {
+                log_runtime_event(
+                    "ERROR",
+                    format!(
+                        "[ShipFlowTray] failed to sync tray after checked status refresh: {error}"
+                    ),
+                );
+            }
+
+            status
+        }
+        _ => get_api_service_status_runtime(service_controller, app_handle, tray_state),
+    }
 }
 
 pub(crate) async fn test_external_tracking_source_runtime(

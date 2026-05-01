@@ -30,7 +30,6 @@ jobs:
           workspaces: |
             src-tauri -> target
             crates/shipflow-service-runtime -> target
-            apps/service -> target
 
       - name: Install frontend dependencies
         run: npm ci
@@ -46,9 +45,6 @@ jobs:
 
       - name: Run service runtime Rust tests
         run: cargo test --manifest-path crates/shipflow-service-runtime/Cargo.toml
-
-      - name: Run service package Rust tests
-        run: cargo test --manifest-path apps/service/Cargo.toml
 
       - name: Run Rust clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings

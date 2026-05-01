@@ -110,28 +110,24 @@ pub fn parse_bag_html(html: &str, url: &str) -> BagResponse {
                 }
             };
 
-            let get_link_text_at =
-                |index: Option<usize>| -> (Option<String>, Option<String>) {
-                    let Some(index) = index else {
-                        return (None, None);
-                    };
-                    if index >= cells.len() {
-                        return (None, None);
-                    }
-
-                    let cell = &cells[index];
-                    if let Some(anchor) = cell.select(&a_selector).next() {
-                        let text = normalize_text(&anchor.text().collect::<String>());
-                        let href = anchor.value().attr("href").map(str::to_string);
-                        (
-                            if text.is_empty() { None } else { Some(text) },
-                            href,
-                        )
-                    } else {
-                        let text = normalize_text(&cell.text().collect::<String>());
-                        (if text.is_empty() { None } else { Some(text) }, None)
-                    }
+            let get_link_text_at = |index: Option<usize>| -> (Option<String>, Option<String>) {
+                let Some(index) = index else {
+                    return (None, None);
                 };
+                if index >= cells.len() {
+                    return (None, None);
+                }
+
+                let cell = &cells[index];
+                if let Some(anchor) = cell.select(&a_selector).next() {
+                    let text = normalize_text(&anchor.text().collect::<String>());
+                    let href = anchor.value().attr("href").map(str::to_string);
+                    (if text.is_empty() { None } else { Some(text) }, href)
+                } else {
+                    let text = normalize_text(&cell.text().collect::<String>());
+                    (if text.is_empty() { None } else { Some(text) }, None)
+                }
+            };
 
             let item = BagItem {
                 no: get_text_at(header_map.get("NO").copied()),
@@ -140,7 +136,8 @@ pub fn parse_bag_html(html: &str, url: &str) -> BagResponse {
                 kantor_kirim: get_text_at(find_col_contains_all(&["KANTOR", "KIRIM"])),
                 tanggal_kirim: get_text_at(find_col_contains_all(&["TANGGAL", "KIRIM"])),
                 posisi_akhir: get_text_at(
-                    find_col_contains_all(&["POSISI"]).or_else(|| find_col_contains_all(&["LOKASI"])),
+                    find_col_contains_all(&["POSISI"])
+                        .or_else(|| find_col_contains_all(&["LOKASI"])),
                 ),
                 status: get_text_at(
                     header_map

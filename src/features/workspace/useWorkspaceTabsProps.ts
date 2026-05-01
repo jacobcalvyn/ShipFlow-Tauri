@@ -34,10 +34,14 @@ type UseWorkspaceTabsPropsOptions = {
   previewExternalApiBaseUrl: NonNullable<ComponentProps<typeof SheetTabs>["onPreviewExternalApiBaseUrl"]>;
   previewExternalApiAuthToken: NonNullable<ComponentProps<typeof SheetTabs>["onPreviewExternalApiAuthToken"]>;
   previewAllowInsecureExternalApiHttp: NonNullable<ComponentProps<typeof SheetTabs>["onPreviewAllowInsecureExternalApiHttp"]>;
+  previewDesktopServiceUrl: NonNullable<ComponentProps<typeof SheetTabs>["onPreviewDesktopServiceUrl"]>;
+  previewDesktopServiceAuthToken: NonNullable<ComponentProps<typeof SheetTabs>["onPreviewDesktopServiceAuthToken"]>;
+  pasteDesktopServiceAuthToken: NonNullable<ComponentProps<typeof SheetTabs>["onPasteDesktopServiceAuthToken"]>;
   previewGenerateServiceToken: ComponentProps<typeof SheetTabs>["onGenerateServiceToken"];
   previewRegenerateServiceToken: ComponentProps<typeof SheetTabs>["onRegenerateServiceToken"];
   copyServiceEndpoint: NonNullable<ComponentProps<typeof SheetTabs>["onCopyServiceEndpoint"]>;
   copyServiceToken: NonNullable<ComponentProps<typeof SheetTabs>["onCopyServiceToken"]>;
+  testApiServiceConnection: NonNullable<ComponentProps<typeof SheetTabs>["onTestApiServiceConnection"]>;
   testExternalTrackingSource: NonNullable<ComponentProps<typeof SheetTabs>["onTestExternalTrackingSource"]>;
   confirmSettings: ComponentProps<typeof SheetTabs>["onConfirmSettings"];
   cancelSettingsPreview: ComponentProps<typeof SheetTabs>["onCancelSettings"];
@@ -79,10 +83,14 @@ export function useWorkspaceTabsProps({
   previewExternalApiBaseUrl,
   previewExternalApiAuthToken,
   previewAllowInsecureExternalApiHttp,
+  previewDesktopServiceUrl,
+  previewDesktopServiceAuthToken,
+  pasteDesktopServiceAuthToken,
   previewGenerateServiceToken,
   previewRegenerateServiceToken,
   copyServiceEndpoint,
   copyServiceToken,
+  testApiServiceConnection,
   testExternalTrackingSource,
   confirmSettings,
   cancelSettingsPreview,
@@ -137,10 +145,14 @@ export function useWorkspaceTabsProps({
     onPreviewExternalApiBaseUrl: previewExternalApiBaseUrl,
     onPreviewExternalApiAuthToken: previewExternalApiAuthToken,
     onPreviewAllowInsecureExternalApiHttp: previewAllowInsecureExternalApiHttp,
+    onPreviewDesktopServiceUrl: previewDesktopServiceUrl,
+    onPreviewDesktopServiceAuthToken: previewDesktopServiceAuthToken,
+    onPasteDesktopServiceAuthToken: pasteDesktopServiceAuthToken,
     onGenerateServiceToken: previewGenerateServiceToken,
     onRegenerateServiceToken: previewRegenerateServiceToken,
     onCopyServiceEndpoint: copyServiceEndpoint,
     onCopyServiceToken: copyServiceToken,
+    onTestApiServiceConnection: testApiServiceConnection,
     onTestExternalTrackingSource: testExternalTrackingSource,
     onConfirmSettings: confirmSettings,
     onCancelSettings: cancelSettingsPreview,

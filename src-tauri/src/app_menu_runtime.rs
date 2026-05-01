@@ -10,7 +10,6 @@ const APP_MENU_SAVE_DOCUMENT_AS_ID: &str = "app-menu-save-document-as";
 const APP_MENU_NEW_WINDOW_ID: &str = "app-menu-new-window";
 const APP_MENU_OPEN_DOCUMENT_IN_NEW_WINDOW_ID: &str = "app-menu-open-document-in-new-window";
 const APP_MENU_SHOW_SETTINGS_ID: &str = "app-menu-show-settings";
-const APP_MENU_SHOW_SERVICE_SETTINGS_ID: &str = "app-menu-show-service-settings";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,14 +81,6 @@ pub(crate) fn build_desktop_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Resul
         true,
         None::<&str>,
     )?;
-    let service_settings_item = MenuItem::with_id(
-        app,
-        APP_MENU_SHOW_SERVICE_SETTINGS_ID,
-        "ShipFlow Service...",
-        true,
-        None::<&str>,
-    )?;
-
     let edit_menu = Submenu::with_items(
         app,
         "Edit",
@@ -119,8 +110,6 @@ pub(crate) fn build_desktop_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Resul
             &PredefinedMenuItem::separator(app)?,
             #[cfg(not(target_os = "macos"))]
             &settings_item,
-            #[cfg(not(target_os = "macos"))]
-            &service_settings_item,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::close_window(app, None)?,
             #[cfg(not(target_os = "macos"))]
@@ -156,7 +145,6 @@ pub(crate) fn build_desktop_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Resul
             &PredefinedMenuItem::about(app, None, Some(about_metadata.clone()))?,
             &PredefinedMenuItem::separator(app)?,
             &settings_item,
-            &service_settings_item,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::services(app, None)?,
             &PredefinedMenuItem::separator(app)?,
@@ -223,9 +211,6 @@ pub(crate) fn handle_desktop_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str
             emit_workspace_menu_command(app, "open-document-in-new-window")
         }
         APP_MENU_SHOW_SETTINGS_ID => emit_workspace_menu_command(app, "show-settings"),
-        APP_MENU_SHOW_SERVICE_SETTINGS_ID => {
-            emit_workspace_menu_command(app, "show-service-settings")
-        }
         _ => {}
     }
 }

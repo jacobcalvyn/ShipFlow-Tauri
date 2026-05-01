@@ -4,7 +4,7 @@ import {
   ServiceSettingsNotice,
   useServiceSettingsController,
 } from "../service/useServiceSettingsController";
-import { writeClipboardText } from "../clipboard";
+import { readClipboardText, writeClipboardText } from "../clipboard";
 
 type UseWorkspaceServiceSurfaceControllerOptions = {
   showNotice: (notice: ServiceSettingsNotice) => void;
@@ -15,6 +15,7 @@ export function useWorkspaceServiceSurfaceController({
 }: UseWorkspaceServiceSurfaceControllerOptions) {
   const serviceSettings = useServiceSettingsController({
     copyText: writeClipboardText,
+    pasteText: readClipboardText,
     showNotice,
   });
 
@@ -24,7 +25,7 @@ export function useWorkspaceServiceSurfaceController({
     } catch {
       showNotice({
         tone: "error",
-        message: "Gagal membuka ShipFlow Service.",
+        message: "Gagal membuka pengaturan koneksi service.",
       });
     }
   }, [showNotice]);

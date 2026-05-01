@@ -281,7 +281,7 @@ describe("SheetTabs", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
     fireEvent.click(screen.getAllByRole("radio")[2]);
-    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
 
     await waitFor(() => {
       expect(onPreviewDisplayScale).toHaveBeenCalledWith("large");
@@ -289,8 +289,9 @@ describe("SheetTabs", () => {
     });
   });
 
-  it("opens ShipFlow Service from the desktop settings modal", () => {
-    const onOpenServiceSettings = vi.fn();
+  it("edits service connection settings from the desktop settings modal", () => {
+    const onPreviewDesktopServiceUrl = vi.fn();
+    const onPreviewDesktopServiceAuthToken = vi.fn();
 
     render(
       <SheetTabs
@@ -313,15 +314,22 @@ describe("SheetTabs", () => {
         onRegenerateServiceToken={vi.fn()}
         onConfirmSettings={vi.fn()}
         onCancelSettings={vi.fn()}
-        onOpenServiceSettings={onOpenServiceSettings}
+        onPreviewDesktopServiceUrl={onPreviewDesktopServiceUrl}
+        onPreviewDesktopServiceAuthToken={onPreviewDesktopServiceAuthToken}
       />
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
-    expect(screen.getByText("ShipFlow Service")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Buka ShipFlow Service" }));
+    expect(screen.getByText("Koneksi Service")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("ShipFlow Service URL"), {
+      target: { value: "http://127.0.0.1:18423" },
+    });
+    fireEvent.change(screen.getByLabelText("ShipFlow Service Bearer Token"), {
+      target: { value: "sf_desktop_token" },
+    });
 
-    expect(onOpenServiceSettings).toHaveBeenCalledTimes(1);
+    expect(onPreviewDesktopServiceUrl).toHaveBeenCalledWith("http://127.0.0.1:18423");
+    expect(onPreviewDesktopServiceAuthToken).toHaveBeenCalledWith("sf_desktop_token");
   });
 
   it("drops dragged selections onto another sheet with copy mode", () => {

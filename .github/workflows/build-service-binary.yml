@@ -25,12 +25,24 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
         with:
           workspaces: |
             crates/shipflow-service-runtime -> target
             apps/service -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build service frontend assets
+        run: npm run build
 
       - name: Run service runtime Rust tests
         run: cargo test --manifest-path crates/shipflow-service-runtime/Cargo.toml

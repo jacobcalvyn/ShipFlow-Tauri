@@ -16,10 +16,10 @@ export type ServiceSettingsNotice = {
 
 const DEFAULT_SERVICE_CONFIG: ServiceConfig = {
   version: 1,
-  desktopConnectionMode: "managedLocal",
+  desktopConnectionMode: "custom",
   desktopServiceUrl: "http://127.0.0.1:18422",
   desktopServiceAuthToken: "",
-  enabled: false,
+  enabled: true,
   mode: "local",
   port: 18422,
   authToken: "",
@@ -29,6 +29,13 @@ const DEFAULT_SERVICE_CONFIG: ServiceConfig = {
   allowInsecureExternalApiHttp: false,
   keepRunningInTray: true,
   lastUpdatedAt: "",
+};
+
+const SERVICE_RUNTIME_DEFAULT_CONFIG: ServiceConfig = {
+  ...DEFAULT_SERVICE_CONFIG,
+  desktopConnectionMode: "managedLocal",
+  desktopServiceAuthToken: "",
+  enabled: true,
 };
 
 const DEFAULT_API_SERVICE_STATUS: ApiServiceStatus = {
@@ -83,10 +90,25 @@ function areServiceConfigsEqual(left: ServiceConfig, right: ServiceConfig) {
   );
 }
 
-function normalizeServiceConfig(config: ServiceConfig): ServiceConfig {
+type ServiceSettingsProfile = "desktopConnection" | "serviceRuntime";
+
+function defaultServiceConfigForProfile(profile: ServiceSettingsProfile): ServiceConfig {
+  return profile === "serviceRuntime"
+    ? SERVICE_RUNTIME_DEFAULT_CONFIG
+    : DEFAULT_SERVICE_CONFIG;
+}
+
+function normalizeServiceConfig(
+  config: ServiceConfig,
+  profile: ServiceSettingsProfile
+): ServiceConfig {
+  const defaultConfig = defaultServiceConfigForProfile(profile);
   return {
-    ...DEFAULT_SERVICE_CONFIG,
+    ...defaultConfig,
     ...config,
+    desktopConnectionMode:
+      profile === "serviceRuntime" ? "managedLocal" : "custom",
+    enabled: profile === "serviceRuntime" ? true : config.enabled,
     port: normalizeServicePort(config.port),
     keepRunningInTray: true,
   };
@@ -94,14 +116,21 @@ function normalizeServiceConfig(config: ServiceConfig): ServiceConfig {
 
 type UseServiceSettingsControllerOptions = {
   copyText: (value: string) => Promise<void>;
+  pasteText?: () => Promise<string>;
   showNotice: (notice: ServiceSettingsNotice) => void;
+  profile?: ServiceSettingsProfile;
 };
 
 export function useServiceSettingsController({
   copyText,
+  pasteText,
   showNotice,
+  profile = "desktopConnection",
 }: UseServiceSettingsControllerOptions) {
-  const [serviceConfig, setServiceConfig] = useState<ServiceConfig>(DEFAULT_SERVICE_CONFIG);
+  const defaultServiceConfig = defaultServiceConfigForProfile(profile);
+  const [serviceConfig, setServiceConfig] = useState<ServiceConfig>(() =>
+    normalizeServiceConfig(defaultServiceConfig, profile)
+  );
   const [serviceConfigPreview, setServiceConfigPreview] = useState<ServiceConfig | null>(null);
   const [hasLoadedServiceConfig, setHasLoadedServiceConfig] = useState(false);
   const [apiServiceStatus, setApiServiceStatus] = useState<ApiServiceStatus>(
@@ -121,7 +150,13 @@ export function useServiceSettingsController({
 
       try {
         const savedConfig = await invoke<ServiceConfig | null>("load_saved_api_service_config");
-        const nextConfig = savedConfig ? normalizeServiceConfig(savedConfig) : DEFAULT_SERVICE_CONFIG;
+        const baseConfig = savedConfig
+          ? normalizeServiceConfig(savedConfig, profile)
+          : {
+              ...normalizeServiceConfig(defaultServiceConfig, profile),
+              authToken: serviceConfigRef.current.authToken,
+            };
+        const nextConfig = baseConfig;
 
         if (!preservePreview || serviceConfigPreview === null) {
           if (!areServiceConfigsEqual(serviceConfigRef.current, nextConfig)) {
@@ -132,17 +167,21 @@ export function useServiceSettingsController({
 
         return nextConfig;
       } catch {
+        const fallbackConfig = {
+          ...normalizeServiceConfig(defaultServiceConfig, profile),
+          authToken: serviceConfigRef.current.authToken,
+        };
         if (!preservePreview || serviceConfigPreview === null) {
-          if (!areServiceConfigsEqual(serviceConfigRef.current, DEFAULT_SERVICE_CONFIG)) {
-            serviceConfigRef.current = DEFAULT_SERVICE_CONFIG;
-            setServiceConfig(DEFAULT_SERVICE_CONFIG);
+          if (!areServiceConfigsEqual(serviceConfigRef.current, fallbackConfig)) {
+            serviceConfigRef.current = fallbackConfig;
+            setServiceConfig(fallbackConfig);
           }
         }
 
-        return DEFAULT_SERVICE_CONFIG;
+        return fallbackConfig;
       }
     },
-    [serviceConfigPreview]
+    [defaultServiceConfig, profile, serviceConfigPreview]
   );
 
   const refreshApiServiceStatus = useCallback(async () => {
@@ -159,7 +198,7 @@ export function useServiceSettingsController({
         errorMessage:
           error instanceof Error
             ? error.message
-            : "Gagal membaca status akses API eksternal.",
+            : "Gagal membaca status API Service.",
       });
     }
   }, []);
@@ -208,9 +247,9 @@ export function useServiceSettingsController({
   const previewServiceConfig = useCallback((updater: (config: ServiceConfig) => ServiceConfig) => {
     setServiceConfigPreview((current) => {
       const base = current ?? serviceConfigRef.current;
-      return updater(base);
+      return normalizeServiceConfig(updater(base), profile);
     });
-  }, []);
+  }, [profile]);
 
   const previewServiceEnabled = useCallback(
     (enabled: boolean) => {
@@ -237,7 +276,7 @@ export function useServiceSettingsController({
       previewServiceConfig((current) => ({
         ...current,
         desktopConnectionMode,
-        enabled: desktopConnectionMode === "custom" ? false : current.enabled,
+        enabled: desktopConnectionMode === "custom" ? true : current.enabled,
       }));
     },
     [previewServiceConfig]
@@ -262,6 +301,41 @@ export function useServiceSettingsController({
     },
     [previewServiceConfig]
   );
+
+  const pasteDesktopServiceAuthToken = useCallback(async () => {
+    if (!pasteText) {
+      showNotice({
+        tone: "error",
+        message: "Clipboard paste tidak tersedia.",
+      });
+      return;
+    }
+
+    try {
+      const text = (await pasteText()).trim();
+      if (!text) {
+        showNotice({
+          tone: "error",
+          message: "Clipboard kosong.",
+        });
+        return;
+      }
+
+      previewDesktopServiceAuthToken(text);
+      showNotice({
+        tone: "success",
+        message: "Token service ditempel dari clipboard.",
+      });
+    } catch (error) {
+      showNotice({
+        tone: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal membaca clipboard.",
+      });
+    }
+  }, [pasteText, previewDesktopServiceAuthToken, showNotice]);
 
   const previewServicePort = useCallback(
     (port: number) => {
@@ -343,7 +417,7 @@ export function useServiceSettingsController({
         return true;
       } catch (error) {
         const message =
-          error instanceof Error ? error.message : "Gagal mengonfigurasi akses API eksternal.";
+          error instanceof Error ? error.message : "Gagal mengonfigurasi API Service.";
 
         setApiServiceStatus({
           status: "error",
@@ -371,13 +445,18 @@ export function useServiceSettingsController({
           lastUpdatedAt: new Date().toISOString(),
         }
       : null;
+    const normalizedNextServiceConfig = nextServiceConfig
+      ? normalizeServiceConfig(nextServiceConfig, profile)
+      : null;
 
     if (
-      nextServiceConfig &&
-      (nextServiceConfig.desktopConnectionMode === "managedLocal" || nextServiceConfig.enabled)
+      normalizedNextServiceConfig &&
+      profile === "serviceRuntime" &&
+      (normalizedNextServiceConfig.desktopConnectionMode === "managedLocal" ||
+        normalizedNextServiceConfig.enabled)
     ) {
       try {
-        await invoke("validate_tracking_source_config", { config: nextServiceConfig });
+        await invoke("validate_tracking_source_config", { config: normalizedNextServiceConfig });
       } catch (error) {
         showNotice({
           tone: "error",
@@ -390,8 +469,8 @@ export function useServiceSettingsController({
       }
     }
 
-    if (nextServiceConfig) {
-      const didApply = await applyServiceConfig(nextServiceConfig);
+    if (normalizedNextServiceConfig) {
+      const didApply = await applyServiceConfig(normalizedNextServiceConfig);
       if (!didApply) {
         return false;
       }
@@ -399,7 +478,7 @@ export function useServiceSettingsController({
 
     setServiceConfigPreview(null);
     return true;
-  }, [applyServiceConfig, serviceConfigPreview, showNotice]);
+  }, [applyServiceConfig, profile, serviceConfigPreview, showNotice]);
 
   const copyServiceEndpoint = useCallback(
     (endpoint: string) => {
@@ -434,13 +513,13 @@ export function useServiceSettingsController({
         .then(() =>
           showNotice({
             tone: "success",
-            message: "Token API berhasil disalin.",
+            message: "Token API Service berhasil disalin.",
           })
         )
         .catch(() =>
           showNotice({
             tone: "error",
-            message: "Gagal menyalin token API.",
+            message: "Gagal menyalin token API Service.",
           })
         );
     },
@@ -471,6 +550,7 @@ export function useServiceSettingsController({
     previewExternalApiAuthToken,
     previewExternalApiBaseUrl,
     previewGenerateServiceToken,
+    pasteDesktopServiceAuthToken,
     previewRegenerateServiceToken,
     previewServiceEnabled,
     previewServiceMode,

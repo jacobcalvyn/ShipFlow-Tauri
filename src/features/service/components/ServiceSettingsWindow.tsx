@@ -10,9 +10,11 @@ import type { ServiceSettingsNotice } from "../useServiceSettingsController";
 type ServiceSettingsWindowProps = {
   serviceConfig: ServiceConfig;
   hasPendingServiceConfigChanges: boolean;
+  profile?: "desktopConnection" | "serviceRuntime";
   onPreviewDesktopConnectionMode: (mode: DesktopServiceConnectionMode) => void;
   onPreviewDesktopServiceUrl: (url: string) => void;
   onPreviewDesktopServiceAuthToken: (token: string) => void;
+  onPasteDesktopServiceAuthToken: () => Promise<void> | void;
   onPreviewServiceEnabled: (enabled: boolean) => void;
   onPreviewServiceMode: (mode: ServiceMode) => void;
   onPreviewServicePort: (port: number) => void;
@@ -35,10 +37,11 @@ type ServiceSettingsWindowProps = {
 export function ServiceSettingsWindow({
   serviceConfig,
   hasPendingServiceConfigChanges,
+  profile = "desktopConnection",
   onPreviewDesktopConnectionMode,
   onPreviewDesktopServiceUrl,
   onPreviewDesktopServiceAuthToken,
-  onPreviewServiceEnabled,
+  onPasteDesktopServiceAuthToken,
   onPreviewServiceMode,
   onPreviewServicePort,
   onPreviewTrackingSource,
@@ -56,6 +59,7 @@ export function ServiceSettingsWindow({
   onHideWindow,
   onShowNotice,
 }: ServiceSettingsWindowProps) {
+  const isServiceRuntimeProfile = profile === "serviceRuntime";
   const [activeView, setActiveView] = useState<"runtime" | "api">("runtime");
   const [isTokenVisible, setIsTokenVisible] = useState(false);
   const [isDesktopTokenVisible, setIsDesktopTokenVisible] = useState(false);
@@ -101,12 +105,8 @@ export function ServiceSettingsWindow({
     Number.isInteger(normalizedPort) && normalizedPort >= 1 && normalizedPort <= 65535;
 
   const serviceGuideBaseUrl = useMemo(() => {
-    if (serviceConfig.mode === "local") {
-      return `http://127.0.0.1:${serviceConfig.port}`;
-    }
-
-    return `http://<device-ip>:${serviceConfig.port}`;
-  }, [serviceConfig.mode, serviceConfig.port]);
+    return `http://127.0.0.1:${serviceConfig.port}`;
+  }, [serviceConfig.port]);
 
   const handlePortDraftChange = (value: string) => {
     setPortDraft(value);
@@ -193,20 +193,35 @@ export function ServiceSettingsWindow({
     }
   };
 
-  const activeViewTitle = activeView === "runtime" ? "Runtime Internal" : "API Endpoint";
+  const activeViewTitle =
+    activeView === "runtime"
+      ? isServiceRuntimeProfile
+        ? "Sumber Lacak"
+        : "Koneksi Service"
+      : isServiceRuntimeProfile
+        ? "API Service"
+        : "API Endpoint";
   const activeViewDescription =
     activeView === "runtime"
-      ? "Pilih sumber tracking utama yang dipakai oleh service lokal."
-      : "Atur endpoint lokal, mode jaringan, dan token autentikasi untuk klien lain.";
+      ? isServiceRuntimeProfile
+        ? "Pilih internal scrap atau external API sebagai sumber data service."
+        : "Pilih sumber tracking utama yang dipakai oleh service lokal."
+      : isServiceRuntimeProfile
+        ? "Atur port, token wajib, dan akses LAN opsional."
+        : "Atur endpoint lokal, mode jaringan, dan token autentikasi untuk klien lain.";
 
   return (
     <main className="shell service-settings-shell display-scale-small">
       <section className="sheet-panel service-settings-panel">
         <div className="sheet-head service-settings-head">
           <div className="service-settings-title">
-            <span className="muted-label">Service</span>
-            <h2>ShipFlow Service</h2>
-            <p>Konfigurasi runtime tracking dan endpoint lokal untuk integrasi desktop.</p>
+            <span className="muted-label">{isServiceRuntimeProfile ? "Service" : "Desktop"}</span>
+            <h2>{isServiceRuntimeProfile ? "ShipFlow Service" : "Koneksi ShipFlow Service"}</h2>
+            <p>
+              {isServiceRuntimeProfile
+                ? "Atur sumber lacak, port, dan token API Service."
+                : "Atur alamat dan token service yang dipakai Desktop untuk lacak."}
+            </p>
           </div>
         </div>
 
@@ -231,7 +246,7 @@ export function ServiceSettingsWindow({
                   .join(" ")}
                 onClick={() => setActiveView("runtime")}
               >
-                Runtime Internal
+                {isServiceRuntimeProfile ? "Sumber Lacak" : "Koneksi Service"}
               </button>
               <button
                 type="button"
@@ -274,8 +289,9 @@ export function ServiceSettingsWindow({
               hidden={activeView !== "runtime"}
             >
               <div className="service-settings-stack">
+                {!isServiceRuntimeProfile ? (
                 <div className="settings-field-block">
-                  <span className="settings-input-label">Koneksi Desktop</span>
+                  <span className="settings-input-label">Target Service</span>
                   <div
                     className="settings-radio-group service-settings-segmented-group"
                     role="radiogroup"
@@ -286,9 +302,10 @@ export function ServiceSettingsWindow({
                         type="radio"
                         name="desktop-service-connection"
                         checked={serviceConfig.desktopConnectionMode === "managedLocal"}
-                        onChange={() => onPreviewDesktopConnectionMode("managedLocal")}
+                        onChange={() => onPreviewDesktopConnectionMode("custom")}
+                        disabled
                       />
-                      <span className="settings-radio-text">Service lokal terkelola</span>
+                      <span className="settings-radio-text">Service bawaan lama</span>
                     </label>
                     <label className="settings-radio-option service-settings-segmented-option">
                       <input
@@ -297,18 +314,19 @@ export function ServiceSettingsWindow({
                         checked={serviceConfig.desktopConnectionMode === "custom"}
                         onChange={() => onPreviewDesktopConnectionMode("custom")}
                       />
-                      <span className="settings-radio-text">Service custom</span>
+                      <span className="settings-radio-text">Service terpisah</span>
                     </label>
                   </div>
                 </div>
+                ) : null}
 
                 {serviceConfig.desktopConnectionMode === "custom" ? (
                   <>
                     <label className="settings-text-field">
-                      <span className="settings-input-label">Service URL</span>
+                      <span className="settings-input-label">ShipFlow Service URL</span>
                       <input
                         type="url"
-                        aria-label="Desktop Service URL"
+                        aria-label="ShipFlow Service URL"
                         value={serviceConfig.desktopServiceUrl}
                         onChange={(event) =>
                           onPreviewDesktopServiceUrl(event.target.value)
@@ -316,10 +334,10 @@ export function ServiceSettingsWindow({
                       />
                     </label>
                     <label className="settings-text-field">
-                      <span className="settings-input-label">Service Token</span>
+                      <span className="settings-input-label">ShipFlow Service Token</span>
                       <input
                         type={isDesktopTokenVisible ? "text" : "password"}
-                        aria-label="Desktop Service Bearer Token"
+                        aria-label="ShipFlow Service Bearer Token"
                         value={serviceConfig.desktopServiceAuthToken}
                         onChange={(event) =>
                           onPreviewDesktopServiceAuthToken(event.target.value)
@@ -343,6 +361,16 @@ export function ServiceSettingsWindow({
                         disabled={!serviceConfig.desktopServiceAuthToken}
                       >
                         Copy
+                      </button>
+                      <button
+                        type="button"
+                        className="sheet-tab-action"
+                        onClick={() => {
+                          void onPasteDesktopServiceAuthToken();
+                          setServiceConnectionTestResult(null);
+                        }}
+                      >
+                        Paste
                       </button>
                       <button
                         type="button"
@@ -478,7 +506,7 @@ export function ServiceSettingsWindow({
                   </>
                 ) : (
                   <div className="settings-field-help settings-field-help-info">
-                    Sumber tracking dan config scrap internal mengikuti ShipFlow Service yang dituju.
+                    Mode lacak diatur di ShipFlow Service: internal scrap atau external API.
                   </div>
                 )}
               </div>
@@ -499,44 +527,31 @@ export function ServiceSettingsWindow({
               <div className="service-settings-stack">
                 {serviceConfig.desktopConnectionMode === "custom" ? (
                   <div className="settings-field-help settings-field-help-info">
-                    Endpoint API dan lifecycle service mengikuti ShipFlow Service yang dituju.
+                    Desktop hanya memanggil ShipFlow Service. Port API Service, token, internal scrap, dan external API diatur di sisi Service.
                   </div>
                 ) : (
                   <>
-                <label className="settings-checkbox-option service-settings-checkbox-row">
-                  <input
-                    type="checkbox"
-                    aria-label="Buka Akses API Eksternal"
-                    checked={serviceConfig.enabled}
-                    onChange={(event) => onPreviewServiceEnabled(event.currentTarget.checked)}
-                  />
-                  <span>Buka akses API eksternal</span>
-                </label>
+                <div className="settings-field-help settings-field-help-info">
+                  API Service selalu aktif untuk Desktop. Token wajib dipakai untuk lacak, baik sumbernya internal scrap maupun external API.
+                </div>
 
                 <div className="settings-field-block">
-                  <span className="settings-input-label">Mode</span>
-                  <div
-                    className="settings-radio-group service-settings-segmented-group"
-                    role="radiogroup"
-                    aria-label="Mode Akses API"
-                  >
-                    <label className="settings-radio-option service-settings-segmented-option">
+                  <span className="settings-input-label">Akses Jaringan</span>
+                  <div className="service-settings-network-stack">
+                    <div className="service-settings-always-on-row">
+                      <span className="service-settings-always-on-dot" aria-hidden="true" />
+                      <span className="settings-radio-text">Localhost selalu aktif untuk Desktop</span>
+                    </div>
+                    <label className="settings-checkbox-option service-settings-checkbox-row">
                       <input
-                        type="radio"
-                        name="service-mode"
-                        checked={serviceConfig.mode === "local"}
-                        onChange={() => onPreviewServiceMode("local")}
-                      />
-                      <span className="settings-radio-text">Localhost Saja</span>
-                    </label>
-                    <label className="settings-radio-option service-settings-segmented-option">
-                      <input
-                        type="radio"
-                        name="service-mode"
+                        type="checkbox"
+                        aria-label="LAN / Jaringan Lokal"
                         checked={serviceConfig.mode === "lan"}
-                        onChange={() => onPreviewServiceMode("lan")}
+                        onChange={(event) =>
+                          onPreviewServiceMode(event.currentTarget.checked ? "lan" : "local")
+                        }
                       />
-                      <span className="settings-radio-text">LAN / Jaringan Lokal</span>
+                      <span>LAN / Jaringan Lokal</span>
                     </label>
                   </div>
                 </div>
@@ -563,19 +578,19 @@ export function ServiceSettingsWindow({
 
                 {serviceConfig.mode === "lan" ? (
                   <div className="settings-field-help settings-field-help-warning">
-                    LAN membuka endpoint ke perangkat lain dalam jaringan yang sama.
+                    LAN membuka endpoint tambahan ke perangkat lain dalam jaringan yang sama. Desktop tetap memakai localhost.
                   </div>
                 ) : null}
 
                 <div className="service-settings-field-row">
                   <label className="settings-text-field service-settings-token-field">
-                    <span className="settings-input-label">Token</span>
+                    <span className="settings-input-label">Token API Service</span>
                     <input
                       type={isTokenVisible ? "text" : "password"}
                       readOnly
-                      aria-label="Token API"
+                      aria-label="Token API Service"
                       value={serviceConfig.authToken}
-                      placeholder="Generate token"
+                      placeholder="Generate token wajib"
                     />
                   </label>
                   <div className="settings-inline-actions service-settings-field-actions">
@@ -624,7 +639,7 @@ export function ServiceSettingsWindow({
 
                 <div className="service-settings-endpoint-row">
                   <div className="service-settings-endpoint-field">
-                    <span className="settings-input-label">Endpoint</span>
+                    <span className="settings-input-label">Endpoint Desktop</span>
                     <code className="service-settings-endpoint-code">{serviceGuideBaseUrl}</code>
                   </div>
                   <button

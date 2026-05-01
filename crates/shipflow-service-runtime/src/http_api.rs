@@ -7,6 +7,7 @@ use axum::{
 use reqwest::Client;
 use serde_json::{json, Value};
 use shipflow_core::model::{BagResponse, ManifestResponse, TrackResponse, TrackingError};
+use std::time::Duration;
 
 use crate::lookup_cache::{
     resolve_bag_request_cached, resolve_manifest_request_cached, resolve_tracking_request_cached,
@@ -44,8 +45,16 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
             )
         })?;
 
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(6))
+        .read_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(25))
+        .user_agent("ShipFlow Service/0.1")
+        .build()
+        .map_err(|error| format!("Unable to create service HTTP client: {error}"))?;
+
     let app_state = HttpApiState {
-        client: Client::new(),
+        client,
         auth_token: config.auth_token.clone(),
         mode: config.mode,
         bind_address,
@@ -70,8 +79,12 @@ fn build_router(app_state: HttpApiState) -> Router {
         .with_state(app_state)
 }
 
-async fn health_handler() -> Json<Value> {
-    Json(json!({ "ok": true }))
+async fn health_handler(
+    State(state): State<HttpApiState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    authorize_request(&headers, &state.auth_token)?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn status_handler(
@@ -230,6 +243,16 @@ mod tests {
         let result = authorize_request(&headers, "secret-token");
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_wrong_bearer_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, "Bearer other-token".parse().unwrap());
+
+        let result = authorize_request(&headers, "secret-token");
+
+        assert!(matches!(result, Err((StatusCode::UNAUTHORIZED, _))));
     }
 
     #[test]

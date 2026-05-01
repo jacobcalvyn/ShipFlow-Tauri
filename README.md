@@ -28,7 +28,7 @@ Architecture references:
 - Supports multiple sheets, where each sheet is an isolated tracking workspace
 - Supports creating a new sheet from selected shipment IDs only
 - Supports appending selected shipment IDs into another existing sheet
-- Includes external API access for other apps through the companion service
+- Uses a standalone `ShipFlow Service` for Desktop tracking and optional API access for other apps
 
 ## Tracking Flow
 
@@ -142,14 +142,14 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - Temporary header highlight when a shortcut scroll target is reached
 - Sheet-specific scroll position, request state, and notices
 - Toast notifications are shown as a fixed top-center queue and do not shift the sheet layout
-- `Setting` is opened from a gear icon in the tabs panel and includes display scale controls plus a launcher to open `ShipFlow Service`
-- `ShipFlow Service` owns:
+- `Setting` is opened from a gear icon in the tabs panel and includes display scale controls plus a connection panel for the standalone `ShipFlow Service`
+- The standalone `ShipFlow Service` owns:
   - runtime tracking source selection
-  - external API access mode (`localhost` or `LAN`)
-  - external API port
+  - service bind mode (`localhost` or `LAN`)
+  - service API port
   - service-generated bearer token
-- `ShipFlow Service` is laid out as a compact desktop preference window with a stable full-height content panel, persistent footer actions, and tighter control alignment across macOS and Windows
-- The `ShipFlow Service` footer now keeps `Reset Perubahan`, `Sembunyikan`, and `Simpan`; `Sembunyikan` hides the service window without discarding unsaved local draft changes
+- Desktop stores only the service URL/port and bearer token it uses to call that separate service.
+- The Desktop connection panel keeps `Reset Perubahan`, `Sembunyikan`, and `Simpan`; `Sembunyikan` hides the panel without discarding unsaved local draft changes
 - The external API `Base URL` field no longer ships with a hard-coded example endpoint placeholder
 - `Nomor Kiriman` rows include per-row QR preview, copy ID, and source-link actions
 - `PID/Kantong Terakhir` is derived from the latest `bagging` / `unbagging` event and includes QR preview, copy ID, and print actions for the latest bag/PID
@@ -190,12 +190,13 @@ The main table currently focuses on:
 
 - `ShipFlow Desktop` does not scrape directly. Tracking is resolved by `ShipFlow Service`.
 - `ShipFlow Service` is the single source of truth for tracking source and external API access.
-- Desktop `Setting` only launches `ShipFlow Service`; service configuration is not edited from the desktop modal.
-- `ShipFlow Service` settings can now choose whether Desktop uses the managed local service or a custom service URL/token.
-- In custom Desktop-to-Service mode, Desktop does not spawn a managed tracking runtime and the target service owns its own scraper/internal API config.
+- Desktop `Setting` only edits the Desktop-to-Service URL/port/token. It does not edit service-owned tracking source configuration.
+- Desktop always uses the configured standalone service URL/token for tracking.
+- Desktop does not spawn a managed tracking runtime and the target service owns its own scraper/internal API config.
 - Custom Desktop-to-Service settings are saved only after an authenticated `/status` response proves the endpoint is ShipFlow Service.
-- In custom Desktop-to-Service mode, Desktop does not enable or manage the bundled API endpoint; the target service owns that endpoint and token.
-- External API access can be opened or closed from `ShipFlow Service` without affecting the desktop runtime itself.
+- In custom Desktop-to-Service mode, Desktop does not enable or manage the Service API endpoint; the target service owns that endpoint and token.
+- The Service API token is required for Desktop tracking in both internal scraper mode and external API mode.
+- External tracking source access can be opened or closed from `ShipFlow Service` without affecting the desktop runtime itself.
 - Retrack failures do not wipe the last successful shipment data. Failed refreshes keep the old row data and mark the row as stale.
 - Numeric parsing in the Rust scraper is hardened: invalid upstream numeric fields now fail loudly instead of silently falling back to `0`.
 - Empty numeric upstream fields are preserved as `null`, not coerced to `0`.
@@ -214,8 +215,8 @@ The main table currently focuses on:
 - `Delete All` resets rows, filters, value filters, sort state, and in-flight tracking work so the table returns to a clean input state.
 - Delivery-runsheet parsing is hardened so `FAILEDTODELIVERED` cases are not incorrectly split into two updates on the latest runsheet.
 - Delivery-runsheet parsing now keeps only the latest effective update for a runsheet summary.
-- The service companion always keeps tray/background behavior enabled; it is no longer exposed as a user-facing desktop setting.
-- Desktop startup now proactively checks whether `ShipFlow Service` is already running and starts the companion runtime when needed.
+- Desktop no longer manages service tray/background lifecycle.
+- Desktop startup no longer starts a service companion. Start the standalone service first, then configure Desktop with that service URL/token.
 - Desktop/service readiness checks now require an authenticated `GET /status` response from `ShipFlow Service`, including a ShipFlow-specific product marker, before reusing an existing runtime process.
 - Custom Desktop-to-Service lookups re-check the authenticated `/status` identity before sending shipment, bag, or manifest IDs to a custom endpoint.
 - Service configuration is validated before it is persisted, and enabled service configs are written only after the companion process has started and passed the authenticated readiness probe.
@@ -255,9 +256,9 @@ The main table currently focuses on:
 - [src-tauri/src/os_bridge.rs](./src-tauri/src/os_bridge.rs): clipboard, URL, and native file-picker bridge
 - [src-tauri/src/window_runtime.rs](./src-tauri/src/window_runtime.rs): window/document registry runtime
 - [src-tauri/src/workspace_document.rs](./src-tauri/src/workspace_document.rs): workspace document read/write helpers
-- [src-tauri/src/service.rs](./src-tauri/src/service.rs): service controller composition layer
+- [src-tauri/src/service.rs](./src-tauri/src/service.rs): Desktop-side service connection config layer
 - [src-tauri/src/service_client.rs](./src-tauri/src/service_client.rs): Desktop-to-Service HTTP client boundary
-- [src-tauri/src/service](./src-tauri/src/service): Desktop-side service adapters, config/state store, process runtime, and tray runtime
+- [src-tauri/src/service](./src-tauri/src/service): Desktop-side service connection/state compatibility modules
 - [crates/shipflow-core](./crates/shipflow-core): shared lookup core for shipment, bag, and manifest parser/upstream logic and models
 - [crates/shipflow-service-runtime](./crates/shipflow-service-runtime): shared ShipFlow Service HTTP API and lookup cache runtime
 - [src-tauri/src/tracking/mod.rs](./src-tauri/src/tracking/mod.rs): Tauri-side compatibility module that re-exports the shared tracking core
@@ -266,21 +267,21 @@ The main table currently focuses on:
 ### Runtime Split
 
 - `ShipFlow Desktop`: document workspace, sheet management, and table UI
-- `ShipFlow Service`: runtime lookup API, source selection, service token, tray/background lifecycle, and external API access
+- `ShipFlow Service`: runtime lookup API, source selection, service token, cache, and external API access
 - `shipflow-core`: shared lookup engine used by desktop/service Rust code
-- `shipflow-service-runtime`: shared service HTTP API and lookup-cache engine used by Desktop-managed and standalone service binaries
-- Desktop and service currently ship together as one product bundle, but run as separate executables/processes
-- The repo is moving toward separate Desktop and Service installer packages while keeping `shipflow-core` shared inside the monorepo.
+- `shipflow-service-runtime`: shared service HTTP API and lookup-cache engine used by the standalone service binary
+- Desktop and service are separate runtime artifacts. Desktop does not bundle, spawn, or stop ShipFlow Service.
+- The repo keeps Desktop and Service in one monorepo while producing separate release artifacts.
 - `shipflow-core` is linked into the Rust binaries and is not packaged as a standalone app
 
 ## Runtime Smoke Checklist
 
 Use this checklist before publishing a runtime/security change:
 
-- Start Desktop with the managed local service and confirm tracking, bag import, and manifest import all resolve through `ShipFlow Service`.
-- Switch Desktop-to-Service to a custom localhost URL/token and confirm the authenticated `/status` check passes before lookup.
+- Start standalone `ShipFlow Service` and configure Desktop with its localhost URL/token.
+- Confirm tracking, bag import, and manifest import all resolve through `ShipFlow Service`.
 - Start another process on the configured service port and confirm Desktop does not treat a plain open port as ShipFlow Service.
-- Tamper or stale the recorded service PID file and confirm shutdown/reuse refuses a non-ShipFlow process.
+- Confirm Desktop reports a clear configuration error when no standalone service URL/token is saved.
 - Open normal POD previews, then confirm oversized `data:image` payloads, SVG payloads, and private/loopback remote URLs are rejected.
 - Save the same workspace repeatedly and confirm the existing file remains readable after each save.
 
@@ -295,7 +296,7 @@ Latest CLI/runtime smoke baseline, verified on 2026-04-25:
 - Starting a second service process on the same port fails with `Address already in use`.
 - `npm run build` and `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` pass after the runtime smoke test.
 
-The CLI smoke test does not replace a visual Desktop smoke pass. Still verify the Tauri window flow for managed local service startup, custom service settings, POD hover previews, and native workspace save dialogs before a user-facing release.
+The CLI smoke test does not replace a visual Desktop smoke pass. Still verify the Tauri window flow for standalone service settings, POD hover previews, and native workspace save dialogs before a user-facing release.
 
 ### Reference Only
 
@@ -327,10 +328,29 @@ Run a Desktop dev instance on a non-default Vite port:
 npm run tauri -- dev --config '{"build":{"devUrl":"http://127.0.0.1:1431","beforeDevCommand":"npm run dev -- --host 127.0.0.1 --port 1431 --strictPort"}}'
 ```
 
-Run the service app directly in dev:
+Run the service app directly in dev. This starts the Service frontend on port `1432`, waits until it is ready, then opens the Service app:
 
 ```bash
-cargo run --manifest-path apps/service/Cargo.toml --
+npm run dev:service
+```
+
+In the Service window:
+
+1. Open `Sumber Lacak` and choose `Internal ShipFlow` or `API ShipFlow Eksternal`.
+2. Open `API`, review the localhost endpoint, generate a token if needed, and save.
+3. Copy the endpoint and token into Desktop `Setting`.
+
+The service also supports CLI mode for headless testing:
+
+```bash
+cargo run --manifest-path apps/service/Cargo.toml -- --auth-token sf_dev_token --port 18422
+```
+
+For CLI mode, configure Desktop with:
+
+```text
+ShipFlow Service URL: http://127.0.0.1:18422
+ShipFlow Service Token: sf_dev_token
 ```
 
 ## Build
@@ -347,25 +367,19 @@ Build the desktop app:
 npm run tauri build
 ```
 
-Prepare the bundled service binary:
-
-```bash
-npm run prepare:service-binary
-```
-
 Build the standalone service binary:
 
 ```bash
 npm run build:service
 ```
 
-Build the bundled desktop installer with the companion service binary included:
+Build the desktop installer:
 
 ```bash
 npm run build:bundle
 ```
 
-Build the macOS app bundle only, with the companion service binary included:
+Build the macOS app bundle only:
 
 ```bash
 npm run build:bundle:macos
@@ -382,9 +396,9 @@ What it does:
 - runs on `windows-latest`
 - installs Node.js and Rust
 - runs frontend tests
-- runs Tauri, shared core, service runtime, and service package Rust tests
+- runs Tauri, shared core, and service runtime Rust tests
 - runs Rust clippy with warnings denied
-- builds the NSIS installer through the bundled-service config so `ShipFlow Service` is included
+- builds the Desktop NSIS installer without bundling `ShipFlow Service`
 - uploads two artifacts:
   - portable app executable: `shipflow-desktop-windows-portable`
   - NSIS installer executable: `shipflow-desktop-windows-installer`
@@ -410,11 +424,11 @@ What it does:
 - runs on `macos-latest`
 - installs Node.js and Rust
 - runs frontend tests
-- runs Tauri, shared core, service runtime, and service package Rust tests
+- runs Tauri, shared core, and service runtime Rust tests
 - runs Rust clippy with warnings denied
 - optionally uses Apple signing and notarization credentials when the corresponding `APPLE_*` repository secrets are configured
 - otherwise falls back to Tauri ad-hoc signing (`bundle.macOS.signingIdentity = "-"`) so the app bundle is still signed for local validation
-- builds the macOS app bundle through the bundled-service config so `ShipFlow Service` is included
+- builds the Desktop macOS app bundle without bundling `ShipFlow Service`
 - verifies the generated `.app` bundle signature with `codesign --verify --deep --strict`
 - archives the `.app` bundle as a `.zip` artifact to preserve the macOS bundle structure during download
 
@@ -442,14 +456,15 @@ The repository includes a standalone service binary workflow at:
 What it does:
 
 - runs on `macos-latest` and `windows-latest`
-- installs Rust
+- installs Rust and frontend dependencies
+- builds the frontend assets embedded by the Service settings window
 - runs service runtime and service package Rust tests
 - builds `apps/service` in release mode
 - uploads standalone service binary artifacts:
   - `shipflow-service-macos`
   - `shipflow-service-windows`
 
-This is the first packaging step toward separate Desktop and Service release artifacts. The bundled desktop installers still include the companion service binary for now.
+Desktop installers no longer include the service binary. Install or run the Service artifact separately, then configure Desktop with the service URL and token.
 
 ## Tests
 
@@ -549,4 +564,4 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 - Hidden columns are stored in browser/webview local storage
 - Pinned columns are stored in browser/webview local storage
 - Workspace and sheet state are persisted in browser/webview local storage with a storage-safe fallback snapshot
-- Service runtime state, PID markers, pending activation requests, and runtime logs are stored under the user app-data `shipflow-service-runtime` state directory; the old temp-dir location is read only as a migration fallback
+- Desktop stores only the standalone ShipFlow Service URL/token it uses for lookups

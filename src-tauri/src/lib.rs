@@ -18,11 +18,13 @@ use std::sync::{Arc, Mutex};
 use app_menu_runtime::{build_desktop_menu, handle_desktop_menu_event};
 use app_runtime::{
     build_main_webview_navigation_guard_plugin, build_tracking_client, desktop_setup,
-    handle_desktop_window_event, handle_service_settings_window_event, service_settings_setup,
+    handle_desktop_window_event, handle_service_settings_window_event, load_service_window_icon,
+    open_service_settings_window_runtime, service_settings_setup,
 };
 use lookup_runtime::LookupCacheState;
 use os_bridge::{
     copy_text_to_clipboard, open_external_url_runtime, pick_workspace_document_path_runtime,
+    read_text_from_clipboard,
 };
 use pod_preview::resolve_pod_image_source;
 use runtime_log::log_runtime_event;
@@ -34,7 +36,7 @@ use service_client::{
     track_manifest_via_service, track_shipment_via_service,
 };
 use service_runtime::{
-    configure_api_service_runtime, get_api_service_status_runtime,
+    configure_api_service_runtime, get_api_service_status_checked_runtime,
     load_saved_api_service_config_runtime, test_external_tracking_source_runtime,
     validate_tracking_source_config_runtime, TrayState,
 };
@@ -198,6 +200,11 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn read_from_clipboard() -> Result<String, String> {
+    read_text_from_clipboard()
+}
+
+#[tauri::command]
 fn pick_workspace_document_path(
     mode: String,
     suggested_name: Option<String>,
@@ -274,8 +281,8 @@ fn create_workspace_window(
 }
 
 #[tauri::command]
-fn open_shipflow_service_app() -> Result<(), String> {
-    service::launch_shipflow_service_app()
+fn open_shipflow_service_app(app_handle: tauri::AppHandle) -> Result<(), String> {
+    open_service_settings_window_runtime(&app_handle)
 }
 
 #[tauri::command]
@@ -324,12 +331,19 @@ fn load_saved_api_service_config(
 }
 
 #[tauri::command]
-fn get_api_service_status(
+async fn get_api_service_status(
     service_controller: tauri::State<'_, ApiServiceController>,
+    client_state: tauri::State<'_, TrackingClientState>,
     app_handle: tauri::AppHandle,
     tray_state: tauri::State<'_, TrayState>,
-) -> ApiServiceStatus {
-    get_api_service_status_runtime(&service_controller, app_handle, &tray_state)
+) -> Result<ApiServiceStatus, String> {
+    Ok(get_api_service_status_checked_runtime(
+        &service_controller,
+        &client_state,
+        app_handle,
+        &tray_state,
+    )
+    .await)
 }
 
 #[tauri::command]
@@ -428,6 +442,7 @@ pub fn run() {
             resolve_pod_image,
             open_external_url,
             copy_to_clipboard,
+            read_from_clipboard,
             pick_workspace_document_path,
             read_workspace_document,
             write_workspace_document,
@@ -455,6 +470,16 @@ pub fn run_service_settings() {
     install_runtime_logging();
     let tracking_client = build_tracking_client("ShipFlow Service/0.1");
     let mut context = build_base_context();
+    match load_service_window_icon() {
+        Ok(icon) => {
+            context.set_default_window_icon(Some(icon.clone()));
+            context.set_tray_icon(Some(icon));
+        }
+        Err(error) => log_runtime_event(
+            "ERROR",
+            format!("[ShipFlowService] failed to load service icon: {error}"),
+        ),
+    }
     context.config_mut().app.windows.clear();
 
     tauri::Builder::default()
@@ -474,6 +499,7 @@ pub fn run_service_settings() {
             track_manifest,
             open_external_url,
             copy_to_clipboard,
+            read_from_clipboard,
             log_frontend_runtime_event,
             configure_api_service,
             load_saved_api_service_config,

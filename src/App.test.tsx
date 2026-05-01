@@ -363,6 +363,10 @@ describe("App workspace isolation", () => {
         return Promise.resolve(undefined);
       }
 
+      if (command === "read_from_clipboard") {
+        return Promise.resolve("sf_clipboard_token");
+      }
+
       if (command === "open_shipflow_service_app") {
         return Promise.resolve(undefined);
       }
@@ -2081,19 +2085,33 @@ describe("App workspace isolation", () => {
 
     expect(window.localStorage.getItem("shipflow-display-scale")).toBe("small");
 
-    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
 
     expect(window.localStorage.getItem("shipflow-display-scale")).toBe("large");
   });
 
-  it("opens ShipFlow Service from desktop settings", async () => {
+  it("shows service connection settings inside desktop settings", async () => {
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
-    fireEvent.click(screen.getByRole("button", { name: "Buka ShipFlow Service" }));
+
+    expect(screen.getByLabelText("ShipFlow Service URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("ShipFlow Service Bearer Token")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Paste" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Tes Service" })).toBeInTheDocument();
+    expect(getInvokeCalls("open_shipflow_service_app")).toHaveLength(0);
+  });
+
+  it("pastes the desktop service token from the clipboard", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
+    fireEvent.click(screen.getByRole("button", { name: "Paste" }));
 
     await waitFor(() => {
-      expect(getInvokeCalls("open_shipflow_service_app")).toHaveLength(1);
+      expect(screen.getByLabelText("ShipFlow Service Bearer Token")).toHaveValue(
+        "sf_clipboard_token"
+      );
     });
   });
 
@@ -2481,7 +2499,7 @@ describe("App workspace isolation", () => {
     expect(window.localStorage.getItem("shipflow-display-scale")).toBe("small");
   });
 
-  it("persists previewed service config only after settings are confirmed in the service window", async () => {
+  it("persists service runtime API settings only after settings are confirmed in the service window", async () => {
     setShipFlowWindowKind("service-settings");
     render(<App />);
 
@@ -2489,22 +2507,29 @@ describe("App workspace isolation", () => {
     expect(getInvokeCalls("configure_api_service")).toHaveLength(0);
 
     fireEvent.click(await screen.findByRole("tab", { name: "API" }));
-    fireEvent.click(await screen.findByRole("checkbox", { name: "Buka Akses API Eksternal" }));
+    expect(
+      screen.getByText(
+        "API Service selalu aktif untuk Desktop. Token wajib dipakai untuk lacak, baik sumbernya internal scrap maupun external API."
+      )
+    ).toBeInTheDocument();
+    expect(screen.getByText("Localhost selalu aktif untuk Desktop")).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("LAN / Jaringan Lokal"));
     fireEvent.change(screen.getByLabelText("Port"), {
       target: { value: "19422" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
 
     expect(window.localStorage.getItem("shipflow-service-config")).toBeNull();
 
-    const tokenField = screen.getByLabelText("Token API") as HTMLInputElement;
+    const tokenField = screen.getByLabelText("Token API Service") as HTMLInputElement;
+    expect(tokenField.value).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
     expect(tokenField.value).toMatch(/^sf_[a-f0-9]+$/);
 
     fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
 
     await waitFor(() => {
       expect(getInvokeCalls("configure_api_service")).toHaveLength(1);
+      expect(persistedServiceConfig?.desktopConnectionMode).toBe("managedLocal");
       expect(persistedServiceConfig?.enabled).toBe(true);
       expect(persistedServiceConfig?.mode).toBe("lan");
       expect(persistedServiceConfig?.port).toBe(19422);
@@ -2513,22 +2538,22 @@ describe("App workspace isolation", () => {
     });
   });
 
-  it("rolls back previewed service config and token when the service window resets changes", async () => {
+  it("rolls back previewed service runtime config and generated token when the service window resets changes", async () => {
     setShipFlowWindowKind("service-settings");
     render(<App />);
 
     expect(window.localStorage.getItem("shipflow-service-config")).toBeNull();
 
     fireEvent.click(await screen.findByRole("tab", { name: "API" }));
-    fireEvent.click(await screen.findByRole("checkbox", { name: "Buka Akses API Eksternal" }));
+    const originalToken = (screen.getByLabelText("Token API Service") as HTMLInputElement).value;
+    expect(originalToken).toBe("");
     fireEvent.click(screen.getByRole("button", { name: "Generate" }));
     fireEvent.click(screen.getByRole("button", { name: "Reset Perubahan" }));
 
     expect(window.localStorage.getItem("shipflow-service-config")).toBeNull();
     expect(getInvokeCalls("configure_api_service")).toHaveLength(0);
 
-    expect(screen.getByRole("checkbox", { name: "Buka Akses API Eksternal" })).not.toBeChecked();
-    expect((screen.getByLabelText("Token API") as HTMLInputElement).value).toBe("");
+    expect(screen.getByLabelText("Token API Service")).toHaveValue(originalToken);
   });
 
   it("hides the ShipFlow Service window without discarding draft changes", async () => {
@@ -2536,10 +2561,9 @@ describe("App workspace isolation", () => {
     setShipFlowWindowKind("service-settings");
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "Runtime Internal" }));
-    fireEvent.click(await screen.findByRole("radio", { name: "API ShipFlow Eksternal" }));
-    fireEvent.change(screen.getByLabelText("External API Base URL"), {
-      target: { value: "https://internal-shipflow.test" },
+    fireEvent.click(await screen.findByRole("tab", { name: "API" }));
+    fireEvent.change(screen.getByLabelText("Port"), {
+      target: { value: "19422" },
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Sembunyikan" }));
@@ -2549,38 +2573,17 @@ describe("App workspace isolation", () => {
     });
 
     expect(getInvokeCalls("configure_api_service")).toHaveLength(0);
-    expect(screen.getByLabelText("External API Base URL")).toHaveValue(
-      "https://internal-shipflow.test"
-    );
+    expect(screen.getByLabelText("Port")).toHaveValue(19422);
   });
 
-  it("persists external tracking source settings after confirmation in the service window", async () => {
+  it("exposes service-owned internal and external tracking source settings", async () => {
     setShipFlowWindowKind("service-settings");
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "Runtime Internal" }));
-    fireEvent.click(await screen.findByRole("radio", { name: "API ShipFlow Eksternal" }));
-    fireEvent.change(screen.getByLabelText("External API Base URL"), {
-      target: { value: "https://scrappid3.jacobcalvyn.io" },
-    });
-    fireEvent.change(screen.getByLabelText("External API Bearer Token"), {
-      target: {
-        value: "sf_32c18e59ecca4f91e23070d33c74a230a0ccc73161b6ae79",
-      },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Sumber Lacak" }));
 
-    await waitFor(() => {
-      expect(getInvokeCalls("configure_api_service")).toHaveLength(1);
-      expect(persistedServiceConfig?.trackingSource).toBe("externalApi");
-      expect(persistedServiceConfig?.externalApiBaseUrl).toBe(
-        "https://scrappid3.jacobcalvyn.io"
-      );
-      expect(persistedServiceConfig?.externalApiAuthToken).toBe(
-        "sf_32c18e59ecca4f91e23070d33c74a230a0ccc73161b6ae79"
-      );
-      expect(persistedServiceConfig?.allowInsecureExternalApiHttp).toBe(false);
-    });
+    expect(screen.getByRole("radio", { name: "Internal ShipFlow" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "API ShipFlow Eksternal" })).toBeInTheDocument();
   });
 
   it("restores external tracking source selection and base URL in the service window even when the bearer token is session-only", async () => {
@@ -2605,7 +2608,7 @@ describe("App workspace isolation", () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByRole("tab", { name: "Runtime Internal" })).toHaveAttribute(
+      expect(screen.getByRole("tab", { name: "Sumber Lacak" })).toHaveAttribute(
         "aria-selected",
         "true"
       );
@@ -2617,43 +2620,11 @@ describe("App workspace isolation", () => {
     });
   });
 
-  it("persists custom desktop service connection settings from the service window", async () => {
+  it("persists external tracking source settings after confirmation in the service window", async () => {
     setShipFlowWindowKind("service-settings");
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "Runtime Internal" }));
-    fireEvent.click(await screen.findByRole("radio", { name: "Service custom" }));
-    fireEvent.change(screen.getByLabelText("Desktop Service URL"), {
-      target: { value: "http://127.0.0.1:18423" },
-    });
-    fireEvent.change(screen.getByLabelText("Desktop Service Bearer Token"), {
-      target: { value: "sf_custom_service_token" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Tes Service" }));
-
-    await waitFor(() => {
-      expect(getInvokeCalls("test_api_service_connection")).toHaveLength(1);
-      expect(
-        screen.getByText("ShipFlow Service is reachable at http://127.0.0.1:18423.")
-      ).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
-
-    await waitFor(() => {
-      expect(getInvokeCalls("configure_api_service")).toHaveLength(1);
-      expect(persistedServiceConfig?.desktopConnectionMode).toBe("custom");
-      expect(persistedServiceConfig?.enabled).toBe(false);
-      expect(persistedServiceConfig?.desktopServiceUrl).toBe("http://127.0.0.1:18423");
-      expect(persistedServiceConfig?.desktopServiceAuthToken).toBe("sf_custom_service_token");
-    });
-  });
-
-  it("tests external tracking source config from the service window", async () => {
-    setShipFlowWindowKind("service-settings");
-    render(<App />);
-
-    fireEvent.click(await screen.findByRole("tab", { name: "Runtime Internal" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Sumber Lacak" }));
     fireEvent.click(await screen.findByRole("radio", { name: "API ShipFlow Eksternal" }));
     fireEvent.change(screen.getByLabelText("External API Base URL"), {
       target: { value: "https://scrappid3.jacobcalvyn.io" },
@@ -2663,14 +2634,44 @@ describe("App workspace isolation", () => {
         value: "sf_32c18e59ecca4f91e23070d33c74a230a0ccc73161b6ae79",
       },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Tes" }));
+    fireEvent.click(screen.getByRole("tab", { name: "API" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
 
     await waitFor(() => {
-      expect(getInvokeCalls("test_external_tracking_source")).toHaveLength(1);
-      expect(
-        screen.getByText("Koneksi berhasil. Akses API aktif via lan (0.0.0.0:18422).")
-      ).toBeInTheDocument();
+      expect(getInvokeCalls("configure_api_service")).toHaveLength(1);
+      expect(persistedServiceConfig?.desktopConnectionMode).toBe("managedLocal");
+      expect(persistedServiceConfig?.trackingSource).toBe("externalApi");
+      expect(persistedServiceConfig?.externalApiBaseUrl).toBe(
+        "https://scrappid3.jacobcalvyn.io"
+      );
+      expect(persistedServiceConfig?.externalApiAuthToken).toBe(
+        "sf_32c18e59ecca4f91e23070d33c74a230a0ccc73161b6ae79"
+      );
+      expect(persistedServiceConfig?.allowInsecureExternalApiHttp).toBe(false);
     });
+  });
+
+  it("shows service API port and token controls in the API tab", async () => {
+    setShipFlowWindowKind("service-settings");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "API" }));
+
+    expect(screen.getByText("Localhost selalu aktif untuk Desktop")).toBeInTheDocument();
+    expect(screen.getByLabelText("Port")).toHaveValue(18422);
+    const tokenField = screen.getByLabelText("Token API Service");
+    expect(tokenField).toBeInTheDocument();
+
+    const initialToken = (tokenField as HTMLInputElement).value;
+    expect(initialToken).toBe("");
+    const loadCallCount = getInvokeCalls("load_saved_api_service_config").length;
+    window.dispatchEvent(new Event("focus"));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("load_saved_api_service_config").length).toBeGreaterThan(loadCallCount);
+    });
+    expect(screen.getByLabelText("Token API Service")).toHaveValue(initialToken);
   });
 
   it("falls back to native clipboard bridge for copying all and selected tracking IDs", async () => {
@@ -2708,37 +2709,27 @@ describe("App workspace isolation", () => {
     });
   });
 
-  it("blocks invalid external HTTP tracking config in the service window until insecure HTTP is explicitly allowed", async () => {
+  it("tests external tracking source config from the service window", async () => {
     setShipFlowWindowKind("service-settings");
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "Runtime Internal" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Sumber Lacak" }));
     fireEvent.click(await screen.findByRole("radio", { name: "API ShipFlow Eksternal" }));
     fireEvent.change(screen.getByLabelText("External API Base URL"), {
-      target: { value: "http://internal-shipflow.test" },
+      target: { value: "https://scrappid3.jacobcalvyn.io" },
     });
     fireEvent.change(screen.getByLabelText("External API Bearer Token"), {
-      target: { value: "sf_http_only" },
+      target: {
+        value: "sf_32c18e59ecca4f91e23070d33c74a230a0ccc73161b6ae79",
+      },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Tes" }));
 
     await waitFor(() => {
+      expect(getInvokeCalls("test_external_tracking_source")).toHaveLength(1);
       expect(
-        screen.getByText(
-          "External API base URL must use HTTPS unless insecure HTTP is explicitly allowed."
-        )
+        screen.getByText("Koneksi berhasil. Akses API aktif via lan (0.0.0.0:18422).")
       ).toBeInTheDocument();
-    });
-
-    fireEvent.click(
-      screen.getByRole("checkbox", {
-        name: "Izinkan HTTP non-TLS",
-      })
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
-
-    await waitFor(() => {
-      expect(persistedServiceConfig?.allowInsecureExternalApiHttp).toBe(true);
     });
   });
 
@@ -2753,8 +2744,8 @@ describe("App workspace isolation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
 
-    const okButton = screen.getByRole("button", { name: "OK" });
-    okButton.focus();
+    const saveButton = screen.getByRole("button", { name: "Simpan" });
+    saveButton.focus();
 
     fireEvent.keyDown(window, { key: "Delete" });
     expect(screen.getAllByDisplayValue("P900")[0]).toBeInTheDocument();

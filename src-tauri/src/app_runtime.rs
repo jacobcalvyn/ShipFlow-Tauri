@@ -1,10 +1,14 @@
 use std::collections::HashSet;
+use std::env;
+use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use png::Decoder as PngDecoder;
+use tauri::image::Image;
 use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
 use tauri::webview::PageLoadEvent;
-use tauri::{App, Emitter, Manager, Runtime, WebviewUrl, Window, WindowEvent};
+use tauri::{App, AppHandle, Emitter, Manager, Runtime, WebviewUrl, Window, WindowEvent};
 
 use crate::lookup_runtime::LookupCacheState;
 use crate::runtime_log::log_runtime_event;
@@ -224,6 +228,65 @@ fn spawn_service_settings_activation_listener(app_handle: tauri::AppHandle<tauri
     });
 }
 
+fn service_settings_webview_url() -> WebviewUrl {
+    if cfg!(debug_assertions) {
+        if let Ok(raw_url) = env::var("SHIPFLOW_SERVICE_SETTINGS_URL") {
+            match tauri::Url::parse(&raw_url) {
+                Ok(mut url) => {
+                    if !url
+                        .query_pairs()
+                        .any(|(key, value)| key == "windowKind" && value == "service-settings")
+                    {
+                        url.query_pairs_mut()
+                            .append_pair("windowKind", "service-settings");
+                    }
+                    return WebviewUrl::External(url);
+                }
+                Err(error) => {
+                    log_runtime_event(
+                        "ERROR",
+                        format!(
+                            "[ShipFlowService] invalid SHIPFLOW_SERVICE_SETTINGS_URL '{raw_url}': {error}"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    WebviewUrl::App("index.html?windowKind=service-settings".into())
+}
+
+pub(crate) fn load_service_window_icon() -> Result<Image<'static>, String> {
+    let decoder = PngDecoder::new(Cursor::new(include_bytes!("../icons/service-icon.png")));
+    let mut reader = decoder
+        .read_info()
+        .map_err(|error| format!("Unable to decode service window icon metadata: {error}"))?;
+    let mut buffer = vec![0; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut buffer)
+        .map_err(|error| format!("Unable to decode service window icon pixels: {error}"))?;
+
+    let rgba_bytes = match info.color_type {
+        png::ColorType::Rgba => buffer[..info.buffer_size()].to_vec(),
+        png::ColorType::Rgb => buffer[..info.buffer_size()]
+            .chunks_exact(3)
+            .flat_map(|chunk| [chunk[0], chunk[1], chunk[2], 255])
+            .collect(),
+        _ => return Err("Service window icon must be RGB or RGBA PNG.".to_string()),
+    };
+
+    Ok(Image::new_owned(rgba_bytes, info.width, info.height))
+}
+
+fn with_service_window_icon<'a, R: Runtime, M: Manager<R>>(
+    builder: tauri::WebviewWindowBuilder<'a, R, M>,
+) -> Result<tauri::WebviewWindowBuilder<'a, R, M>, String> {
+    builder
+        .icon(load_service_window_icon()?)
+        .map_err(|error| format!("Unable to set service window icon: {error}"))
+}
+
 pub(crate) fn build_tracking_client(user_agent: &str) -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(6))
@@ -299,22 +362,46 @@ pub(crate) fn service_settings_setup(
         "[ShipFlowService] failed to sync tray companion:",
     );
 
-    tauri::WebviewWindowBuilder::new(
-        app,
-        "service-settings",
-        WebviewUrl::App("index.html?windowKind=service-settings".into()),
-    )
-    .title("ShipFlow Service")
-    .inner_size(980.0, 820.0)
-    .resizable(true)
-    .initialization_script("window.__SHIPFLOW_WINDOW_KIND__ = 'service-settings';")
-    .build()
-    .map_err(|error| {
-        std::io::Error::other(format!("Unable to create ShipFlow Service window: {error}"))
-    })?;
+    let service_window_builder =
+        tauri::WebviewWindowBuilder::new(app, "service-settings", service_settings_webview_url())
+            .title("ShipFlow Service")
+            .inner_size(980.0, 820.0)
+            .resizable(true)
+            .initialization_script("window.__SHIPFLOW_WINDOW_KIND__ = 'service-settings';");
+
+    with_service_window_icon(service_window_builder)
+        .map_err(std::io::Error::other)?
+        .build()
+        .map_err(|error| {
+            std::io::Error::other(format!("Unable to create ShipFlow Service window: {error}"))
+        })?;
 
     spawn_service_settings_activation_listener(app.handle().clone());
     Ok(())
+}
+
+pub(crate) fn open_service_settings_window_runtime<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("service-settings") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let service_window_builder =
+        tauri::WebviewWindowBuilder::new(app, "service-settings", service_settings_webview_url())
+            .title("ShipFlow Service")
+            .inner_size(980.0, 820.0)
+            .resizable(true)
+            .initialization_script("window.__SHIPFLOW_WINDOW_KIND__ = 'service-settings';");
+
+    with_service_window_icon(service_window_builder)
+        .map_err(|error| format!("Unable to create ShipFlow Service window: {error}"))?
+        .build()
+        .map(|_| ())
+        .map_err(|error| format!("Unable to create ShipFlow Service window: {error}"))
 }
 
 pub(crate) fn handle_desktop_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {

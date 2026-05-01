@@ -56,10 +56,14 @@ type SheetTabsProps = {
   onPreviewExternalApiBaseUrl?: (baseUrl: string) => void;
   onPreviewExternalApiAuthToken?: (token: string) => void;
   onPreviewAllowInsecureExternalApiHttp?: (enabled: boolean) => void;
+  onPreviewDesktopServiceUrl?: (url: string) => void;
+  onPreviewDesktopServiceAuthToken?: (token: string) => void;
+  onPasteDesktopServiceAuthToken?: () => Promise<void> | void;
   onGenerateServiceToken: () => void;
   onRegenerateServiceToken: () => void;
   onCopyServiceEndpoint?: (endpoint: string) => void;
   onCopyServiceToken?: (token: string) => void;
+  onTestApiServiceConnection?: (config: ServiceConfig) => Promise<string>;
   onTestExternalTrackingSource?: (config: ServiceConfig) => Promise<string>;
   onConfirmSettings: () => Promise<boolean> | boolean;
   onCancelSettings: () => void;
@@ -145,10 +149,14 @@ export function SheetTabs({
   onPreviewExternalApiBaseUrl = () => {},
   onPreviewExternalApiAuthToken = () => {},
   onPreviewAllowInsecureExternalApiHttp = () => {},
+  onPreviewDesktopServiceUrl = () => {},
+  onPreviewDesktopServiceAuthToken = () => {},
+  onPasteDesktopServiceAuthToken = () => {},
   onGenerateServiceToken,
   onRegenerateServiceToken,
   onCopyServiceEndpoint = () => {},
   onCopyServiceToken = () => {},
+  onTestApiServiceConnection = async () => "",
   onTestExternalTrackingSource = async () => "",
   onConfirmSettings,
   onCancelSettings,
@@ -167,6 +175,12 @@ export function SheetTabs({
   } | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isConfirmingSettings, setIsConfirmingSettings] = useState(false);
+  const [isDesktopTokenVisible, setIsDesktopTokenVisible] = useState(false);
+  const [isTestingServiceConnection, setIsTestingServiceConnection] = useState(false);
+  const [serviceConnectionTestResult, setServiceConnectionTestResult] = useState<{
+    tone: "success" | "error";
+    message: string;
+  } | null>(null);
   const [isFileMenuOpen, setIsFileMenuOpen] = useState(false);
   const [dropTargetSheetId, setDropTargetSheetId] = useState<string | null>(null);
   const [dropTargetMode, setDropTargetMode] = useState<SheetDropTransferMode>("move");
@@ -483,6 +497,27 @@ export function SheetTabs({
     setSheetMenuPosition(null);
     setDeleteArmedSheetId(null);
     setIsSettingsOpen(true);
+  };
+
+  const handleTestServiceConnection = async () => {
+    setIsTestingServiceConnection(true);
+    setServiceConnectionTestResult(null);
+
+    try {
+      const message = await onTestApiServiceConnection(serviceConfig);
+      setServiceConnectionTestResult({
+        tone: "success",
+        message,
+      });
+    } catch (error) {
+      setServiceConnectionTestResult({
+        tone: "error",
+        message:
+          error instanceof Error ? error.message : "Gagal menguji koneksi ShipFlow Service.",
+      });
+    } finally {
+      setIsTestingServiceConnection(false);
+    }
   };
 
   const confirmSettings = async () => {
@@ -969,76 +1004,140 @@ export function SheetTabs({
                       <p>Pilih ukuran workspace sesuai kenyamanan kerja di desktop.</p>
                     </div>
                     <div
-                      className="settings-option-list"
+                      className="settings-scale-options"
                       role="radiogroup"
                       aria-label="Ukuran Tampilan"
                     >
-                      <label className="settings-option-row">
-                        <div className="settings-option-main">
-                          <input
-                            type="radio"
-                            name="display-scale"
-                            checked={displayScale === "small"}
-                            onChange={() => onPreviewDisplayScale("small")}
-                          />
-                          <div>
-                            <div className="settings-option-title">Kecil</div>
-                            <div className="settings-option-description">
-                              Layout paling rapat untuk melihat lebih banyak data sekaligus.
-                            </div>
-                          </div>
-                        </div>
-                      </label>
-                      <label className="settings-option-row">
-                        <div className="settings-option-main">
-                          <input
-                            type="radio"
-                            name="display-scale"
-                            checked={displayScale === "medium"}
-                            onChange={() => onPreviewDisplayScale("medium")}
-                          />
-                          <div>
-                            <div className="settings-option-title">Sedang</div>
-                            <div className="settings-option-description">
-                              Keseimbangan antara kepadatan tabel dan keterbacaan.
-                            </div>
-                          </div>
-                        </div>
-                      </label>
-                      <label className="settings-option-row">
-                        <div className="settings-option-main">
-                          <input
-                            type="radio"
-                            name="display-scale"
-                            checked={displayScale === "large"}
-                            onChange={() => onPreviewDisplayScale("large")}
-                          />
-                          <div>
-                            <div className="settings-option-title">Besar</div>
-                            <div className="settings-option-description">
-                              Tampilan lebih lega untuk jarak pandang yang santai.
-                            </div>
-                          </div>
-                        </div>
-                      </label>
+                      <button
+                        type="button"
+                        className={[
+                          "settings-scale-option",
+                          displayScale === "small" ? "is-active" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        role="radio"
+                        aria-checked={displayScale === "small"}
+                        onClick={() => onPreviewDisplayScale("small")}
+                      >
+                        Kecil
+                      </button>
+                      <button
+                        type="button"
+                        className={[
+                          "settings-scale-option",
+                          displayScale === "medium" ? "is-active" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        role="radio"
+                        aria-checked={displayScale === "medium"}
+                        onClick={() => onPreviewDisplayScale("medium")}
+                      >
+                        Sedang
+                      </button>
+                      <button
+                        type="button"
+                        className={[
+                          "settings-scale-option",
+                          displayScale === "large" ? "is-active" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        role="radio"
+                        aria-checked={displayScale === "large"}
+                        onClick={() => onPreviewDisplayScale("large")}
+                      >
+                        Besar
+                      </button>
                     </div>
                     <div className="settings-service-launcher">
                       <div className="settings-service-launcher-copy">
-                        <div className="settings-service-launcher-title">ShipFlow Service</div>
+                        <div className="settings-service-launcher-title">Koneksi Service</div>
                         <div className="settings-service-launcher-description">
-                          Pengaturan runtime tracking dan akses API eksternal dibuka dari app
-                          service terpisah.
+                          Atur port/URL dan token ShipFlow Service yang dipakai Desktop untuk
+                          lacak.
                         </div>
                       </div>
-                      <div className="settings-inline-actions">
+                    </div>
+                    <div className="service-settings-stack">
+                      <label className="settings-text-field">
+                        <span className="settings-input-label">ShipFlow Service URL</span>
+                        <input
+                          type="url"
+                          aria-label="ShipFlow Service URL"
+                          value={serviceConfig.desktopServiceUrl}
+                          onChange={(event) => {
+                            onPreviewDesktopServiceUrl(event.target.value);
+                            setServiceConnectionTestResult(null);
+                          }}
+                        />
+                      </label>
+                      <label className="settings-text-field">
+                        <span className="settings-input-label">ShipFlow Service Token</span>
+                        <input
+                          type={isDesktopTokenVisible ? "text" : "password"}
+                          aria-label="ShipFlow Service Bearer Token"
+                          value={serviceConfig.desktopServiceAuthToken}
+                          onChange={(event) => {
+                            onPreviewDesktopServiceAuthToken(event.target.value);
+                            setServiceConnectionTestResult(null);
+                          }}
+                        />
+                      </label>
+                      <div className="settings-inline-actions service-settings-field-actions">
                         <button
                           type="button"
                           className="sheet-tab-action"
-                          onClick={onOpenServiceSettings}
+                          onClick={() => setIsDesktopTokenVisible((current) => !current)}
                         >
-                          Buka ShipFlow Service
+                          {isDesktopTokenVisible ? "Sembunyikan" : "Tampilkan"}
+                        </button>
+                        <button
+                          type="button"
+                          className="sheet-tab-action"
+                          onClick={() => onCopyServiceToken(serviceConfig.desktopServiceAuthToken)}
+                          disabled={!serviceConfig.desktopServiceAuthToken}
+                        >
+                          Copy
+                        </button>
+                        <button
+                          type="button"
+                          className="sheet-tab-action"
+                          onClick={() => {
+                            void onPasteDesktopServiceAuthToken();
+                            setServiceConnectionTestResult(null);
+                          }}
+                        >
+                          Paste
+                        </button>
+                        <button
+                          type="button"
+                          className="sheet-tab-action"
+                          onClick={handleTestServiceConnection}
+                          disabled={
+                            isTestingServiceConnection ||
+                            !serviceConfig.desktopServiceUrl.trim() ||
+                            !serviceConfig.desktopServiceAuthToken.trim()
+                          }
+                        >
+                          {isTestingServiceConnection ? "Testing..." : "Tes Service"}
                         </button>
                       </div>
+                      {serviceConnectionTestResult ? (
+                        <div
+                          className={[
+                            "settings-field-help",
+                            `settings-field-help-${serviceConnectionTestResult.tone}`,
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
+                          role="status"
+                          aria-live="polite"
+                        >
+                          {serviceConnectionTestResult.message}
+                        </div>
+                      ) : null}
                     </div>
                   </section>
                 </div>
@@ -1059,7 +1158,7 @@ export function SheetTabs({
                     }}
                     disabled={isConfirmingSettings}
                   >
-                    {isConfirmingSettings ? "Menyimpan..." : "OK"}
+                    {isConfirmingSettings ? "Menyimpan..." : "Simpan"}
                   </button>
                 </div>
               </div>

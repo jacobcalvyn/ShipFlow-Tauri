@@ -82,6 +82,63 @@ pub(crate) fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
     Err("Clipboard copy is not supported on this platform.".into())
 }
 
+fn read_clipboard_command(mut command: Command) -> Result<String, String> {
+    prepare_platform_command(&mut command);
+    let output = command
+        .output()
+        .map_err(|error| format!("Unable to read clipboard: {error}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Clipboard read command exited with status {}.",
+            output.status
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+pub(crate) fn read_text_from_clipboard() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        return read_clipboard_command(Command::new("pbpaste"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new("powershell");
+        command.args(["-NoProfile", "-Command", "Get-Clipboard"]);
+        return read_clipboard_command(command);
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let candidates = [
+            ("wl-paste", Vec::<&str>::new()),
+            ("xclip", vec!["-selection", "clipboard", "-out"]),
+            ("xsel", vec!["--clipboard", "--output"]),
+        ];
+
+        let mut last_error = None;
+        for (program, args) in candidates {
+            let mut command = Command::new(program);
+            command.args(args);
+
+            match read_clipboard_command(command) {
+                Ok(text) => return Ok(text),
+                Err(error) => last_error = Some(error),
+            }
+        }
+
+        return Err(
+            last_error.unwrap_or_else(|| "No supported clipboard command is available.".into())
+        );
+    }
+
+    #[allow(unreachable_code)]
+    Err("Clipboard paste is not supported on this platform.".into())
+}
+
 #[cfg(target_os = "macos")]
 fn pick_workspace_document_path_macos(
     mode: &str,

@@ -21,3 +21,19 @@ export async function writeClipboardText(value: string) {
 
   await invoke("copy_to_clipboard", { text });
 }
+
+export async function readClipboardText() {
+  if (
+    typeof navigator !== "undefined" &&
+    navigator.clipboard &&
+    typeof navigator.clipboard.readText === "function"
+  ) {
+    try {
+      return await navigator.clipboard.readText();
+    } catch {
+      // Fall through to the native clipboard bridge below.
+    }
+  }
+
+  return invoke<string>("read_from_clipboard");
+}

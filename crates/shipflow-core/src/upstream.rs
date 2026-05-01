@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{error::Error as StdError, time::Duration};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -51,6 +51,22 @@ pub fn sanitize_shipment_id(value: &str) -> String {
             }
         })
         .collect()
+}
+
+fn format_request_error_details(error: &reqwest::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+
+    while let Some(cause) = source {
+        let cause_message = cause.to_string();
+        if !cause_message.trim().is_empty() {
+            message.push_str(": ");
+            message.push_str(&cause_message);
+        }
+        source = cause.source();
+    }
+
+    message
 }
 
 pub fn normalize_and_validate_shipment_id(input: &str) -> Result<String, TrackingError> {
@@ -352,14 +368,17 @@ pub async fn fetch_lookup_response(
             }
             Err(error) => {
                 if attempt == TRACKING_MAX_ATTEMPTS {
+                    let details = format_request_error_details(&error);
                     let message = if error.is_connect() {
-                        format!("Tracking request failed during connection phase: {error}")
+                        format!(
+                            "POS tracking upstream connection failed. Check DNS or internet access from ShipFlow Service. Details: {details}"
+                        )
                     } else if error.is_timeout() {
                         format!(
-                            "Tracking request timed out while waiting for POS response: {error}"
+                            "POS tracking upstream timed out while waiting for a response. Details: {details}"
                         )
                     } else {
-                        format!("Tracking request failed: {error}")
+                        format!("POS tracking upstream request failed. Details: {details}")
                     };
                     return Err(TrackingError::Upstream(message));
                 }
