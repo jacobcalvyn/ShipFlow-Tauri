@@ -28,6 +28,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "windows": {
+      "nsis": {
+        "installerHooks": "../scripts/windows/desktop-installer-hooks.nsh"
+      }
+    },
     "macOS": {
       "signingIdentity": "-"
     },

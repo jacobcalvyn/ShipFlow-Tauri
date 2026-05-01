@@ -409,13 +409,20 @@ fn process_command_line(pid: u32) -> Option<String> {
 }
 
 fn command_line_matches_service_process(command_line: &str, required_flag: &str) -> bool {
-    let normalized = command_line.to_ascii_lowercase();
-    let has_expected_binary =
-        command_line_contains_binary(&normalized, SERVICE_COMPANION_BINARY_BASENAME)
-            || command_line_contains_binary(&normalized, DESKTOP_BINARY_BASENAME)
-            || command_line_contains_binary(&normalized, DESKTOP_PRODUCT_BASENAME);
+    command_line_matches_shipflow_binary(command_line) && command_line.contains(required_flag)
+}
 
-    has_expected_binary && command_line.contains(required_flag)
+fn command_line_matches_service_settings_process(command_line: &str) -> bool {
+    command_line_matches_shipflow_binary(command_line)
+        && !command_line.contains(SERVICE_PROCESS_FLAG)
+        && !command_line.contains(SERVICE_TRAY_FLAG)
+}
+
+fn command_line_matches_shipflow_binary(command_line: &str) -> bool {
+    let normalized = command_line.to_ascii_lowercase();
+    command_line_contains_binary(&normalized, SERVICE_COMPANION_BINARY_BASENAME)
+        || command_line_contains_binary(&normalized, DESKTOP_BINARY_BASENAME)
+        || command_line_contains_binary(&normalized, DESKTOP_PRODUCT_BASENAME)
 }
 
 fn command_line_contains_binary(normalized_command_line: &str, binary_name: &str) -> bool {
@@ -434,6 +441,13 @@ pub(crate) fn is_expected_service_process(pid: u32, required_flag: &str) -> bool
             .is_some_and(|command_line| {
                 command_line_matches_service_process(command_line, required_flag)
             })
+}
+
+pub(crate) fn is_expected_service_settings_process(pid: u32) -> bool {
+    is_process_alive(pid)
+        && process_command_line(pid)
+            .as_deref()
+            .is_some_and(command_line_matches_service_settings_process)
 }
 
 fn terminate_process(pid: u32) -> Result<(), String> {
@@ -646,9 +660,9 @@ pub(crate) fn launch_shipflow_service_settings_companion() -> Result<(), String>
 mod tests {
     use super::{
         authenticated_service_status_is_valid, build_service_endpoint,
-        command_line_matches_service_process, format_service_status_label,
-        should_keep_service_tray_companion, ApiServiceConfig, ApiServiceMode, ApiServiceStatus,
-        ApiServiceStatusKind,
+        command_line_matches_service_process, command_line_matches_service_settings_process,
+        format_service_status_label, should_keep_service_tray_companion, ApiServiceConfig,
+        ApiServiceMode, ApiServiceStatus, ApiServiceStatusKind,
     };
     use crate::service::DesktopServiceConnectionMode;
     use crate::tracking::model::TrackingSource;
@@ -768,6 +782,19 @@ mod tests {
         assert!(!command_line_matches_service_process(
             "/usr/bin/python other.py --shipflow-service-process",
             super::SERVICE_PROCESS_FLAG
+        ));
+    }
+
+    #[test]
+    fn service_settings_command_line_rejects_background_service_flags() {
+        assert!(command_line_matches_service_settings_process(
+            r#""C:\Program Files\ShipFlow Service\shipflow-service.exe""#
+        ));
+        assert!(!command_line_matches_service_settings_process(
+            r#""C:\Program Files\ShipFlow Service\shipflow-service.exe" --shipflow-service-process"#
+        ));
+        assert!(!command_line_matches_service_settings_process(
+            r#""C:\Program Files\ShipFlow Service\shipflow-service.exe" --shipflow-service-tray"#
         ));
     }
 

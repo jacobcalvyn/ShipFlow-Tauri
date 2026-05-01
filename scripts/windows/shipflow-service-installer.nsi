@@ -36,7 +36,14 @@ Page instfiles
 UninstPage uninstConfirm
 UninstPage instfiles
 
+!macro SHIPFLOW_CLOSE_SERVICE_PROCESSES
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM shipflow-service.exe /T /F'
+  Sleep 500
+!macroend
+
 Section "Install"
+  !insertmacro SHIPFLOW_CLOSE_SERVICE_PROCESSES
+
   SetOutPath "$INSTDIR"
   File "/oname=shipflow-service.exe" "${SOURCE_EXE}"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -57,6 +64,8 @@ Section "Install"
 SectionEnd
 
 Section "Uninstall"
+  !insertmacro SHIPFLOW_CLOSE_SERVICE_PROCESSES
+
   Delete "$DESKTOP\ShipFlow Service.lnk"
   Delete "$SMPROGRAMS\ShipFlow Service\ShipFlow Service.lnk"
   Delete "$SMPROGRAMS\ShipFlow Service\Uninstall ShipFlow Service.lnk"

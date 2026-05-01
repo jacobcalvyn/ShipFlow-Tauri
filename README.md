@@ -218,6 +218,10 @@ The main table currently focuses on:
 - Desktop no longer manages service tray/background lifecycle.
 - Desktop startup no longer starts a service companion. Start the standalone service first, then configure Desktop with that service URL/token.
 - Desktop/service readiness checks now require an authenticated `GET /status` response from `ShipFlow Service`, including a ShipFlow-specific product marker, before reusing an existing runtime process.
+- Windows release builds of `ShipFlow Service` use the Windows subsystem, so launching the installed service app does not open a console window.
+- Closing the `ShipFlow Service` settings window hides it while the service tray companion remains available when `keep_running_in_tray` is enabled.
+- Reopening `ShipFlow Service` focuses or recreates the existing settings window instead of starting a duplicate settings instance.
+- Windows Desktop and Service installers run shutdown hooks before install and uninstall replacement, so running ShipFlow processes are closed before files are overwritten.
 - Custom Desktop-to-Service lookups re-check the authenticated `/status` identity before sending shipment, bag, or manifest IDs to a custom endpoint.
 - Service configuration is validated before it is persisted, and enabled service configs are written only after the companion process has started and passed the authenticated readiness probe.
 - Service config, runtime config, PID markers, pending activation requests, and runtime logs are stored under the user app-data state directory, with legacy temp-dir reads kept only as a migration fallback.
@@ -401,6 +405,7 @@ What it does:
 - runs Tauri, shared core, and service runtime Rust tests
 - runs Rust clippy with warnings denied
 - builds the Desktop NSIS installer without bundling `ShipFlow Service`
+- wires the Desktop NSIS installer to close running Desktop processes before reinstall or uninstall replacement
 - uploads two artifacts:
   - portable app executable: `shipflow-desktop-windows-portable`
   - NSIS installer executable: `shipflow-desktop-windows-installer`
@@ -463,6 +468,7 @@ What it does:
 - runs service runtime and service package Rust tests
 - builds `apps/service` in release mode with Tauri `custom-protocol` enabled
 - builds a per-user Windows installer with NSIS
+- builds the Windows Service app without a console window and closes running `shipflow-service.exe` processes before reinstall or uninstall replacement
 - uploads service artifacts:
   - `shipflow-service-macos`
   - `shipflow-service-windows-installer`
@@ -501,6 +507,7 @@ Rust tests are now split by domain and cover:
 - Base64 + percent-encoded tracking URL generation
 - embedded API bearer-auth validation
 - authenticated service readiness probing and ShipFlow service identity checks
+- service settings activation, single-instance detection, and tray companion lifecycle checks
 - backend shipment-ID normalization and validation
 - backend bag-ID and manifest-ID normalization and validation
 - service-side bag / manifest lookup endpoint encoding and error-message parsing

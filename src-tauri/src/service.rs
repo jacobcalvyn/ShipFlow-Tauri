@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 
 use self::http_api::run_service_process;
 use self::process_runtime::{
-    is_expected_service_process, is_process_alive, is_service_runtime_ready, spawn_service_process,
-    stop_service_process, sync_service_tray_companion, wait_for_service_runtime,
+    is_expected_service_process, is_expected_service_settings_process, is_process_alive,
+    is_service_runtime_ready, spawn_service_process, stop_service_process,
+    sync_service_tray_companion, wait_for_service_runtime,
 };
 use self::runtime_config::{
     error_status, running_status, stopped_status, validate_desktop_service_connection_config,
@@ -321,7 +322,7 @@ pub fn maybe_delegate_desktop_launch_to_existing_process() -> Result<bool, Strin
 
 pub fn maybe_delegate_service_settings_launch_to_existing_process() -> Result<bool, String> {
     if let Some(pid) = read_recorded_service_settings_pid() {
-        if is_process_alive(pid) {
+        if is_expected_service_settings_process(pid) {
             persist_service_settings_activation_request(&DesktopActivationRequest {
                 focus_main_window: true,
             })?;

@@ -210,6 +210,13 @@ fn spawn_service_settings_activation_listener(app_handle: tauri::AppHandle<tauri
                     let _ = window.unminimize();
                     let _ = window.show();
                     let _ = window.set_focus();
+                } else if let Err(error) = open_service_settings_window_runtime(&app_handle) {
+                    log_runtime_event(
+                        "ERROR",
+                        format!(
+                            "[ShipFlowService] failed to reopen service settings window: {error}"
+                        ),
+                    );
                 }
             }
             Ok(None) => {}
@@ -468,6 +475,12 @@ pub(crate) fn handle_service_settings_window_event<R: Runtime>(
     match event {
         WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
+            if let Err(error) = service::register_current_service_settings_process() {
+                log_runtime_event(
+                    "ERROR",
+                    format!("[ShipFlowService] failed to refresh service settings pid: {error}"),
+                );
+            }
             let tray_config = service::load_saved_api_service_config()
                 .unwrap_or_else(|error| {
                     log_runtime_event(
