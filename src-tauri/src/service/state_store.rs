@@ -124,10 +124,10 @@ fn ensure_service_state_dir() -> Result<(), String> {
     Ok(())
 }
 
-fn set_user_only_permissions(path: &Path, mode: u32) {
+fn set_user_only_permissions(_path: &Path, _mode: u32) {
     #[cfg(unix)]
     {
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+        let _ = fs::set_permissions(_path, fs::Permissions::from_mode(_mode));
     }
 }
 
@@ -190,29 +190,52 @@ fn write_state_file(path: PathBuf, payload: Vec<u8>, label: &str) -> Result<(), 
 
     #[cfg(target_os = "windows")]
     {
-        if path.exists() {
-            let backup_counter = STATE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let backup_path = path.with_file_name(format!(
-                "{file_name}.{}.{}.{}.bak",
-                std::process::id(),
-                timestamp,
-                backup_counter
-            ));
-            fs::rename(&path, &backup_path)
-                .map_err(|error| format!("Unable to prepare {label} replacement: {error}"))?;
+        for _ in 0..16 {
+            if path.exists() {
+                let backup_counter = STATE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+                let backup_path = path.with_file_name(format!(
+                    "{file_name}.{}.{}.{}.bak",
+                    std::process::id(),
+                    timestamp,
+                    backup_counter
+                ));
 
-            return match fs::rename(&temp_path, &path) {
-                Ok(()) => {
-                    let _ = fs::remove_file(&backup_path);
-                    Ok(())
+                match fs::rename(&path, &backup_path) {
+                    Ok(()) => {
+                        return match fs::rename(&temp_path, &path) {
+                            Ok(()) => {
+                                let _ = fs::remove_file(&backup_path);
+                                Ok(())
+                            }
+                            Err(error) => {
+                                let _ = fs::rename(&backup_path, &path);
+                                let _ = fs::remove_file(&temp_path);
+                                Err(format!("Unable to finalize {label}: {error}"))
+                            }
+                        };
+                    }
+                    Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                    Err(error) => {
+                        let _ = fs::remove_file(&temp_path);
+                        return Err(format!("Unable to prepare {label} replacement: {error}"));
+                    }
                 }
+            }
+
+            match fs::rename(&temp_path, &path) {
+                Ok(()) => return Ok(()),
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
                 Err(error) => {
-                    let _ = fs::rename(&backup_path, &path);
                     let _ = fs::remove_file(&temp_path);
-                    Err(format!("Unable to finalize {label}: {error}"))
+                    return Err(format!("Unable to finalize {label}: {error}"));
                 }
-            };
+            }
         }
+
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!(
+            "Unable to finalize {label}: concurrent replacement did not settle"
+        ));
     }
 
     fs::rename(&temp_path, &path).map_err(|error| {
