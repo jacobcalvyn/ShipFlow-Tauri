@@ -253,17 +253,15 @@ pub(crate) fn run_service_tray_app() -> Result<bool, String> {
         *control_flow = ControlFlow::WaitUntil(Instant::now() + SERVICE_TRAY_REFRESH_INTERVAL);
 
         match event {
-            Event::NewEvents(StartCause::Init) => {
-                if tray_runtime.is_none() {
-                    match ServiceTrayRuntime::new() {
-                        Ok(mut runtime) => {
-                            runtime.refresh();
-                            tray_runtime = Some(runtime);
-                        }
-                        Err(error) => {
-                            log_runtime_event("ERROR", format!("[ShipFlowServiceTray] {error}"));
-                            *control_flow = ControlFlow::Exit;
-                        }
+            Event::NewEvents(StartCause::Init) if tray_runtime.is_none() => {
+                match ServiceTrayRuntime::new() {
+                    Ok(mut runtime) => {
+                        runtime.refresh();
+                        tray_runtime = Some(runtime);
+                    }
+                    Err(error) => {
+                        log_runtime_event("ERROR", format!("[ShipFlowServiceTray] {error}"));
+                        *control_flow = ControlFlow::Exit;
                     }
                 }
             }

@@ -149,7 +149,7 @@ fn replace_state_file_windows(
                     ErrorKind::AlreadyExists | ErrorKind::PermissionDenied
                 ) =>
             {
-                last_error = error.to_string();
+                std::thread::sleep(std::time::Duration::from_millis(2));
             }
             Err(error) => {
                 let _ = fs::remove_file(&temp_path);
@@ -255,7 +255,7 @@ fn write_state_file(path: PathBuf, payload: Vec<u8>, label: &str) -> Result<(), 
 
     #[cfg(target_os = "windows")]
     {
-        return replace_state_file_windows(path, temp_path, label);
+        replace_state_file_windows(path, temp_path, label)
     }
 
     #[cfg(not(target_os = "windows"))]

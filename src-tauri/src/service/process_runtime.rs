@@ -488,14 +488,14 @@ pub(crate) fn is_process_alive(pid: u32) -> bool {
     {
         let mut tasklist_command = Command::new("tasklist");
         prepare_background_command(&mut tasklist_command);
-        return tasklist_command
+        tasklist_command
             .args(["/FI", &format!("PID eq {pid}")])
             .output()
             .map(|output| {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 stdout.contains(&pid.to_string())
             })
-            .unwrap_or(false);
+            .unwrap_or(false)
     }
 
     #[cfg(not(target_os = "windows"))]
