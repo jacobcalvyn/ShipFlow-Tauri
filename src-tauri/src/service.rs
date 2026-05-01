@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use self::http_api::run_service_process;
 use self::process_runtime::{
     is_expected_service_process, is_process_alive, is_service_runtime_ready, spawn_service_process,
-    stop_service_process, wait_for_service_runtime,
+    stop_service_process, sync_service_tray_companion, wait_for_service_runtime,
 };
 use self::runtime_config::{
     error_status, running_status, stopped_status, validate_desktop_service_connection_config,
@@ -364,6 +364,10 @@ pub fn maybe_run_service_tray_from_current_args() -> Result<bool, String> {
     }
 
     run_service_tray_app()
+}
+
+pub fn sync_service_tray_companion_for_config(config: &ApiServiceConfig) -> Result<(), String> {
+    sync_service_tray_companion(config)
 }
 
 pub fn maybe_run_service_process_from_current_args() -> Result<bool, String> {

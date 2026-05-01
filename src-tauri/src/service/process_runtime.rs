@@ -578,13 +578,14 @@ pub(crate) fn wait_for_service_runtime(config: &ApiServiceConfig, timeout: Durat
     false
 }
 
+fn should_keep_service_tray_companion(config: &ApiServiceConfig) -> bool {
+    config.keep_running_in_tray && !config.uses_custom_desktop_service_connection()
+}
+
 pub fn sync_service_tray_companion(config: &ApiServiceConfig) -> Result<(), String> {
     sync_service_tray_autostart(config)?;
 
-    if config.enabled
-        && config.keep_running_in_tray
-        && !config.uses_custom_desktop_service_connection()
-    {
+    if should_keep_service_tray_companion(config) {
         ensure_service_tray_process_running()
     } else {
         stop_service_tray_process();
@@ -645,8 +646,9 @@ pub(crate) fn launch_shipflow_service_settings_companion() -> Result<(), String>
 mod tests {
     use super::{
         authenticated_service_status_is_valid, build_service_endpoint,
-        command_line_matches_service_process, format_service_status_label, ApiServiceConfig,
-        ApiServiceMode, ApiServiceStatus, ApiServiceStatusKind,
+        command_line_matches_service_process, format_service_status_label,
+        should_keep_service_tray_companion, ApiServiceConfig, ApiServiceMode, ApiServiceStatus,
+        ApiServiceStatusKind,
     };
     use crate::service::DesktopServiceConnectionMode;
     use crate::tracking::model::TrackingSource;
@@ -734,6 +736,27 @@ mod tests {
         );
 
         assert_eq!(label, "API Off");
+    }
+
+    #[test]
+    fn tray_companion_stays_available_when_api_is_off_but_keep_running_is_enabled() {
+        let config = ApiServiceConfig {
+            enabled: false,
+            keep_running_in_tray: true,
+            ..sample_config()
+        };
+
+        assert!(should_keep_service_tray_companion(&config));
+    }
+
+    #[test]
+    fn tray_companion_stops_when_keep_running_is_disabled() {
+        let config = ApiServiceConfig {
+            keep_running_in_tray: false,
+            ..sample_config()
+        };
+
+        assert!(!should_keep_service_tray_companion(&config));
     }
 
     #[test]

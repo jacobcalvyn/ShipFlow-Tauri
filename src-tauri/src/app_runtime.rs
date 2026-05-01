@@ -361,6 +361,21 @@ pub(crate) fn service_settings_setup(
         "[ShipFlowService] failed to load persisted config:",
         "[ShipFlowService] failed to sync tray companion:",
     );
+    let tray_config = service::load_saved_api_service_config()
+        .unwrap_or_else(|error| {
+            log_runtime_event(
+                "ERROR",
+                format!("[ShipFlowService] failed to load tray config: {error}"),
+            );
+            None
+        })
+        .unwrap_or_else(default_tray_service_config);
+    if let Err(error) = service::sync_service_tray_companion_for_config(&tray_config) {
+        log_runtime_event(
+            "ERROR",
+            format!("[ShipFlowService] failed to start tray companion: {error}"),
+        );
+    }
 
     let service_window_builder =
         tauri::WebviewWindowBuilder::new(app, "service-settings", service_settings_webview_url())
@@ -446,9 +461,40 @@ pub(crate) fn handle_service_settings_window_event<R: Runtime>(
     window: &Window<R>,
     event: &WindowEvent,
 ) {
-    if let WindowEvent::Destroyed = event {
-        if window.label() == "service-settings" {
+    if window.label() != "service-settings" {
+        return;
+    }
+
+    match event {
+        WindowEvent::CloseRequested { api, .. } => {
+            api.prevent_close();
+            let tray_config = service::load_saved_api_service_config()
+                .unwrap_or_else(|error| {
+                    log_runtime_event(
+                        "ERROR",
+                        format!(
+                            "[ShipFlowService] failed to load tray config before hide: {error}"
+                        ),
+                    );
+                    None
+                })
+                .unwrap_or_else(default_tray_service_config);
+            if let Err(error) = service::sync_service_tray_companion_for_config(&tray_config) {
+                log_runtime_event(
+                    "ERROR",
+                    format!("[ShipFlowService] failed to keep tray companion alive: {error}"),
+                );
+            }
+            if let Err(error) = window.hide() {
+                log_runtime_event(
+                    "ERROR",
+                    format!("[ShipFlowService] failed to hide service window: {error}"),
+                );
+            }
+        }
+        WindowEvent::Destroyed => {
             service::clear_current_service_settings_process();
         }
+        _ => {}
     }
 }

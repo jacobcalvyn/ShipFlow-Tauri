@@ -5,8 +5,8 @@ use tauri::{AppHandle, Runtime};
 use crate::lookup_runtime::LookupCacheState;
 use crate::runtime_log::log_runtime_event;
 use crate::service::{
-    ApiServiceConfig, ApiServiceController, ApiServiceMode, ApiServiceStatus,
-    DesktopServiceConnectionMode,
+    sync_service_tray_companion_for_config, ApiServiceConfig, ApiServiceController, ApiServiceMode,
+    ApiServiceStatus, DesktopServiceConnectionMode,
 };
 use crate::service_client::test_api_service_connection;
 use crate::tracking;
@@ -119,6 +119,12 @@ pub(crate) async fn configure_api_service_runtime<R: Runtime>(
         log_runtime_event(
             "ERROR",
             format!("[ShipFlowTray] failed to sync tray after configure: {error}"),
+        );
+    }
+    if let Err(error) = sync_service_tray_companion_for_config(&config) {
+        log_runtime_event(
+            "ERROR",
+            format!("[ShipFlowTray] failed to sync tray companion after configure: {error}"),
         );
     }
 
