@@ -124,11 +124,76 @@ fn ensure_service_state_dir() -> Result<(), String> {
     Ok(())
 }
 
-fn set_user_only_permissions(_path: &Path, _mode: u32) {
-    #[cfg(unix)]
-    {
-        let _ = fs::set_permissions(_path, fs::Permissions::from_mode(_mode));
+#[cfg(unix)]
+fn set_user_only_permissions(path: &Path, mode: u32) {
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+}
+
+#[cfg(not(unix))]
+fn set_user_only_permissions(_path: &Path, _mode: u32) {}
+
+#[cfg(target_os = "windows")]
+fn replace_state_file_windows(
+    path: PathBuf,
+    temp_path: PathBuf,
+    label: &str,
+) -> Result<(), String> {
+    let mut last_error = String::new();
+
+    for _ in 0..64 {
+        match fs::rename(&temp_path, &path) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::AlreadyExists | ErrorKind::PermissionDenied
+                ) =>
+            {
+                last_error = error.to_string();
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temp_path);
+                return Err(format!("Unable to finalize {label}: {error}"));
+            }
+        }
+
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) if error.kind() == ErrorKind::PermissionDenied => {
+                last_error = error.to_string();
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                continue;
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temp_path);
+                return Err(format!("Unable to prepare {label} replacement: {error}"));
+            }
+        }
+
+        match fs::rename(&temp_path, &path) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::AlreadyExists | ErrorKind::PermissionDenied
+                ) =>
+            {
+                last_error = error.to_string();
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temp_path);
+                return Err(format!("Unable to finalize {label}: {error}"));
+            }
+        }
     }
+
+    let _ = fs::remove_file(&temp_path);
+    if last_error.is_empty() {
+        last_error = "concurrent replacement did not settle".into();
+    }
+    Err(format!("Unable to finalize {label}: {last_error}"))
 }
 
 fn state_file_candidates(primary_path: &Path) -> Vec<PathBuf> {
@@ -190,58 +255,16 @@ fn write_state_file(path: PathBuf, payload: Vec<u8>, label: &str) -> Result<(), 
 
     #[cfg(target_os = "windows")]
     {
-        for _ in 0..16 {
-            if path.exists() {
-                let backup_counter = STATE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-                let backup_path = path.with_file_name(format!(
-                    "{file_name}.{}.{}.{}.bak",
-                    std::process::id(),
-                    timestamp,
-                    backup_counter
-                ));
-
-                match fs::rename(&path, &backup_path) {
-                    Ok(()) => {
-                        return match fs::rename(&temp_path, &path) {
-                            Ok(()) => {
-                                let _ = fs::remove_file(&backup_path);
-                                Ok(())
-                            }
-                            Err(error) => {
-                                let _ = fs::rename(&backup_path, &path);
-                                let _ = fs::remove_file(&temp_path);
-                                Err(format!("Unable to finalize {label}: {error}"))
-                            }
-                        };
-                    }
-                    Err(error) if error.kind() == ErrorKind::NotFound => continue,
-                    Err(error) => {
-                        let _ = fs::remove_file(&temp_path);
-                        return Err(format!("Unable to prepare {label} replacement: {error}"));
-                    }
-                }
-            }
-
-            match fs::rename(&temp_path, &path) {
-                Ok(()) => return Ok(()),
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-                Err(error) => {
-                    let _ = fs::remove_file(&temp_path);
-                    return Err(format!("Unable to finalize {label}: {error}"));
-                }
-            }
-        }
-
-        let _ = fs::remove_file(&temp_path);
-        return Err(format!(
-            "Unable to finalize {label}: concurrent replacement did not settle"
-        ));
+        return replace_state_file_windows(path, temp_path, label);
     }
 
-    fs::rename(&temp_path, &path).map_err(|error| {
-        let _ = fs::remove_file(&temp_path);
-        format!("Unable to finalize {label}: {error}")
-    })
+    #[cfg(not(target_os = "windows"))]
+    {
+        fs::rename(&temp_path, &path).map_err(|error| {
+            let _ = fs::remove_file(&temp_path);
+            format!("Unable to finalize {label}: {error}")
+        })
+    }
 }
 
 pub(crate) fn persist_saved_config(config: &ApiServiceConfig) -> Result<(), String> {
