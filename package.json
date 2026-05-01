@@ -8,7 +8,7 @@
     "dev:service:web": "vite --host 127.0.0.1 --port 1432 --strictPort",
     "dev:service": "node ./scripts/run-service-dev.mjs",
     "build": "tsc && vite build",
-    "build:service": "cargo build --manifest-path apps/service/Cargo.toml --release",
+    "build:service": "cargo build --manifest-path apps/service/Cargo.toml --release --features custom-protocol",
     "build:bundle": "tauri build --config src-tauri/tauri.bundle.conf.json",
     "build:bundle:macos": "tauri build --config src-tauri/tauri.bundle.conf.json --bundles app",
     "build:bundle:nsis": "tauri build --config src-tauri/tauri.bundle.conf.json --bundles nsis",

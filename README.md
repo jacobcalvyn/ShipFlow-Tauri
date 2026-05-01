@@ -373,6 +373,8 @@ Build the standalone service binary:
 npm run build:service
 ```
 
+This builds the portable Service binary with Tauri `custom-protocol` enabled, so the Service settings window uses embedded production assets instead of a localhost dev server.
+
 Build the desktop installer:
 
 ```bash
@@ -459,7 +461,7 @@ What it does:
 - installs Rust and frontend dependencies
 - builds the frontend assets embedded by the Service settings window
 - runs service runtime and service package Rust tests
-- builds `apps/service` in release mode
+- builds `apps/service` in release mode with Tauri `custom-protocol` enabled
 - uploads standalone service binary artifacts:
   - `shipflow-service-macos`
   - `shipflow-service-windows`

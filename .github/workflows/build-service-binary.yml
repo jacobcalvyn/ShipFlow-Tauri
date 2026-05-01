@@ -51,7 +51,7 @@ jobs:
         run: cargo test --manifest-path apps/service/Cargo.toml
 
       - name: Build standalone service binary
-        run: cargo build --manifest-path apps/service/Cargo.toml --release
+        run: cargo build --manifest-path apps/service/Cargo.toml --release --features custom-protocol
 
       - name: Upload macOS service binary
         if: runner.os == 'macOS'

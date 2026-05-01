@@ -5,6 +5,9 @@ description = "Standalone ShipFlow Service companion"
 authors = ["Codex"]
 edition = "2021"
 
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [[bin]]
 name = "shipflow-service"
 path = "src/main.rs"
