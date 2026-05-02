@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { ClipboardEvent, FocusEvent, MutableRefObject, useCallback, useEffect, useRef } from "react";
+import { trackShipment } from "../../backend/commands";
 import { MAX_CONCURRENT_BULK_REQUESTS } from "../sheet/columns";
 import {
   applyBulkPasteToSheet,
@@ -332,7 +332,7 @@ export function useTrackingRuntimeController({
           );
         });
         const result = (await Promise.race([
-          invoke<TrackResponse>("track_shipment", {
+          trackShipment({
             shipmentId: normalizedId,
             forceRefresh: options?.forceRefresh === true,
             sheetId,

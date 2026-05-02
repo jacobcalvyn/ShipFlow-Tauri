@@ -46,12 +46,12 @@ impl Default for TrayServiceSnapshot {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct TrayState {
+pub struct TrayState {
     inner: Arc<Mutex<TrayServiceSnapshot>>,
 }
 
 impl TrayState {
-    pub(crate) fn snapshot(&self) -> ApiServiceConfig {
+    pub fn snapshot(&self) -> ApiServiceConfig {
         self.inner
             .lock()
             .expect("tray state lock poisoned")
@@ -59,22 +59,22 @@ impl TrayState {
             .clone()
     }
 
-    pub(crate) fn update_service(&self, config: &ApiServiceConfig, status: &ApiServiceStatus) {
+    pub fn update_service(&self, config: &ApiServiceConfig, status: &ApiServiceStatus) {
         let mut snapshot = self.inner.lock().expect("tray state lock poisoned");
         snapshot.service_config = config.clone();
         snapshot.service_status = status.clone();
     }
 }
 
-pub(crate) fn default_tray_service_config() -> ApiServiceConfig {
+pub fn default_tray_service_config() -> ApiServiceConfig {
     TrayServiceSnapshot::default().service_config
 }
 
-pub(crate) fn sync_service_tray<R: Runtime>(
+pub fn sync_service_tray<R: Runtime>(
     app: &AppHandle<R>,
     tray_state: &TrayState,
 ) -> tauri::Result<()> {
-    if let Some(tray) = app.tray_by_id(crate::SERVICE_TRAY_ID) {
+    if let Some(tray) = app.tray_by_id(crate::service::SERVICE_TRAY_ID) {
         let _ = tray.set_visible(false);
     }
 
@@ -91,7 +91,7 @@ fn tracking_error_message(error: tracking::model::TrackingError) -> String {
     }
 }
 
-pub(crate) async fn configure_api_service_runtime<R: Runtime>(
+pub async fn configure_api_service_runtime<R: Runtime>(
     app_handle: AppHandle<R>,
     mut config: ApiServiceConfig,
     client_state: &TrackingClientState,
@@ -137,7 +137,7 @@ pub(crate) async fn configure_api_service_runtime<R: Runtime>(
     result
 }
 
-pub(crate) fn load_saved_api_service_config_runtime<R: Runtime>(
+pub fn load_saved_api_service_config_runtime<R: Runtime>(
     service_controller: &ApiServiceController,
     client_state: &TrackingClientState,
     app_handle: AppHandle<R>,
@@ -171,7 +171,7 @@ pub(crate) fn load_saved_api_service_config_runtime<R: Runtime>(
     Ok(saved_config)
 }
 
-pub(crate) fn get_api_service_status_runtime<R: Runtime>(
+pub fn get_api_service_status_runtime<R: Runtime>(
     service_controller: &ApiServiceController,
     app_handle: AppHandle<R>,
     tray_state: &TrayState,
@@ -212,7 +212,7 @@ fn custom_service_status_from_config(
     }
 }
 
-pub(crate) async fn get_api_service_status_checked_runtime<R: Runtime>(
+pub async fn get_api_service_status_checked_runtime<R: Runtime>(
     service_controller: &ApiServiceController,
     client_state: &TrackingClientState,
     app_handle: AppHandle<R>,
@@ -249,7 +249,7 @@ pub(crate) async fn get_api_service_status_checked_runtime<R: Runtime>(
     }
 }
 
-pub(crate) async fn test_external_tracking_source_runtime(
+pub async fn test_external_tracking_source_runtime(
     config: ApiServiceConfig,
     client_state: &TrackingClientState,
 ) -> Result<String, String> {
@@ -258,9 +258,7 @@ pub(crate) async fn test_external_tracking_source_runtime(
         .map_err(tracking_error_message)
 }
 
-pub(crate) fn validate_tracking_source_config_runtime(
-    config: ApiServiceConfig,
-) -> Result<(), String> {
+pub fn validate_tracking_source_config_runtime(config: ApiServiceConfig) -> Result<(), String> {
     validate_tracking_source_settings(&config.tracking_source_config())
         .map_err(tracking_error_message)
 }

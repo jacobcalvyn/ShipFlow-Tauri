@@ -250,31 +250,40 @@ The main table currently focuses on:
 - [src/features/service/ServiceSettingsApp.tsx](./src/features/service/ServiceSettingsApp.tsx): service-settings window app shell
 - [src/features/service/useServiceSettingsController.ts](./src/features/service/useServiceSettingsController.ts): service-settings controller
 - [src/features/service/components/ServiceSettingsWindow.tsx](./src/features/service/components/ServiceSettingsWindow.tsx): service-settings window UI
+- [src/backend/commands.ts](./src/backend/commands.ts): typed frontend boundary for Tauri commands
+- [src/features/workspace/components/SheetTabs.tsx](./src/features/workspace/components/SheetTabs.tsx): sheet tab shell and tab/menu orchestration
+- [src/features/workspace/components/SheetFileMenu.tsx](./src/features/workspace/components/SheetFileMenu.tsx): workspace file menu
+- [src/features/workspace/components/DesktopServiceConnectionPanel.tsx](./src/features/workspace/components/DesktopServiceConnectionPanel.tsx): Desktop-to-Service port/token settings panel
+- [src/features/sheet/components/SheetActionBar.tsx](./src/features/sheet/components/SheetActionBar.tsx): sheet action bar shell
+- [src/features/sheet/components/ImportSourceModal.tsx](./src/features/sheet/components/ImportSourceModal.tsx): bag/manifest import modal
 - [src/features/sheet/components](./src/features/sheet/components): table, header, row, and action bar components
 - [src/features/workspace](./src/features/workspace): workspace controllers, adapters, dialogs, and shell components
 
 ### Backend
 
+- [Cargo.toml](./Cargo.toml): root Rust workspace that owns the single Cargo lockfile
 - [apps/service](./apps/service): standalone ShipFlow Service binary package
-- [src-tauri/src/lib.rs](./src-tauri/src/lib.rs): Tauri command composition layer
-- [src-tauri/src/app_runtime.rs](./src-tauri/src/app_runtime.rs): desktop bootstrap and runtime setup
-- [src-tauri/src/app_menu_runtime.rs](./src-tauri/src/app_menu_runtime.rs): desktop app menu wiring
-- [src-tauri/src/lookup_runtime.rs](./src-tauri/src/lookup_runtime.rs): Tauri compatibility re-export for the shared service runtime lookup cache
-- [src-tauri/src/os_bridge.rs](./src-tauri/src/os_bridge.rs): clipboard, URL, and native file-picker bridge
-- [src-tauri/src/window_runtime.rs](./src-tauri/src/window_runtime.rs): window/document registry runtime
-- [src-tauri/src/workspace_document.rs](./src-tauri/src/workspace_document.rs): workspace document read/write helpers
-- [src-tauri/src/service.rs](./src-tauri/src/service.rs): Desktop-side service connection config layer
-- [src-tauri/src/service_client.rs](./src-tauri/src/service_client.rs): Desktop-to-Service HTTP client boundary
-- [src-tauri/src/service](./src-tauri/src/service): Desktop-side service connection/state compatibility modules
+- [src-tauri](./src-tauri): ShipFlow Desktop Tauri app crate and Desktop-only command registration
+- [src-tauri/src/desktop_app.rs](./src-tauri/src/desktop_app.rs): Desktop Tauri builder and bootstrap
+- [src-tauri/src/commands](./src-tauri/src/commands): Desktop command modules grouped by tracking, workspace, service, and system boundaries
+- [crates/shipflow-tauri-runtime](./crates/shipflow-tauri-runtime): shared Tauri runtime library used by Desktop and Service
+- [crates/shipflow-tauri-runtime/src/service_settings_app.rs](./crates/shipflow-tauri-runtime/src/service_settings_app.rs): Service settings app builder and Service-only command registration
+- [crates/shipflow-tauri-runtime/src/service](./crates/shipflow-tauri-runtime/src/service): shared service config, process, state, API, and tray runtime
+- [crates/shipflow-tauri-runtime/src/service/state_store](./crates/shipflow-tauri-runtime/src/service/state_store): app-data paths and per-OS atomic state-file replacement helpers
+- [crates/shipflow-tauri-runtime/src/service_client.rs](./crates/shipflow-tauri-runtime/src/service_client.rs): Desktop-to-Service HTTP client boundary
+- [crates/shipflow-tauri-runtime/src/os_bridge.rs](./crates/shipflow-tauri-runtime/src/os_bridge.rs): clipboard, URL, and native file-picker bridge
+- [crates/shipflow-tauri-runtime/src/window_runtime.rs](./crates/shipflow-tauri-runtime/src/window_runtime.rs): window/document registry runtime
+- [crates/shipflow-tauri-runtime/src/workspace_document.rs](./crates/shipflow-tauri-runtime/src/workspace_document.rs): workspace document read/write helpers
 - [crates/shipflow-core](./crates/shipflow-core): shared lookup core for shipment, bag, and manifest parser/upstream logic and models
 - [crates/shipflow-service-runtime](./crates/shipflow-service-runtime): shared ShipFlow Service HTTP API and lookup cache runtime
-- [src-tauri/src/tracking/mod.rs](./src-tauri/src/tracking/mod.rs): Tauri-side compatibility module that re-exports the shared tracking core
+- [crates/shipflow-tauri-runtime/src/tracking/mod.rs](./crates/shipflow-tauri-runtime/src/tracking/mod.rs): shared tracking facade used by Tauri command handlers
 - [src-tauri/src/fixtures](./src-tauri/src/fixtures): parser fixtures used by Rust tests
 
 ### Runtime Split
 
 - `ShipFlow Desktop`: document workspace, sheet management, and table UI
 - `ShipFlow Service`: runtime lookup API, source selection, service token, cache, and external API access
+- `shipflow-tauri-runtime`: neutral shared runtime used by both Desktop and Service
 - `shipflow-core`: shared lookup engine used by desktop/service Rust code
 - `shipflow-service-runtime`: shared service HTTP API and lookup-cache engine used by the standalone service binary
 - Desktop and service are separate runtime artifacts. Desktop does not bundle, spawn, or stop ShipFlow Service.
@@ -295,13 +304,13 @@ Use this checklist before publishing a runtime/security change:
 Latest CLI/runtime smoke baseline, verified on 2026-04-25:
 
 - `npm run build:service` builds the standalone service binary.
-- `cargo test --manifest-path src-tauri/Cargo.toml` passes the runtime hardening tests, including POD guardrails, custom service status identity checks, concurrent state writes, and workspace finalize failure preservation.
+- `cargo test --workspace --all-targets` passes the runtime hardening tests, including POD guardrails, custom service status identity checks, concurrent state writes, and workspace finalize failure preservation.
 - A standalone `ShipFlow Service` process can start on `127.0.0.1:19431` with a generated runtime config.
 - `GET /status` with the expected bearer token returns `200 OK` and the `product: "shipflow-service"` marker.
 - `GET /status` with the wrong bearer token returns `401 Unauthorized`.
 - `GET /health` returns `200 OK`.
 - Starting a second service process on the same port fails with `Address already in use`.
-- `npm run build` and `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` pass after the runtime smoke test.
+- `npm run build`, `cargo fmt --all -- --check`, and `cargo clippy --workspace --all-targets -- -D warnings` pass after the runtime smoke test.
 
 The CLI smoke test does not replace a visual Desktop smoke pass. Still verify the Tauri window flow for standalone service settings, POD hover previews, and native workspace save dialogs before a user-facing release.
 
@@ -350,7 +359,7 @@ Open the Service window from the tray/menu-bar entry. In the Service window:
 The service also supports CLI mode for headless testing:
 
 ```bash
-cargo run --manifest-path apps/service/Cargo.toml -- --auth-token sf_dev_token --port 18422
+cargo run -p shipflow-service -- --auth-token sf_dev_token --port 18422
 ```
 
 For CLI mode, configure Desktop with:
@@ -415,10 +424,12 @@ What it does:
 - runs on `windows-latest`
 - installs Node.js and Rust
 - runs frontend tests
-- runs Tauri, shared core, and service runtime Rust tests
-- runs Rust clippy with warnings denied
+- runs `cargo fmt --all -- --check`
+- runs `cargo test --workspace --all-targets`
+- runs `cargo clippy --workspace --all-targets -- -D warnings`
 - builds the Desktop NSIS installer without bundling `ShipFlow Service`
 - wires the Desktop NSIS installer to close running Desktop processes before reinstall or uninstall replacement
+- smoke-checks the Desktop executable and installer icon
 - uploads two artifacts:
   - portable app executable: `shipflow-desktop-windows-portable`
   - NSIS installer executable: `shipflow-desktop-windows-installer`
@@ -430,8 +441,8 @@ Triggers:
 
 The uploaded Windows outputs are:
 
-- `src-tauri/target/release/shipflow3-tauri.exe`
-- `src-tauri/target/release/bundle/nsis/*.exe`
+- `target/release/shipflow3-tauri.exe`
+- `target/release/bundle/nsis/*.exe`
 
 ## GitHub Actions macOS Build
 
@@ -444,11 +455,13 @@ What it does:
 - runs on `macos-latest`
 - installs Node.js and Rust
 - runs frontend tests
-- runs Tauri, shared core, and service runtime Rust tests
-- runs Rust clippy with warnings denied
+- runs `cargo fmt --all -- --check`
+- runs `cargo test --workspace --all-targets`
+- runs `cargo clippy --workspace --all-targets -- -D warnings`
 - optionally uses Apple signing and notarization credentials when the corresponding `APPLE_*` repository secrets are configured
 - otherwise falls back to Tauri ad-hoc signing (`bundle.macOS.signingIdentity = "-"`) so the app bundle is still signed for local validation
 - builds the Desktop macOS app bundle without bundling `ShipFlow Service`
+- smoke-checks the generated app bundle and icon resources
 - verifies the generated `.app` bundle signature with `codesign --verify --deep --strict`
 - archives the `.app` bundle as a `.zip` artifact to preserve the macOS bundle structure during download
 
@@ -459,7 +472,7 @@ Triggers:
 
 The uploaded macOS outputs are:
 
-- `src-tauri/target/release/bundle/macos/ShipFlow-Desktop-macos-app.zip`
+- `target/release/bundle/macos/ShipFlow-Desktop-macos-app.zip`
 
 Important notes:
 
@@ -478,7 +491,9 @@ What it does:
 - runs on `macos-latest` and `windows-latest`
 - installs Rust and frontend dependencies
 - builds the frontend assets embedded by the Service settings window
-- runs service runtime and service package Rust tests
+- runs `cargo fmt --all -- --check`
+- runs `cargo test --workspace --all-targets`
+- runs `cargo clippy --workspace --all-targets -- -D warnings`
 - builds `apps/service` in release mode with Tauri `custom-protocol` enabled
 - builds and signs a macOS `ShipFlow Service.app` bundle with the Service icon
 - builds a per-user Windows installer with NSIS
@@ -545,40 +560,44 @@ Main Rust test locations:
 - [crates/shipflow-core/src/manifest.rs](./crates/shipflow-core/src/manifest.rs)
 - [crates/shipflow-core/src/parser.rs](./crates/shipflow-core/src/parser.rs)
 - [crates/shipflow-core/src/upstream.rs](./crates/shipflow-core/src/upstream.rs)
-- [src-tauri/src/service/runtime_config.rs](./src-tauri/src/service/runtime_config.rs)
-- [src-tauri/src/service/http_api.rs](./src-tauri/src/service/http_api.rs)
-- [src-tauri/src/service/process_runtime.rs](./src-tauri/src/service/process_runtime.rs)
-- [src-tauri/src/service/state_store.rs](./src-tauri/src/service/state_store.rs)
-- [src-tauri/src/workspace_document.rs](./src-tauri/src/workspace_document.rs)
+- [crates/shipflow-tauri-runtime/src/service/runtime_config.rs](./crates/shipflow-tauri-runtime/src/service/runtime_config.rs)
+- [crates/shipflow-tauri-runtime/src/service/http_api.rs](./crates/shipflow-tauri-runtime/src/service/http_api.rs)
+- [crates/shipflow-tauri-runtime/src/service/process_runtime.rs](./crates/shipflow-tauri-runtime/src/service/process_runtime.rs)
+- [crates/shipflow-tauri-runtime/src/service/state_store.rs](./crates/shipflow-tauri-runtime/src/service/state_store.rs)
+- [crates/shipflow-tauri-runtime/src/workspace_document.rs](./crates/shipflow-tauri-runtime/src/workspace_document.rs)
 
-Run Rust tests with:
+Run all Rust tests with:
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo test --workspace --all-targets
 ```
 
-Run shared core Rust tests with:
+Run Rust format check with:
 
 ```bash
-cargo test --manifest-path crates/shipflow-core/Cargo.toml
-```
-
-Run service runtime Rust tests with:
-
-```bash
-cargo test --manifest-path crates/shipflow-service-runtime/Cargo.toml
-```
-
-Run service package Rust tests with:
-
-```bash
-cargo test --manifest-path apps/service/Cargo.toml
+cargo fmt --all -- --check
 ```
 
 Run Rust clippy with warnings denied:
 
 ```bash
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Run an individual Rust workspace package when debugging a narrow area:
+
+```bash
+cargo test -p shipflow-core
+```
+
+Quality-gate commands for local release checks:
+
+```bash
+npm test
+npm run build
+cargo fmt --all -- --check
+cargo test --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 ## Notes

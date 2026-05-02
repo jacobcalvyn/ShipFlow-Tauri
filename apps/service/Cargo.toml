@@ -13,11 +13,11 @@ name = "shipflow-service"
 path = "src/main.rs"
 
 [dependencies]
-shipflow3_tauri_lib = { package = "shipflow3-tauri", path = "../../src-tauri" }
 shipflow-core = { path = "../../crates/shipflow-core" }
 shipflow-service-runtime = { path = "../../crates/shipflow-service-runtime" }
-tauri = { version = "2.1.1", features = ["tray-icon"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+shipflow-tauri-runtime = { path = "../../crates/shipflow-tauri-runtime" }
+tauri = { workspace = true }
+tokio = { workspace = true }
 
 [build-dependencies]
-tauri-build = { version = "2.0.1", features = [] }
+tauri-build = { workspace = true }

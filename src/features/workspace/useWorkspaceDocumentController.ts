@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   Dispatch,
@@ -9,6 +8,18 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  claimCurrentWorkspaceDocument,
+  createWorkspaceWindow,
+  getCurrentWindowLabel,
+  pickWorkspaceDocumentPath as pickWorkspaceDocumentPathCommand,
+  readWorkspaceDocument,
+  resolveWindowCloseRequest,
+  setCurrentWindowDocumentState,
+  setCurrentWindowTitle,
+  takePendingWorkspaceWindowRequest,
+  writeWorkspaceDocument,
+} from "../../backend/commands";
 import { createDefaultWorkspaceState } from "./default-state";
 import {
   createDefaultWorkspaceDocumentMeta,
@@ -75,12 +86,7 @@ async function pickWorkspaceDocumentPath(
   mode: "open" | "save",
   suggestedName?: string
 ) {
-  return Promise.resolve(
-    invoke<string | null>("pick_workspace_document_path", {
-      mode,
-      suggestedName,
-    })
-  );
+  return pickWorkspaceDocumentPathCommand(mode, suggestedName);
 }
 
 export function useWorkspaceDocumentController({
@@ -131,7 +137,7 @@ export function useWorkspaceDocumentController({
   }, [documentMeta]);
 
   useEffect(() => {
-    void Promise.resolve(invoke<string>("get_current_window_label"))
+    void Promise.resolve(getCurrentWindowLabel())
       .then((label) => {
         setWindowStorageScope(label);
 
@@ -171,9 +177,7 @@ export function useWorkspaceDocumentController({
 
   useEffect(() => {
     void Promise.resolve(
-      invoke("set_current_window_title", {
-        title: buildWorkspaceWindowTitle(documentMeta),
-      })
+      setCurrentWindowTitle(buildWorkspaceWindowTitle(documentMeta))
     ).catch(() => {
       // Ignore title update failures so document state stays functional.
     });
@@ -181,7 +185,7 @@ export function useWorkspaceDocumentController({
 
   useEffect(() => {
     void Promise.resolve(
-      invoke("set_current_window_document_state", {
+      setCurrentWindowDocumentState({
         isDirty: documentMeta.isDirty,
         documentName: documentMeta.name,
       })
@@ -205,9 +209,7 @@ export function useWorkspaceDocumentController({
 
   const claimCurrentWorkspaceDocumentPath = useCallback(async (path: string | null) => {
     return Promise.resolve(
-      invoke<WorkspaceDocumentClaimResult>("claim_current_workspace_document", {
-        path,
-      })
+      claimCurrentWorkspaceDocument(path)
     );
   }, []);
 
@@ -265,10 +267,7 @@ export function useWorkspaceDocumentController({
 
       try {
         const result = await Promise.resolve(
-          invoke<WorkspaceDocumentWriteResult>("write_workspace_document", {
-            path: trimmedPath,
-            document,
-          })
+          writeWorkspaceDocument(trimmedPath, document)
         );
 
         documentBaselineRef.current = serializedWorkspace;
@@ -362,9 +361,7 @@ export function useWorkspaceDocumentController({
 
       try {
         const result = await Promise.resolve(
-          invoke<WorkspaceDocumentReadResult>("read_workspace_document", {
-            path: trimmedPath,
-          })
+          readWorkspaceDocument(trimmedPath)
         );
 
         applyWorkspaceDocument(result.path, result.document);
@@ -458,9 +455,7 @@ export function useWorkspaceDocumentController({
 
   const createNewWorkspaceWindow = useCallback(async () => {
     const result = await Promise.resolve(
-      invoke<WorkspaceDocumentClaimResult>("create_workspace_window", {
-        documentPath: null,
-      })
+      createWorkspaceWindow(null)
     );
 
     if (result.status === "alreadyOpen") {
@@ -479,9 +474,7 @@ export function useWorkspaceDocumentController({
       }
 
       const result = await Promise.resolve(
-        invoke<WorkspaceDocumentClaimResult>("create_workspace_window", {
-          documentPath: pickedPath,
-        })
+        createWorkspaceWindow(pickedPath)
       );
 
       if (result.status === "alreadyOpen") {
@@ -562,7 +555,7 @@ export function useWorkspaceDocumentController({
 
   useEffect(() => {
     void Promise.resolve(
-      invoke<WorkspaceWindowLaunchRequest | null>("take_pending_workspace_window_request")
+      takePendingWorkspaceWindowRequest()
     )
       .then((request) => {
         if (!request) {
@@ -625,9 +618,7 @@ export function useWorkspaceDocumentController({
 
   const resolvePendingWindowClose = useCallback(async (action: "cancel" | "discard") => {
     await Promise.resolve(
-      invoke("resolve_window_close_request", {
-        action,
-      })
+      resolveWindowCloseRequest(action)
     );
     setPendingWindowCloseRequest(null);
   }, []);

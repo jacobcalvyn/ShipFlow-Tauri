@@ -86,27 +86,27 @@ fn parse_args() -> Result<Option<CliConfig>, String> {
 }
 
 fn run_service_settings_app() {
-    shipflow3_tauri_lib::install_runtime_logging();
+    shipflow_tauri_runtime::install_runtime_logging();
 
-    if shipflow3_tauri_lib::maybe_run_service_tray_from_current_args()
+    if shipflow_tauri_runtime::maybe_run_service_tray_from_current_args()
         .expect("failed to initialize ShipFlow service tray companion")
     {
         return;
     }
 
-    if shipflow3_tauri_lib::maybe_run_service_process_from_current_args()
+    if shipflow_tauri_runtime::maybe_run_service_process_from_current_args()
         .expect("failed to initialize ShipFlow service process")
     {
         return;
     }
 
-    if shipflow3_tauri_lib::maybe_delegate_to_existing_service_settings_process()
+    if shipflow_tauri_runtime::maybe_delegate_service_settings_launch_to_existing_process()
         .expect("failed to delegate to existing ShipFlow Service settings process")
     {
         return;
     }
 
-    shipflow3_tauri_lib::run_service_settings_with_context(tauri::generate_context!());
+    shipflow_tauri_runtime::run_service_settings_with_context(tauri::generate_context!());
 }
 
 fn run_cli_service() {

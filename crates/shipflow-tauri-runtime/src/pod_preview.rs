@@ -170,10 +170,7 @@ async fn fetch_remote_pod_payload(
     Ok((content_type, bytes))
 }
 
-pub(crate) async fn resolve_pod_image_source(
-    image_source: &str,
-    depth: u8,
-) -> Result<String, String> {
+pub async fn resolve_pod_image_source(image_source: &str, depth: u8) -> Result<String, String> {
     if depth > 3 {
         return Err("POD image source redirected too many times.".into());
     }
@@ -333,7 +330,7 @@ fn extract_data_image_from_text(value: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn normalize_base64_image(value: &str) -> Option<String> {
+pub fn normalize_base64_image(value: &str) -> Option<String> {
     let mut normalized = value.trim().to_string();
 
     if normalized.len() > 3
@@ -375,7 +372,7 @@ pub(crate) fn normalize_base64_image(value: &str) -> Option<String> {
     Some(normalized)
 }
 
-pub(crate) fn base64_to_data_url(normalized: &str) -> String {
+pub fn base64_to_data_url(normalized: &str) -> String {
     let mime_type = if normalized.starts_with("iVBOR") {
         "image/png"
     } else if normalized.starts_with("R0lGOD") {

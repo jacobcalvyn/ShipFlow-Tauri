@@ -9,9 +9,9 @@ import {
   useRef,
   useState,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import QRCode from "qrcode";
+import { resolvePodImage } from "../../../backend/commands";
 import {
   LATEST_BAG_STATUS_COLUMN_PATH,
   LATEST_MANIFEST_COLUMN_PATH,
@@ -226,7 +226,7 @@ function PodPhotoPreview({
 
     let cancelled = false;
 
-    void invoke<string>("resolve_pod_image", { imageSource: source })
+    void resolvePodImage(source)
       .then((resolved) => {
         if (cancelled || !resolved) {
           return;

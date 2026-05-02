@@ -41,7 +41,7 @@ fn run_clipboard_command(mut command: Command, text: &str) -> Result<(), String>
     }
 }
 
-pub(crate) fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
+pub fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         return run_clipboard_command(Command::new("pbcopy"), text);
@@ -98,7 +98,7 @@ fn read_clipboard_command(mut command: Command) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub(crate) fn read_text_from_clipboard() -> Result<String, String> {
+pub fn read_text_from_clipboard() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         return read_clipboard_command(Command::new("pbpaste"));
@@ -286,7 +286,7 @@ fn pick_workspace_document_path_native(
     Err("Native file picker is not supported on this platform.".into())
 }
 
-pub(crate) fn pick_workspace_document_path_runtime(
+pub fn pick_workspace_document_path_runtime(
     mode: &str,
     suggested_name: Option<&str>,
 ) -> Result<Option<String>, String> {
@@ -302,7 +302,7 @@ fn quote_windows_start_target(value: &str) -> String {
     format!("\"{value}\"")
 }
 
-pub(crate) fn open_external_url_runtime(url: &str) -> Result<(), String> {
+pub fn open_external_url_runtime(url: &str) -> Result<(), String> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
         return Err("External URL is required.".into());

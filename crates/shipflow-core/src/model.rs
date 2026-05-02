@@ -30,9 +30,10 @@ impl TrackingClientState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TrackingSource {
+    #[default]
     Default,
     ExternalApi,
 }
@@ -43,12 +44,6 @@ pub enum LookupKind {
     Track,
     Bag,
     Manifest,
-}
-
-impl Default for TrackingSource {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

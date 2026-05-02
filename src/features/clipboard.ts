@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { copyToClipboard, readFromClipboard } from "../backend/commands";
 
 export async function writeClipboardText(value: string) {
   const text = value.trim();
@@ -19,7 +19,7 @@ export async function writeClipboardText(value: string) {
     }
   }
 
-  await invoke("copy_to_clipboard", { text });
+  await copyToClipboard(text);
 }
 
 export async function readClipboardText() {
@@ -35,5 +35,5 @@ export async function readClipboardText() {
     }
   }
 
-  return invoke<string>("read_from_clipboard");
+  return readFromClipboard();
 }

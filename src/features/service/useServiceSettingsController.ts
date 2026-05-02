@@ -1,5 +1,12 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  configureApiService,
+  getApiServiceStatus,
+  loadSavedApiServiceConfig,
+  testApiServiceConnection as testApiServiceConnectionCommand,
+  testExternalTrackingSource as testExternalTrackingSourceCommand,
+  validateTrackingSourceConfig,
+} from "../../backend/commands";
 import {
   ApiServiceStatus,
   DesktopServiceConnectionMode,
@@ -179,7 +186,7 @@ export function useServiceSettingsController({
       const preservePreview = options?.preservePreview ?? true;
 
       try {
-        const savedConfig = await invoke<ServiceConfig | null>("load_saved_api_service_config");
+        const savedConfig = await loadSavedApiServiceConfig();
         const baseConfig = savedConfig
           ? normalizeServiceConfig(savedConfig, profile)
           : {
@@ -216,7 +223,7 @@ export function useServiceSettingsController({
 
   const refreshApiServiceStatus = useCallback(async () => {
     try {
-      const status = await invoke<ApiServiceStatus>("get_api_service_status");
+      const status = await getApiServiceStatus();
       setApiServiceStatus(status);
     } catch (error) {
       setApiServiceStatus({
@@ -438,9 +445,7 @@ export function useServiceSettingsController({
   const applyServiceConfig = useCallback(
     async (nextConfig: ServiceConfig) => {
       try {
-        const status = await invoke<ApiServiceStatus>("configure_api_service", {
-          config: nextConfig,
-        });
+        const status = await configureApiService(nextConfig);
         serviceConfigRef.current = nextConfig;
         setServiceConfig(nextConfig);
         setApiServiceStatus(status);
@@ -486,7 +491,7 @@ export function useServiceSettingsController({
         normalizedNextServiceConfig.enabled)
     ) {
       try {
-        await invoke("validate_tracking_source_config", { config: normalizedNextServiceConfig });
+        await validateTrackingSourceConfig(normalizedNextServiceConfig);
       } catch (error) {
         showNotice({
           tone: "error",
@@ -557,11 +562,11 @@ export function useServiceSettingsController({
   );
 
   const testExternalTrackingSource = useCallback(async (config: ServiceConfig) => {
-    return invoke<string>("test_external_tracking_source", { config });
+    return testExternalTrackingSourceCommand(config);
   }, []);
 
   const testApiServiceConnection = useCallback(async (config: ServiceConfig) => {
-    return invoke<string>("test_api_service_connection", { config });
+    return testApiServiceConnectionCommand(config);
   }, []);
 
   return {

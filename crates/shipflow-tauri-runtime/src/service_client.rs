@@ -4,7 +4,7 @@ use crate::service::{ApiServiceConfig, SERVICE_STATUS_PRODUCT};
 use crate::tracking;
 use crate::tracking::model::{BagResponse, ManifestResponse, TrackResponse};
 
-pub(crate) use shipflow_service_runtime::FORCE_REFRESH_HEADER_NAME;
+pub use shipflow_service_runtime::FORCE_REFRESH_HEADER_NAME;
 
 fn extract_service_error_message(status: reqwest::StatusCode, raw_body: Option<&str>) -> String {
     if let Some(body) = raw_body.map(str::trim).filter(|value| !value.is_empty()) {
@@ -57,7 +57,7 @@ fn build_service_lookup_endpoint(
     Ok(endpoint.into())
 }
 
-pub(crate) async fn track_shipment_via_service(
+pub async fn track_shipment_via_service(
     client: &reqwest::Client,
     config: &ApiServiceConfig,
     shipment_id: &str,
@@ -74,7 +74,7 @@ pub(crate) async fn track_shipment_via_service(
     .await
 }
 
-pub(crate) async fn track_bag_via_service(
+pub async fn track_bag_via_service(
     client: &reqwest::Client,
     config: &ApiServiceConfig,
     bag_id: &str,
@@ -83,7 +83,7 @@ pub(crate) async fn track_bag_via_service(
     fetch_lookup_via_service(client, config, "bag", bag_id, "bag", force_refresh).await
 }
 
-pub(crate) async fn track_manifest_via_service(
+pub async fn track_manifest_via_service(
     client: &reqwest::Client,
     config: &ApiServiceConfig,
     manifest_id: &str,
@@ -158,7 +158,7 @@ async fn fetch_lookup_via_service<T: DeserializeOwned>(
     }
 }
 
-pub(crate) async fn test_api_service_connection(
+pub async fn test_api_service_connection(
     client: &reqwest::Client,
     config: &ApiServiceConfig,
 ) -> Result<String, String> {

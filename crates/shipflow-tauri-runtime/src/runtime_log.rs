@@ -75,13 +75,13 @@ fn append_runtime_log_line(level: &str, message: &str) -> Result<(), String> {
         .map_err(|error| format!("Unable to write runtime log line: {error}"))
 }
 
-pub(crate) fn log_runtime_event(level: &str, message: impl AsRef<str>) {
+pub fn log_runtime_event(level: &str, message: impl AsRef<str>) {
     let message = message.as_ref();
     eprintln!("{message}");
     let _ = append_runtime_log_line(level, message);
 }
 
-pub(crate) fn install_runtime_logging() {
+pub fn install_runtime_logging() {
     static PANIC_HOOK_ONCE: OnceLock<()> = OnceLock::new();
 
     PANIC_HOOK_ONCE.get_or_init(|| {

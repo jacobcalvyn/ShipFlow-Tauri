@@ -1,200 +1,32 @@
 #![allow(dead_code)]
 
+mod atomic_file;
+mod paths;
+
 use std::{
-    env, fs,
+    fs,
     io::ErrorKind,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use super::{
-    ApiServiceConfig, DesktopActivationRequest, DESKTOP_PID_FILE_NAME, DESKTOP_REQUEST_FILE_NAME,
-    SERVICE_CONFIG_FILE_NAME, SERVICE_PID_FILE_NAME, SERVICE_RUNTIME_CONFIG_FILE_NAME,
-    SERVICE_SETTINGS_PID_FILE_NAME, SERVICE_SETTINGS_REQUEST_FILE_NAME, SERVICE_STATE_DIR_NAME,
-    SERVICE_TRAY_PID_FILE_NAME,
+use super::{ApiServiceConfig, DesktopActivationRequest};
+use atomic_file::write_state_file;
+use paths::{
+    desktop_pid_path, desktop_request_path, legacy_service_state_dir, service_config_path,
+    service_pid_path, service_runtime_config_path, service_settings_pid_path,
+    service_settings_request_path, service_tray_pid_path, state_dir_override,
 };
 
-static STATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-#[cfg(test)]
-fn state_dir_override() -> Option<PathBuf> {
-    env::var_os("SHIPFLOW_SERVICE_STATE_DIR_OVERRIDE").map(PathBuf::from)
-}
-
-#[cfg(not(test))]
-fn state_dir_override() -> Option<PathBuf> {
-    None
-}
-
-fn legacy_service_state_dir() -> PathBuf {
-    env::temp_dir().join(SERVICE_STATE_DIR_NAME)
-}
-
-fn app_data_service_state_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        return env::var_os("HOME").map(PathBuf::from).map(|home| {
-            home.join("Library")
-                .join("Application Support")
-                .join("ShipFlow Desktop")
-                .join(SERVICE_STATE_DIR_NAME)
-        });
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        return env::var_os("APPDATA").map(PathBuf::from).map(|app_data| {
-            app_data
-                .join("ShipFlow Desktop")
-                .join(SERVICE_STATE_DIR_NAME)
-        });
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        if let Some(xdg_data_home) = env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
-            return Some(
-                xdg_data_home
-                    .join("shipflow-desktop")
-                    .join(SERVICE_STATE_DIR_NAME),
-            );
-        }
-
-        return env::var_os("HOME").map(PathBuf::from).map(|home| {
-            home.join(".local")
-                .join("share")
-                .join("shipflow-desktop")
-                .join(SERVICE_STATE_DIR_NAME)
-        });
-    }
-
-    #[allow(unreachable_code)]
-    None
-}
-
-fn service_state_dir() -> PathBuf {
-    if let Some(path) = state_dir_override() {
-        return path;
-    }
-
-    app_data_service_state_dir().unwrap_or_else(legacy_service_state_dir)
-}
-
-fn service_config_path() -> PathBuf {
-    service_state_dir().join(SERVICE_CONFIG_FILE_NAME)
-}
-
-fn service_runtime_config_path() -> PathBuf {
-    service_state_dir().join(SERVICE_RUNTIME_CONFIG_FILE_NAME)
-}
-
-fn service_pid_path() -> PathBuf {
-    service_state_dir().join(SERVICE_PID_FILE_NAME)
-}
-
-fn service_tray_pid_path() -> PathBuf {
-    service_state_dir().join(SERVICE_TRAY_PID_FILE_NAME)
-}
-
-fn service_settings_pid_path() -> PathBuf {
-    service_state_dir().join(SERVICE_SETTINGS_PID_FILE_NAME)
-}
-
-fn desktop_pid_path() -> PathBuf {
-    service_state_dir().join(DESKTOP_PID_FILE_NAME)
-}
-
-fn service_settings_request_path() -> PathBuf {
-    service_state_dir().join(SERVICE_SETTINGS_REQUEST_FILE_NAME)
-}
-
-fn desktop_request_path() -> PathBuf {
-    service_state_dir().join(DESKTOP_REQUEST_FILE_NAME)
-}
-
-fn ensure_service_state_dir() -> Result<(), String> {
-    let state_dir = service_state_dir();
-    fs::create_dir_all(&state_dir)
-        .map_err(|error| format!("Unable to prepare service state directory: {error}"))?;
-    set_user_only_permissions(&state_dir, 0o700);
-    Ok(())
-}
-
 #[cfg(unix)]
-fn set_user_only_permissions(path: &Path, mode: u32) {
+pub(super) fn set_user_only_permissions(path: &Path, mode: u32) {
     let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
 }
 
 #[cfg(not(unix))]
-fn set_user_only_permissions(_path: &Path, _mode: u32) {}
-
-#[cfg(target_os = "windows")]
-fn replace_state_file_windows(
-    path: PathBuf,
-    temp_path: PathBuf,
-    label: &str,
-) -> Result<(), String> {
-    let mut last_error = String::new();
-
-    for _ in 0..64 {
-        match fs::rename(&temp_path, &path) {
-            Ok(()) => return Ok(()),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::AlreadyExists | ErrorKind::PermissionDenied
-                ) =>
-            {
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            Err(error) => {
-                let _ = fs::remove_file(&temp_path);
-                return Err(format!("Unable to finalize {label}: {error}"));
-            }
-        }
-
-        match fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) if error.kind() == ErrorKind::PermissionDenied => {
-                last_error = error.to_string();
-                std::thread::sleep(std::time::Duration::from_millis(2));
-                continue;
-            }
-            Err(error) => {
-                let _ = fs::remove_file(&temp_path);
-                return Err(format!("Unable to prepare {label} replacement: {error}"));
-            }
-        }
-
-        match fs::rename(&temp_path, &path) {
-            Ok(()) => return Ok(()),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::AlreadyExists | ErrorKind::PermissionDenied
-                ) =>
-            {
-                last_error = error.to_string();
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            Err(error) => {
-                let _ = fs::remove_file(&temp_path);
-                return Err(format!("Unable to finalize {label}: {error}"));
-            }
-        }
-    }
-
-    let _ = fs::remove_file(&temp_path);
-    if last_error.is_empty() {
-        last_error = "concurrent replacement did not settle".into();
-    }
-    Err(format!("Unable to finalize {label}: {last_error}"))
-}
+pub(super) fn set_user_only_permissions(_path: &Path, _mode: u32) {}
 
 fn state_file_candidates(primary_path: &Path) -> Vec<PathBuf> {
     let mut candidates = vec![primary_path.to_path_buf()];
@@ -231,43 +63,7 @@ fn read_first_state_file(
     Ok(None)
 }
 
-fn write_state_file(path: PathBuf, payload: Vec<u8>, label: &str) -> Result<(), String> {
-    ensure_service_state_dir()?;
-    let file_name = path
-        .file_name()
-        .map(|value| value.to_string_lossy().to_string())
-        .unwrap_or_else(|| "state".into());
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let counter = STATE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let temp_path = path.with_file_name(format!(
-        "{file_name}.{}.{}.{}.tmp",
-        std::process::id(),
-        timestamp,
-        counter
-    ));
-
-    fs::write(&temp_path, payload)
-        .map_err(|error| format!("Unable to write temporary {label}: {error}"))?;
-    set_user_only_permissions(&temp_path, 0o600);
-
-    #[cfg(target_os = "windows")]
-    {
-        replace_state_file_windows(path, temp_path, label)
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        fs::rename(&temp_path, &path).map_err(|error| {
-            let _ = fs::remove_file(&temp_path);
-            format!("Unable to finalize {label}: {error}")
-        })
-    }
-}
-
-pub(crate) fn persist_saved_config(config: &ApiServiceConfig) -> Result<(), String> {
+pub fn persist_saved_config(config: &ApiServiceConfig) -> Result<(), String> {
     let serialized = serde_json::to_vec_pretty(config)
         .map_err(|error| format!("Unable to serialize API service configuration: {error}"))?;
     write_state_file(
@@ -277,7 +73,7 @@ pub(crate) fn persist_saved_config(config: &ApiServiceConfig) -> Result<(), Stri
     )
 }
 
-pub(crate) fn persist_runtime_config(config: &ApiServiceConfig) -> Result<(), String> {
+pub fn persist_runtime_config(config: &ApiServiceConfig) -> Result<(), String> {
     let serialized = serde_json::to_vec_pretty(config)
         .map_err(|error| format!("Unable to serialize runtime service configuration: {error}"))?;
     write_state_file(
@@ -287,7 +83,7 @@ pub(crate) fn persist_runtime_config(config: &ApiServiceConfig) -> Result<(), St
     )
 }
 
-pub(crate) fn load_saved_config() -> Result<Option<ApiServiceConfig>, String> {
+pub fn load_saved_config() -> Result<Option<ApiServiceConfig>, String> {
     let primary_path = service_config_path();
     let Some((source_path, bytes)) =
         read_first_state_file(primary_path.clone(), "persisted API service configuration")?
@@ -305,7 +101,7 @@ pub(crate) fn load_saved_config() -> Result<Option<ApiServiceConfig>, String> {
     Ok(Some(config))
 }
 
-pub(crate) fn load_runtime_config() -> Result<Option<ApiServiceConfig>, String> {
+pub fn load_runtime_config() -> Result<Option<ApiServiceConfig>, String> {
     let primary_path = service_runtime_config_path();
     let Some((source_path, bytes)) =
         read_first_state_file(primary_path.clone(), "runtime service configuration")?
@@ -327,11 +123,11 @@ fn persist_pid_file(path: PathBuf, pid: u32, label: &str) -> Result<(), String> 
     write_state_file(path, pid.to_string().into_bytes(), label)
 }
 
-pub(crate) fn persist_service_pid(pid: u32) -> Result<(), String> {
+pub fn persist_service_pid(pid: u32) -> Result<(), String> {
     persist_pid_file(service_pid_path(), pid, "API service process id")
 }
 
-pub(crate) fn persist_service_tray_pid(pid: u32) -> Result<(), String> {
+pub fn persist_service_tray_pid(pid: u32) -> Result<(), String> {
     persist_pid_file(service_tray_pid_path(), pid, "API service tray process id")
 }
 
@@ -353,19 +149,19 @@ fn read_pid_file(path: PathBuf) -> Option<u32> {
     raw_value.trim().parse::<u32>().ok()
 }
 
-pub(crate) fn read_recorded_pid() -> Option<u32> {
+pub fn read_recorded_pid() -> Option<u32> {
     read_pid_file(service_pid_path())
 }
 
-pub(crate) fn read_recorded_tray_pid() -> Option<u32> {
+pub fn read_recorded_tray_pid() -> Option<u32> {
     read_pid_file(service_tray_pid_path())
 }
 
-pub(crate) fn read_recorded_service_settings_pid() -> Option<u32> {
+pub fn read_recorded_service_settings_pid() -> Option<u32> {
     read_pid_file(service_settings_pid_path())
 }
 
-pub(crate) fn read_recorded_desktop_pid() -> Option<u32> {
+pub fn read_recorded_desktop_pid() -> Option<u32> {
     read_pid_file(desktop_pid_path())
 }
 
@@ -375,23 +171,23 @@ fn clear_path(path: PathBuf) {
     }
 }
 
-pub(crate) fn clear_recorded_pid() {
+pub fn clear_recorded_pid() {
     clear_path(service_pid_path());
 }
 
-pub(crate) fn clear_runtime_config() {
+pub fn clear_runtime_config() {
     clear_path(service_runtime_config_path());
 }
 
-pub(crate) fn clear_recorded_tray_pid() {
+pub fn clear_recorded_tray_pid() {
     clear_path(service_tray_pid_path());
 }
 
-pub(crate) fn clear_recorded_service_settings_pid() {
+pub fn clear_recorded_service_settings_pid() {
     clear_path(service_settings_pid_path());
 }
 
-pub(crate) fn clear_recorded_desktop_pid() {
+pub fn clear_recorded_desktop_pid() {
     clear_path(desktop_pid_path());
 }
 
@@ -403,7 +199,7 @@ pub fn clear_current_service_settings_process() {
     clear_recorded_service_settings_pid();
 }
 
-pub(crate) fn persist_service_settings_activation_request(
+pub fn persist_service_settings_activation_request(
     request: &DesktopActivationRequest,
 ) -> Result<(), String> {
     let payload = serde_json::to_vec(request).map_err(|error| {
@@ -416,7 +212,7 @@ pub(crate) fn persist_service_settings_activation_request(
     )
 }
 
-pub(crate) fn persist_desktop_activation_request(
+pub fn persist_desktop_activation_request(
     request: &DesktopActivationRequest,
 ) -> Result<(), String> {
     let payload = serde_json::to_vec(request)

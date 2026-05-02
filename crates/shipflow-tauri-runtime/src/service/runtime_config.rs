@@ -3,7 +3,7 @@ use shipflow_service_runtime::{
     validate_service_runtime_config, ServiceRuntimeConfig, ServiceRuntimeMode,
 };
 
-pub(crate) fn running_status(config: &ApiServiceConfig) -> ApiServiceStatus {
+pub fn running_status(config: &ApiServiceConfig) -> ApiServiceStatus {
     ApiServiceStatus {
         status: ApiServiceStatusKind::Running,
         enabled: true,
@@ -14,7 +14,7 @@ pub(crate) fn running_status(config: &ApiServiceConfig) -> ApiServiceStatus {
     }
 }
 
-pub(crate) fn stopped_status(config: &ApiServiceConfig) -> ApiServiceStatus {
+pub fn stopped_status(config: &ApiServiceConfig) -> ApiServiceStatus {
     ApiServiceStatus {
         status: ApiServiceStatusKind::Stopped,
         enabled: false,
@@ -25,7 +25,7 @@ pub(crate) fn stopped_status(config: &ApiServiceConfig) -> ApiServiceStatus {
     }
 }
 
-pub(crate) fn error_status(
+pub fn error_status(
     config: &ApiServiceConfig,
     bind_address: &str,
     message: String,
@@ -40,7 +40,7 @@ pub(crate) fn error_status(
     }
 }
 
-pub(crate) fn validate_service_config(
+pub fn validate_service_config(
     config: &ApiServiceConfig,
     _bind_address: &str,
 ) -> Result<(), String> {
@@ -55,9 +55,7 @@ pub(crate) fn validate_service_config(
     })
 }
 
-pub(crate) fn validate_desktop_service_connection_config(
-    config: &ApiServiceConfig,
-) -> Result<(), String> {
+pub fn validate_desktop_service_connection_config(config: &ApiServiceConfig) -> Result<(), String> {
     if !config.uses_custom_desktop_service_connection() {
         return Ok(());
     }

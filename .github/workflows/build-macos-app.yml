@@ -33,13 +33,13 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: |
-            src-tauri -> target
-            crates/shipflow-service-runtime -> target
+          workspaces: . -> target
 
       - name: Install frontend dependencies
         run: npm ci
@@ -47,17 +47,14 @@ jobs:
       - name: Run frontend tests
         run: npm test
 
-      - name: Run Tauri Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Check Rust format
+        run: cargo fmt --all -- --check
 
-      - name: Run shared core Rust tests
-        run: cargo test --manifest-path crates/shipflow-core/Cargo.toml
-
-      - name: Run service runtime Rust tests
-        run: cargo test --manifest-path crates/shipflow-service-runtime/Cargo.toml
+      - name: Run Rust tests
+        run: cargo test --workspace --all-targets
 
       - name: Run Rust clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Build macOS frontend bundle
         run: npm run build
@@ -73,22 +70,29 @@ jobs:
       - name: Build macOS application bundle
         run: npm run build:bundle:macos
 
+      - name: Smoke check macOS desktop artifacts
+        shell: bash
+        run: |
+          APP_PATH="$(find target/release/bundle/macos -maxdepth 1 -name 'ShipFlow Desktop.app' -print -quit)"
+          test -n "$APP_PATH"
+          test -n "$(find "$APP_PATH/Contents/Resources" -maxdepth 1 -name '*.icns' -print -quit)"
+
       - name: Verify macOS app bundle signature
         run: |
-          APP_PATH="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          APP_PATH="$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
           test -n "$APP_PATH"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
       - name: Archive macOS app bundle
         shell: bash
         run: |
-          APP_PATH="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          APP_PATH="$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
           test -n "$APP_PATH"
-          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" src-tauri/target/release/bundle/macos/ShipFlow-Desktop-macos-app.zip
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" target/release/bundle/macos/ShipFlow-Desktop-macos-app.zip
 
       - name: Upload macOS app archive
         uses: actions/upload-artifact@v6
         with:
           name: shipflow-desktop-macos-app
-          path: src-tauri/target/release/bundle/macos/ShipFlow-Desktop-macos-app.zip
+          path: target/release/bundle/macos/ShipFlow-Desktop-macos-app.zip
           if-no-files-found: error

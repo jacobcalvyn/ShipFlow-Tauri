@@ -198,7 +198,7 @@ impl ServiceTrayRuntime {
     }
 }
 
-pub(crate) fn run_service_tray_app() -> Result<bool, String> {
+pub fn run_service_tray_app() -> Result<bool, String> {
     let event_loop = EventLoopBuilder::<ServiceTrayUserEvent>::with_user_event().build();
     let menu_proxy = event_loop.create_proxy();
     MenuEvent::set_event_handler(Some(move |event| {
@@ -262,7 +262,9 @@ fn configure_service_blocking(config: ApiServiceConfig) -> Result<ApiServiceStat
 }
 
 fn load_service_tray_icon() -> Result<Option<Icon>, String> {
-    let decoder = PngDecoder::new(Cursor::new(include_bytes!("../../icons/service-icon.png")));
+    let decoder = PngDecoder::new(Cursor::new(include_bytes!(
+        "../../../../src-tauri/icons/service-icon.png"
+    )));
     let mut reader = decoder
         .read_info()
         .map_err(|error| format!("Unable to decode tray icon metadata: {error}"))?;

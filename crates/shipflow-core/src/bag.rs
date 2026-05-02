@@ -8,10 +8,7 @@ fn normalize_text(value: &str) -> String {
 }
 
 fn normalize_label(value: &str) -> String {
-    normalize_text(value)
-        .to_uppercase()
-        .replace('.', "")
-        .replace(':', "")
+    normalize_text(value).to_uppercase().replace(['.', ':'], "")
 }
 
 fn is_bag_header(labels: &[String]) -> bool {

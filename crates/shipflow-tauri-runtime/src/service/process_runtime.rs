@@ -38,7 +38,7 @@ fn prepare_background_command(_command: &mut Command) {
     }
 }
 
-pub(crate) fn spawn_service_process(config: &ApiServiceConfig) -> Result<u32, String> {
+pub fn spawn_service_process(config: &ApiServiceConfig) -> Result<u32, String> {
     let executable = resolve_service_companion_executable()?;
     let encoded_config = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
         serde_json::to_vec(config)
@@ -60,7 +60,7 @@ pub(crate) fn spawn_service_process(config: &ApiServiceConfig) -> Result<u32, St
     Ok(child.id())
 }
 
-pub(crate) fn ensure_service_tray_process_running() -> Result<(), String> {
+pub fn ensure_service_tray_process_running() -> Result<(), String> {
     if read_recorded_tray_pid()
         .is_some_and(|pid| is_expected_service_process(pid, SERVICE_TRAY_FLAG))
     {
@@ -348,7 +348,7 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-pub(crate) fn stop_service_process() {
+pub fn stop_service_process() {
     if let Some(pid) = read_recorded_pid() {
         if is_expected_service_process(pid, SERVICE_PROCESS_FLAG) {
             let _ = terminate_process(pid);
@@ -359,7 +359,7 @@ pub(crate) fn stop_service_process() {
     clear_runtime_config();
 }
 
-pub(crate) fn stop_service_tray_process() {
+pub fn stop_service_tray_process() {
     if let Some(pid) = read_recorded_tray_pid() {
         if is_expected_service_process(pid, SERVICE_TRAY_FLAG) {
             let _ = terminate_process(pid);
@@ -435,7 +435,7 @@ fn command_line_contains_binary(normalized_command_line: &str, binary_name: &str
         || normalized_command_line.contains(&format!("\\{binary_name}"))
 }
 
-pub(crate) fn is_expected_service_process(pid: u32, required_flag: &str) -> bool {
+pub fn is_expected_service_process(pid: u32, required_flag: &str) -> bool {
     is_process_alive(pid)
         && process_command_line(pid)
             .as_deref()
@@ -444,7 +444,7 @@ pub(crate) fn is_expected_service_process(pid: u32, required_flag: &str) -> bool
             })
 }
 
-pub(crate) fn is_expected_service_settings_process(pid: u32) -> bool {
+pub fn is_expected_service_settings_process(pid: u32) -> bool {
     is_process_alive(pid)
         && process_command_line(pid)
             .as_deref()
@@ -498,7 +498,7 @@ fn terminate_process(pid: u32) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn is_process_alive(pid: u32) -> bool {
+pub fn is_process_alive(pid: u32) -> bool {
     #[cfg(target_os = "windows")]
     {
         let mut tasklist_command = Command::new("tasklist");
@@ -576,13 +576,13 @@ fn authenticated_service_status_is_valid(response: &str) -> bool {
         && payload.get("product").and_then(|value| value.as_str()) == Some(SERVICE_STATUS_PRODUCT)
 }
 
-pub(crate) fn is_service_runtime_ready(config: &ApiServiceConfig, timeout: Duration) -> bool {
+pub fn is_service_runtime_ready(config: &ApiServiceConfig, timeout: Duration) -> bool {
     read_authenticated_service_status(config.port, &config.auth_token, timeout)
         .map(|response| authenticated_service_status_is_valid(&response))
         .unwrap_or(false)
 }
 
-pub(crate) fn wait_for_service_runtime(config: &ApiServiceConfig, timeout: Duration) -> bool {
+pub fn wait_for_service_runtime(config: &ApiServiceConfig, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if is_service_runtime_ready(config, Duration::from_millis(250)) {
@@ -608,10 +608,7 @@ pub fn sync_service_tray_companion(config: &ApiServiceConfig) -> Result<(), Stri
     }
 }
 
-pub(crate) fn build_service_endpoint(
-    config: &ApiServiceConfig,
-    status: &ApiServiceStatus,
-) -> String {
+pub fn build_service_endpoint(config: &ApiServiceConfig, status: &ApiServiceStatus) -> String {
     let port = status.port.unwrap_or(config.port);
     let mode = status.mode.clone().unwrap_or_else(|| config.mode.clone());
 
@@ -624,10 +621,7 @@ pub(crate) fn build_service_endpoint(
     }
 }
 
-pub(crate) fn format_service_status_label(
-    config: &ApiServiceConfig,
-    status: &ApiServiceStatus,
-) -> String {
+pub fn format_service_status_label(config: &ApiServiceConfig, status: &ApiServiceStatus) -> String {
     if !config.enabled {
         return "API Off".into();
     }
@@ -649,11 +643,11 @@ pub(crate) fn format_service_status_label(
     }
 }
 
-pub(crate) fn launch_shipflow_desktop_companion() -> Result<(), String> {
+pub fn launch_shipflow_desktop_companion() -> Result<(), String> {
     launch_shipflow_desktop()
 }
 
-pub(crate) fn launch_shipflow_service_settings_companion() -> Result<(), String> {
+pub fn launch_shipflow_service_settings_companion() -> Result<(), String> {
     launch_shipflow_service_settings()
 }
 

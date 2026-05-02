@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback } from "react";
+import { openShipflowServiceApp } from "../../backend/commands";
 import {
   ServiceSettingsNotice,
   useServiceSettingsController,
@@ -21,7 +21,7 @@ export function useWorkspaceServiceSurfaceController({
 
   const openShipFlowServiceApp = useCallback(async () => {
     try {
-      await invoke("open_shipflow_service_app");
+      await openShipflowServiceApp();
     } catch {
       showNotice({
         tone: "error",

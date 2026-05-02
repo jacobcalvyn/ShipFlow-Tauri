@@ -1,12 +1,12 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
+import { logFrontendRuntimeEvent } from "./backend/commands";
 import "./styles.css";
 
 async function logFrontendRuntime(level: "info" | "error", message: string) {
   try {
-    await Promise.resolve(invoke("log_frontend_runtime_event", { level, message }));
+    await logFrontendRuntimeEvent(level, message);
   } catch {
     // Ignore logging failures to avoid recursive runtime errors.
   }

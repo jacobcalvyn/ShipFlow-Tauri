@@ -1,11 +1,11 @@
 import { useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { logFrontendRuntimeEvent } from "../backend/commands";
 
 export function useFrontendRuntimeLogging() {
   useEffect(() => {
     const emitRuntimeEvent = (level: "info" | "error", message: string) => {
       void Promise.resolve(
-        invoke("log_frontend_runtime_event", { level, message })
+        logFrontendRuntimeEvent(level, message)
       ).catch(() => {
         // Ignore logging failures to avoid recursive runtime errors.
       });

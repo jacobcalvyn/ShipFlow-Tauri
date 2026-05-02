@@ -264,8 +264,10 @@ fn service_settings_webview_url() -> WebviewUrl {
     WebviewUrl::App("index.html?windowKind=service-settings".into())
 }
 
-pub(crate) fn load_service_window_icon() -> Result<Image<'static>, String> {
-    let decoder = PngDecoder::new(Cursor::new(include_bytes!("../icons/service-icon.png")));
+pub fn load_service_window_icon() -> Result<Image<'static>, String> {
+    let decoder = PngDecoder::new(Cursor::new(include_bytes!(
+        "../../../src-tauri/icons/service-icon.png"
+    )));
     let mut reader = decoder
         .read_info()
         .map_err(|error| format!("Unable to decode service window icon metadata: {error}"))?;
@@ -294,7 +296,7 @@ fn with_service_window_icon<'a, R: Runtime, M: Manager<R>>(
         .map_err(|error| format!("Unable to set service window icon: {error}"))
 }
 
-pub(crate) fn build_tracking_client(user_agent: &str) -> reqwest::Client {
+pub fn build_tracking_client(user_agent: &str) -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(6))
         .read_timeout(Duration::from_secs(15))
@@ -304,7 +306,7 @@ pub(crate) fn build_tracking_client(user_agent: &str) -> reqwest::Client {
         .expect("failed to create tracking client")
 }
 
-pub(crate) fn build_main_webview_navigation_guard_plugin() -> TauriPlugin<tauri::Wry> {
+pub fn build_main_webview_navigation_guard_plugin() -> TauriPlugin<tauri::Wry> {
     let navigation_guard = MainWebviewNavigationGuard::default();
     let navigation_guard_plugin = navigation_guard.clone();
     let page_load_guard_plugin = navigation_guard;
@@ -334,7 +336,7 @@ pub(crate) fn build_main_webview_navigation_guard_plugin() -> TauriPlugin<tauri:
         .build()
 }
 
-pub(crate) fn desktop_setup(app: &mut App<tauri::Wry>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn desktop_setup(app: &mut App<tauri::Wry>) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(error) = service::register_current_desktop_process() {
         log_runtime_event(
             "ERROR",
@@ -353,9 +355,7 @@ pub(crate) fn desktop_setup(app: &mut App<tauri::Wry>) -> Result<(), Box<dyn std
     Ok(())
 }
 
-pub(crate) fn service_settings_setup(
-    app: &mut App<tauri::Wry>,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn service_settings_setup(app: &mut App<tauri::Wry>) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
@@ -398,9 +398,7 @@ pub(crate) fn service_settings_setup(
     Ok(())
 }
 
-pub(crate) fn open_service_settings_window_runtime<R: Runtime>(
-    app: &AppHandle<R>,
-) -> Result<(), String> {
+pub fn open_service_settings_window_runtime<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("service-settings") {
         let _ = window.unminimize();
         let _ = window.show();
@@ -422,7 +420,7 @@ pub(crate) fn open_service_settings_window_runtime<R: Runtime>(
         .map_err(|error| format!("Unable to create ShipFlow Service window: {error}"))
 }
 
-pub(crate) fn handle_desktop_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
+pub fn handle_desktop_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
     let registry = window.state::<WorkspaceDocumentRegistryState>();
     let document_state = window.state::<WindowDocumentState>();
     let close_guard = window.state::<WindowCloseGuardState>();
@@ -460,10 +458,7 @@ pub(crate) fn handle_desktop_window_event<R: Runtime>(window: &Window<R>, event:
     }
 }
 
-pub(crate) fn handle_service_settings_window_event<R: Runtime>(
-    window: &Window<R>,
-    event: &WindowEvent,
-) {
+pub fn handle_service_settings_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
     if window.label() != "service-settings" {
         return;
     }

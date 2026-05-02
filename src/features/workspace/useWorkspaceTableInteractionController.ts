@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { KeyboardEvent, MouseEvent as ReactMouseEvent, MutableRefObject, useCallback } from "react";
+import { openExternalUrl } from "../../backend/commands";
 import { COLUMNS } from "../sheet/columns";
 import {
   clearValueFilterInSheet,
@@ -53,7 +53,7 @@ export function useWorkspaceTableInteractionController({
   const openSourceLink = useCallback(
     async (url: string) => {
       try {
-        await invoke("open_external_url", { url });
+        await openExternalUrl(url);
       } catch (error) {
         showNotice({
           tone: "error",

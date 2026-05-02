@@ -4,7 +4,7 @@ use shipflow_service_runtime::{
 
 use super::ApiServiceConfig;
 
-pub(crate) async fn run_service_process(config: ApiServiceConfig) -> Result<(), String> {
+pub async fn run_service_process(config: ApiServiceConfig) -> Result<(), String> {
     run_service_runtime_process(service_runtime_config_from_api_config(&config)).await
 }
 

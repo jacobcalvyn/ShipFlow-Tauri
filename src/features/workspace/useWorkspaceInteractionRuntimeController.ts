@@ -1,6 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
 import { Dispatch, MutableRefObject, SetStateAction, useCallback } from "react";
 import { flushSync } from "react-dom";
+import { trackBag, trackManifest } from "../../backend/commands";
 import {
   appendTrackingIdsToSheet,
   clearSheetDataPreservingImportStateInSheet,
@@ -308,13 +308,13 @@ export function useWorkspaceInteractionRuntimeController({
       try {
         const response =
           kind === "bag"
-            ? await invoke<BagResponse>("track_bag", {
+            ? await trackBag({
                 bagId: lookupValue,
                 forceRefresh: true,
                 sheetId: targetSheetId,
                 rowKey: "__import_source_bag__",
               })
-            : await invoke<ManifestResponse>("track_manifest", {
+            : await trackManifest({
                 manifestId: lookupValue,
                 forceRefresh: true,
                 sheetId: targetSheetId,
@@ -378,7 +378,7 @@ export function useWorkspaceInteractionRuntimeController({
               }
 
               try {
-                const bagResponse = await invoke<BagResponse>("track_bag", {
+                const bagResponse = await trackBag({
                   bagId,
                   forceRefresh: true,
                   sheetId: targetSheetId,

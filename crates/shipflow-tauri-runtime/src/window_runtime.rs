@@ -11,33 +11,33 @@ use crate::workspace_document::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceWindowRequest {
-    pub(crate) document_path: Option<String>,
-    pub(crate) start_fresh: bool,
+pub struct WorkspaceWindowRequest {
+    pub document_path: Option<String>,
+    pub start_fresh: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceDocumentClaimResult {
-    pub(crate) status: String,
-    pub(crate) path: Option<String>,
-    pub(crate) owner_label: Option<String>,
+pub struct WorkspaceDocumentClaimResult {
+    pub status: String,
+    pub path: Option<String>,
+    pub owner_label: Option<String>,
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct WorkspaceWindowLaunchState {
+pub struct WorkspaceWindowLaunchState {
     inner: Arc<Mutex<HashMap<String, WorkspaceWindowRequest>>>,
 }
 
 impl WorkspaceWindowLaunchState {
-    pub(crate) fn insert(&self, label: String, request: WorkspaceWindowRequest) {
+    pub fn insert(&self, label: String, request: WorkspaceWindowRequest) {
         self.inner
             .lock()
             .expect("workspace window launch state lock poisoned")
             .insert(label, request);
     }
 
-    pub(crate) fn take(&self, label: &str) -> Option<WorkspaceWindowRequest> {
+    pub fn take(&self, label: &str) -> Option<WorkspaceWindowRequest> {
         self.inner
             .lock()
             .expect("workspace window launch state lock poisoned")
@@ -46,12 +46,12 @@ impl WorkspaceWindowLaunchState {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct WorkspaceDocumentRegistryState {
+pub struct WorkspaceDocumentRegistryState {
     path_by_label: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl WorkspaceDocumentRegistryState {
-    pub(crate) fn claim_for_window<R: Runtime>(
+    pub fn claim_for_window<R: Runtime>(
         &self,
         app: &AppHandle<R>,
         window_label: &str,
@@ -98,7 +98,7 @@ impl WorkspaceDocumentRegistryState {
         })
     }
 
-    pub(crate) fn release_window(&self, window_label: &str) {
+    pub fn release_window(&self, window_label: &str) {
         self.path_by_label
             .lock()
             .expect("workspace document registry lock poisoned")
@@ -108,31 +108,31 @@ impl WorkspaceDocumentRegistryState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WindowDocumentStateSnapshot {
-    pub(crate) is_dirty: bool,
-    pub(crate) document_name: String,
+pub struct WindowDocumentStateSnapshot {
+    pub is_dirty: bool,
+    pub document_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WindowCloseRequestPayload {
-    pub(crate) document_name: String,
+pub struct WindowCloseRequestPayload {
+    pub document_name: String,
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct WindowDocumentState {
+pub struct WindowDocumentState {
     by_label: Arc<Mutex<HashMap<String, WindowDocumentStateSnapshot>>>,
 }
 
 impl WindowDocumentState {
-    pub(crate) fn set_for_window(&self, label: &str, snapshot: WindowDocumentStateSnapshot) {
+    pub fn set_for_window(&self, label: &str, snapshot: WindowDocumentStateSnapshot) {
         self.by_label
             .lock()
             .expect("window document state lock poisoned")
             .insert(label.to_string(), snapshot);
     }
 
-    pub(crate) fn get_for_window(&self, label: &str) -> WindowDocumentStateSnapshot {
+    pub fn get_for_window(&self, label: &str) -> WindowDocumentStateSnapshot {
         self.by_label
             .lock()
             .expect("window document state lock poisoned")
@@ -141,7 +141,7 @@ impl WindowDocumentState {
             .unwrap_or_default()
     }
 
-    pub(crate) fn remove_window(&self, label: &str) {
+    pub fn remove_window(&self, label: &str) {
         self.by_label
             .lock()
             .expect("window document state lock poisoned")
@@ -150,26 +150,26 @@ impl WindowDocumentState {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct WindowCloseGuardState {
+pub struct WindowCloseGuardState {
     allowed_labels: Arc<Mutex<HashSet<String>>>,
 }
 
 impl WindowCloseGuardState {
-    pub(crate) fn allow_next_close(&self, label: &str) {
+    pub fn allow_next_close(&self, label: &str) {
         self.allowed_labels
             .lock()
             .expect("window close guard lock poisoned")
             .insert(label.to_string());
     }
 
-    pub(crate) fn take_allowance(&self, label: &str) -> bool {
+    pub fn take_allowance(&self, label: &str) -> bool {
         self.allowed_labels
             .lock()
             .expect("window close guard lock poisoned")
             .remove(label)
     }
 
-    pub(crate) fn clear_window(&self, label: &str) {
+    pub fn clear_window(&self, label: &str) {
         self.allowed_labels
             .lock()
             .expect("window close guard lock poisoned")
@@ -187,10 +187,7 @@ fn uuid_like_label() -> String {
     format!("{now:x}")
 }
 
-pub(crate) fn set_current_window_title_runtime(
-    window: Window,
-    title: String,
-) -> Result<(), String> {
+pub fn set_current_window_title_runtime(window: Window, title: String) -> Result<(), String> {
     let trimmed = title.trim();
     let next_title = if trimmed.is_empty() {
         "ShipFlow Desktop"
@@ -203,11 +200,11 @@ pub(crate) fn set_current_window_title_runtime(
         .map_err(|error| format!("Unable to update window title: {error}"))
 }
 
-pub(crate) fn get_current_window_label_runtime(window: Window) -> String {
+pub fn get_current_window_label_runtime(window: Window) -> String {
     window.label().to_string()
 }
 
-pub(crate) fn set_current_window_document_state_runtime(
+pub fn set_current_window_document_state_runtime(
     window: Window,
     state: &WindowDocumentState,
     is_dirty: bool,
@@ -222,7 +219,7 @@ pub(crate) fn set_current_window_document_state_runtime(
     );
 }
 
-pub(crate) fn claim_current_workspace_document_runtime<R: Runtime>(
+pub fn claim_current_workspace_document_runtime<R: Runtime>(
     app: AppHandle<R>,
     window: Window<R>,
     registry: &WorkspaceDocumentRegistryState,
@@ -231,7 +228,7 @@ pub(crate) fn claim_current_workspace_document_runtime<R: Runtime>(
     registry.claim_for_window(&app, window.label(), path)
 }
 
-pub(crate) fn resolve_window_close_request_runtime(
+pub fn resolve_window_close_request_runtime(
     window: Window,
     close_guard: &WindowCloseGuardState,
     action: String,
@@ -248,7 +245,7 @@ pub(crate) fn resolve_window_close_request_runtime(
     }
 }
 
-pub(crate) fn create_workspace_window_runtime<R: Runtime>(
+pub fn create_workspace_window_runtime<R: Runtime>(
     app: AppHandle<R>,
     launch_state: &WorkspaceWindowLaunchState,
     registry: &WorkspaceDocumentRegistryState,
@@ -305,7 +302,7 @@ pub(crate) fn create_workspace_window_runtime<R: Runtime>(
     })
 }
 
-pub(crate) fn take_pending_workspace_window_request_runtime(
+pub fn take_pending_workspace_window_request_runtime(
     window: Window,
     launch_state: &WorkspaceWindowLaunchState,
 ) -> Option<WorkspaceWindowRequest> {

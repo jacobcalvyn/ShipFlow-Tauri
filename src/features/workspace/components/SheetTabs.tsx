@@ -13,6 +13,8 @@ import {
   ServiceMode,
   TrackingSource,
 } from "../../../types";
+import { DesktopServiceConnectionPanel } from "./DesktopServiceConnectionPanel";
+import { SheetFileMenu } from "./SheetFileMenu";
 
 type SheetTabItem = {
   id: string;
@@ -929,102 +931,24 @@ export function SheetTabs({
             document.body
           )
         : null}
-      {isFileMenuOpen && fileMenuStyle
-        ? createPortal(
-            <div
-              className="sheet-file-menu-panel"
-              style={fileMenuStyle}
-              role="menu"
-              aria-label="File"
-              onMouseEnter={openFileMenu}
-              onMouseLeave={scheduleCloseFileMenu}
-            >
-              <div className="sheet-file-menu-section">
-                <button
-                  type="button"
-                  className="sheet-file-menu-button"
-                  role="menuitem"
-                  onClick={() => handleFileAction(onCreateDocument)}
-                >
-                  Baru
-                </button>
-                <button
-                  type="button"
-                  className="sheet-file-menu-button"
-                  role="menuitem"
-                  onClick={() => handleFileAction(onOpenDocument)}
-                >
-                  Buka
-                </button>
-                <button
-                  type="button"
-                  className="sheet-file-menu-button"
-                  role="menuitem"
-                  onClick={() => handleFileAction(onSaveDocument)}
-                >
-                  Simpan
-                </button>
-                <button
-                  type="button"
-                  className="sheet-file-menu-button"
-                  role="menuitem"
-                  onClick={() => handleFileAction(onSaveDocumentAs)}
-                >
-                  Simpan Sebagai
-                </button>
-                <button
-                  type="button"
-                  className="sheet-file-menu-button"
-                  role="menuitem"
-                  onClick={() => handleFileAction(onCreateDocumentWindow)}
-                >
-                  Jendela Baru
-                </button>
-                <button
-                  type="button"
-                  className="sheet-file-menu-button"
-                  role="menuitem"
-                  onClick={() => handleFileAction(onOpenDocumentInNewWindow)}
-                >
-                  Buka di Jendela Baru
-                </button>
-              </div>
-              <div className="sheet-file-menu-section">
-                <label className="sheet-file-menu-toggle">
-                  <span>Simpan Otomatis</span>
-                  <input
-                    type="checkbox"
-                    checked={isAutosaveEnabled}
-                    onChange={() => onToggleAutosave()}
-                    disabled={!canUseAutosave}
-                  />
-                </label>
-                {!canUseAutosave ? (
-                  <div className="sheet-file-menu-note">
-                    Simpan dokumen terlebih dahulu untuk mengaktifkan Simpan Otomatis.
-                  </div>
-                ) : null}
-              </div>
-              {recentDocuments.length > 0 ? (
-                <div className="sheet-file-menu-section">
-                  <span className="sheet-file-menu-label">Dokumen terbaru</span>
-                  {recentDocuments.map((document) => (
-                    <button
-                      key={document.path}
-                      type="button"
-                      className="sheet-file-menu-button is-secondary"
-                      role="menuitem"
-                      onClick={() => handleFileAction(() => onOpenRecentDocument(document.path))}
-                    >
-                      {document.name}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>,
-            document.body
-          )
-        : null}
+      <SheetFileMenu
+        isOpen={isFileMenuOpen}
+        style={fileMenuStyle}
+        recentDocuments={recentDocuments}
+        canUseAutosave={canUseAutosave}
+        isAutosaveEnabled={isAutosaveEnabled}
+        onMouseEnter={openFileMenu}
+        onMouseLeave={scheduleCloseFileMenu}
+        onAction={handleFileAction}
+        onCreateDocument={onCreateDocument}
+        onOpenDocument={onOpenDocument}
+        onSaveDocument={onSaveDocument}
+        onSaveDocumentAs={onSaveDocumentAs}
+        onCreateDocumentWindow={onCreateDocumentWindow}
+        onOpenDocumentInNewWindow={onOpenDocumentInNewWindow}
+        onOpenRecentDocument={onOpenRecentDocument}
+        onToggleAutosave={onToggleAutosave}
+      />
       {isSettingsOpen
         ? createPortal(
             <div className="settings-modal-backdrop">
@@ -1092,101 +1016,23 @@ export function SheetTabs({
                         Besar
                       </button>
                     </div>
-                    <div className="settings-service-launcher">
-                      <div className="settings-service-launcher-copy">
-                        <div className="settings-service-launcher-title">Koneksi Service</div>
-                        <div className="settings-service-launcher-description">
-                          Atur port localhost dan token ShipFlow Service yang dipakai Desktop
-                          untuk lacak.
-                        </div>
-                      </div>
-                    </div>
-                    <div className="service-settings-stack">
-                      <label className="settings-text-field settings-text-field-port">
-                        <span className="settings-input-label">ShipFlow Service Port</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={65535}
-                          inputMode="numeric"
-                          aria-label="ShipFlow Service Port"
-                          value={desktopServicePortDraft}
-                          onChange={(event) =>
-                            handleDesktopServicePortDraftChange(event.target.value)
-                          }
-                        />
-                      </label>
-                      {!isDesktopServicePortValid ? (
-                        <div className="settings-field-help settings-field-help-error">
-                          Port harus antara 1 dan 65535.
-                        </div>
-                      ) : null}
-                      <label className="settings-text-field">
-                        <span className="settings-input-label">ShipFlow Service Token</span>
-                        <input
-                          type={isDesktopTokenVisible ? "text" : "password"}
-                          aria-label="ShipFlow Service Bearer Token"
-                          value={serviceConfig.desktopServiceAuthToken}
-                          onChange={(event) => {
-                            onPreviewDesktopServiceAuthToken(event.target.value);
-                            setServiceConnectionTestResult(null);
-                          }}
-                        />
-                      </label>
-                      <div className="settings-inline-actions service-settings-field-actions">
-                        <button
-                          type="button"
-                          className="sheet-tab-action"
-                          onClick={() => setIsDesktopTokenVisible((current) => !current)}
-                        >
-                          {isDesktopTokenVisible ? "Sembunyikan" : "Tampilkan"}
-                        </button>
-                        <button
-                          type="button"
-                          className="sheet-tab-action"
-                          onClick={() => onCopyServiceToken(serviceConfig.desktopServiceAuthToken)}
-                          disabled={!serviceConfig.desktopServiceAuthToken}
-                        >
-                          Copy
-                        </button>
-                        <button
-                          type="button"
-                          className="sheet-tab-action"
-                          onClick={() => {
-                            void onPasteDesktopServiceAuthToken();
-                            setServiceConnectionTestResult(null);
-                          }}
-                        >
-                          Paste
-                        </button>
-                        <button
-                          type="button"
-                          className="sheet-tab-action"
-                          onClick={handleTestServiceConnection}
-                          disabled={
-                            isTestingServiceConnection ||
-                            !isDesktopServicePortValid ||
-                            !serviceConfig.desktopServiceAuthToken.trim()
-                          }
-                        >
-                          {isTestingServiceConnection ? "Testing..." : "Tes Service"}
-                        </button>
-                      </div>
-                      {serviceConnectionTestResult ? (
-                        <div
-                          className={[
-                            "settings-field-help",
-                            `settings-field-help-${serviceConnectionTestResult.tone}`,
-                          ]
-                            .filter(Boolean)
-                            .join(" ")}
-                          role="status"
-                          aria-live="polite"
-                        >
-                          {serviceConnectionTestResult.message}
-                        </div>
-                      ) : null}
-                    </div>
+                    <DesktopServiceConnectionPanel
+                      serviceConfig={serviceConfig}
+                      desktopServicePortDraft={desktopServicePortDraft}
+                      isDesktopServicePortValid={isDesktopServicePortValid}
+                      isDesktopTokenVisible={isDesktopTokenVisible}
+                      isTestingServiceConnection={isTestingServiceConnection}
+                      serviceConnectionTestResult={serviceConnectionTestResult}
+                      onDesktopServicePortDraftChange={handleDesktopServicePortDraftChange}
+                      onPreviewDesktopServiceAuthToken={onPreviewDesktopServiceAuthToken}
+                      onClearConnectionTestResult={() => setServiceConnectionTestResult(null)}
+                      onToggleDesktopTokenVisibility={() =>
+                        setIsDesktopTokenVisible((current) => !current)
+                      }
+                      onCopyServiceToken={onCopyServiceToken}
+                      onPasteDesktopServiceAuthToken={onPasteDesktopServiceAuthToken}
+                      onTestServiceConnection={handleTestServiceConnection}
+                    />
                   </section>
                 </div>
                 <div className="settings-modal-footer">

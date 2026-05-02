@@ -18,8 +18,8 @@ use self::http_api::run_service_process;
 use self::process_runtime::{
     ensure_service_tray_process_running, is_expected_service_process,
     is_expected_service_settings_process, is_process_alive, is_service_runtime_ready,
-    spawn_service_process, stop_service_process, sync_service_tray_companion,
-    wait_for_service_runtime,
+    launch_shipflow_service_settings_companion, spawn_service_process, stop_service_process,
+    sync_service_tray_companion, wait_for_service_runtime,
 };
 use self::runtime_config::{
     error_status, running_status, stopped_status, validate_desktop_service_connection_config,
@@ -45,8 +45,8 @@ const SERVICE_PROCESS_FLAG: &str = "--shipflow-service-process";
 const SERVICE_TRAY_FLAG: &str = "--shipflow-service-tray";
 const SERVICE_OPEN_SETTINGS_FLAG: &str = "--shipflow-service-open-settings";
 const SERVICE_CONFIG_ARG: &str = "--service-config-base64";
-pub(crate) use shipflow_service_runtime::SERVICE_STATUS_PRODUCT;
-pub(crate) const SERVICE_STATE_DIR_NAME: &str = "shipflow-service-runtime";
+pub use shipflow_service_runtime::SERVICE_STATUS_PRODUCT;
+pub const SERVICE_STATE_DIR_NAME: &str = "shipflow-service-runtime";
 const SERVICE_CONFIG_FILE_NAME: &str = "config.json";
 const SERVICE_RUNTIME_CONFIG_FILE_NAME: &str = "runtime-config.json";
 const SERVICE_PID_FILE_NAME: &str = "pid";
@@ -56,7 +56,7 @@ const DESKTOP_REQUEST_FILE_NAME: &str = "desktop-request.json";
 const SERVICE_COMPANION_BINARY_BASENAME: &str = "shipflow-service";
 const DESKTOP_BINARY_BASENAME: &str = "shipflow3-tauri";
 const DESKTOP_PRODUCT_BASENAME: &str = "ShipFlow Desktop";
-const SERVICE_TRAY_ID: &str = "shipflow-service-tray";
+pub const SERVICE_TRAY_ID: &str = "shipflow-service-tray";
 const SERVICE_TRAY_STATUS_ID: &str = "service-tray-status";
 const SERVICE_TRAY_OPEN_SETTINGS_ID: &str = "service-tray-open-settings";
 const SERVICE_TRAY_OPEN_DESKTOP_ID: &str = "service-tray-open-desktop";
@@ -334,6 +334,10 @@ pub fn maybe_delegate_service_settings_launch_to_existing_process() -> Result<bo
     }
 
     Ok(false)
+}
+
+pub fn launch_service_settings_app() -> Result<(), String> {
+    launch_shipflow_service_settings_companion()
 }
 
 pub fn should_show_service_settings_window_from_current_args() -> bool {

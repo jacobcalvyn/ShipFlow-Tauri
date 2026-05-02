@@ -13,25 +13,25 @@ static WORKSPACE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceDocumentFile {
-    pub(crate) version: u8,
-    pub(crate) app: String,
-    pub(crate) saved_at: String,
-    pub(crate) workspace: serde_json::Value,
+pub struct WorkspaceDocumentFile {
+    pub version: u8,
+    pub app: String,
+    pub saved_at: String,
+    pub workspace: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceDocumentReadResult {
-    pub(crate) path: String,
-    pub(crate) document: WorkspaceDocumentFile,
+pub struct WorkspaceDocumentReadResult {
+    pub path: String,
+    pub document: WorkspaceDocumentFile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceDocumentWriteResult {
-    pub(crate) path: String,
-    pub(crate) saved_at: String,
+pub struct WorkspaceDocumentWriteResult {
+    pub path: String,
+    pub saved_at: String,
 }
 
 fn expand_document_path(value: &str) -> PathBuf {
@@ -44,7 +44,7 @@ fn expand_document_path(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-pub(crate) fn normalize_workspace_document_path(value: &str) -> Result<PathBuf, String> {
+pub fn normalize_workspace_document_path(value: &str) -> Result<PathBuf, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err("Workspace file path is required.".into());
@@ -58,14 +58,14 @@ pub(crate) fn normalize_workspace_document_path(value: &str) -> Result<PathBuf, 
     Ok(path)
 }
 
-pub(crate) fn to_display_document_path(path: &Path) -> String {
+pub fn to_display_document_path(path: &Path) -> String {
     fs::canonicalize(path)
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
         .to_string()
 }
 
-pub(crate) fn validate_workspace_document(document: &WorkspaceDocumentFile) -> Result<(), String> {
+pub fn validate_workspace_document(document: &WorkspaceDocumentFile) -> Result<(), String> {
     if document.version != 1 {
         return Err("Unsupported workspace document version.".into());
     }
@@ -137,7 +137,7 @@ fn finalize_workspace_document_write(temp_path: &Path, target_path: &Path) -> Re
     }
 }
 
-pub(crate) fn write_workspace_document_to_path(
+pub fn write_workspace_document_to_path(
     path: &Path,
     document: &WorkspaceDocumentFile,
 ) -> Result<(), String> {
@@ -161,7 +161,7 @@ pub(crate) fn write_workspace_document_to_path(
     Ok(())
 }
 
-pub(crate) fn get_workspace_document_name_from_path(path: &str) -> String {
+pub fn get_workspace_document_name_from_path(path: &str) -> String {
     Path::new(path)
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
@@ -169,9 +169,7 @@ pub(crate) fn get_workspace_document_name_from_path(path: &str) -> String {
         .unwrap_or_else(|| "Untitled.shipflow".into())
 }
 
-pub(crate) fn read_workspace_document_file(
-    path: String,
-) -> Result<WorkspaceDocumentReadResult, String> {
+pub fn read_workspace_document_file(path: String) -> Result<WorkspaceDocumentReadResult, String> {
     let normalized_path = normalize_workspace_document_path(&path)?;
     let raw = fs::read_to_string(&normalized_path)
         .map_err(|error| format!("Unable to read workspace file: {error}"))?;
@@ -185,7 +183,7 @@ pub(crate) fn read_workspace_document_file(
     })
 }
 
-pub(crate) fn write_workspace_document_file(
+pub fn write_workspace_document_file(
     path: String,
     document: WorkspaceDocumentFile,
 ) -> Result<WorkspaceDocumentWriteResult, String> {
