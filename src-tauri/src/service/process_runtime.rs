@@ -25,7 +25,7 @@ use super::{
     },
     ApiServiceConfig, ApiServiceMode, ApiServiceStatus, ApiServiceStatusKind,
     DESKTOP_BINARY_BASENAME, DESKTOP_PRODUCT_BASENAME, SERVICE_COMPANION_BINARY_BASENAME,
-    SERVICE_PROCESS_FLAG, SERVICE_STATUS_PRODUCT, SERVICE_TRAY_FLAG,
+    SERVICE_OPEN_SETTINGS_FLAG, SERVICE_PROCESS_FLAG, SERVICE_STATUS_PRODUCT, SERVICE_TRAY_FLAG,
 };
 
 #[cfg(target_os = "windows")]
@@ -91,6 +91,7 @@ fn launch_shipflow_service_settings() -> Result<(), String> {
     let mut command = Command::new(executable);
     prepare_background_command(&mut command);
     command
+        .arg(SERVICE_OPEN_SETTINGS_FLAG)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -789,6 +790,9 @@ mod tests {
     fn service_settings_command_line_rejects_background_service_flags() {
         assert!(command_line_matches_service_settings_process(
             r#""C:\Program Files\ShipFlow Service\shipflow-service.exe""#
+        ));
+        assert!(command_line_matches_service_settings_process(
+            r#""C:\Program Files\ShipFlow Service\shipflow-service.exe" --shipflow-service-open-settings"#
         ));
         assert!(!command_line_matches_service_settings_process(
             r#""C:\Program Files\ShipFlow Service\shipflow-service.exe" --shipflow-service-process"#

@@ -146,7 +146,9 @@ fn run_cli_service() {
 fn main() {
     if env::args().len() == 1
         || env::args().skip(1).any(|argument| {
-            argument == "--shipflow-service-process" || argument == "--shipflow-service-tray"
+            argument == "--shipflow-service-process"
+                || argument == "--shipflow-service-tray"
+                || argument == "--shipflow-service-open-settings"
         })
     {
         run_service_settings_app();

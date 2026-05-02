@@ -43,6 +43,7 @@ pub use self::state_store::{
 
 const SERVICE_PROCESS_FLAG: &str = "--shipflow-service-process";
 const SERVICE_TRAY_FLAG: &str = "--shipflow-service-tray";
+const SERVICE_OPEN_SETTINGS_FLAG: &str = "--shipflow-service-open-settings";
 const SERVICE_CONFIG_ARG: &str = "--service-config-base64";
 pub(crate) use shipflow_service_runtime::SERVICE_STATUS_PRODUCT;
 pub(crate) const SERVICE_STATE_DIR_NAME: &str = "shipflow-service-runtime";
@@ -320,10 +321,11 @@ pub fn maybe_delegate_desktop_launch_to_existing_process() -> Result<bool, Strin
 }
 
 pub fn maybe_delegate_service_settings_launch_to_existing_process() -> Result<bool, String> {
+    let should_show_window = should_show_service_settings_window_from_current_args();
     if let Some(pid) = read_recorded_service_settings_pid() {
         if is_expected_service_settings_process(pid) {
             persist_service_settings_activation_request(&DesktopActivationRequest {
-                focus_main_window: true,
+                focus_main_window: should_show_window,
             })?;
             return Ok(true);
         }
@@ -332,6 +334,10 @@ pub fn maybe_delegate_service_settings_launch_to_existing_process() -> Result<bo
     }
 
     Ok(false)
+}
+
+pub fn should_show_service_settings_window_from_current_args() -> bool {
+    env::args().any(|argument| argument == SERVICE_OPEN_SETTINGS_FLAG)
 }
 
 pub fn ensure_tracking_service_runtime(

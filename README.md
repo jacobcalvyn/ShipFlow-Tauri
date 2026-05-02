@@ -196,6 +196,7 @@ The main table currently focuses on:
 - Custom Desktop-to-Service settings are saved only after an authenticated `/status` response proves the endpoint is ShipFlow Service.
 - In custom Desktop-to-Service mode, Desktop does not enable or manage the Service API endpoint; the target service owns that endpoint and token.
 - The Service API token is required for Desktop tracking in both internal scraper mode and external API mode.
+- ShipFlow Service does not generate or rotate the API token automatically. The token changes only when the user clicks `Generate` or confirms `Regenerate`.
 - External tracking source access can be opened or closed from `ShipFlow Service` without affecting the desktop runtime itself.
 - Retrack failures do not wipe the last successful shipment data. Failed refreshes keep the old row data and mark the row as stale.
 - Numeric parsing in the Rust scraper is hardened: invalid upstream numeric fields now fail loudly instead of silently falling back to `0`.
@@ -219,8 +220,9 @@ The main table currently focuses on:
 - Desktop startup no longer starts a service companion. Start the standalone service first, then configure Desktop with that service port/token.
 - Desktop/service readiness checks now require an authenticated `GET /status` response from `ShipFlow Service`, including a ShipFlow-specific product marker, before reusing an existing runtime process.
 - Windows release builds of `ShipFlow Service` use the Windows subsystem, so launching the installed service app does not open a console window.
+- Launching `ShipFlow Service` normally starts it in the background and keeps only the system-tray/menu-bar entry visible.
 - Closing the `ShipFlow Service` settings window hides it and keeps the service tray companion available.
-- Reopening `ShipFlow Service` focuses or recreates the existing settings window instead of starting a duplicate settings instance.
+- Reopening `ShipFlow Service` from the tray/menu-bar entry focuses or recreates the existing settings window instead of starting a duplicate settings instance.
 - Desktop custom connection saves no longer start or stop the Service tray companion.
 - Windows Desktop and Service installers run shutdown hooks before install and uninstall replacement, so running ShipFlow processes are closed before files are overwritten.
 - Custom Desktop-to-Service lookups re-check the authenticated `/status` identity before sending shipment, bag, or manifest IDs to a custom endpoint.
@@ -333,13 +335,13 @@ Run a Desktop dev instance on a non-default Vite port:
 npm run tauri -- dev --config '{"build":{"devUrl":"http://127.0.0.1:1431","beforeDevCommand":"npm run dev -- --host 127.0.0.1 --port 1431 --strictPort"}}'
 ```
 
-Run the service app directly in dev. This starts the Service frontend on port `1432`, waits until it is ready, then opens the Service app:
+Run the service app directly in dev. This starts the Service frontend on port `1432`, waits until it is ready, then starts the Service app in the background with its tray/menu-bar entry:
 
 ```bash
 npm run dev:service
 ```
 
-In the Service window:
+Open the Service window from the tray/menu-bar entry. In the Service window:
 
 1. Open `Sumber Lacak` and choose `Internal ShipFlow` or `API ShipFlow Eksternal`.
 2. Open `API`, review the localhost endpoint, generate a token if needed, and save.
@@ -380,7 +382,15 @@ Build the standalone service app binary:
 npm run build:service
 ```
 
-This builds the Service app binary with Tauri `custom-protocol` enabled, so the Service settings window uses embedded production assets instead of a localhost dev server. Windows distribution uses the Service installer produced by GitHub Actions, not this raw binary.
+This builds the Service app binary with Tauri `custom-protocol` enabled, so the Service settings window uses embedded production assets instead of a localhost dev server. This raw binary is for local build validation only.
+
+Build the standalone service macOS app bundle:
+
+```bash
+npm run build:service:bundle:macos
+```
+
+Windows distribution uses the Service installer produced by GitHub Actions, not the raw binary.
 
 Build the desktop installer:
 
@@ -470,10 +480,11 @@ What it does:
 - builds the frontend assets embedded by the Service settings window
 - runs service runtime and service package Rust tests
 - builds `apps/service` in release mode with Tauri `custom-protocol` enabled
+- builds and signs a macOS `ShipFlow Service.app` bundle with the Service icon
 - builds a per-user Windows installer with NSIS
-- builds the Windows Service app without a console window and closes running `shipflow-service.exe` processes before reinstall or uninstall replacement
+- builds the Windows Service app without a console window, applies the Service icon to the app executable and installer, and closes running `shipflow-service.exe` processes before reinstall or uninstall replacement
 - uploads service artifacts:
-  - `shipflow-service-macos`
+  - `shipflow-service-macos-app`
   - `shipflow-service-windows-installer`
 
 Desktop installers no longer include the service app. Install ShipFlow Service separately, then configure Desktop with the service port and token.

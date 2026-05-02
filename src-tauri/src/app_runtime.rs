@@ -356,6 +356,9 @@ pub(crate) fn desktop_setup(app: &mut App<tauri::Wry>) -> Result<(), Box<dyn std
 pub(crate) fn service_settings_setup(
     app: &mut App<tauri::Wry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "macos")]
+    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
     if let Err(error) = service::register_current_service_settings_process() {
         log_runtime_event(
             "ERROR",
@@ -375,11 +378,13 @@ pub(crate) fn service_settings_setup(
         );
     }
 
+    let should_show_window = service::should_show_service_settings_window_from_current_args();
     let service_window_builder =
         tauri::WebviewWindowBuilder::new(app, "service-settings", service_settings_webview_url())
             .title("ShipFlow Service")
             .inner_size(980.0, 820.0)
             .resizable(true)
+            .visible(should_show_window)
             .initialization_script("window.__SHIPFLOW_WINDOW_KIND__ = 'service-settings';");
 
     with_service_window_icon(service_window_builder)

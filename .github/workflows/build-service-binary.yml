@@ -50,7 +50,29 @@ jobs:
       - name: Run service package Rust tests
         run: cargo test --manifest-path apps/service/Cargo.toml
 
-      - name: Build service app binary
+      - name: Build macOS service app bundle
+        if: runner.os == 'macOS'
+        working-directory: apps/service
+        run: ../../node_modules/.bin/tauri build --features custom-protocol --bundles app --ci
+
+      - name: Verify macOS service app bundle signature
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP_PATH="$(find apps/service/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      - name: Archive macOS service app bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP_PATH="$(find apps/service/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" apps/service/target/release/bundle/macos/ShipFlow-Service-macos-app.zip
+
+      - name: Build Windows service app binary
+        if: runner.os == 'Windows'
         run: cargo build --manifest-path apps/service/Cargo.toml --release --features custom-protocol
 
       - name: Install NSIS
@@ -71,12 +93,12 @@ jobs:
           }
           & $makensis "/DAPP_VERSION=0.1.0" "/DSOURCE_EXE=$sourceExe" "/DOUT_FILE=$outputExe" "/DICON_FILE=$iconFile" "scripts/windows/shipflow-service-installer.nsi"
 
-      - name: Upload macOS service binary
+      - name: Upload macOS service app archive
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v6
         with:
-          name: shipflow-service-macos
-          path: apps/service/target/release/shipflow-service
+          name: shipflow-service-macos-app
+          path: apps/service/target/release/bundle/macos/ShipFlow-Service-macos-app.zip
           if-no-files-found: error
 
       - name: Upload Windows service installer

@@ -15,7 +15,11 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
+    "targets": "all",
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "icon": [
       "../../src-tauri/icons/service-icon.png",
       "../../src-tauri/icons/service-icon.ico"
