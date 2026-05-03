@@ -480,28 +480,65 @@ Important notes:
 - Ad-hoc signing is sufficient for local/manual validation, especially on Apple Silicon, but it is not a substitute for a Developer ID Application certificate plus notarization.
 - For distribution to other users, configure the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and notarization credentials (`APPLE_API_*` or `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`) as described in the Tauri macOS signing documentation.
 
-## GitHub Actions Service Build
+## GitHub Actions Service Windows Build
 
-The repository includes a standalone service workflow at:
+The repository includes a standalone Windows service workflow at:
 
-- `.github/workflows/build-service-binary.yml`
+- `.github/workflows/build-service-windows-installer.yml`
 
 What it does:
 
-- runs on `macos-latest` and `windows-latest`
-- installs Rust and frontend dependencies
+- runs on `windows-latest`
+- installs Node.js, Rust, and frontend dependencies
 - builds the frontend assets embedded by the Service settings window
 - runs `cargo fmt --all -- --check`
 - runs `cargo test --workspace --all-targets`
 - runs `cargo clippy --workspace --all-targets -- -D warnings`
 - builds `apps/service` in release mode with Tauri `custom-protocol` enabled
-- imports the Apple Developer ID certificate and notarization key when `APPLE_*` secrets are configured
-- builds and signs a macOS `ShipFlow Service.app` bundle with the Service icon
 - builds a per-user Windows installer with NSIS
 - builds the Windows Service app without a console window, applies the Service icon to the app executable and installer, and closes running `shipflow-service.exe` processes before reinstall or uninstall replacement
-- uploads service artifacts:
-  - `shipflow-service-macos-app`
-  - `shipflow-service-windows-installer`
+- smoke-checks the generated installer and Service icon
+- uploads the Windows Service installer artifact: `shipflow-service-windows-installer`
+
+Triggers:
+
+- manual run via `workflow_dispatch`
+- no automatic push trigger by default
+
+The uploaded Windows Service output is:
+
+- `target/release/ShipFlow-Service-Setup.exe`
+
+## GitHub Actions Service macOS Build
+
+The repository includes a standalone macOS service workflow at:
+
+- `.github/workflows/build-service-macos-app.yml`
+
+What it does:
+
+- runs on `macos-latest`
+- installs Node.js, Rust, and frontend dependencies
+- builds the frontend assets embedded by the Service settings window
+- runs `cargo fmt --all -- --check`
+- runs `cargo test --workspace --all-targets`
+- runs `cargo clippy --workspace --all-targets -- -D warnings`
+- imports the Apple Developer ID certificate and notarization key when `APPLE_*` secrets are configured
+- otherwise falls back to Tauri ad-hoc signing after clearing Apple signing environment variables, so partial secrets do not trigger an invalid certificate import
+- builds and signs a macOS `ShipFlow Service.app` bundle with the Service icon
+- smoke-checks the generated app bundle and icon resources
+- verifies the generated `.app` bundle signature with `codesign --verify --deep --strict`
+- archives the `.app` bundle as a `.zip` artifact to preserve the macOS bundle structure during download
+- uploads the macOS Service app artifact: `shipflow-service-macos-app`
+
+Triggers:
+
+- manual run via `workflow_dispatch`
+- no automatic push trigger by default
+
+The uploaded macOS Service output is:
+
+- `target/release/bundle/macos/ShipFlow-Service-macos-app.zip`
 
 Desktop installers no longer include the service app. Install ShipFlow Service separately, then configure Desktop with the service port and token.
 

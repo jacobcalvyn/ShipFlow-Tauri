@@ -1,4 +1,4 @@
-name: Build ShipFlow Service
+name: Build ShipFlow Service macOS
 
 on:
   workflow_dispatch:
@@ -7,9 +7,8 @@ permissions:
   contents: read
 
 jobs:
-  build-service:
-    name: Build service on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+  build-service-macos:
+    runs-on: macos-latest
     timeout-minutes: 30
     env:
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -21,12 +20,6 @@ jobs:
       APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
       APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - macos-latest
-          - windows-latest
 
     steps:
       - name: Checkout repository
@@ -64,7 +57,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Import Apple signing certificate
-        if: ${{ runner.os == 'macOS' && env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_SIGNING_IDENTITY != '' }}
+        if: ${{ env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_SIGNING_IDENTITY != '' }}
         shell: bash
         run: |
           CERTIFICATE_PATH="$RUNNER_TEMP/apple_certificate.p12"
@@ -79,7 +72,7 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
       - name: Prepare App Store Connect key
-        if: ${{ runner.os == 'macOS' && env.APPLE_API_PRIVATE_KEY != '' && env.APPLE_API_KEY != '' }}
+        if: ${{ env.APPLE_API_PRIVATE_KEY != '' && env.APPLE_API_KEY != '' }}
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/private_keys"
@@ -87,14 +80,14 @@ jobs:
           echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8" >> "$GITHUB_ENV"
 
       - name: Build signed macOS service app bundle
-        if: ${{ runner.os == 'macOS' && env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_SIGNING_IDENTITY != '' }}
+        if: ${{ env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_SIGNING_IDENTITY != '' }}
         working-directory: apps/service
         shell: bash
         run: |
           ../../node_modules/.bin/tauri build --features custom-protocol --bundles app --ci --config "{\"bundle\":{\"macOS\":{\"signingIdentity\":\"$APPLE_SIGNING_IDENTITY\"}}}"
 
       - name: Build ad-hoc macOS service app bundle
-        if: ${{ runner.os == 'macOS' && (env.APPLE_CERTIFICATE == '' || env.APPLE_CERTIFICATE_PASSWORD == '' || env.APPLE_SIGNING_IDENTITY == '') }}
+        if: ${{ env.APPLE_CERTIFICATE == '' || env.APPLE_CERTIFICATE_PASSWORD == '' || env.APPLE_SIGNING_IDENTITY == '' }}
         working-directory: apps/service
         env:
           APPLE_CERTIFICATE: ""
@@ -110,7 +103,6 @@ jobs:
         run: ../../node_modules/.bin/tauri build --features custom-protocol --bundles app --ci
 
       - name: Smoke check macOS service artifacts
-        if: runner.os == 'macOS'
         shell: bash
         run: |
           APP_PATH="$(find target/release/bundle/macos -maxdepth 1 -name 'ShipFlow Service.app' -print -quit)"
@@ -118,7 +110,6 @@ jobs:
           test -n "$(find "$APP_PATH/Contents/Resources" -maxdepth 1 -name '*.icns' -print -quit)"
 
       - name: Verify macOS service app bundle signature
-        if: runner.os == 'macOS'
         shell: bash
         run: |
           APP_PATH="$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
@@ -126,58 +117,15 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
       - name: Archive macOS service app bundle
-        if: runner.os == 'macOS'
         shell: bash
         run: |
           APP_PATH="$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
           test -n "$APP_PATH"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" target/release/bundle/macos/ShipFlow-Service-macos-app.zip
 
-      - name: Build Windows service app binary
-        if: runner.os == 'Windows'
-        run: cargo build --manifest-path apps/service/Cargo.toml --release --features custom-protocol
-
-      - name: Install NSIS
-        if: runner.os == 'Windows'
-        run: choco install nsis -y --no-progress
-
-      - name: Build Windows service installer
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $sourceExe = (Resolve-Path "target/release/shipflow-service.exe").Path
-          $outputDir = (Resolve-Path "target/release").Path
-          $outputExe = Join-Path $outputDir "ShipFlow-Service-Setup.exe"
-          $iconFile = (Resolve-Path "src-tauri/icons/service-icon.ico").Path
-          $makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
-          if (-not $makensis) {
-            $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS/makensis.exe"
-          }
-          & $makensis "/DAPP_VERSION=0.1.0" "/DSOURCE_EXE=$sourceExe" "/DOUT_FILE=$outputExe" "/DICON_FILE=$iconFile" "scripts/windows/shipflow-service-installer.nsi"
-
-      - name: Smoke check Windows service artifacts
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "target/release/ShipFlow-Service-Setup.exe")) {
-            throw "Missing service installer"
-          }
-          if (-not (Test-Path "src-tauri/icons/service-icon.ico")) {
-            throw "Missing service installer icon"
-          }
-
       - name: Upload macOS service app archive
-        if: runner.os == 'macOS'
         uses: actions/upload-artifact@v6
         with:
           name: shipflow-service-macos-app
           path: target/release/bundle/macos/ShipFlow-Service-macos-app.zip
-          if-no-files-found: error
-
-      - name: Upload Windows service installer
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v6
-        with:
-          name: shipflow-service-windows-installer
-          path: target/release/ShipFlow-Service-Setup.exe
           if-no-files-found: error

@@ -1,0 +1,83 @@
+name: Build ShipFlow Service Windows
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-service-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build service frontend assets
+        run: npm run build
+
+      - name: Check Rust format
+        run: cargo fmt --all -- --check
+
+      - name: Run Rust tests
+        run: cargo test --workspace --all-targets
+
+      - name: Run Rust clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build Windows service app binary
+        run: cargo build --manifest-path apps/service/Cargo.toml --release --features custom-protocol
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Build Windows service installer
+        shell: pwsh
+        run: |
+          $sourceExe = (Resolve-Path "target/release/shipflow-service.exe").Path
+          $outputDir = (Resolve-Path "target/release").Path
+          $outputExe = Join-Path $outputDir "ShipFlow-Service-Setup.exe"
+          $iconFile = (Resolve-Path "src-tauri/icons/service-icon.ico").Path
+          $makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+          if (-not $makensis) {
+            $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS/makensis.exe"
+          }
+          & $makensis "/DAPP_VERSION=0.1.0" "/DSOURCE_EXE=$sourceExe" "/DOUT_FILE=$outputExe" "/DICON_FILE=$iconFile" "scripts/windows/shipflow-service-installer.nsi"
+
+      - name: Smoke check Windows service artifacts
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "target/release/ShipFlow-Service-Setup.exe")) {
+            throw "Missing service installer"
+          }
+          if (-not (Test-Path "src-tauri/icons/service-icon.ico")) {
+            throw "Missing service installer icon"
+          }
+
+      - name: Upload Windows service installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: shipflow-service-windows-installer
+          path: target/release/ShipFlow-Service-Setup.exe
+          if-no-files-found: error
