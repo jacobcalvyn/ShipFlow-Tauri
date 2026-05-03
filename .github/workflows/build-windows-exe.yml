@@ -62,13 +62,6 @@ jobs:
             throw "Missing desktop installer icon"
           }
 
-      - name: Upload portable executable
-        uses: actions/upload-artifact@v6
-        with:
-          name: shipflow-desktop-windows-portable
-          path: target/release/shipflow3-tauri.exe
-          if-no-files-found: error
-
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v6
         with:

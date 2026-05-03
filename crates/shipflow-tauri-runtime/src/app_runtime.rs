@@ -349,7 +349,15 @@ pub fn desktop_setup(app: &mut App<tauri::Wry>) -> Result<(), Box<dyn std::error
         "[ShipFlowService] failed to load persisted config:",
         "[ShipFlowTray] failed to initialize tray:",
     );
-    ensure_desktop_tracking_runtime(app, saved_config);
+    let desktop_tracking_config =
+        service::load_desktop_tracking_service_config().unwrap_or_else(|error| {
+            log_runtime_event(
+                "ERROR",
+                format!("[ShipFlowDesktop] failed to load desktop service config: {error}"),
+            );
+            saved_config
+        });
+    ensure_desktop_tracking_runtime(app, desktop_tracking_config);
 
     spawn_desktop_activation_listener(app.handle().clone());
     Ok(())
@@ -371,14 +379,19 @@ pub fn service_settings_setup(app: &mut App<tauri::Wry>) -> Result<(), Box<dyn s
         "[ShipFlowService] failed to load persisted config:",
         "[ShipFlowService] failed to sync tray companion:",
     );
-    if let Err(error) = service::ensure_service_tray_companion_running() {
-        log_runtime_event(
-            "ERROR",
-            format!("[ShipFlowService] failed to start tray companion: {error}"),
-        );
-    }
+    let is_tray_available = match service::ensure_service_tray_companion_running() {
+        Ok(()) => true,
+        Err(error) => {
+            log_runtime_event(
+                "ERROR",
+                format!("[ShipFlowService] failed to start tray companion: {error}"),
+            );
+            false
+        }
+    };
 
     let should_show_window = service::should_show_service_settings_window_from_current_args();
+    let should_show_window = should_show_window || !is_tray_available;
     let service_window_builder =
         tauri::WebviewWindowBuilder::new(app, "service-settings", service_settings_webview_url())
             .title("ShipFlow Service")

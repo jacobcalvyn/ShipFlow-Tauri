@@ -190,13 +190,14 @@ The main table currently focuses on:
 
 - `ShipFlow Desktop` does not scrape directly. Tracking is resolved by `ShipFlow Service`.
 - `ShipFlow Service` is the single source of truth for tracking source and external API access.
-- Desktop `Setting` only edits the Desktop-to-Service URL/port/token. It does not edit service-owned tracking source configuration.
+- Desktop `Setting` only edits the Desktop-to-Service localhost port/token. It does not edit service-owned tracking source configuration.
 - Desktop always uses the configured standalone service port/token for tracking.
 - Desktop does not spawn a managed tracking runtime and the target service owns its own scraper/internal API config.
 - Custom Desktop-to-Service settings are saved only after an authenticated `/status` response proves the endpoint is ShipFlow Service.
 - In custom Desktop-to-Service mode, Desktop does not enable or manage the Service API endpoint; the target service owns that endpoint and token.
 - The Service API token is required for Desktop tracking in both internal scraper mode and external API mode.
 - ShipFlow Service does not generate or rotate the API token automatically. The token changes only when the user clicks `Generate` or confirms `Regenerate`.
+- Legacy Desktop connection data that was saved into the old Service config file is migrated into `desktop-service-config.json`, so Service-owned runtime config and token remain stable after restart.
 - External tracking source access can be opened or closed from `ShipFlow Service` without affecting the desktop runtime itself.
 - Retrack failures do not wipe the last successful shipment data. Failed refreshes keep the old row data and mark the row as stale.
 - Numeric parsing in the Rust scraper is hardened: invalid upstream numeric fields now fail loudly instead of silently falling back to `0`.
@@ -223,6 +224,8 @@ The main table currently focuses on:
 - Launching `ShipFlow Service` normally starts it in the background and keeps only the system-tray/menu-bar entry visible.
 - Closing the `ShipFlow Service` settings window hides it and keeps the service tray companion available.
 - Reopening `ShipFlow Service` from the tray/menu-bar entry focuses or recreates the existing settings window instead of starting a duplicate settings instance.
+- If the Service tray/menu-bar companion cannot start, the Service settings window is shown as a fallback so the user can still edit configuration.
+- Desktop and Service cross-launch helpers look for the separately installed app first and no longer fall back to launching the current app as the other product.
 - Desktop custom connection saves no longer start or stop the Service tray companion.
 - Windows Desktop and Service installers run shutdown hooks before install and uninstall replacement, so running ShipFlow processes are closed before files are overwritten.
 - Custom Desktop-to-Service lookups re-check the authenticated `/status` identity before sending shipment, bag, or manifest IDs to a custom endpoint.
@@ -430,18 +433,15 @@ What it does:
 - builds the Desktop NSIS installer without bundling `ShipFlow Service`
 - wires the Desktop NSIS installer to close running Desktop processes before reinstall or uninstall replacement
 - smoke-checks the Desktop executable and installer icon
-- uploads two artifacts:
-  - portable app executable: `shipflow-desktop-windows-portable`
-  - NSIS installer executable: `shipflow-desktop-windows-installer`
+- uploads the Desktop NSIS installer artifact: `shipflow-desktop-windows-installer`
 
 Triggers:
 
 - manual run via `workflow_dispatch`
 - no automatic push trigger by default
 
-The uploaded Windows outputs are:
+The uploaded Windows output is:
 
-- `target/release/shipflow3-tauri.exe`
 - `target/release/bundle/nsis/*.exe`
 
 ## GitHub Actions macOS Build
@@ -495,6 +495,7 @@ What it does:
 - runs `cargo test --workspace --all-targets`
 - runs `cargo clippy --workspace --all-targets -- -D warnings`
 - builds `apps/service` in release mode with Tauri `custom-protocol` enabled
+- imports the Apple Developer ID certificate and notarization key when `APPLE_*` secrets are configured
 - builds and signs a macOS `ShipFlow Service.app` bundle with the Service icon
 - builds a per-user Windows installer with NSIS
 - builds the Windows Service app without a console window, applies the Service icon to the app executable and installer, and closes running `shipflow-service.exe` processes before reinstall or uninstall replacement
@@ -503,6 +504,12 @@ What it does:
   - `shipflow-service-windows-installer`
 
 Desktop installers no longer include the service app. Install ShipFlow Service separately, then configure Desktop with the service port and token.
+
+Important macOS distribution note:
+
+- A downloaded `ShipFlow Service.app` must be Developer ID signed and notarized to pass Gatekeeper without the "Apple could not verify" warning.
+- The Service workflow falls back to ad-hoc signing only when Apple signing/notarization secrets are missing; that fallback is for local validation, not end-user distribution.
+- Configure the same `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and notarization credentials used by the Desktop macOS workflow before publishing the Service artifact.
 
 ## Tests
 

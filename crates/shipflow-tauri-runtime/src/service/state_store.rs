@@ -12,11 +12,11 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use super::{ApiServiceConfig, DesktopActivationRequest};
+use super::{ApiServiceConfig, DesktopActivationRequest, DesktopServiceConnectionMode};
 use atomic_file::write_state_file;
 use paths::{
-    desktop_pid_path, desktop_request_path, legacy_service_state_dir, service_config_path,
-    service_pid_path, service_runtime_config_path, service_settings_pid_path,
+    desktop_pid_path, desktop_request_path, desktop_service_config_path, legacy_service_state_dir,
+    service_config_path, service_pid_path, service_runtime_config_path, service_settings_pid_path,
     service_settings_request_path, service_tray_pid_path, state_dir_override,
 };
 
@@ -73,6 +73,16 @@ pub fn persist_saved_config(config: &ApiServiceConfig) -> Result<(), String> {
     )
 }
 
+pub fn persist_desktop_service_config(config: &ApiServiceConfig) -> Result<(), String> {
+    let serialized = serde_json::to_vec_pretty(config)
+        .map_err(|error| format!("Unable to serialize desktop service configuration: {error}"))?;
+    write_state_file(
+        desktop_service_config_path(),
+        serialized,
+        "desktop service configuration",
+    )
+}
+
 pub fn persist_runtime_config(config: &ApiServiceConfig) -> Result<(), String> {
     let serialized = serde_json::to_vec_pretty(config)
         .map_err(|error| format!("Unable to serialize runtime service configuration: {error}"))?;
@@ -83,6 +93,38 @@ pub fn persist_runtime_config(config: &ApiServiceConfig) -> Result<(), String> {
     )
 }
 
+fn migrate_legacy_desktop_config(config: &ApiServiceConfig) {
+    if !config.uses_custom_desktop_service_connection() {
+        return;
+    }
+
+    if load_desktop_service_config().ok().flatten().is_none() {
+        let _ = persist_desktop_service_config(config);
+    }
+}
+
+fn port_from_desktop_service_url(config: &ApiServiceConfig) -> u16 {
+    reqwest::Url::parse(config.desktop_service_url.trim())
+        .ok()
+        .and_then(|url| url.port_or_known_default())
+        .unwrap_or(config.port)
+}
+
+fn service_config_from_legacy_desktop_config(
+    legacy_config: &ApiServiceConfig,
+) -> Option<ApiServiceConfig> {
+    let mut config = legacy_config.clone();
+    config.desktop_connection_mode = DesktopServiceConnectionMode::ManagedLocal;
+    config.port = port_from_desktop_service_url(legacy_config);
+    config.desktop_service_url = format!("http://127.0.0.1:{}", config.port);
+    if config.auth_token.trim().is_empty() {
+        config.auth_token = legacy_config.desktop_service_auth_token.trim().to_string();
+    }
+    config.desktop_service_auth_token.clear();
+
+    (!config.auth_token.trim().is_empty()).then_some(config)
+}
+
 pub fn load_saved_config() -> Result<Option<ApiServiceConfig>, String> {
     let primary_path = service_config_path();
     let Some((source_path, bytes)) =
@@ -91,11 +133,45 @@ pub fn load_saved_config() -> Result<Option<ApiServiceConfig>, String> {
         return Ok(None);
     };
 
-    let config = serde_json::from_slice(&bytes)
+    let config: ApiServiceConfig = serde_json::from_slice(&bytes)
         .map_err(|error| format!("Unable to parse persisted API service configuration: {error}"))?;
+
+    if config.uses_custom_desktop_service_connection() {
+        migrate_legacy_desktop_config(&config);
+
+        if let Some(runtime_config) = load_runtime_config()? {
+            let _ = persist_saved_config(&runtime_config);
+            return Ok(Some(runtime_config));
+        }
+
+        if let Some(service_config) = service_config_from_legacy_desktop_config(&config) {
+            let _ = persist_saved_config(&service_config);
+            return Ok(Some(service_config));
+        }
+
+        return Ok(None);
+    }
 
     if source_path != primary_path {
         let _ = persist_saved_config(&config);
+    }
+
+    Ok(Some(config))
+}
+
+pub fn load_desktop_service_config() -> Result<Option<ApiServiceConfig>, String> {
+    let primary_path = desktop_service_config_path();
+    let Some((source_path, bytes)) =
+        read_first_state_file(primary_path.clone(), "desktop service configuration")?
+    else {
+        return Ok(None);
+    };
+
+    let config: ApiServiceConfig = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Unable to parse desktop service configuration: {error}"))?;
+
+    if source_path != primary_path {
+        let _ = persist_desktop_service_config(&config);
     }
 
     Ok(Some(config))
@@ -109,7 +185,7 @@ pub fn load_runtime_config() -> Result<Option<ApiServiceConfig>, String> {
         return Ok(None);
     };
 
-    let config = serde_json::from_slice(&bytes)
+    let config: ApiServiceConfig = serde_json::from_slice(&bytes)
         .map_err(|error| format!("Unable to parse runtime service configuration: {error}"))?;
 
     if source_path != primary_path {
@@ -266,11 +342,12 @@ mod tests {
     };
 
     use super::{
-        load_runtime_config, load_saved_config, persist_desktop_activation_request,
-        persist_runtime_config, persist_saved_config, persist_service_pid,
-        persist_service_settings_activation_request, read_recorded_pid, service_pid_path,
-        take_pending_desktop_activation_request, take_pending_service_settings_activation_request,
-        ApiServiceConfig, DesktopActivationRequest,
+        load_desktop_service_config, load_runtime_config, load_saved_config,
+        persist_desktop_activation_request, persist_desktop_service_config, persist_runtime_config,
+        persist_saved_config, persist_service_pid, persist_service_settings_activation_request,
+        read_recorded_pid, service_pid_path, take_pending_desktop_activation_request,
+        take_pending_service_settings_activation_request, ApiServiceConfig,
+        DesktopActivationRequest,
     };
     use crate::service::{ApiServiceMode, DesktopServiceConnectionMode};
     use crate::test_support::runtime_state_dir_test_lock;
@@ -352,6 +429,97 @@ mod tests {
                 .expect("runtime config should exist");
 
             assert_eq!(loaded, config);
+        });
+    }
+
+    #[test]
+    fn desktop_service_config_does_not_overwrite_service_config() {
+        with_state_dir("shipflow-desktop-service-config-test", || {
+            let service_config = sample_config();
+            let desktop_config = ApiServiceConfig {
+                desktop_connection_mode: DesktopServiceConnectionMode::Custom,
+                desktop_service_url: "http://127.0.0.1:19422".into(),
+                desktop_service_auth_token: "sf_desktop_connection_token".into(),
+                auth_token: String::new(),
+                ..service_config.clone()
+            };
+
+            persist_saved_config(&service_config).expect("service config should persist");
+            persist_desktop_service_config(&desktop_config)
+                .expect("desktop service config should persist");
+
+            let loaded_service_config = load_saved_config()
+                .expect("service config should load")
+                .expect("service config should exist");
+            let loaded_desktop_config = load_desktop_service_config()
+                .expect("desktop service config should load")
+                .expect("desktop service config should exist");
+
+            assert_eq!(loaded_service_config, service_config);
+            assert_eq!(loaded_desktop_config, desktop_config);
+        });
+    }
+
+    #[test]
+    fn legacy_desktop_config_is_migrated_out_of_service_config() {
+        with_state_dir("shipflow-legacy-desktop-config-migration-test", || {
+            let runtime_config = sample_config();
+            let legacy_desktop_config = ApiServiceConfig {
+                desktop_connection_mode: DesktopServiceConnectionMode::Custom,
+                desktop_service_url: "http://127.0.0.1:19422".into(),
+                desktop_service_auth_token: "sf_legacy_desktop_token".into(),
+                auth_token: String::new(),
+                tracking_source: TrackingSource::Default,
+                external_api_base_url: String::new(),
+                external_api_auth_token: String::new(),
+                ..runtime_config.clone()
+            };
+
+            persist_runtime_config(&runtime_config).expect("runtime config should persist");
+            persist_saved_config(&legacy_desktop_config)
+                .expect("legacy desktop config should persist in old service slot");
+
+            let loaded_service_config = load_saved_config()
+                .expect("service config should load")
+                .expect("service config should resolve from runtime config");
+            let loaded_desktop_config = load_desktop_service_config()
+                .expect("desktop config should load")
+                .expect("legacy desktop config should migrate");
+
+            assert_eq!(loaded_service_config, runtime_config);
+            assert_eq!(loaded_desktop_config, legacy_desktop_config);
+        });
+    }
+
+    #[test]
+    fn legacy_desktop_config_recovers_service_token_when_runtime_config_is_missing() {
+        with_state_dir("shipflow-legacy-desktop-token-recovery-test", || {
+            let legacy_desktop_config = ApiServiceConfig {
+                desktop_connection_mode: DesktopServiceConnectionMode::Custom,
+                desktop_service_url: "http://127.0.0.1:19422".into(),
+                desktop_service_auth_token: "sf_legacy_desktop_token".into(),
+                auth_token: String::new(),
+                ..sample_config()
+            };
+
+            persist_saved_config(&legacy_desktop_config)
+                .expect("legacy desktop config should persist in old service slot");
+
+            let loaded_service_config = load_saved_config()
+                .expect("service config should load")
+                .expect("service config should be recovered from legacy desktop token");
+            let loaded_desktop_config = load_desktop_service_config()
+                .expect("desktop config should load")
+                .expect("legacy desktop config should migrate");
+
+            assert_eq!(
+                loaded_service_config.desktop_connection_mode,
+                DesktopServiceConnectionMode::ManagedLocal
+            );
+            assert_eq!(loaded_service_config.port, 19422);
+            assert_eq!(loaded_service_config.auth_token, "sf_legacy_desktop_token");
+            assert!(loaded_service_config.desktop_service_auth_token.is_empty());
+            assert_eq!(loaded_desktop_config, legacy_desktop_config);
         });
     }
 

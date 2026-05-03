@@ -26,10 +26,11 @@ use self::runtime_config::{
     validate_service_config,
 };
 use self::state_store::{
-    clear_recorded_desktop_pid, clear_recorded_service_settings_pid, load_saved_config,
-    persist_desktop_activation_request, persist_runtime_config, persist_saved_config,
-    persist_service_pid, persist_service_settings_activation_request, read_recorded_desktop_pid,
-    read_recorded_pid, read_recorded_service_settings_pid,
+    clear_recorded_desktop_pid, clear_recorded_service_settings_pid, load_desktop_service_config,
+    load_saved_config, persist_desktop_activation_request, persist_desktop_service_config,
+    persist_runtime_config, persist_saved_config, persist_service_pid,
+    persist_service_settings_activation_request, read_recorded_desktop_pid, read_recorded_pid,
+    read_recorded_service_settings_pid,
 };
 use self::tray_runtime::run_service_tray_app;
 use crate::tracking::model::{TrackingSource, TrackingSourceConfig};
@@ -48,6 +49,7 @@ const SERVICE_CONFIG_ARG: &str = "--service-config-base64";
 pub use shipflow_service_runtime::SERVICE_STATUS_PRODUCT;
 pub const SERVICE_STATE_DIR_NAME: &str = "shipflow-service-runtime";
 const SERVICE_CONFIG_FILE_NAME: &str = "config.json";
+const DESKTOP_SERVICE_CONFIG_FILE_NAME: &str = "desktop-service-config.json";
 const SERVICE_RUNTIME_CONFIG_FILE_NAME: &str = "runtime-config.json";
 const SERVICE_PID_FILE_NAME: &str = "pid";
 const SERVICE_TRAY_PID_FILE_NAME: &str = "tray.pid";
@@ -172,7 +174,7 @@ impl ApiServiceController {
         validate_desktop_service_connection_config(&config)?;
 
         if config.uses_custom_desktop_service_connection() {
-            persist_saved_config(&config)?;
+            persist_desktop_service_connection_config(&config)?;
             let status = running_status(&config);
             self.set_status(status.clone());
             return Ok(status);
@@ -305,6 +307,16 @@ impl ApiServiceConfig {
     }
 }
 
+pub fn config_as_desktop_service_connection(mut config: ApiServiceConfig) -> ApiServiceConfig {
+    if !config.uses_custom_desktop_service_connection() {
+        config.desktop_connection_mode = DesktopServiceConnectionMode::Custom;
+        config.desktop_service_url = format!("http://127.0.0.1:{}", config.port);
+        config.desktop_service_auth_token = config.auth_token.clone();
+    }
+
+    config
+}
+
 pub fn maybe_delegate_desktop_launch_to_existing_process() -> Result<bool, String> {
     if let Some(pid) = read_recorded_desktop_pid() {
         if is_process_alive(pid) {
@@ -354,15 +366,30 @@ pub fn ensure_tracking_service_runtime(
         );
     };
 
-    if !config.uses_custom_desktop_service_connection() {
-        return Err(
-            "ShipFlow Desktop no longer starts a bundled service. Configure a standalone ShipFlow Service URL and token."
-                .into(),
-        );
-    }
-
+    let config = config_as_desktop_service_connection(config);
     validate_desktop_service_connection_config(&config)?;
     Ok(config)
+}
+
+pub fn load_desktop_tracking_service_config() -> Result<Option<ApiServiceConfig>, String> {
+    if let Some(config) = load_desktop_service_config()? {
+        return Ok(Some(config));
+    }
+
+    load_saved_config()
+}
+
+pub fn load_desktop_service_connection_config() -> Result<Option<ApiServiceConfig>, String> {
+    match load_desktop_tracking_service_config()? {
+        Some(config) => Ok(Some(config_as_desktop_service_connection(config))),
+        None => Ok(None),
+    }
+}
+
+pub fn persist_desktop_service_connection_config(config: &ApiServiceConfig) -> Result<(), String> {
+    let config = config_as_desktop_service_connection(config.clone());
+    validate_desktop_service_connection_config(&config)?;
+    persist_desktop_service_config(&config)
 }
 
 pub fn maybe_run_service_tray_from_current_args() -> Result<bool, String> {
@@ -429,7 +456,11 @@ mod tests {
     };
 
     use super::{
-        state_store::{load_runtime_config, persist_runtime_config},
+        ensure_tracking_service_runtime,
+        state_store::{
+            load_desktop_service_config, load_runtime_config, load_saved_config,
+            persist_runtime_config, persist_saved_config,
+        },
         ApiServiceConfig, ApiServiceController, ApiServiceMode, DesktopServiceConnectionMode,
     };
     use crate::test_support::runtime_state_dir_test_lock;
@@ -513,5 +544,57 @@ mod tests {
                 .expect("runtime config should still exist");
             assert_eq!(loaded_runtime_config, runtime_config);
         });
+    }
+
+    #[test]
+    fn saving_custom_desktop_connection_does_not_replace_service_config() {
+        with_state_dir("shipflow-custom-desktop-split-config-test", || {
+            let service_config = service_runtime_config();
+            let desktop_config = desktop_custom_connection_config();
+            persist_saved_config(&service_config).expect("service config should persist");
+
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime should build");
+            runtime
+                .block_on(ApiServiceController::default().configure(desktop_config.clone()))
+                .expect("custom desktop connection should save");
+
+            let loaded_service_config = load_saved_config()
+                .expect("service config should load")
+                .expect("service config should still exist");
+            let loaded_desktop_config = load_desktop_service_config()
+                .expect("desktop config should load")
+                .expect("desktop config should exist");
+
+            assert_eq!(loaded_service_config, service_config);
+            assert_eq!(loaded_desktop_config, desktop_config);
+        });
+    }
+
+    #[test]
+    fn desktop_tracking_uses_service_runtime_config_as_standalone_connection() {
+        let runtime_config = service_runtime_config();
+        let resolved = ensure_tracking_service_runtime(Some(runtime_config))
+            .expect("service runtime config should resolve to desktop service connection");
+
+        assert_eq!(
+            resolved.desktop_connection_mode,
+            DesktopServiceConnectionMode::Custom
+        );
+        assert_eq!(resolved.desktop_service_url, "http://127.0.0.1:18422");
+        assert_eq!(resolved.desktop_service_auth_token, "sf_service_token");
+    }
+
+    #[test]
+    fn desktop_tracking_rejects_service_runtime_config_without_token() {
+        let mut runtime_config = service_runtime_config();
+        runtime_config.auth_token.clear();
+
+        let error = ensure_tracking_service_runtime(Some(runtime_config))
+            .expect_err("desktop tracking should still require the service API token");
+
+        assert!(error.contains("token"));
     }
 }

@@ -1,6 +1,8 @@
 use shipflow_tauri_runtime::pod_preview::resolve_pod_image_source;
 use shipflow_tauri_runtime::runtime_log::log_runtime_event;
-use shipflow_tauri_runtime::service::{ensure_tracking_service_runtime, ApiServiceController};
+use shipflow_tauri_runtime::service::{
+    ensure_tracking_service_runtime, load_desktop_tracking_service_config,
+};
 use shipflow_tauri_runtime::service_client::{
     track_bag_via_service, track_manifest_via_service, track_shipment_via_service,
 };
@@ -15,7 +17,6 @@ pub async fn track_shipment(
     sheet_id: Option<String>,
     row_key: Option<String>,
     client_state: tauri::State<'_, TrackingClientState>,
-    service_controller: tauri::State<'_, ApiServiceController>,
 ) -> Result<TrackResponse, String> {
     let context = format!(
         "[sheetId={}, rowKey={}, shipmentId={}]",
@@ -24,7 +25,7 @@ pub async fn track_shipment(
         shipment_id.trim()
     );
 
-    let saved_service_config = service_controller.load_saved_config().unwrap_or(None);
+    let saved_service_config = load_desktop_tracking_service_config().unwrap_or(None);
     let runtime_config =
         ensure_tracking_service_runtime(saved_service_config).map_err(|message| {
             log_runtime_event("ERROR", format!("[ShipFlowBackend] {context} {message}"));
@@ -48,7 +49,6 @@ pub async fn track_bag(
     sheet_id: Option<String>,
     row_key: Option<String>,
     client_state: tauri::State<'_, TrackingClientState>,
-    service_controller: tauri::State<'_, ApiServiceController>,
 ) -> Result<BagResponse, String> {
     let context = format!(
         "[sheetId={}, rowKey={}, bagId={}]",
@@ -57,7 +57,7 @@ pub async fn track_bag(
         bag_id.trim()
     );
 
-    let saved_service_config = service_controller.load_saved_config().unwrap_or(None);
+    let saved_service_config = load_desktop_tracking_service_config().unwrap_or(None);
     let runtime_config =
         ensure_tracking_service_runtime(saved_service_config).map_err(|message| {
             log_runtime_event("ERROR", format!("[ShipFlowBackend] {context} {message}"));
@@ -81,7 +81,6 @@ pub async fn track_manifest(
     sheet_id: Option<String>,
     row_key: Option<String>,
     client_state: tauri::State<'_, TrackingClientState>,
-    service_controller: tauri::State<'_, ApiServiceController>,
 ) -> Result<ManifestResponse, String> {
     let context = format!(
         "[sheetId={}, rowKey={}, manifestId={}]",
@@ -90,7 +89,7 @@ pub async fn track_manifest(
         manifest_id.trim()
     );
 
-    let saved_service_config = service_controller.load_saved_config().unwrap_or(None);
+    let saved_service_config = load_desktop_tracking_service_config().unwrap_or(None);
     let runtime_config =
         ensure_tracking_service_runtime(saved_service_config).map_err(|message| {
             log_runtime_event("ERROR", format!("[ShipFlowBackend] {context} {message}"));

@@ -96,7 +96,6 @@ impl ServiceTrayRuntime {
             .with_id(SERVICE_TRAY_ID)
             .with_menu(Box::new(menu))
             .with_tooltip("ShipFlow Service")
-            .with_title("ShipFlow Service")
             .with_menu_on_left_click(false);
 
         if let Some(icon) = load_service_tray_icon()? {

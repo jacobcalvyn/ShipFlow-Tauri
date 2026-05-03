@@ -31,6 +31,8 @@ use super::{
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+const SERVICE_PRODUCT_BASENAME: &str = "ShipFlow Service";
+
 fn prepare_background_command(_command: &mut Command) {
     #[cfg(target_os = "windows")]
     {
@@ -114,7 +116,14 @@ fn resolve_service_companion_executable() -> Result<PathBuf, String> {
         }
     }
 
-    Ok(current_executable)
+    if executable_name_matches(
+        &current_executable,
+        &[SERVICE_COMPANION_BINARY_BASENAME, SERVICE_PRODUCT_BASENAME],
+    ) {
+        return Ok(current_executable);
+    }
+
+    Err("Unable to find the installed ShipFlow Service app. Install ShipFlow Service or run the service app before opening it from Desktop.".into())
 }
 
 fn resolve_desktop_companion_executable() -> Result<PathBuf, String> {
@@ -127,7 +136,14 @@ fn resolve_desktop_companion_executable() -> Result<PathBuf, String> {
         }
     }
 
-    Ok(current_executable)
+    if executable_name_matches(
+        &current_executable,
+        &[DESKTOP_BINARY_BASENAME, DESKTOP_PRODUCT_BASENAME],
+    ) {
+        return Ok(current_executable);
+    }
+
+    Err("Unable to find the installed ShipFlow Desktop app. Install ShipFlow Desktop before opening it from the Service tray.".into())
 }
 
 fn service_companion_candidates(current_executable: &FsPath) -> Vec<PathBuf> {
@@ -146,6 +162,8 @@ fn service_companion_candidates(current_executable: &FsPath) -> Vec<PathBuf> {
     {
         candidates.push(parent_dir.join(SERVICE_COMPANION_BINARY_BASENAME));
     }
+
+    candidates.extend(installed_service_companion_candidates(current_executable));
 
     candidates
 }
@@ -169,7 +187,135 @@ fn desktop_companion_candidates(current_executable: &FsPath) -> Vec<PathBuf> {
         candidates.push(parent_dir.join(DESKTOP_PRODUCT_BASENAME));
     }
 
+    candidates.extend(installed_desktop_companion_candidates(current_executable));
+
     candidates
+}
+
+fn executable_name_matches(path: &FsPath, expected_basenames: &[&str]) -> bool {
+    let Some(file_name) = path
+        .file_stem()
+        .or_else(|| path.file_name())
+        .and_then(|value| value.to_str())
+    else {
+        return false;
+    };
+    let normalized_file_name = file_name.to_ascii_lowercase();
+
+    expected_basenames
+        .iter()
+        .any(|basename| normalized_file_name == basename.to_ascii_lowercase())
+}
+
+fn installed_service_companion_candidates(current_executable: &FsPath) -> Vec<PathBuf> {
+    installed_app_executable_candidates(
+        current_executable,
+        SERVICE_PRODUCT_BASENAME,
+        &[SERVICE_COMPANION_BINARY_BASENAME],
+    )
+}
+
+fn installed_desktop_companion_candidates(current_executable: &FsPath) -> Vec<PathBuf> {
+    installed_app_executable_candidates(
+        current_executable,
+        DESKTOP_PRODUCT_BASENAME,
+        &[DESKTOP_BINARY_BASENAME, DESKTOP_PRODUCT_BASENAME],
+    )
+}
+
+fn installed_app_executable_candidates(
+    current_executable: &FsPath,
+    product_name: &str,
+    binary_names: &[&str],
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    #[cfg(not(target_os = "macos"))]
+    let _ = current_executable;
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(sibling_app_dir) = macos_sibling_app_dir(current_executable, product_name) {
+            candidates.extend(macos_app_executables(sibling_app_dir, binary_names));
+        }
+
+        candidates.extend(macos_app_executables(
+            PathBuf::from("/Applications").join(format!("{product_name}.app")),
+            binary_names,
+        ));
+
+        if let Some(home_dir) = env::var_os("HOME").map(PathBuf::from) {
+            candidates.extend(macos_app_executables(
+                home_dir
+                    .join("Applications")
+                    .join(format!("{product_name}.app")),
+                binary_names,
+            ));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        for install_dir in windows_install_dirs(product_name) {
+            for binary_name in binary_names {
+                candidates.push(install_dir.join(format!("{binary_name}.exe")));
+            }
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        for binary_name in binary_names {
+            candidates.push(PathBuf::from("/usr/local/bin").join(binary_name));
+            candidates.push(PathBuf::from("/usr/bin").join(binary_name));
+        }
+    }
+
+    candidates
+}
+
+#[cfg(target_os = "macos")]
+fn macos_sibling_app_dir(current_executable: &FsPath, product_name: &str) -> Option<PathBuf> {
+    current_executable.ancestors().find_map(|ancestor| {
+        let is_app_bundle = ancestor
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("app"));
+        if !is_app_bundle {
+            return None;
+        }
+
+        ancestor
+            .parent()
+            .map(|apps_dir| apps_dir.join(format!("{product_name}.app")))
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_app_executables(app_dir: PathBuf, binary_names: &[&str]) -> Vec<PathBuf> {
+    binary_names
+        .iter()
+        .map(|binary_name| app_dir.join("Contents/MacOS").join(binary_name))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_install_dirs(product_name: &str) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+        dirs.push(local_app_data.join("Programs").join(product_name));
+        dirs.push(local_app_data.join(product_name));
+    }
+
+    if let Some(program_files) = env::var_os("ProgramFiles").map(PathBuf::from) {
+        dirs.push(program_files.join(product_name));
+    }
+
+    if let Some(program_files_x86) = env::var_os("ProgramFiles(x86)").map(PathBuf::from) {
+        dirs.push(program_files_x86.join(product_name));
+    }
+
+    dirs
 }
 
 fn launch_shipflow_desktop() -> Result<(), String> {
