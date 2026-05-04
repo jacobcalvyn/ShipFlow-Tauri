@@ -298,8 +298,10 @@ pub fn pick_workspace_document_path_runtime(
 }
 
 #[cfg(target_os = "windows")]
-fn quote_windows_start_target(value: &str) -> String {
-    format!("\"{value}\"")
+fn windows_external_url_command(url: &str) -> Command {
+    let mut command = Command::new("rundll32");
+    command.args(["url.dll,FileProtocolHandler", url]);
+    command
 }
 
 pub fn open_external_url_runtime(url: &str) -> Result<(), String> {
@@ -320,11 +322,7 @@ pub fn open_external_url_runtime(url: &str) -> Result<(), String> {
     };
 
     #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "start", "", &quote_windows_start_target(trimmed)]);
-        command
-    };
+    let mut command = windows_external_url_command(trimmed);
 
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut command = {
@@ -344,18 +342,18 @@ pub fn open_external_url_runtime(url: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     #[cfg(target_os = "windows")]
-    use super::quote_windows_start_target;
+    use super::windows_external_url_command;
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn quote_windows_start_target_preserves_query_string_separators() {
-        let quoted = quote_windows_start_target(
-            "https://apiexpos.mile.app/api/v1/print-bag?bag_id=PID89885610_5f9fae9b5fbe9d6e401ad0c5&oid=NWY5ZmFlOWI1ZmJlOWQ2ZTQwMWFkMGM1",
-        );
+    fn windows_external_url_launcher_does_not_shell_quote_url() {
+        let url = "https://apiexpos.mile.app/api/v1/print-bag?bag_id=PID89885610_5f9fae9b5fbe9d6e401ad0c5&oid=NWY5ZmFlOWI1ZmJlOWQ2ZTQwMWFkMGM1";
+        let command = windows_external_url_command(url);
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
 
-        assert_eq!(
-            quoted,
-            "\"https://apiexpos.mile.app/api/v1/print-bag?bag_id=PID89885610_5f9fae9b5fbe9d6e401ad0c5&oid=NWY5ZmFlOWI1ZmJlOWQ2ZTQwMWFkMGM1\""
-        );
+        assert_eq!(args, vec!["url.dll,FileProtocolHandler", url]);
     }
 }
