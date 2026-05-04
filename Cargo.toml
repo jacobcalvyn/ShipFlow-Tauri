@@ -19,6 +19,7 @@ serde_json = "1"
 tao = "0.34.8"
 tauri = { version = "=2.10.3", features = ["tray-icon"] }
 tauri-build = { version = "=2.5.6", features = [] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tower-http = { version = "0.6", features = ["cors"] }
 tray-icon = "0.21.3"

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -9,6 +10,16 @@ use serde::{Deserialize, Serialize};
 const MAX_PERSISTED_LOOKUP_ENTRIES: usize = 2_000;
 const SERVICE_STATE_DIR_NAME: &str = "shipflow-service-runtime";
 const LOOKUP_STORE_FILE_NAME: &str = "lookup-store.json";
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const SERVICE_APP_DATA_DIR_NAME: &str = "ShipFlow Service";
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const LEGACY_DESKTOP_APP_DATA_DIR_NAME: &str = "ShipFlow Desktop";
+#[cfg(all(unix, not(target_os = "macos")))]
+const SERVICE_XDG_DATA_DIR_NAME: &str = "shipflow-service";
+#[cfg(all(unix, not(target_os = "macos")))]
+const LEGACY_DESKTOP_XDG_DATA_DIR_NAME: &str = "shipflow-desktop";
+
+static PERSISTENT_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
 pub struct PersistentLookupStore {
@@ -31,6 +42,12 @@ struct PersistentLookupEntry {
 }
 
 impl PersistentLookupStore {
+    pub fn open_default() -> Self {
+        let path = default_persistent_lookup_store_path();
+        migrate_legacy_persistent_lookup_store(&path);
+        Self::open(path)
+    }
+
     pub fn open(path: PathBuf) -> Self {
         let inner = fs::read(&path)
             .ok()
@@ -84,7 +101,9 @@ impl PersistentLookupStore {
             store.clone()
         };
 
-        let _ = self.persist_snapshot(&snapshot);
+        if let Err(error) = self.persist_snapshot(&snapshot) {
+            eprintln!("[ShipFlowService] {error}");
+        }
     }
 
     fn persist_snapshot(&self, snapshot: &PersistentLookupStoreFile) -> Result<(), String> {
@@ -94,17 +113,12 @@ impl PersistentLookupStore {
             })?;
         }
 
-        let temp_path =
-            self.path
-                .with_extension(format!("tmp.{}.{}", std::process::id(), unix_ms()));
+        let temp_path = unique_store_temp_path(&self.path);
         let bytes = serde_json::to_vec(snapshot)
             .map_err(|error| format!("Unable to serialize persistent lookup store: {error}"))?;
         fs::write(&temp_path, bytes)
             .map_err(|error| format!("Unable to write persistent lookup store: {error}"))?;
-        fs::rename(&temp_path, &self.path).map_err(|error| {
-            let _ = fs::remove_file(&temp_path);
-            format!("Unable to finalize persistent lookup store: {error}")
-        })
+        replace_store_file(temp_path, self.path.clone())
     }
 }
 
@@ -119,7 +133,7 @@ pub fn default_persistent_lookup_store_path() -> PathBuf {
             return home_dir
                 .join("Library")
                 .join("Application Support")
-                .join("ShipFlow Desktop")
+                .join(SERVICE_APP_DATA_DIR_NAME)
                 .join(SERVICE_STATE_DIR_NAME)
                 .join(LOOKUP_STORE_FILE_NAME);
         }
@@ -129,7 +143,7 @@ pub fn default_persistent_lookup_store_path() -> PathBuf {
     {
         if let Some(app_data) = std::env::var_os("APPDATA").map(PathBuf::from) {
             return app_data
-                .join("ShipFlow Desktop")
+                .join(SERVICE_APP_DATA_DIR_NAME)
                 .join(SERVICE_STATE_DIR_NAME)
                 .join(LOOKUP_STORE_FILE_NAME);
         }
@@ -139,7 +153,7 @@ pub fn default_persistent_lookup_store_path() -> PathBuf {
     {
         if let Some(xdg_data_home) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
             return xdg_data_home
-                .join("shipflow-desktop")
+                .join(SERVICE_XDG_DATA_DIR_NAME)
                 .join(SERVICE_STATE_DIR_NAME)
                 .join(LOOKUP_STORE_FILE_NAME);
         }
@@ -148,7 +162,7 @@ pub fn default_persistent_lookup_store_path() -> PathBuf {
             return home_dir
                 .join(".local")
                 .join("share")
-                .join("shipflow-desktop")
+                .join(SERVICE_XDG_DATA_DIR_NAME)
                 .join(SERVICE_STATE_DIR_NAME)
                 .join(LOOKUP_STORE_FILE_NAME);
         }
@@ -157,6 +171,170 @@ pub fn default_persistent_lookup_store_path() -> PathBuf {
     std::env::temp_dir()
         .join(SERVICE_STATE_DIR_NAME)
         .join(LOOKUP_STORE_FILE_NAME)
+}
+
+#[cfg(target_os = "macos")]
+fn legacy_persistent_lookup_store_path() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from).map(|home_dir| {
+        home_dir
+            .join("Library")
+            .join("Application Support")
+            .join(LEGACY_DESKTOP_APP_DATA_DIR_NAME)
+            .join(SERVICE_STATE_DIR_NAME)
+            .join(LOOKUP_STORE_FILE_NAME)
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn legacy_persistent_lookup_store_path() -> Option<PathBuf> {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .map(|app_data| {
+            app_data
+                .join(LEGACY_DESKTOP_APP_DATA_DIR_NAME)
+                .join(SERVICE_STATE_DIR_NAME)
+                .join(LOOKUP_STORE_FILE_NAME)
+        })
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn legacy_persistent_lookup_store_path() -> Option<PathBuf> {
+    if let Some(xdg_data_home) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
+        return Some(
+            xdg_data_home
+                .join(LEGACY_DESKTOP_XDG_DATA_DIR_NAME)
+                .join(SERVICE_STATE_DIR_NAME)
+                .join(LOOKUP_STORE_FILE_NAME),
+        );
+    }
+
+    std::env::var_os("HOME").map(PathBuf::from).map(|home_dir| {
+        home_dir
+            .join(".local")
+            .join("share")
+            .join(LEGACY_DESKTOP_XDG_DATA_DIR_NAME)
+            .join(SERVICE_STATE_DIR_NAME)
+            .join(LOOKUP_STORE_FILE_NAME)
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", unix)))]
+fn legacy_persistent_lookup_store_path() -> Option<PathBuf> {
+    None
+}
+
+fn migrate_legacy_persistent_lookup_store(path: &Path) {
+    if path.exists() {
+        return;
+    }
+
+    let Some(legacy_path) = legacy_persistent_lookup_store_path() else {
+        return;
+    };
+    if !legacy_path.exists() || legacy_path == path {
+        return;
+    }
+
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+
+    let _ = fs::copy(legacy_path, path);
+}
+
+fn unique_store_temp_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "lookup-store.json".into());
+    let counter = PERSISTENT_STORE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    path.with_file_name(format!(
+        "{file_name}.{}.{}.{}.tmp",
+        std::process::id(),
+        unix_ms(),
+        counter
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn replace_store_file(temp_path: PathBuf, path: PathBuf) -> Result<(), String> {
+    use std::io::ErrorKind;
+    use std::time::Duration;
+
+    let mut last_error = String::new();
+    for _ in 0..64 {
+        match fs::rename(&temp_path, &path) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::AlreadyExists | ErrorKind::PermissionDenied
+                ) =>
+            {
+                last_error = error.to_string();
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temp_path);
+                return Err(format!(
+                    "Unable to finalize persistent lookup store: {error}"
+                ));
+            }
+        }
+
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) if error.kind() == ErrorKind::PermissionDenied => {
+                last_error = error.to_string();
+                std::thread::sleep(Duration::from_millis(2));
+                continue;
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temp_path);
+                return Err(format!(
+                    "Unable to prepare persistent lookup store replacement: {error}"
+                ));
+            }
+        }
+
+        match fs::rename(&temp_path, &path) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::AlreadyExists | ErrorKind::PermissionDenied
+                ) =>
+            {
+                last_error = error.to_string();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temp_path);
+                return Err(format!(
+                    "Unable to finalize persistent lookup store: {error}"
+                ));
+            }
+        }
+    }
+
+    let _ = fs::remove_file(&temp_path);
+    if last_error.is_empty() {
+        last_error = "concurrent replacement did not settle".into();
+    }
+    Err(format!(
+        "Unable to finalize persistent lookup store: {last_error}"
+    ))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn replace_store_file(temp_path: PathBuf, path: PathBuf) -> Result<(), String> {
+    fs::rename(&temp_path, &path).map_err(|error| {
+        let _ = fs::remove_file(&temp_path);
+        format!("Unable to finalize persistent lookup store: {error}")
+    })
 }
 
 fn compact_store(store: &mut PersistentLookupStoreFile) {
@@ -209,6 +387,30 @@ mod tests {
     fn stores_and_loads_success_payload() {
         let path = unique_store_path();
         let store = PersistentLookupStore::open(path.clone());
+        store.store_success(
+            "track:1".into(),
+            "{\"ok\":true}".into(),
+            Duration::from_secs(60),
+        );
+
+        let reopened = PersistentLookupStore::open(path.clone());
+        assert_eq!(
+            reopened.load_success("track:1").as_deref(),
+            Some("{\"ok\":true}")
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn overwrites_existing_success_payload() {
+        let path = unique_store_path();
+        let store = PersistentLookupStore::open(path.clone());
+        store.store_success(
+            "track:1".into(),
+            "{\"ok\":false}".into(),
+            Duration::from_secs(60),
+        );
         store.store_success(
             "track:1".into(),
             "{\"ok\":true}".into(),

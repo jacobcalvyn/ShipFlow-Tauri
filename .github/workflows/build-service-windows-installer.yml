@@ -1,4 +1,4 @@
-name: Build ShipFlow Service Windows
+name: Build Service Windows
 
 on:
   workflow_dispatch:

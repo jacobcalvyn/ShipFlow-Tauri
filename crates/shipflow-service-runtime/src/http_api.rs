@@ -13,7 +13,9 @@ use std::time::Duration;
 use crate::api_contract::{
     envelope, error_response_v1, generate_request_id, legacy_error_response, REQUEST_ID_HEADER_NAME,
 };
-use crate::jobs::{BatchJobRegistry, BatchTrackJobStart};
+use crate::jobs::{
+    BatchJobRegistry, BatchTrackJobStart, MAX_BATCH_SHIPMENT_IDS, MAX_BATCH_SHIPMENT_ID_LENGTH,
+};
 use crate::lookup_cache::{
     resolve_bag_request_cached, resolve_manifest_request_cached, resolve_tracking_request_cached,
     LookupCacheState, LookupRequestOptions,
@@ -22,7 +24,7 @@ use crate::model::{
     validate_service_runtime_config, ServiceRuntimeConfig, ServiceRuntimeMode,
     SERVICE_STATUS_PRODUCT,
 };
-use crate::persistent_store::{default_persistent_lookup_store_path, PersistentLookupStore};
+use crate::persistent_store::PersistentLookupStore;
 use crate::FORCE_REFRESH_HEADER_NAME;
 
 const STATUS_SCHEMA_VERSION: &str = "shipflow.service.status.v1";
@@ -101,9 +103,8 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
         bind_address,
         port: config.port,
         tracking_source,
-        lookup_cache: LookupCacheState::default().with_persistent_store(
-            PersistentLookupStore::open(default_persistent_lookup_store_path()),
-        ),
+        lookup_cache: LookupCacheState::default()
+            .with_persistent_store(PersistentLookupStore::open_default()),
         job_registry: BatchJobRegistry::default(),
     };
     let router = build_router(app_state);
@@ -403,14 +404,50 @@ async fn v1_start_track_batch_job(
             "At least one shipment ID is required.",
         ));
     }
+    if shipment_ids.len() > MAX_BATCH_SHIPMENT_IDS {
+        return Err(error_response_v1(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            JOB_SCHEMA_VERSION,
+            request_id,
+            &format!("At most {MAX_BATCH_SHIPMENT_IDS} shipment IDs are allowed per batch job."),
+        ));
+    }
+    if shipment_ids
+        .iter()
+        .any(|shipment_id| shipment_id.len() > MAX_BATCH_SHIPMENT_ID_LENGTH)
+    {
+        return Err(error_response_v1(
+            StatusCode::BAD_REQUEST,
+            JOB_SCHEMA_VERSION,
+            request_id,
+            &format!("Shipment IDs must be {MAX_BATCH_SHIPMENT_ID_LENGTH} characters or fewer."),
+        ));
+    }
 
-    let job = state.job_registry.create_track_job(shipment_ids.len());
+    let mut deduped_shipment_ids = Vec::with_capacity(shipment_ids.len());
+    for shipment_id in shipment_ids {
+        if !deduped_shipment_ids.contains(&shipment_id) {
+            deduped_shipment_ids.push(shipment_id);
+        }
+    }
+
+    let job = state
+        .job_registry
+        .create_track_job(deduped_shipment_ids.len())
+        .map_err(|message| {
+            error_response_v1(
+                StatusCode::TOO_MANY_REQUESTS,
+                JOB_SCHEMA_VERSION,
+                request_id.clone(),
+                &message,
+            )
+        })?;
     let job_id = job.job_id.clone();
     let state_for_job = state.clone();
     let force_refresh = payload.force_refresh.unwrap_or(false);
 
     tokio::spawn(async move {
-        run_track_batch_job(state_for_job, job_id, shipment_ids, force_refresh).await;
+        run_track_batch_job(state_for_job, job_id, deduped_shipment_ids, force_refresh).await;
     });
 
     Ok(envelope(JOB_SCHEMA_VERSION, request_id, job))

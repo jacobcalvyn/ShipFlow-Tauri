@@ -56,7 +56,7 @@ Successful `/v1` responses use this envelope:
     "apiVersion": "v1",
     "schemaVersion": "shipflow.tracking.detail.v1",
     "requestId": "sf_req_client_001",
-    "generatedAt": "1777850000.123Z"
+    "generatedAt": "2026-05-04T00:00:00.123Z"
   },
   "data": {},
   "warnings": []
@@ -71,7 +71,7 @@ Error responses use the same metadata shape and put the user-facing failure mess
     "apiVersion": "v1",
     "schemaVersion": "shipflow.service.job.v1",
     "requestId": "sf_req_client_001",
-    "generatedAt": "1777850000.123Z"
+    "generatedAt": "2026-05-04T00:00:00.123Z"
   },
   "error": {
     "message": "Bearer token is invalid."
@@ -108,7 +108,7 @@ Example response:
     "apiVersion": "v1",
     "schemaVersion": "shipflow.service.status.v1",
     "requestId": "sf_req_...",
-    "generatedAt": "1777850000.123Z"
+    "generatedAt": "2026-05-04T00:00:00.123Z"
   },
   "data": {
     "service": "running",
@@ -143,7 +143,7 @@ Example response:
     "apiVersion": "v1",
     "schemaVersion": "shipflow.service.capabilities.v1",
     "requestId": "sf_req_...",
-    "generatedAt": "1777850000.123Z"
+    "generatedAt": "2026-05-04T00:00:00.123Z"
   },
   "data": {
     "product": "shipflow-service",
@@ -213,7 +213,7 @@ Content-Type: application/json
 }
 ```
 
-`shipmentIds` are trimmed and empty IDs are ignored. The service returns `400 Bad Request` if no valid ID remains.
+`shipmentIds` are trimmed, empty IDs are ignored, and duplicates are collapsed before the job starts. The service returns `400 Bad Request` if no valid ID remains, `413 Payload Too Large` if more than 1,000 IDs are submitted, and `400 Bad Request` if an ID is longer than 128 characters. Completed job records are retained for a short service-runtime window and may be removed after polling; clients should fetch results when a job reaches a terminal status.
 
 Start response:
 
@@ -223,7 +223,7 @@ Start response:
     "apiVersion": "v1",
     "schemaVersion": "shipflow.service.job.v1",
     "requestId": "sf_req_...",
-    "generatedAt": "1777850000.123Z"
+    "generatedAt": "2026-05-04T00:00:00.123Z"
   },
   "data": {
     "jobId": "job_1777850000123_0",
@@ -252,8 +252,8 @@ Status response data:
   "failed": 0,
   "cancelRequested": false,
   "errorMessage": null,
-  "createdAt": "1777850000.123Z",
-  "updatedAt": "1777850001.456Z"
+  "createdAt": "2026-05-04T00:00:00.123Z",
+  "updatedAt": "2026-05-04T00:00:01.456Z"
 }
 ```
 
@@ -274,8 +274,8 @@ Result response data:
   "failed": 1,
   "cancelRequested": false,
   "errorMessage": null,
-  "createdAt": "1777850000.123Z",
-  "updatedAt": "1777850002.789Z",
+  "createdAt": "2026-05-04T00:00:00.123Z",
+  "updatedAt": "2026-05-04T00:00:02.789Z",
   "results": [
     {
       "id": "P2603310114291",

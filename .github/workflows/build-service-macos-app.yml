@@ -1,4 +1,4 @@
-name: Build ShipFlow Service macOS
+name: Build Service macOS
 
 on:
   workflow_dispatch:

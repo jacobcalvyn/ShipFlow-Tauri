@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::{http::StatusCode, Json};
 use serde::Serialize;
 use serde_json::{json, Value};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 pub const API_VERSION: &str = "v1";
 pub const REQUEST_ID_HEADER_NAME: &str = "x-shipflow-request-id";
@@ -42,10 +43,9 @@ pub struct ApiErrorBody {
 }
 
 pub fn generated_at_iso8601() -> String {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}.{:03}Z", duration.as_secs(), duration.subsec_millis())
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
 pub fn generate_request_id() -> String {
@@ -107,7 +107,9 @@ pub fn legacy_error_response(status: StatusCode, message: &str) -> (StatusCode, 
 
 #[cfg(test)]
 mod tests {
-    use super::{envelope, API_VERSION};
+    use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+
+    use super::{envelope, generated_at_iso8601, API_VERSION};
 
     #[test]
     fn builds_v1_envelope_with_stable_meta() {
@@ -117,5 +119,12 @@ mod tests {
         assert_eq!(payload.meta.schema_version, "test.v1");
         assert_eq!(payload.meta.request_id, "req-1");
         assert!(payload.warnings.is_empty());
+    }
+
+    #[test]
+    fn generated_at_uses_rfc3339_timestamp() {
+        let generated_at = generated_at_iso8601();
+
+        OffsetDateTime::parse(&generated_at, &Rfc3339).expect("generatedAt should be RFC3339");
     }
 }

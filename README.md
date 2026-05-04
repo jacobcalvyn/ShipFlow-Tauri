@@ -113,6 +113,8 @@ Authorization: Bearer <service-token>
 
 Successful `/v1` responses use an envelope with `meta`, `data`, and `warnings`. Errors use the same `meta` shape plus an `error.message`.
 
+Envelope timestamps such as `generatedAt`, `createdAt`, and `updatedAt` use RFC3339 timestamps, for example `2026-05-04T00:00:00.123Z`.
+
 The API supports:
 
 - authenticated status and product identity checks
@@ -128,6 +130,13 @@ See [docs/service-api-v1.md](./docs/service-api-v1.md) for endpoint details and 
 Bulk tracking can be delegated to `ShipFlow Service` through `/v1/jobs/track-batch`.
 
 The job API returns a `jobId`, status endpoint, and result endpoint. A running job can be cancelled through `POST /v1/jobs/:job_id/cancel`. This is the backend foundation for heavier bulk tracking flows without making the Desktop command layer block on every row.
+
+Batch job guardrails:
+
+- up to `1,000` shipment IDs per job
+- shipment IDs are trimmed, empty IDs are ignored, and duplicates are collapsed
+- individual shipment IDs must be `128` characters or fewer
+- completed job records are retained for a bounded service-runtime window and cleaned up automatically
 
 ## JSON Shape
 
@@ -257,6 +266,8 @@ The main table currently focuses on:
 - Manifest and bag imports auto-close the modal after `Ganti Semua` or `Tambah Data`, then immediately start shipment tracking in the target sheet.
 - Runtime lookup results for `track`, `bag`, and `manifest` now use one in-memory cache with in-flight coalescing, kind-specific TTL, and short negative-cache protection.
 - Successful lookup payloads are also persisted into a local user-state lookup store so repeated lookups can survive service restarts.
+- The persistent lookup store belongs to the `ShipFlow Service` app-data namespace, with a one-time legacy migration from the old `ShipFlow Desktop` namespace.
+- Persistent lookup-store writes use unique temporary files and OS-aware replacement, so repeated writes remain durable on Windows after the first cache file already exists.
 - Manual refresh flows such as `Lacak Ulang`, `Retry Gagal`, and bag/manifest modal fetches can explicitly bypass cache when the user intends a fresh lookup.
 - Runtime startup and source/config refresh paths now invalidate lookup cache explicitly before using the refreshed tracking configuration.
 - Active, dirty, and loading rows remain visible even while filters are active.
@@ -470,11 +481,42 @@ Build the macOS app bundle only:
 npm run build:bundle:macos
 ```
 
-## GitHub Actions Windows Build
+## GitHub Actions Quality Gate
+
+The repository includes a quality workflow at:
+
+- `.github/workflows/quality.yml`
+
+The workflow name shown in GitHub Actions is:
+
+- `Quality Gate`
+
+What it does:
+
+- runs on `ubuntu-latest`
+- installs Node.js and Rust
+- installs Linux Tauri system dependencies
+- runs frontend tests
+- runs the production frontend build
+- runs `cargo fmt --all -- --check`
+- runs `cargo test --workspace --all-targets`
+- runs `cargo clippy --workspace --all-targets -- -D warnings`
+
+Triggers:
+
+- automatic run on `push` to `main`
+- automatic run on `pull_request`
+- manual run via `workflow_dispatch`
+
+## GitHub Actions Build Desktop Windows
 
 The repository includes a Windows build workflow at:
 
 - `.github/workflows/build-windows-exe.yml`
+
+The workflow name shown in GitHub Actions is:
+
+- `Build Desktop Windows`
 
 What it does:
 
@@ -498,11 +540,15 @@ The uploaded Windows output is:
 
 - `target/release/bundle/nsis/*.exe`
 
-## GitHub Actions macOS Build
+## GitHub Actions Build Desktop macOS
 
 The repository also includes a macOS build workflow at:
 
 - `.github/workflows/build-macos-app.yml`
+
+The workflow name shown in GitHub Actions is:
+
+- `Build Desktop macOS`
 
 What it does:
 
@@ -534,11 +580,15 @@ Important notes:
 - Ad-hoc signing is sufficient for local/manual validation, especially on Apple Silicon, but it is not a substitute for a Developer ID Application certificate plus notarization.
 - For distribution to other users, configure the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and notarization credentials (`APPLE_API_*` or `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`) as described in the Tauri macOS signing documentation.
 
-## GitHub Actions Service Windows Build
+## GitHub Actions Build Service Windows
 
 The repository includes a standalone Windows service workflow at:
 
 - `.github/workflows/build-service-windows-installer.yml`
+
+The workflow name shown in GitHub Actions is:
+
+- `Build Service Windows`
 
 What it does:
 
@@ -563,11 +613,15 @@ The uploaded Windows Service output is:
 
 - `target/release/ShipFlow-Service-Setup.exe`
 
-## GitHub Actions Service macOS Build
+## GitHub Actions Build Service macOS
 
 The repository includes a standalone macOS service workflow at:
 
 - `.github/workflows/build-service-macos-app.yml`
+
+The workflow name shown in GitHub Actions is:
+
+- `Build Service macOS`
 
 What it does:
 
@@ -631,6 +685,9 @@ The table benchmark is kept separate from the normal test suite so regular check
 
 Rust tests are now split by domain and cover:
 
+- Service API v1 response envelope timestamp formatting
+- Service API batch-job status/result bookkeeping
+- persistent lookup-store overwrite durability
 - Base64 + percent-encoded tracking URL generation
 - embedded API bearer-auth validation
 - authenticated service readiness probing and ShipFlow service identity checks
