@@ -231,6 +231,8 @@ fn installed_app_executable_candidates(
     let mut candidates = Vec::new();
     #[cfg(not(target_os = "macos"))]
     let _ = current_executable;
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let _ = product_name;
 
     #[cfg(target_os = "macos")]
     {
