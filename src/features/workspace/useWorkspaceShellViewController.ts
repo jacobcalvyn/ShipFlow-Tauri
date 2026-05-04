@@ -158,6 +158,7 @@ export function useWorkspaceShellViewController({
     togglePinnedColumn: interactionRuntime.togglePinnedColumn,
     toggleColumnVisibility: interactionRuntime.toggleColumnVisibility,
     toggleColumnValueFilter: interactionRuntime.toggleColumnValueFilter,
+    setColumnValueFilterSelection: interactionRuntime.setColumnValueFilterSelection,
     clearColumnValueFilter: interactionRuntime.clearColumnValueFilter,
     closeColumnMenu: interactionRuntime.closeColumnMenu,
     handleColumnMenuRef: interactionRuntime.handleColumnMenuRef,

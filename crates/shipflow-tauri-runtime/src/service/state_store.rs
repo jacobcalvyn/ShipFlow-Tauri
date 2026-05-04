@@ -3,6 +3,7 @@
 mod atomic_file;
 mod paths;
 
+use std::collections::HashMap;
 use std::{
     fs,
     io::ErrorKind,
@@ -17,7 +18,8 @@ use atomic_file::write_state_file;
 use paths::{
     desktop_pid_path, desktop_request_path, desktop_service_config_path, legacy_service_state_dir,
     service_config_path, service_pid_path, service_runtime_config_path, service_settings_pid_path,
-    service_settings_request_path, service_tray_pid_path, state_dir_override,
+    service_settings_request_path, service_token_vault_path, service_tray_pid_path,
+    state_dir_override,
 };
 
 #[cfg(unix)]
@@ -63,8 +65,107 @@ fn read_first_state_file(
     Ok(None)
 }
 
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenVaultFile {
+    version: u8,
+    tokens: HashMap<String, String>,
+}
+
+fn read_token_vault() -> Result<TokenVaultFile, String> {
+    match fs::read(service_token_vault_path()) {
+        Ok(bytes) => serde_json::from_slice::<TokenVaultFile>(&bytes)
+            .map_err(|error| format!("Unable to parse service token vault: {error}")),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(TokenVaultFile {
+            version: 1,
+            tokens: HashMap::new(),
+        }),
+        Err(error) => Err(format!("Unable to read service token vault: {error}")),
+    }
+}
+
+fn write_token_vault(vault: &TokenVaultFile) -> Result<(), String> {
+    let serialized = serde_json::to_vec_pretty(vault)
+        .map_err(|error| format!("Unable to serialize service token vault: {error}"))?;
+    write_state_file(
+        service_token_vault_path(),
+        serialized,
+        "service token vault",
+    )
+}
+
+fn token_key(role: &str, field: &str) -> String {
+    format!("{role}.{field}")
+}
+
+fn update_vault_token(tokens: &mut HashMap<String, String>, key: String, value: &str) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        tokens.remove(&key);
+    } else {
+        tokens.insert(key, trimmed.to_string());
+    }
+}
+
+fn persist_config_tokens(config: &ApiServiceConfig, role: &str) -> Result<(), String> {
+    let mut vault = read_token_vault()?;
+    vault.version = 1;
+    update_vault_token(
+        &mut vault.tokens,
+        token_key(role, "authToken"),
+        &config.auth_token,
+    );
+    update_vault_token(
+        &mut vault.tokens,
+        token_key(role, "desktopServiceAuthToken"),
+        &config.desktop_service_auth_token,
+    );
+    update_vault_token(
+        &mut vault.tokens,
+        token_key(role, "externalApiAuthToken"),
+        &config.external_api_auth_token,
+    );
+    write_token_vault(&vault)
+}
+
+fn redact_config_tokens(mut config: ApiServiceConfig) -> ApiServiceConfig {
+    config.auth_token.clear();
+    config.desktop_service_auth_token.clear();
+    config.external_api_auth_token.clear();
+    config
+}
+
+fn hydrate_config_tokens(mut config: ApiServiceConfig, role: &str) -> ApiServiceConfig {
+    let Ok(vault) = read_token_vault() else {
+        return config;
+    };
+
+    if config.auth_token.trim().is_empty() {
+        if let Some(token) = vault.tokens.get(&token_key(role, "authToken")) {
+            config.auth_token = token.clone();
+        }
+    }
+    if config.desktop_service_auth_token.trim().is_empty() {
+        if let Some(token) = vault
+            .tokens
+            .get(&token_key(role, "desktopServiceAuthToken"))
+        {
+            config.desktop_service_auth_token = token.clone();
+        }
+    }
+    if config.external_api_auth_token.trim().is_empty() {
+        if let Some(token) = vault.tokens.get(&token_key(role, "externalApiAuthToken")) {
+            config.external_api_auth_token = token.clone();
+        }
+    }
+
+    config
+}
+
 pub fn persist_saved_config(config: &ApiServiceConfig) -> Result<(), String> {
-    let serialized = serde_json::to_vec_pretty(config)
+    persist_config_tokens(config, "service")?;
+    let storage_config = redact_config_tokens(config.clone());
+    let serialized = serde_json::to_vec_pretty(&storage_config)
         .map_err(|error| format!("Unable to serialize API service configuration: {error}"))?;
     write_state_file(
         service_config_path(),
@@ -74,7 +175,9 @@ pub fn persist_saved_config(config: &ApiServiceConfig) -> Result<(), String> {
 }
 
 pub fn persist_desktop_service_config(config: &ApiServiceConfig) -> Result<(), String> {
-    let serialized = serde_json::to_vec_pretty(config)
+    persist_config_tokens(config, "desktop")?;
+    let storage_config = redact_config_tokens(config.clone());
+    let serialized = serde_json::to_vec_pretty(&storage_config)
         .map_err(|error| format!("Unable to serialize desktop service configuration: {error}"))?;
     write_state_file(
         desktop_service_config_path(),
@@ -84,7 +187,9 @@ pub fn persist_desktop_service_config(config: &ApiServiceConfig) -> Result<(), S
 }
 
 pub fn persist_runtime_config(config: &ApiServiceConfig) -> Result<(), String> {
-    let serialized = serde_json::to_vec_pretty(config)
+    persist_config_tokens(config, "runtime")?;
+    let storage_config = redact_config_tokens(config.clone());
+    let serialized = serde_json::to_vec_pretty(&storage_config)
         .map_err(|error| format!("Unable to serialize runtime service configuration: {error}"))?;
     write_state_file(
         service_runtime_config_path(),
@@ -135,6 +240,7 @@ pub fn load_saved_config() -> Result<Option<ApiServiceConfig>, String> {
 
     let config: ApiServiceConfig = serde_json::from_slice(&bytes)
         .map_err(|error| format!("Unable to parse persisted API service configuration: {error}"))?;
+    let config = hydrate_config_tokens(config, "service");
 
     if config.uses_custom_desktop_service_connection() {
         migrate_legacy_desktop_config(&config);
@@ -169,6 +275,7 @@ pub fn load_desktop_service_config() -> Result<Option<ApiServiceConfig>, String>
 
     let config: ApiServiceConfig = serde_json::from_slice(&bytes)
         .map_err(|error| format!("Unable to parse desktop service configuration: {error}"))?;
+    let config = hydrate_config_tokens(config, "desktop");
 
     if source_path != primary_path {
         let _ = persist_desktop_service_config(&config);
@@ -187,6 +294,7 @@ pub fn load_runtime_config() -> Result<Option<ApiServiceConfig>, String> {
 
     let config: ApiServiceConfig = serde_json::from_slice(&bytes)
         .map_err(|error| format!("Unable to parse runtime service configuration: {error}"))?;
+    let config = hydrate_config_tokens(config, "runtime");
 
     if source_path != primary_path {
         let _ = persist_runtime_config(&config);
@@ -345,9 +453,9 @@ mod tests {
         load_desktop_service_config, load_runtime_config, load_saved_config,
         persist_desktop_activation_request, persist_desktop_service_config, persist_runtime_config,
         persist_saved_config, persist_service_pid, persist_service_settings_activation_request,
-        read_recorded_pid, service_pid_path, take_pending_desktop_activation_request,
-        take_pending_service_settings_activation_request, ApiServiceConfig,
-        DesktopActivationRequest,
+        read_recorded_pid, service_config_path, service_pid_path, service_token_vault_path,
+        take_pending_desktop_activation_request, take_pending_service_settings_activation_request,
+        ApiServiceConfig, DesktopActivationRequest,
     };
     use crate::service::{ApiServiceMode, DesktopServiceConnectionMode};
     use crate::test_support::runtime_state_dir_test_lock;
@@ -409,6 +517,30 @@ mod tests {
                 .expect("saved config should load")
                 .expect("saved config should exist");
 
+            assert_eq!(loaded, config);
+        });
+    }
+
+    #[test]
+    fn saved_config_redacts_tokens_into_token_vault() {
+        with_state_dir("shipflow-service-token-vault-test", || {
+            let config = sample_config();
+
+            persist_saved_config(&config).expect("saved config should persist");
+
+            let raw_config = fs::read_to_string(service_config_path())
+                .expect("raw service config should be readable");
+            assert!(!raw_config.contains("sf_state_store_token"));
+            assert!(!raw_config.contains("external-token"));
+
+            let raw_vault = fs::read_to_string(service_token_vault_path())
+                .expect("token vault should be readable");
+            assert!(raw_vault.contains("sf_state_store_token"));
+            assert!(raw_vault.contains("external-token"));
+
+            let loaded = load_saved_config()
+                .expect("saved config should load")
+                .expect("saved config should exist");
             assert_eq!(loaded, config);
         });
     }

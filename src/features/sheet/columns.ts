@@ -5,6 +5,9 @@ export const MIN_EMPTY_TRAILING_ROWS = 5;
 export const SELECTOR_COLUMN_WIDTH = 52;
 export const MAX_CONCURRENT_BULK_REQUESTS = 4;
 export const TRACKING_COLUMN_PATH = "detail.shipment_header.nomor_kiriman";
+export const DAYS_SINCE_TRANSACTION_COLUMN_PATH = "computed.days_since_transaction";
+export const DAYS_SINCE_LAST_UNBAGGING_COLUMN_PATH =
+  "computed.days_since_last_unbagging";
 export const LATEST_BAG_STATUS_COLUMN_PATH = "history_summary.latest_bagging_status";
 export const LATEST_MANIFEST_COLUMN_PATH = "history_summary.latest_manifest_r7";
 export const LATEST_DELIVERY_COLUMN_PATH = "history_summary.latest_delivery_runsheet";
@@ -19,6 +22,24 @@ export const COLUMNS: ColumnDefinition[] = [
     defaultWidth: 200,
     minWidth: 160,
     sticky: true,
+  },
+  {
+    path: DAYS_SINCE_TRANSACTION_COLUMN_PATH,
+    label: "TRX - TODAY",
+    type: "number",
+    defaultWidth: 132,
+    minWidth: 124,
+    maxWidth: 136,
+    compact: true,
+  },
+  {
+    path: DAYS_SINCE_LAST_UNBAGGING_COLUMN_PATH,
+    label: "TRX - UNBAG",
+    type: "number",
+    defaultWidth: 132,
+    minWidth: 124,
+    maxWidth: 136,
+    compact: true,
   },
   {
     path: LATEST_BAG_STATUS_COLUMN_PATH,

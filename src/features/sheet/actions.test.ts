@@ -11,6 +11,8 @@ import {
   setRowErrorInSheet,
   setRowLoadingInSheet,
   setRowSuccessInSheet,
+  setRowsQueuedInSheet,
+  setValueFilterSelectionInSheet,
   setTrackingInputInSheet,
   stopSelectionFollowingVisibleRowsInSheet,
   toggleRowSelectionInSheet,
@@ -136,6 +138,47 @@ describe("sheet actions", () => {
     expect(() => assertValidSheetState(successState)).not.toThrow();
   });
 
+  it("marks rows queued before bulk tracking workers pick them up", () => {
+    const initial = createDefaultSheetState();
+    const rowKey = initial.rows[0].key;
+    const previousSuccess = setRowSuccessInSheet(initial, rowKey, "P2603310114291", {
+      url: "https://example.test",
+      detail: {
+        shipment_header: { nomor_kiriman: "P2603310114291" },
+        origin_detail: {},
+        package_detail: {},
+        billing_detail: { cod_info: { is_cod: false } },
+        actors: { pengirim: {}, penerima: {} },
+        performance_detail: {},
+      },
+      status_akhir: {},
+      pod: {},
+      history: [],
+      history_summary: {
+        irregularity: [],
+        bagging_unbagging: [],
+        manifest_r7: [],
+        delivery_runsheet: [],
+      },
+    });
+
+    const queuedState = setRowsQueuedInSheet(previousSuccess, [
+      { key: rowKey, value: " P2603310114291 " },
+    ]);
+    const queuedRow = queuedState.rows.find((row) => row.key === rowKey);
+
+    expect(queuedRow).toMatchObject({
+      trackingInput: "P2603310114291",
+      loading: false,
+      queued: true,
+      stale: false,
+      dirty: false,
+      error: "",
+    });
+    expect(queuedRow?.shipment).toBe(previousSuccess.rows[0].shipment);
+    expect(() => assertValidSheetState(queuedState)).not.toThrow();
+  });
+
   it("clears carried tracking state when a row input becomes empty", () => {
     const initial = createDefaultSheetState();
     const rowKey = initial.rows[0].key;
@@ -173,6 +216,24 @@ describe("sheet actions", () => {
       error: "",
     });
     expect(() => assertValidSheetState(clearedState)).not.toThrow();
+  });
+
+  it("sets exact value filter selections for quick include and exclude actions", () => {
+    const initial = {
+      ...createDefaultSheetState(),
+      valueFilters: {
+        status: ["A", "B", "C"],
+      },
+    };
+
+    const onlyB = setValueFilterSelectionInSheet(initial, "status", ["B"]);
+    expect(onlyB.valueFilters.status).toEqual(["B"]);
+
+    const exceptB = setValueFilterSelectionInSheet(onlyB, "status", ["A", "C"]);
+    expect(exceptB.valueFilters.status).toEqual(["A", "C"]);
+
+    const cleared = setValueFilterSelectionInSheet(exceptB, "status", []);
+    expect(cleared.valueFilters.status).toBeUndefined();
   });
 
   it("forces selection to match visible rows when filter-driven selection is active", () => {

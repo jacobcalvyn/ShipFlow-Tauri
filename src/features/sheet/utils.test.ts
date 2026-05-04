@@ -1,10 +1,16 @@
-import { COLUMNS, MIN_EMPTY_TRAILING_ROWS } from "./columns";
+import {
+  COLUMNS,
+  DAYS_SINCE_LAST_UNBAGGING_COLUMN_PATH,
+  DAYS_SINCE_TRANSACTION_COLUMN_PATH,
+  MIN_EMPTY_TRAILING_ROWS,
+} from "./columns";
 import { SheetRow } from "./types";
 import {
   assertValidSheetState,
   compareRows,
   ensureTrailingEmptyRows,
   formatColumnValue,
+  getColumnValueOptions,
   getLatestBagPrintUrl,
   getRowStatus,
   sanitizeTrackingInput,
@@ -18,10 +24,22 @@ function createRow(partial: Partial<SheetRow> = {}): SheetRow {
     trackingInput: partial.trackingInput ?? "",
     shipment: partial.shipment ?? null,
     loading: partial.loading ?? false,
+    queued: partial.queued ?? false,
     stale: partial.stale ?? false,
     dirty: partial.dirty ?? false,
     error: partial.error ?? "",
   };
+}
+
+function formatDateDaysAgo(daysAgo: number) {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() - daysAgo);
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 describe("sheet utils", () => {
@@ -172,7 +190,7 @@ describe("sheet utils", () => {
       "P20260310064942110"
     );
     expect(formatColumnValue(row, latestDeliveryColumn)).toBe(
-      "FAILEDTODELIVERED (RUMAH/ALAMAT TIDAK DITEMUKAN) | Gabriel Erick Taurui (560000529) | 2026-04-15 14:50:02"
+      "FAILEDTODELIVERED | 2026-04-15 | Gabriel Erick Taurui (560000529)"
     );
     expect(formatColumnValue(row, baggingColumn)).toBe(
       "Bagging PID95084242 | DC JAYAPURA 9910A | 2026-04-15 16:33:20"
@@ -181,14 +199,98 @@ describe("sheet utils", () => {
       "P20260310064942110 | DC JAYAPURA 9910A | 2026-03-10 08:46:26"
     );
     expect(formatColumnValue(row, deliveryColumn)).toBe(
-      "FAILEDTODELIVERED (RUMAH/ALAMAT TIDAK DITEMUKAN) | Gabriel Erick Taurui (560000529) | 2026-04-15 14:50:02"
+      "FAILEDTODELIVERED | 2026-04-15 | Gabriel Erick Taurui (560000529)"
     );
+  });
+
+  it("formats elapsed day columns from transaction and latest unbagging dates", () => {
+    const transactionDaysAgo = 10;
+    const latestUnbaggingDaysAgo = 2;
+    const olderUnbaggingDaysAgo = 8;
+    const transactionDaysColumn = COLUMNS.find(
+      (column) => column.path === DAYS_SINCE_TRANSACTION_COLUMN_PATH
+    )!;
+    const unbaggingDaysColumn = COLUMNS.find(
+      (column) => column.path === DAYS_SINCE_LAST_UNBAGGING_COLUMN_PATH
+    )!;
+    const row = createRow({
+      shipment: {
+        url: "https://example.test",
+        detail: {
+          shipment_header: { nomor_kiriman: "P2601" },
+          origin_detail: {
+            tanggal_input: formatDateDaysAgo(transactionDaysAgo),
+          },
+          package_detail: { berat_actual: 0, berat_volumetric: 0 },
+          billing_detail: {
+            bea_dasar: 0,
+            nilai_barang: 0,
+            htnb: 0,
+            cod_info: { is_cod: false, total_cod: 0 },
+          },
+          actors: { pengirim: {}, penerima: {} },
+          performance_detail: {},
+        },
+        status_akhir: {},
+        pod: {},
+        history: [],
+        history_summary: {
+          irregularity: [],
+          bagging_unbagging: [
+            {
+              nomor_kantung: "PID-OLD",
+              unbagging: {
+                tanggal: formatDateDaysAgo(olderUnbaggingDaysAgo),
+                waktu: "09:00:00",
+              },
+            },
+            {
+              nomor_kantung: "PID-NEW",
+              unbagging: {
+                tanggal: formatDateDaysAgo(latestUnbaggingDaysAgo),
+                waktu: "17:00:00",
+              },
+            },
+          ],
+          manifest_r7: [],
+          delivery_runsheet: [],
+        },
+      },
+    });
+
+    expect(formatColumnValue(row, transactionDaysColumn)).toBe(
+      String(transactionDaysAgo)
+    );
+    expect(formatColumnValue(row, unbaggingDaysColumn)).toBe(
+      String(latestUnbaggingDaysAgo)
+    );
+  });
+
+  it("counts value filter options without changing their raw filter values", () => {
+    const trackingColumn = COLUMNS.find(
+      (column) => column.path === "detail.shipment_header.nomor_kiriman"
+    )!;
+
+    expect(
+      getColumnValueOptions(
+        [
+          createRow({ trackingInput: "PID94102398 - UNBAGGING" }),
+          createRow({ trackingInput: "PID91886166 - UNBAGGING" }),
+          createRow({ trackingInput: "PID94102398 - UNBAGGING" }),
+        ],
+        trackingColumn
+      )
+    ).toEqual([
+      { value: "PID91886166 - UNBAGGING", count: 1 },
+      { value: "PID94102398 - UNBAGGING", count: 2 },
+    ]);
   });
 
   it("returns row status in the expected priority order", () => {
     expect(getRowStatus(createRow({ loading: true, error: "x" }))).toBe("Loading");
-    expect(getRowStatus(createRow({ dirty: true, stale: true, error: "x" }))).toBe("Dirty");
-    expect(getRowStatus(createRow({ stale: true, error: "x" }))).toBe("Stale");
+    expect(getRowStatus(createRow({ queued: true, error: "x" }))).toBe("Pending");
+    expect(getRowStatus(createRow({ dirty: true, stale: true, error: "x" }))).toBe("Error");
+    expect(getRowStatus(createRow({ stale: true, error: "x" }))).toBe("Error");
     expect(getRowStatus(createRow({ error: "x" }))).toBe("Error");
     expect(
       getRowStatus(
@@ -221,6 +323,9 @@ describe("sheet utils", () => {
         })
       )
     ).toBe("Ready");
+    expect(getRowStatus(createRow({ trackingInput: "P2601", queued: true }))).toBe(
+      "Pending"
+    );
     expect(getRowStatus(createRow({ trackingInput: "P2601" }))).toBe("Pending");
     expect(getRowStatus(createRow())).toBe("Draft");
   });

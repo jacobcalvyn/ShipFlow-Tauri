@@ -5,7 +5,7 @@ use crate::service::{
     DESKTOP_PID_FILE_NAME, DESKTOP_REQUEST_FILE_NAME, DESKTOP_SERVICE_CONFIG_FILE_NAME,
     SERVICE_CONFIG_FILE_NAME, SERVICE_PID_FILE_NAME, SERVICE_RUNTIME_CONFIG_FILE_NAME,
     SERVICE_SETTINGS_PID_FILE_NAME, SERVICE_SETTINGS_REQUEST_FILE_NAME, SERVICE_STATE_DIR_NAME,
-    SERVICE_TRAY_PID_FILE_NAME,
+    SERVICE_TOKEN_VAULT_FILE_NAME, SERVICE_TRAY_PID_FILE_NAME,
 };
 
 #[cfg(test)]
@@ -82,6 +82,10 @@ pub(super) fn desktop_service_config_path() -> PathBuf {
 
 pub(super) fn service_runtime_config_path() -> PathBuf {
     service_state_dir().join(SERVICE_RUNTIME_CONFIG_FILE_NAME)
+}
+
+pub(super) fn service_token_vault_path() -> PathBuf {
+    service_state_dir().join(SERVICE_TOKEN_VAULT_FILE_NAME)
 }
 
 pub(super) fn service_pid_path() -> PathBuf {

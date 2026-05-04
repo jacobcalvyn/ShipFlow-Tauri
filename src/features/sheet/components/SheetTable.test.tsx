@@ -24,6 +24,7 @@ import { getPreviewPortalLayout } from "./SheetBodyRow";
 import {
   COLUMNS,
   LATEST_BAG_STATUS_COLUMN_PATH,
+  LATEST_DELIVERY_COLUMN_PATH,
   LATEST_MANIFEST_COLUMN_PATH,
 } from "../columns";
 import { SheetRow } from "../types";
@@ -63,6 +64,7 @@ describe("SheetTable", () => {
     const onTogglePinnedColumn = vi.fn();
     const onToggleColumnVisibility = vi.fn();
     const onToggleValueFilter = vi.fn();
+    const onSetValueFilterSelection = vi.fn();
     const onClearValueFilter = vi.fn();
     const onCloseColumnMenu = vi.fn();
     const onColumnMenuRef = vi.fn();
@@ -83,8 +85,11 @@ describe("SheetTable", () => {
         filters={{}}
         valueFilters={{ [visibleColumns[0].path]: ["P2603310114291"] }}
         valueOptionsByPath={{
-          [visibleColumns[0].path]: ["P2603310114291", "P2603310115000"],
-          [visibleColumns[1].path]: ["Alice"],
+          [visibleColumns[0].path]: [
+            { value: "P2603310114291", count: 2 },
+            { value: "P2603310115000", count: 33 },
+          ],
+          [visibleColumns[1].path]: [{ value: "Alice", count: 1 }],
         }}
         openColumnMenuPath={visibleColumns[0].path}
         highlightedColumnPath={visibleColumns[0].path}
@@ -109,6 +114,7 @@ describe("SheetTable", () => {
         onTogglePinnedColumn={onTogglePinnedColumn}
         onToggleColumnVisibility={onToggleColumnVisibility}
         onToggleValueFilter={onToggleValueFilter}
+        onSetValueFilterSelection={onSetValueFilterSelection}
         onClearValueFilter={onClearValueFilter}
         onCloseColumnMenu={onCloseColumnMenu}
         onColumnMenuRef={onColumnMenuRef}
@@ -131,11 +137,22 @@ describe("SheetTable", () => {
     });
     expect(onFilterChange).toHaveBeenCalledWith(visibleColumns[0].path, "P2603");
 
-    fireEvent.click(screen.getByLabelText("P2603310114291"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "P2603310114291 (2)" }));
     expect(onToggleValueFilter).toHaveBeenCalledWith(
       visibleColumns[0].path,
       "P2603310114291"
     );
+    expect(screen.getByText("(33)")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter only P2603310115000" }));
+    expect(onSetValueFilterSelection).toHaveBeenCalledWith(visibleColumns[0].path, [
+      "P2603310115000",
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter except P2603310115000" }));
+    expect(onSetValueFilterSelection).toHaveBeenCalledWith(visibleColumns[0].path, [
+      "P2603310114291",
+    ]);
 
     fireEvent.click(screen.getByText("Sort Asc"));
     expect(onSetColumnSort).toHaveBeenCalledWith(visibleColumns[0].path, "asc");
@@ -204,6 +221,7 @@ describe("SheetTable", () => {
         onTogglePinnedColumn={vi.fn()}
         onToggleColumnVisibility={vi.fn()}
         onToggleValueFilter={vi.fn()}
+        onSetValueFilterSelection={vi.fn()}
         onClearValueFilter={vi.fn()}
         onCloseColumnMenu={vi.fn()}
         onColumnMenuRef={vi.fn()}
@@ -224,6 +242,71 @@ describe("SheetTable", () => {
     fireEvent.mouseEnter(qrButton.parentElement as HTMLElement);
 
     expect(mockedToDataUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the wide filter menu for latest delivery values", () => {
+    const deliveryColumns = COLUMNS.filter((column) =>
+      [LATEST_DELIVERY_COLUMN_PATH].includes(column.path)
+    );
+    const deliveryColumnWidths = Object.fromEntries(
+      deliveryColumns.map((column) => [column.path, column.defaultWidth])
+    );
+
+    const { container } = render(
+      <SheetTable
+        sheetId="sheet-1"
+        displayScale="small"
+        displayedRows={[createRow()]}
+        visibleColumns={deliveryColumns}
+        hiddenColumns={[]}
+        columnWidths={deliveryColumnWidths}
+        pinnedColumnSet={new Set()}
+        pinnedLeftMap={{}}
+        hoveredColumn={null}
+        allVisibleSelected={false}
+        selectedRowKeySet={new Set()}
+        filters={{}}
+        valueFilters={{}}
+        valueOptionsByPath={{
+          [LATEST_DELIVERY_COLUMN_PATH]: [
+            {
+              value:
+                "FAILEDTODELIVERED | 2026-04-15 | Gabriel Erick Taurui (560000529)",
+              count: 2,
+            },
+          ],
+        }}
+        openColumnMenuPath={LATEST_DELIVERY_COLUMN_PATH}
+        highlightedColumnPath={null}
+        scrollContainerRef={createRef<HTMLDivElement>()}
+        onScrollContainer={vi.fn()}
+        sortDirectionForPath={() => null}
+        onMouseLeaveTable={vi.fn()}
+        onHoverColumn={vi.fn()}
+        onToggleVisibleSelection={vi.fn()}
+        onToggleRowSelection={vi.fn()}
+        onOpenSourceLink={vi.fn()}
+        onCopyTrackingId={vi.fn()}
+        onClearTrackingCell={vi.fn()}
+        onTrackingInputChange={vi.fn()}
+        onTrackingInputBlur={vi.fn()}
+        onTrackingInputKeyDown={vi.fn()}
+        onTrackingInputPaste={vi.fn()}
+        onFilterChange={vi.fn()}
+        onResizeStart={vi.fn()}
+        onToggleColumnMenu={vi.fn()}
+        onSetColumnSort={vi.fn()}
+        onTogglePinnedColumn={vi.fn()}
+        onToggleColumnVisibility={vi.fn()}
+        onToggleValueFilter={vi.fn()}
+        onSetValueFilterSelection={vi.fn()}
+        onClearValueFilter={vi.fn()}
+        onCloseColumnMenu={vi.fn()}
+        onColumnMenuRef={vi.fn()}
+      />
+    );
+
+    expect(container.querySelector(".column-menu-body-wide-filter")).toBeInTheDocument();
   });
 
   it("lazy-resolves POD previews only after the first hover", async () => {
@@ -304,6 +387,7 @@ describe("SheetTable", () => {
         onTogglePinnedColumn={vi.fn()}
         onToggleColumnVisibility={vi.fn()}
         onToggleValueFilter={vi.fn()}
+        onSetValueFilterSelection={vi.fn()}
         onClearValueFilter={vi.fn()}
         onCloseColumnMenu={vi.fn()}
         onColumnMenuRef={vi.fn()}
@@ -422,6 +506,7 @@ describe("SheetTable", () => {
         onTogglePinnedColumn={vi.fn()}
         onToggleColumnVisibility={vi.fn()}
         onToggleValueFilter={vi.fn()}
+        onSetValueFilterSelection={vi.fn()}
         onClearValueFilter={vi.fn()}
         onCloseColumnMenu={vi.fn()}
         onColumnMenuRef={vi.fn()}
@@ -530,6 +615,7 @@ describe("SheetTable", () => {
         onTogglePinnedColumn={vi.fn()}
         onToggleColumnVisibility={vi.fn()}
         onToggleValueFilter={vi.fn()}
+        onSetValueFilterSelection={vi.fn()}
         onClearValueFilter={vi.fn()}
         onCloseColumnMenu={vi.fn()}
         onColumnMenuRef={vi.fn()}
@@ -606,6 +692,7 @@ describe("SheetTable", () => {
         onTogglePinnedColumn={vi.fn()}
         onToggleColumnVisibility={vi.fn()}
         onToggleValueFilter={vi.fn()}
+        onSetValueFilterSelection={vi.fn()}
         onClearValueFilter={vi.fn()}
         onCloseColumnMenu={vi.fn()}
         onColumnMenuRef={vi.fn()}

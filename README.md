@@ -10,6 +10,7 @@ Architecture references:
 
 - [docs/runtime-architecture.md](./docs/runtime-architecture.md)
 - [docs/desktop-service-split.md](./docs/desktop-service-split.md)
+- [docs/service-api-v1.md](./docs/service-api-v1.md)
 - [docs/refactor-audit.md](./docs/refactor-audit.md)
 - [docs/native-platform-architecture.md](./docs/native-platform-architecture.md)
 
@@ -23,12 +24,13 @@ Architecture references:
 - Shows shipment detail and `status_akhir` fields in a wide spreadsheet-style table
 - Supports importing shipment IDs from bag and manifest lookups into the active sheet
 - Supports bulk paste, row selection, CSV export, column pin/hide, sorting, and filtering
-- Supports both text filters and per-column multi-select value filters
+- Supports both text filters and per-column multi-select value filters with value counts and quick include/exclude actions
 - Supports retracking all current shipments from the action bar
 - Supports multiple sheets, where each sheet is an isolated tracking workspace
 - Supports creating a new sheet from selected shipment IDs only
 - Supports appending selected shipment IDs into another existing sheet
 - Uses a standalone `ShipFlow Service` for Desktop tracking and optional API access for other apps
+- Exposes a documented `ShipFlow Service` API v1 contract for status, capabilities, lookup, and batch tracking jobs
 
 ## Tracking Flow
 
@@ -76,15 +78,56 @@ Current ownership:
 
 Current local service routes:
 
+- `GET /health`
 - `GET /status`
 - `GET /track/:shipment_id`
 - `GET /bag/:bag_id`
 - `GET /manifest/:manifest_id`
 
+Current versioned service API routes:
+
+- `GET /v1/status`
+- `GET /v1/capabilities`
+- `GET /v1/track/:shipment_id`
+- `GET /v1/bag/:bag_id`
+- `GET /v1/manifest/:manifest_id`
+- `POST /v1/jobs/track-batch`
+- `GET /v1/jobs/:job_id`
+- `GET /v1/jobs/:job_id/result`
+- `POST /v1/jobs/:job_id/cancel`
+
+The full service API contract is documented in [docs/service-api-v1.md](./docs/service-api-v1.md).
+
 Important note:
 
 - external API source selection currently applies to shipment tracking
 - bag and manifest lookups currently use the internal POS scraper path
+
+## ShipFlow Service API v1
+
+`ShipFlow Service` owns the local/LAN API used by Desktop and optional internal clients. Every API endpoint requires:
+
+```http
+Authorization: Bearer <service-token>
+```
+
+Successful `/v1` responses use an envelope with `meta`, `data`, and `warnings`. Errors use the same `meta` shape plus an `error.message`.
+
+The API supports:
+
+- authenticated status and product identity checks
+- capability discovery
+- shipment, bag, and manifest lookups
+- force-refresh lookups with `x-shipflow-force-refresh: true`
+- background batch tracking jobs with start/status/result/cancel endpoints
+
+See [docs/service-api-v1.md](./docs/service-api-v1.md) for endpoint details and example payloads.
+
+## Background Batch Jobs
+
+Bulk tracking can be delegated to `ShipFlow Service` through `/v1/jobs/track-batch`.
+
+The job API returns a `jobId`, status endpoint, and result endpoint. A running job can be cancelled through `POST /v1/jobs/:job_id/cancel`. This is the backend foundation for heavier bulk tracking flows without making the Desktop command layer block on every row.
 
 ## JSON Shape
 
@@ -141,7 +184,6 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - Shortcut badges now include operational jump targets such as `PID/Kantong`, `Status Akhir`, and `Kantor Kirim`
 - Temporary header highlight when a shortcut scroll target is reached
 - Sheet-specific scroll position, request state, and notices
-- Toast notifications are shown as a fixed top-center queue and do not shift the sheet layout
 - `Setting` is opened from a gear icon in the tabs panel and includes display scale controls plus a connection panel for the standalone `ShipFlow Service`
 - The standalone `ShipFlow Service` owns:
   - runtime tracking source selection
@@ -155,12 +197,17 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - `PID/Kantong Terakhir` is derived from the latest `bagging` / `unbagging` event and includes QR preview, copy ID, and print actions for the latest bag/PID
 - `Manifest Terakhir` is derived from the latest `history_summary.manifest_r7` entry and includes a copy-ID action
 - `Delivery Terakhir` is derived from the latest `history_summary.delivery_runsheet` entry
+- `TRX - TODAY` shows the day count from the shipment transaction date to today
+- `TRX - UNBAG` shows the day count from the latest unbagging event to today
 - QR previews are generated locally in-app and do not rely on an external QR image service
 - `POD Photo 1` and `POD Photo 2` render as image thumbnails with hover preview
 - POD hover previews are resolved through the Tauri backend, cap remote/data-image payloads at `5 MB`, reject SVG payloads, and keep only a bounded in-memory frontend preview cache
 - `history_summary` cells open scrollable popup details inside the app
-- Value-filter popups for sender/recipient name and address columns use a wider panel for long values
+- Value-filter popups show per-value item counts, for example `PID94102398 - UNBAGGING (33)`
+- Hovering a value-filter option exposes `Filter ini` and `Filter kecuali ini` shortcuts for quick include/exclude filtering
+- Value-filter popups for sender/recipient name, address, and latest delivery columns use a wider panel for long values
 - The workspace layout is tuned to be more compact so tabs, actions, shortcuts, and the sheet grid fit more comfortably in one screen
+- Toast notifications are shown as a fixed top-right queue and do not shift the sheet layout
 - `history_summary.delivery_runsheet` now keeps the latest delivery result as one update with:
   - `status` as the final delivery status
   - `keterangan_status` as the delivery failure/detail reason when available
@@ -209,12 +256,14 @@ The main table currently focuses on:
 - Manifest-to-bag fan-out now uses capped parallel lookup workers and ignores stale downstream results when a manifest lookup is replaced or rerun.
 - Manifest and bag imports auto-close the modal after `Ganti Semua` or `Tambah Data`, then immediately start shipment tracking in the target sheet.
 - Runtime lookup results for `track`, `bag`, and `manifest` now use one in-memory cache with in-flight coalescing, kind-specific TTL, and short negative-cache protection.
+- Successful lookup payloads are also persisted into a local user-state lookup store so repeated lookups can survive service restarts.
 - Manual refresh flows such as `Lacak Ulang`, `Retry Gagal`, and bag/manifest modal fetches can explicitly bypass cache when the user intends a fresh lookup.
 - Runtime startup and source/config refresh paths now invalidate lookup cache explicitly before using the refreshed tracking configuration.
 - Active, dirty, and loading rows remain visible even while filters are active.
 - Filtered views now force selection to exactly the currently visible shipment IDs, and clearing filters stops that auto-follow mode before normal manual selection resumes.
 - Request telemetry is emitted for `start`, `success`, `fail`, and `abort` with `sheetId`, `rowKey`, and `shipmentId`.
 - `Delete All` resets rows, filters, value filters, sort state, and in-flight tracking work so the table returns to a clean input state.
+- `Lacak Ulang` marks all target rows as queued first, then promotes only the active worker row to loading while preserving completed/failed row status.
 - Delivery-runsheet parsing is hardened so `FAILEDTODELIVERED` cases are not incorrectly split into two updates on the latest runsheet.
 - Delivery-runsheet parsing now keeps only the latest effective update for a runsheet summary.
 - Desktop no longer manages service tray/background lifecycle.
@@ -237,10 +286,12 @@ The main table currently focuses on:
 - Desktop and service runtime events are written to per-process log files under the shared runtime state directory.
 - Runtime log files now also emit `[ShipFlowCacheMetrics]` summary lines with per-kind cache ratios and counters for operator audit.
 - ShipFlow Service lookup endpoints now percent-encode bag and manifest IDs before issuing local HTTP requests.
+- ShipFlow Service now exposes a documented `/v1` API contract with response envelopes and batch tracking job endpoints.
+- Service tokens are written to a separate local token vault file and hydrated into runtime config when needed, so primary config files do not carry raw token fields.
 - Windows native URL launching now keeps full query strings intact, so bag print URLs preserve both `bag_id` and `oid`.
 - The service-settings UI is tuned to keep the main content panel height stable across view switches so the window does not expose large empty gaps.
-- Lookup cache remains in-memory only for now; cache persistence across restart is intentionally not enabled yet.
-- Workspace document saves write through a temporary file and replace the target only after the new payload has been written.
+- CSV export now uses a native save dialog and backend file write instead of a browser download link.
+- Workspace document saves write through a temporary file, create bounded recovery snapshots, and replace the target only after the new payload has been written.
 
 ## Project Structure
 
@@ -279,6 +330,9 @@ The main table currently focuses on:
 - [crates/shipflow-tauri-runtime/src/workspace_document.rs](./crates/shipflow-tauri-runtime/src/workspace_document.rs): workspace document read/write helpers
 - [crates/shipflow-core](./crates/shipflow-core): shared lookup core for shipment, bag, and manifest parser/upstream logic and models
 - [crates/shipflow-service-runtime](./crates/shipflow-service-runtime): shared ShipFlow Service HTTP API and lookup cache runtime
+- [crates/shipflow-service-runtime/src/api_contract.rs](./crates/shipflow-service-runtime/src/api_contract.rs): versioned API envelope and error contract
+- [crates/shipflow-service-runtime/src/jobs.rs](./crates/shipflow-service-runtime/src/jobs.rs): background batch job registry for Service API jobs
+- [crates/shipflow-service-runtime/src/persistent_store.rs](./crates/shipflow-service-runtime/src/persistent_store.rs): persistent lookup payload store
 - [crates/shipflow-tauri-runtime/src/tracking/mod.rs](./crates/shipflow-tauri-runtime/src/tracking/mod.rs): shared tracking facade used by Tauri command handlers
 - [src-tauri/src/fixtures](./src-tauri/src/fixtures): parser fixtures used by Rust tests
 

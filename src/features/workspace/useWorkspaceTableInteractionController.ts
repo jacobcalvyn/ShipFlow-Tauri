@@ -7,6 +7,7 @@ import {
   setColumnWidthInSheet,
   setSortInSheet,
   setTextFilterInSheet,
+  setValueFilterSelectionInSheet,
   toggleRowSelectionInSheet,
   toggleValueFilterInSheet,
   toggleVisibleSelectionInSheet,
@@ -147,6 +148,15 @@ export function useWorkspaceTableInteractionController({
     [updateActiveSheet]
   );
 
+  const setColumnValueFilterSelection = useCallback(
+    (path: string, values: string[]) => {
+      updateActiveSheet((current) =>
+        setValueFilterSelectionInSheet(current, path, values)
+      );
+    },
+    [updateActiveSheet]
+  );
+
   const clearColumnValueFilter = useCallback(
     (path: string) => {
       updateActiveSheet((current) => clearValueFilterInSheet(current, path));
@@ -230,6 +240,7 @@ export function useWorkspaceTableInteractionController({
     handleTrackingInputKeyDown,
     openSourceLink,
     setColumnSort,
+    setColumnValueFilterSelection,
     toggleColumnValueFilter,
     toggleRowSelection,
     toggleVisibleSelection,

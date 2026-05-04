@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { getReleaseHealth, type ReleaseHealth } from "../../../backend/commands";
 import { ServiceConfig } from "../../../types";
 
 type ServiceConnectionTestResult = {
@@ -36,6 +38,20 @@ export function DesktopServiceConnectionPanel({
   onPasteDesktopServiceAuthToken,
   onTestServiceConnection,
 }: DesktopServiceConnectionPanelProps) {
+  const [releaseHealth, setReleaseHealth] = useState<ReleaseHealth | null>(null);
+  const [releaseHealthError, setReleaseHealthError] = useState<string | null>(null);
+
+  const showReleaseHealth = () => {
+    setReleaseHealthError(null);
+    void getReleaseHealth()
+      .then((health) => setReleaseHealth(health))
+      .catch((error) =>
+        setReleaseHealthError(
+          error instanceof Error ? error.message : "Gagal membaca release health."
+        )
+      );
+  };
+
   return (
     <>
       <div className="settings-service-launcher">
@@ -127,6 +143,29 @@ export function DesktopServiceConnectionPanel({
             aria-live="polite"
           >
             {serviceConnectionTestResult.message}
+          </div>
+        ) : null}
+        <div className="settings-service-launcher settings-release-health">
+          <div className="settings-service-launcher-copy">
+            <div className="settings-service-launcher-title">Release Health</div>
+            <div className="settings-service-launcher-description">
+              Cek versi app, platform, dan jenis build yang sedang berjalan.
+            </div>
+          </div>
+          <button type="button" className="sheet-tab-action" onClick={showReleaseHealth}>
+            Cek Health
+          </button>
+        </div>
+        {releaseHealth ? (
+          <div className="settings-field-help settings-field-help-info" role="status">
+            {releaseHealth.packageName} {releaseHealth.appVersion} · {releaseHealth.targetOs}/
+            {releaseHealth.targetArch}
+            {releaseHealth.debugBuild ? " · debug" : " · release"}
+          </div>
+        ) : null}
+        {releaseHealthError ? (
+          <div className="settings-field-help settings-field-help-error" role="status">
+            {releaseHealthError}
           </div>
         ) : null}
       </div>

@@ -1,6 +1,9 @@
+pub mod api_contract;
 pub mod http_api;
+pub mod jobs;
 pub mod lookup_cache;
 pub mod model;
+pub mod persistent_store;
 
 pub const FORCE_REFRESH_HEADER_NAME: &str = "x-shipflow-force-refresh";
 

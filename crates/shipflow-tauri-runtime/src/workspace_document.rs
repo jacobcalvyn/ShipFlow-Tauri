@@ -8,6 +8,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 const WORKSPACE_DOCUMENT_EXTENSION: &str = "shipflow";
+const CSV_EXPORT_EXTENSION: &str = "csv";
+const WORKSPACE_RECOVERY_EXTENSION: &str = "recovery";
+const MAX_WORKSPACE_RECOVERY_FILES: usize = 8;
 
 static WORKSPACE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -32,6 +35,21 @@ pub struct WorkspaceDocumentReadResult {
 pub struct WorkspaceDocumentWriteResult {
     pub path: String,
     pub saved_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceCsvExportResult {
+    pub path: String,
+    pub row_count: usize,
+    pub exported_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRecoverySnapshot {
+    pub path: String,
+    pub created_at: String,
 }
 
 fn expand_document_path(value: &str) -> PathBuf {
@@ -137,6 +155,69 @@ fn finalize_workspace_document_write(temp_path: &Path, target_path: &Path) -> Re
     }
 }
 
+fn workspace_recovery_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "workspace.shipflow".into());
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+
+    path.with_file_name(format!(
+        "{file_name}.{timestamp}.{WORKSPACE_RECOVERY_EXTENSION}"
+    ))
+}
+
+fn cleanup_workspace_recovery_files(path: &Path) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let Some(file_name) = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+    else {
+        return;
+    };
+
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    let mut recovery_files = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|candidate| {
+            candidate
+                .file_name()
+                .map(|name| name.to_string_lossy())
+                .is_some_and(|name| {
+                    name.starts_with(&format!("{file_name}."))
+                        && name.ends_with(&format!(".{WORKSPACE_RECOVERY_EXTENSION}"))
+                })
+        })
+        .collect::<Vec<_>>();
+
+    recovery_files.sort();
+    let excess_count = recovery_files
+        .len()
+        .saturating_sub(MAX_WORKSPACE_RECOVERY_FILES);
+    for stale_path in recovery_files.into_iter().take(excess_count) {
+        let _ = fs::remove_file(stale_path);
+    }
+}
+
+fn create_workspace_recovery_snapshot(path: &Path) {
+    if !path.exists() {
+        return;
+    }
+
+    let recovery_path = workspace_recovery_path(path);
+    if fs::copy(path, &recovery_path).is_ok() {
+        cleanup_workspace_recovery_files(path);
+    }
+}
+
 pub fn write_workspace_document_to_path(
     path: &Path,
     document: &WorkspaceDocumentFile,
@@ -156,6 +237,7 @@ pub fn write_workspace_document_to_path(
     fs::write(&temp_path, serialized)
         .map_err(|error| format!("Unable to write workspace temp file: {error}"))?;
 
+    create_workspace_recovery_snapshot(path);
     finalize_workspace_document_write(&temp_path, path)?;
 
     Ok(())
@@ -194,6 +276,96 @@ pub fn write_workspace_document_file(
         path: to_display_document_path(&normalized_path),
         saved_at: document.saved_at,
     })
+}
+
+pub fn write_csv_export_file(
+    path: String,
+    csv_content: String,
+    row_count: usize,
+) -> Result<WorkspaceCsvExportResult, String> {
+    let mut target_path = normalize_csv_export_path(&path)?;
+    let parent = target_path
+        .parent()
+        .ok_or_else(|| "CSV export file must have a parent directory.".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Unable to create CSV export directory: {error}"))?;
+
+    if target_path.extension().is_none() {
+        target_path.set_extension(CSV_EXPORT_EXTENSION);
+    }
+
+    let temp_path = unique_workspace_temp_path(&target_path, "csv.tmp");
+    fs::write(&temp_path, csv_content)
+        .map_err(|error| format!("Unable to write CSV export temp file: {error}"))?;
+    finalize_workspace_document_write(&temp_path, &target_path)
+        .map_err(|error| error.replace("workspace file", "CSV export"))?;
+
+    Ok(WorkspaceCsvExportResult {
+        path: to_display_document_path(&target_path),
+        row_count,
+        exported_at: current_timestamp_string(),
+    })
+}
+
+pub fn list_workspace_recovery_snapshots(
+    path: String,
+) -> Result<Vec<WorkspaceRecoverySnapshot>, String> {
+    let normalized_path = normalize_workspace_document_path(&path)?;
+    let Some(parent) = normalized_path.parent() else {
+        return Ok(Vec::new());
+    };
+    let Some(file_name) = normalized_path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut snapshots = fs::read_dir(parent)
+        .map_err(|error| format!("Unable to read workspace recovery directory: {error}"))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|candidate| {
+            candidate
+                .file_name()
+                .map(|name| name.to_string_lossy())
+                .is_some_and(|name| {
+                    name.starts_with(&format!("{file_name}."))
+                        && name.ends_with(&format!(".{WORKSPACE_RECOVERY_EXTENSION}"))
+                })
+        })
+        .map(|candidate| WorkspaceRecoverySnapshot {
+            created_at: fs::metadata(&candidate)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| format!("{}.{:03}Z", duration.as_secs(), duration.subsec_millis()))
+                .unwrap_or_default(),
+            path: to_display_document_path(&candidate),
+        })
+        .collect::<Vec<_>>();
+    snapshots.sort_by(|left, right| right.path.cmp(&left.path));
+    Ok(snapshots)
+}
+
+fn normalize_csv_export_path(value: &str) -> Result<PathBuf, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("CSV export file path is required.".into());
+    }
+
+    let mut path = expand_document_path(trimmed);
+    if path.extension().is_none() {
+        path.set_extension(CSV_EXPORT_EXTENSION);
+    }
+    Ok(path)
+}
+
+fn current_timestamp_string() -> String {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}.{:03}Z", duration.as_secs(), duration.subsec_millis())
 }
 
 #[cfg(test)]

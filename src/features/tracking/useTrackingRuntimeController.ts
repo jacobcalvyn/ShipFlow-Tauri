@@ -8,6 +8,7 @@ import {
   setRowErrorInSheet,
   setRowLoadingInSheet,
   setRowSuccessInSheet,
+  setRowsQueuedInSheet,
   setTrackingInputInSheet,
 } from "../sheet/actions";
 import { SheetState } from "../sheet/types";
@@ -465,8 +466,38 @@ export function useTrackingRuntimeController({
       options?: FetchRuntimeOptions
     ) => {
       const runEpoch = bumpSheetEpoch(bulkRunEpochBySheetRef, sheetId);
-      const queue = [...entries];
+      const queue = entries
+        .map((entry) => ({
+          key: entry.key,
+          value: sanitizeTrackingInput(entry.value),
+        }))
+        .filter(
+          (entry) =>
+            entry.value !== "" && !getTrackingInputValidationError(entry.value)
+        );
       const workerCount = Math.min(MAX_CONCURRENT_BULK_REQUESTS, queue.length);
+
+      if (queue.length === 0) {
+        return;
+      }
+
+      queue.forEach(({ key }) => {
+        const requestKey = getSheetRequestKey(sheetId, key);
+        const controller = requestControllersRef.current.get(requestKey);
+        const meta = requestMetaRef.current.get(requestKey);
+
+        if (meta) {
+          emitTrackingTelemetry("abort", meta, {
+            reason: "bulk_tracking_restart",
+          });
+        }
+
+        controller?.abort();
+        requestControllersRef.current.delete(requestKey);
+        requestMetaRef.current.delete(requestKey);
+      });
+
+      updateSheet(sheetId, (current) => setRowsQueuedInSheet(current, queue));
 
       const workers = Array.from({ length: workerCount }, async () => {
         while (queue.length > 0 && getSheetEpoch(bulkRunEpochBySheetRef, sheetId) === runEpoch) {
@@ -485,7 +516,7 @@ export function useTrackingRuntimeController({
 
       await Promise.allSettled(workers);
     },
-    [bumpSheetEpoch, fetchShipmentIntoRow, getSheetEpoch]
+    [bumpSheetEpoch, fetchShipmentIntoRow, getSheetEpoch, updateSheet]
   );
 
   const handleTrackingInputPaste = useCallback(

@@ -18,6 +18,25 @@ export type WorkspaceDocumentWriteResult = {
   savedAt: string;
 };
 
+export type WorkspaceCsvExportResult = {
+  path: string;
+  rowCount: number;
+  exportedAt: string;
+};
+
+export type WorkspaceRecoverySnapshot = {
+  path: string;
+  createdAt: string;
+};
+
+export type ReleaseHealth = {
+  appVersion: string;
+  targetOs: string;
+  targetArch: string;
+  packageName: string;
+  debugBuild: boolean;
+};
+
 export type WorkspaceWindowLaunchRequest = {
   documentPath: string | null;
   startFresh: boolean;
@@ -84,6 +103,10 @@ export function readFromClipboard() {
 
 export function logFrontendRuntimeEvent(level: "info" | "error", message: string) {
   return invokeCommand<void>("log_frontend_runtime_event", { level, message });
+}
+
+export function getReleaseHealth() {
+  return invokeCommand<ReleaseHealth>("get_release_health");
 }
 
 export function openShipflowServiceApp() {
@@ -154,6 +177,18 @@ export function writeWorkspaceDocument(path: string, document: WorkspaceDocument
     path,
     document,
   });
+}
+
+export function exportWorkspaceCsv(args: {
+  suggestedName: string;
+  csvContent: string;
+  rowCount: number;
+}) {
+  return invokeCommand<WorkspaceCsvExportResult | null>("export_workspace_csv", args);
+}
+
+export function listWorkspaceRecovery(path: string) {
+  return invokeCommand<WorkspaceRecoverySnapshot[]>("list_workspace_recovery", { path });
 }
 
 export function createWorkspaceWindow(documentPath: string | null) {

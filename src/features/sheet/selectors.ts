@@ -219,7 +219,7 @@ export function getDisplayedRows(
   const alwaysVisibleRows = sheetState.rows.filter(
     (row) =>
       row.trackingInput.trim() !== "" &&
-      (row.loading || row.dirty || row.shipment === null)
+      (row.loading || row.queued || row.dirty || row.shipment === null)
   );
 
   const workingRowKeySet = new Set(workingRows.map((row) => row.key));
@@ -285,7 +285,15 @@ export function getExportableRows(
 }
 
 export function getLoadedCount(displayedRows: SheetRow[]) {
-  return displayedRows.filter((row) => row.shipment !== null).length;
+  return displayedRows.filter(
+    (row) =>
+      row.shipment !== null &&
+      !row.loading &&
+      !row.queued &&
+      !row.error &&
+      !row.stale &&
+      !row.dirty
+  ).length;
 }
 
 export function getTotalShipmentCount(nonEmptyRows: SheetRow[]) {

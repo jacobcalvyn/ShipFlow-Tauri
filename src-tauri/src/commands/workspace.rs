@@ -1,4 +1,6 @@
-use shipflow_tauri_runtime::os_bridge::pick_workspace_document_path_runtime;
+use shipflow_tauri_runtime::os_bridge::{
+    pick_csv_export_path_runtime, pick_workspace_document_path_runtime,
+};
 use shipflow_tauri_runtime::service::launch_service_settings_app;
 use shipflow_tauri_runtime::window_runtime::{
     claim_current_workspace_document_runtime, create_workspace_window_runtime,
@@ -9,8 +11,9 @@ use shipflow_tauri_runtime::window_runtime::{
     WorkspaceWindowRequest,
 };
 use shipflow_tauri_runtime::workspace_document::{
-    read_workspace_document_file, write_workspace_document_file, WorkspaceDocumentFile,
-    WorkspaceDocumentReadResult, WorkspaceDocumentWriteResult,
+    list_workspace_recovery_snapshots, read_workspace_document_file, write_csv_export_file,
+    write_workspace_document_file, WorkspaceCsvExportResult, WorkspaceDocumentFile,
+    WorkspaceDocumentReadResult, WorkspaceDocumentWriteResult, WorkspaceRecoverySnapshot,
 };
 
 #[tauri::command]
@@ -38,6 +41,24 @@ pub fn write_workspace_document(
     document: WorkspaceDocumentFile,
 ) -> Result<WorkspaceDocumentWriteResult, String> {
     write_workspace_document_file(path, document)
+}
+
+#[tauri::command]
+pub fn export_workspace_csv(
+    suggested_name: String,
+    csv_content: String,
+    row_count: usize,
+) -> Result<Option<WorkspaceCsvExportResult>, String> {
+    let Some(path) = pick_csv_export_path_runtime(&suggested_name)? else {
+        return Ok(None);
+    };
+
+    write_csv_export_file(path, csv_content, row_count).map(Some)
+}
+
+#[tauri::command]
+pub fn list_workspace_recovery(path: String) -> Result<Vec<WorkspaceRecoverySnapshot>, String> {
+    list_workspace_recovery_snapshots(path)
 }
 
 #[tauri::command]

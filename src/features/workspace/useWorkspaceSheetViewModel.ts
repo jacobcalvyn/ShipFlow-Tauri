@@ -137,6 +137,7 @@ export function useWorkspaceSheetViewModel(activeSheet: SheetState) {
           (row) =>
             row.trackingInput.trim() !== "" &&
             !row.loading &&
+            !row.queued &&
             (row.error !== "" || row.stale || row.dirty)
         )
         .map((row) => ({
@@ -157,7 +158,7 @@ export function useWorkspaceSheetViewModel(activeSheet: SheetState) {
   );
 
   const loadingCount = useMemo(
-    () => displayedRows.filter((row) => row.loading).length,
+    () => displayedRows.filter((row) => row.loading || row.queued).length,
     [displayedRows]
   );
 

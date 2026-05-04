@@ -20,12 +20,15 @@ use shipflow_core::{
 };
 use tokio::sync::Notify;
 
+use crate::persistent_store::PersistentLookupStore;
+
 const TRACK_CACHE_TTL_SECS: u64 = 30;
 const BAG_CACHE_TTL_SECS: u64 = 60;
 const MANIFEST_CACHE_TTL_SECS: u64 = 90;
 const ERROR_CACHE_TTL_SECS: u64 = 8;
 const CACHE_SUMMARY_MIN_EVENTS: u64 = 20;
 const CACHE_SUMMARY_MIN_INTERVAL_SECS: u64 = 60;
+const PERSISTENT_SUCCESS_CACHE_TTL_SECS: u64 = 6 * 60 * 60;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LookupRequestOptions {
@@ -68,6 +71,7 @@ pub struct LookupCacheState {
     inner: Arc<Mutex<LookupCacheInner>>,
     policy: LookupCachePolicy,
     log_sink: Option<LogSink>,
+    persistent_store: Option<PersistentLookupStore>,
 }
 
 #[derive(Default)]
@@ -154,7 +158,13 @@ impl LookupCacheState {
             inner: Arc::new(Mutex::new(LookupCacheInner::default())),
             policy: LookupCachePolicy::default(),
             log_sink: Some(Arc::new(log_sink)),
+            persistent_store: None,
         }
+    }
+
+    pub fn with_persistent_store(mut self, persistent_store: PersistentLookupStore) -> Self {
+        self.persistent_store = Some(persistent_store);
+        self
     }
 
     pub fn invalidate_all(&self, reason: &str) {
@@ -196,6 +206,27 @@ impl LookupCacheState {
         let mut loader = Some(loader);
 
         loop {
+            if !options.force_refresh {
+                if let Some(payload) =
+                    self.load_persistent_success(kind, &normalized_id, &cache_key)
+                {
+                    match serde_json::from_str::<T>(&payload) {
+                        Ok(value) => return Ok(value),
+                        Err(error) => {
+                            self.log(
+                                "WARN",
+                                format!(
+                                    "[ShipFlowCache] persistent_cache_decode_failed kind={} id={} key={} error={error}",
+                                    lookup_kind_label(kind),
+                                    normalized_id,
+                                    cache_key
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+
             let action = self.next_action(&cache_key, kind, &normalized_id, options);
 
             match action {
@@ -250,6 +281,10 @@ impl LookupCacheState {
                         },
                         Err(error) => Some(CachedLookupEntry::error(kind, error, self.policy)),
                     };
+
+                    if let Some(entry) = cached_entry.as_ref() {
+                        self.store_persistent_success(kind, &normalized_id, &cache_key, entry);
+                    }
 
                     let metrics_summary = {
                         let mut inner = self.inner.lock().expect("lookup cache lock poisoned");
@@ -388,6 +423,54 @@ impl LookupCacheState {
         inner.entries.remove(cache_key);
     }
 
+    fn load_persistent_success(
+        &self,
+        kind: LookupKind,
+        normalized_id: &str,
+        cache_key: &str,
+    ) -> Option<String> {
+        let payload = self
+            .persistent_store
+            .as_ref()
+            .and_then(|store| store.load_success(cache_key))?;
+        self.log(
+            "INFO",
+            format!(
+                "[ShipFlowCache] persistent_cache_hit kind={} id={normalized_id} key={cache_key}",
+                lookup_kind_label(kind)
+            ),
+        );
+        Some(payload)
+    }
+
+    fn store_persistent_success(
+        &self,
+        kind: LookupKind,
+        normalized_id: &str,
+        cache_key: &str,
+        entry: &CachedLookupEntry,
+    ) {
+        let Some(persistent_store) = &self.persistent_store else {
+            return;
+        };
+        let CachedLookupValue::Success(payload) = &entry.value else {
+            return;
+        };
+
+        persistent_store.store_success(
+            cache_key.to_string(),
+            payload.clone(),
+            Duration::from_secs(PERSISTENT_SUCCESS_CACHE_TTL_SECS),
+        );
+        self.log(
+            "INFO",
+            format!(
+                "[ShipFlowCache] persistent_cache_store kind={} id={normalized_id} key={cache_key}",
+                lookup_kind_label(kind)
+            ),
+        );
+    }
+
     fn log(&self, level: &str, message: String) {
         if let Some(log_sink) = &self.log_sink {
             log_sink(level, message);
@@ -400,6 +483,7 @@ impl LookupCacheState {
             inner: Arc::new(Mutex::new(LookupCacheInner::default())),
             policy,
             log_sink: None,
+            persistent_store: None,
         }
     }
 }

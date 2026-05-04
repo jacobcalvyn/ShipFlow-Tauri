@@ -1,6 +1,6 @@
 import { MouseEvent as ReactMouseEvent, memo } from "react";
-import { TRACKING_COLUMN_PATH } from "../columns";
-import { ColumnDefinition } from "../types";
+import { LATEST_DELIVERY_COLUMN_PATH, TRACKING_COLUMN_PATH } from "../columns";
+import { ColumnDefinition, ValueFilterOption } from "../types";
 import { getColumnToneClass, getColumnTypeClass } from "../utils";
 
 const WIDE_FILTER_MENU_PATHS = new Set([
@@ -8,6 +8,7 @@ const WIDE_FILTER_MENU_PATHS = new Set([
   "detail.actors.pengirim.alamat",
   "detail.actors.penerima.nama",
   "detail.actors.penerima.alamat",
+  LATEST_DELIVERY_COLUMN_PATH,
 ]);
 
 type ColumnHeaderCellProps = {
@@ -20,7 +21,7 @@ type ColumnHeaderCellProps = {
   sortDirection: "asc" | "desc" | null;
   hiddenColumns: ColumnDefinition[];
   selectedValueFilters: string[];
-  availableValueOptions: string[];
+  availableValueOptions: ValueFilterOption[];
   isMenuOpen: boolean;
   isHighlighted: boolean;
   onHoverColumn: (columnIndex: number | null) => void;
@@ -33,6 +34,7 @@ type ColumnHeaderCellProps = {
   onTogglePinned: (path: string) => void;
   onToggleVisibility: (path: string) => void;
   onToggleValueFilter: (path: string, value: string) => void;
+  onSetValueFilterSelection: (path: string, values: string[]) => void;
   onClearValueFilter: (path: string) => void;
   onCloseMenu: () => void;
   onMenuRef: (path: string, element: HTMLDivElement | null) => void;
@@ -58,6 +60,7 @@ export const ColumnHeaderCell = memo(function ColumnHeaderCell({
   onTogglePinned,
   onToggleVisibility,
   onToggleValueFilter,
+  onSetValueFilterSelection,
   onClearValueFilter,
   onCloseMenu,
   onMenuRef,
@@ -186,18 +189,56 @@ export const ColumnHeaderCell = memo(function ColumnHeaderCell({
                 {availableValueOptions.length > 0 ? (
                   <div className="column-menu-checklist">
                     {availableValueOptions.map((option) => {
-                      const optionId = `${column.path}-${option}`;
+                      const optionId = `${column.path}-${option.value}`;
+                      const exceptOptions = availableValueOptions
+                        .filter((currentOption) => currentOption.value !== option.value)
+                        .map((currentOption) => currentOption.value);
 
                       return (
-                        <label key={option} className="column-menu-checkbox" htmlFor={optionId}>
-                          <input
-                            id={optionId}
-                            type="checkbox"
-                            checked={selectedValueFilters.includes(option)}
-                            onChange={() => onToggleValueFilter(column.path, option)}
-                          />
-                          <span>{option}</span>
-                        </label>
+                        <div key={option.value} className="column-menu-value-option">
+                          <label className="column-menu-checkbox" htmlFor={optionId}>
+                            <input
+                              id={optionId}
+                              type="checkbox"
+                              checked={selectedValueFilters.includes(option.value)}
+                              onChange={() => onToggleValueFilter(column.path, option.value)}
+                            />
+                            <span>
+                              {option.value}
+                              <span className="column-menu-option-count">
+                                {" "}
+                                ({option.count})
+                              </span>
+                            </span>
+                          </label>
+                          <div className="column-menu-value-actions">
+                            <button
+                              type="button"
+                              className="column-menu-value-action"
+                              aria-label={`Filter only ${option.value}`}
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                onSetValueFilterSelection(column.path, [option.value]);
+                              }}
+                            >
+                              Filter ini
+                            </button>
+                            <button
+                              type="button"
+                              className="column-menu-value-action"
+                              aria-label={`Filter except ${option.value}`}
+                              disabled={exceptOptions.length === 0}
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                onSetValueFilterSelection(column.path, exceptOptions);
+                              }}
+                            >
+                              Filter kecuali ini
+                            </button>
+                          </div>
+                        </div>
                       );
                     })}
                   </div>

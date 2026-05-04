@@ -125,7 +125,7 @@ describe("useWorkspaceShellViewController", () => {
       pinnedLeftMap: new Map([["trackingId", 0]]),
       allVisibleSelected: false,
       selectedRowKeySet: new Set(["row-1"]),
-      valueOptionsByPath: { courier: ["JNE"] },
+      valueOptionsByPath: { courier: [{ value: "JNE", count: 1 }] },
     };
     const interactionRefs = {
       hoveredColumn: 2,
@@ -181,6 +181,7 @@ describe("useWorkspaceShellViewController", () => {
       togglePinnedColumn: vi.fn(),
       toggleColumnVisibility: vi.fn(),
       toggleColumnValueFilter: vi.fn(),
+      setColumnValueFilterSelection: vi.fn(),
       clearColumnValueFilter: vi.fn(),
       closeColumnMenu: vi.fn(),
       handleColumnMenuRef: vi.fn(),

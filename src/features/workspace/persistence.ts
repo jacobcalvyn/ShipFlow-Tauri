@@ -85,6 +85,7 @@ export function createStorageSafeWorkspaceState(
           rows: sheetState.rows.map((row) => ({
             ...row,
             loading: false,
+            queued: false,
             shipment:
               mode === "full" && row.shipment ? createStorageSafeTrackResponse(row.shipment) : null,
             stale: mode === "full" ? row.stale : false,
@@ -188,6 +189,7 @@ export function normalizePersistedWorkspaceState(
                 trackingInput,
                 shipment,
                 loading: false,
+                queued: false,
                 stale: shipment ? Boolean(candidateRow.stale) : false,
                 dirty: shipment ? Boolean(candidateRow.dirty) : false,
                 error: typeof candidateRow.error === "string" ? candidateRow.error : "",

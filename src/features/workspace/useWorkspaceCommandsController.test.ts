@@ -9,22 +9,13 @@ import {
 } from "../sheet/columns";
 import { SheetRow } from "../sheet/types";
 import { useWorkspaceCommandsController } from "./useWorkspaceCommandsController";
+import { exportWorkspaceCsv } from "../../backend/commands";
 
-const createObjectUrlMock = vi.fn((_: Blob) => "blob:shipflow");
-const revokeObjectUrlMock = vi.fn();
-const linkClickMock = vi.fn();
-const originalCreateElement = document.createElement.bind(document);
-class TestBlob {
-  private readonly content: string;
+vi.mock("../../backend/commands", () => ({
+  exportWorkspaceCsv: vi.fn(),
+}));
 
-  constructor(parts: unknown[]) {
-    this.content = parts.map((part) => String(part)).join("");
-  }
-
-  text() {
-    return Promise.resolve(this.content);
-  }
-}
+const exportWorkspaceCsvMock = vi.mocked(exportWorkspaceCsv);
 
 function createRow(): SheetRow {
   return {
@@ -184,26 +175,11 @@ function buildOptions() {
 describe("useWorkspaceCommandsController", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    createObjectUrlMock.mockReset();
-    createObjectUrlMock.mockReturnValue("blob:shipflow");
-    revokeObjectUrlMock.mockReset();
-    linkClickMock.mockReset();
-
-    vi.stubGlobal("URL", {
-      createObjectURL: createObjectUrlMock,
-      revokeObjectURL: revokeObjectUrlMock,
+    exportWorkspaceCsvMock.mockResolvedValue({
+      path: "/tmp/shipflow-view.csv",
+      rowCount: 1,
+      exportedAt: "2026-05-04T00:00:00.000Z",
     });
-    vi.stubGlobal("Blob", TestBlob as unknown as typeof Blob);
-
-    vi.spyOn(document, "createElement").mockImplementation(((tagName: string) => {
-      if (tagName === "a") {
-        const link = originalCreateElement("a");
-        link.click = linkClickMock;
-        return link;
-      }
-
-      return originalCreateElement(tagName);
-    }) as typeof document.createElement);
   });
 
   it("excludes POD and raw history summary columns from exported CSV", async () => {
@@ -214,11 +190,11 @@ describe("useWorkspaceCommandsController", () => {
 
     await act(async () => {
       result.current.exportCsv();
+      await Promise.resolve();
     });
 
-    expect(createObjectUrlMock).toHaveBeenCalledTimes(1);
-    const blob = createObjectUrlMock.mock.calls[0]?.[0] as unknown as TestBlob;
-    const csvContent = await blob.text();
+    expect(exportWorkspaceCsvMock).toHaveBeenCalledTimes(1);
+    const csvContent = exportWorkspaceCsvMock.mock.calls[0]?.[0].csvContent ?? "";
 
     expect(csvContent).toContain("Nomor Kiriman");
     expect(csvContent).toContain("PID/Kantong Terakhir");

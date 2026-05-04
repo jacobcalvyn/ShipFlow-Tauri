@@ -11,7 +11,7 @@ import {
 } from "react";
 import { ColumnHeaderCell } from "./ColumnHeaderCell";
 import { SheetBodyRow } from "./SheetBodyRow";
-import { ColumnDefinition, SheetRow } from "../types";
+import { ColumnDefinition, SheetRow, ValueFilterOption } from "../types";
 import { getColumnToneClass } from "../utils";
 
 const TABLE_SCALE_METRICS = {
@@ -77,7 +77,7 @@ type SheetTableProps = {
   selectedRowKeySet: Set<string>;
   filters: Record<string, string>;
   valueFilters: Record<string, string[]>;
-  valueOptionsByPath: Record<string, string[]>;
+  valueOptionsByPath: Record<string, ValueFilterOption[]>;
   openColumnMenuPath: string | null;
   highlightedColumnPath: string | null;
   scrollContainerRef: RefObject<HTMLDivElement>;
@@ -116,6 +116,7 @@ type SheetTableProps = {
   onTogglePinnedColumn: (path: string) => void;
   onToggleColumnVisibility: (path: string) => void;
   onToggleValueFilter: (path: string, value: string) => void;
+  onSetValueFilterSelection: (path: string, values: string[]) => void;
   onClearValueFilter: (path: string) => void;
   onCloseColumnMenu: () => void;
   onColumnMenuRef: (path: string, element: HTMLDivElement | null) => void;
@@ -159,6 +160,7 @@ export function SheetTable({
   onTogglePinnedColumn,
   onToggleColumnVisibility,
   onToggleValueFilter,
+  onSetValueFilterSelection,
   onClearValueFilter,
   onCloseColumnMenu,
   onColumnMenuRef,
@@ -274,6 +276,7 @@ export function SheetTable({
                 onTogglePinned={onTogglePinnedColumn}
                 onToggleVisibility={onToggleColumnVisibility}
                 onToggleValueFilter={onToggleValueFilter}
+                onSetValueFilterSelection={onSetValueFilterSelection}
                 onClearValueFilter={onClearValueFilter}
                 onCloseMenu={onCloseColumnMenu}
                 onMenuRef={onColumnMenuRef}

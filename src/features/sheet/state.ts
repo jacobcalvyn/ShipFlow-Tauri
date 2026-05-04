@@ -100,3 +100,24 @@ export function toggleValueFilterSelection(
     [path]: nextValues,
   };
 }
+
+export function setValueFilterSelection(
+  valueFilters: Record<string, string[]>,
+  path: string,
+  values: string[]
+) {
+  const nextValues = values.filter(
+    (value, index, current) => value.trim() !== "" && current.indexOf(value) === index
+  );
+
+  if (nextValues.length === 0) {
+    const nextFilters = { ...valueFilters };
+    delete nextFilters[path];
+    return nextFilters;
+  }
+
+  return {
+    ...valueFilters,
+    [path]: nextValues,
+  };
+}

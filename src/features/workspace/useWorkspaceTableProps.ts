@@ -38,6 +38,7 @@ type UseWorkspaceTablePropsOptions = {
   togglePinnedColumn: ComponentProps<typeof SheetTable>["onTogglePinnedColumn"];
   toggleColumnVisibility: ComponentProps<typeof SheetTable>["onToggleColumnVisibility"];
   toggleColumnValueFilter: ComponentProps<typeof SheetTable>["onToggleValueFilter"];
+  setColumnValueFilterSelection: ComponentProps<typeof SheetTable>["onSetValueFilterSelection"];
   clearColumnValueFilter: ComponentProps<typeof SheetTable>["onClearValueFilter"];
   closeColumnMenu: ComponentProps<typeof SheetTable>["onCloseColumnMenu"];
   handleColumnMenuRef: ComponentProps<typeof SheetTable>["onColumnMenuRef"];
@@ -80,6 +81,7 @@ export function useWorkspaceTableProps({
   togglePinnedColumn,
   toggleColumnVisibility,
   toggleColumnValueFilter,
+  setColumnValueFilterSelection,
   clearColumnValueFilter,
   closeColumnMenu,
   handleColumnMenuRef,
@@ -122,6 +124,7 @@ export function useWorkspaceTableProps({
     onTogglePinnedColumn: togglePinnedColumn,
     onToggleColumnVisibility: toggleColumnVisibility,
     onToggleValueFilter: toggleColumnValueFilter,
+    onSetValueFilterSelection: setColumnValueFilterSelection,
     onClearValueFilter: clearColumnValueFilter,
     onCloseColumnMenu: closeColumnMenu,
     onColumnMenuRef: handleColumnMenuRef,

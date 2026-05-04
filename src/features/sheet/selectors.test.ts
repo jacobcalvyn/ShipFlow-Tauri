@@ -1,5 +1,11 @@
 import { createDefaultSheetState } from "./default-state";
-import { setSortInSheet, setTextFilterInSheet, setTrackingInputInSheet } from "./actions";
+import {
+  setRowSuccessInSheet,
+  setRowsQueuedInSheet,
+  setSortInSheet,
+  setTextFilterInSheet,
+  setTrackingInputInSheet,
+} from "./actions";
 import {
   getActiveFilterCount,
   getColumnShortcuts,
@@ -124,6 +130,31 @@ describe("sheet selectors", () => {
 
     expect(getLoadedCount(displayedRows)).toBe(1);
     expect(displayedRows[0].shipment?.detail.shipment_header.nomor_kiriman).toBe("P1");
+  });
+
+  it("keeps queued rows visible without counting stale shipment data as loaded", () => {
+    const initial = createDefaultSheetState();
+    const rowKey = initial.rows[0].key;
+    const loaded = setRowSuccessInSheet(
+      initial,
+      rowKey,
+      "P1",
+      createShipment("P1", "INVEHICLE")
+    );
+    const queued = setRowsQueuedInSheet(loaded, [{ key: rowKey, value: "P1" }]);
+    const filtered = setTextFilterInSheet(queued, "status_akhir.status", "delivered");
+
+    const visibleColumns = getVisibleColumns(filtered);
+    const visiblePathSet = getVisibleColumnPathSet(visibleColumns);
+    const displayedRows = getDisplayedRows(
+      filtered,
+      getNonEmptyRows(filtered.rows),
+      visibleColumns,
+      getActiveFilterCount(filtered, visiblePathSet)
+    );
+
+    expect(displayedRows.some((row) => row.key === rowKey && row.queued)).toBe(true);
+    expect(getLoadedCount(displayedRows)).toBe(0);
   });
 
   it("sizes the tracking column from the longest valid tracking value only", () => {

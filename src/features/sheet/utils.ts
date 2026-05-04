@@ -1,5 +1,7 @@
 import {
   COLUMNS,
+  DAYS_SINCE_LAST_UNBAGGING_COLUMN_PATH,
+  DAYS_SINCE_TRANSACTION_COLUMN_PATH,
   INITIAL_ROW_COUNT,
   LATEST_BAG_STATUS_COLUMN_PATH,
   LATEST_DELIVERY_COLUMN_PATH,
@@ -13,6 +15,7 @@ const NON_TRACKING_CHARACTERS_REGEX = /[^A-Z0-9-]/g;
 export const MAX_TRACKING_INPUT_LENGTH = 64;
 const BAG_PRINT_SUFFIX = "5f9fae9b5fbe9d6e401ad0c5";
 const BAG_PRINT_OID = "NWY5ZmFlOWI1ZmJlOWQ2ZTQwMWFkMGM1";
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const HISTORY_SUMMARY_PATHS = new Set([
   "history_summary.irregularity",
   "history_summary.bagging_unbagging",
@@ -26,6 +29,7 @@ export function createEmptyRow(): SheetRow {
     trackingInput: "",
     shipment: null,
     loading: false,
+    queued: false,
     stale: false,
     dirty: false,
     error: "",
@@ -103,9 +107,100 @@ export function getByPath(source: unknown, path: string): unknown {
   }, source);
 }
 
+function createValidatedLocalDate(year: number, month: number, day: number) {
+  const parsed = new Date(year, month - 1, day);
+  if (
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function parseLocalDateValue(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const yearFirst = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (yearFirst) {
+    return createValidatedLocalDate(
+      Number(yearFirst[1]),
+      Number(yearFirst[2]),
+      Number(yearFirst[3])
+    );
+  }
+
+  const dayFirst = trimmed.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+  if (dayFirst) {
+    return createValidatedLocalDate(
+      Number(dayFirst[3]),
+      Number(dayFirst[2]),
+      Number(dayFirst[1])
+    );
+  }
+
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function parseLocalDateTimeValue(dateValue: string, timeValue?: string) {
+  const parsed = parseLocalDateValue(dateValue);
+  if (!parsed || !timeValue) {
+    return parsed;
+  }
+
+  const timeMatch = timeValue.trim().match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/);
+  if (!timeMatch) {
+    return parsed;
+  }
+
+  const hours = Number(timeMatch[1]);
+  const minutes = Number(timeMatch[2]);
+  const seconds = Number(timeMatch[3] ?? "0");
+  if (hours > 23 || minutes > 59 || seconds > 59) {
+    return parsed;
+  }
+
+  parsed.setHours(hours, minutes, seconds, 0);
+  return parsed;
+}
+
+function getUtcCalendarStart(date: Date) {
+  return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function getElapsedCalendarDays(dateValue: unknown, today = new Date()) {
+  if (typeof dateValue !== "string" || dateValue.trim() === "") {
+    return undefined;
+  }
+
+  const parsed = parseLocalDateValue(dateValue);
+  if (!parsed) {
+    return undefined;
+  }
+
+  const elapsedDays = Math.floor(
+    (getUtcCalendarStart(today) - getUtcCalendarStart(parsed)) / DAY_IN_MS
+  );
+  return Math.max(0, elapsedDays);
+}
+
 export function getRowStatus(row: SheetRow) {
   if (row.loading) {
     return "Loading";
+  }
+
+  if (row.queued) {
+    return "Pending";
+  }
+
+  if (row.error) {
+    return "Error";
   }
 
   if (row.dirty) {
@@ -114,10 +209,6 @@ export function getRowStatus(row: SheetRow) {
 
   if (row.stale) {
     return "Stale";
-  }
-
-  if (row.error) {
-    return "Error";
   }
 
   if (row.shipment) {
@@ -142,6 +233,14 @@ export function getRawColumnValue(row: SheetRow, column: ColumnDefinition): unkn
 
   if (column.path === LATEST_BAG_STATUS_COLUMN_PATH) {
     return getLatestBagStatusText(row.shipment.history_summary);
+  }
+
+  if (column.path === DAYS_SINCE_TRANSACTION_COLUMN_PATH) {
+    return getElapsedCalendarDays(row.shipment.detail.origin_detail.tanggal_input);
+  }
+
+  if (column.path === DAYS_SINCE_LAST_UNBAGGING_COLUMN_PATH) {
+    return getDaysSinceLatestUnbagging(row.shipment.history_summary);
   }
 
   if (column.path === LATEST_MANIFEST_COLUMN_PATH) {
@@ -190,6 +289,33 @@ export function formatDateValue(value: string) {
 function formatDateTimeParts(date?: string, time?: string) {
   const parts = [date, time].filter(Boolean);
   return parts.length > 0 ? parts.join(" ") : "-";
+}
+
+function formatYearMonthDayPart(date?: string) {
+  const trimmed = date?.trim();
+  if (!trimmed) {
+    return "-";
+  }
+
+  const yearFirst = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (yearFirst) {
+    return [
+      yearFirst[1],
+      yearFirst[2].padStart(2, "0"),
+      yearFirst[3].padStart(2, "0"),
+    ].join("-");
+  }
+
+  const dayFirst = trimmed.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+  if (dayFirst) {
+    return [
+      dayFirst[3],
+      dayFirst[2].padStart(2, "0"),
+      dayFirst[1].padStart(2, "0"),
+    ].join("-");
+  }
+
+  return trimmed;
 }
 
 function getRecordValue(
@@ -257,6 +383,58 @@ function getLatestBagStatusText(historySummary: unknown) {
 
 export function getLatestBagId(historySummary: unknown) {
   return getLatestBagStatusDetails(historySummary)?.bagId ?? null;
+}
+
+function getDaysSinceLatestUnbagging(historySummary: unknown) {
+  if (!historySummary || typeof historySummary !== "object") {
+    return undefined;
+  }
+
+  const rawValue = (historySummary as Record<string, unknown>).bagging_unbagging;
+  if (!Array.isArray(rawValue) || rawValue.length === 0) {
+    return undefined;
+  }
+
+  let latestUnbagging:
+    | {
+        date: string;
+        timestamp: number;
+      }
+    | null = null;
+
+  for (const item of rawValue) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const unbagging = (item as Record<string, unknown>).unbagging;
+    if (!unbagging || typeof unbagging !== "object") {
+      continue;
+    }
+
+    const eventRecord = unbagging as Record<string, unknown>;
+    const date = getRecordValue(eventRecord, "tanggal");
+    if (!date) {
+      continue;
+    }
+
+    const parsed = parseLocalDateTimeValue(
+      date,
+      getRecordValue(eventRecord, "waktu")
+    );
+    if (!parsed) {
+      continue;
+    }
+
+    const timestamp = parsed.getTime();
+    if (!latestUnbagging || timestamp >= latestUnbagging.timestamp) {
+      latestUnbagging = { date, timestamp };
+    }
+  }
+
+  return latestUnbagging
+    ? getElapsedCalendarDays(latestUnbagging.date)
+    : undefined;
 }
 
 export function getLatestManifestId(historySummary: unknown) {
@@ -409,30 +587,19 @@ function getHistorySummaryLatestText(rawValue: unknown, path: string) {
         : null;
     const latestStatus = latestUpdate
       ? getRecordValue(latestUpdate, "status") ?? "Delivery Update"
-      : "Delivery Runsheet";
-    const latestKeterangan = latestUpdate
-      ? getRecordValue(latestUpdate, "keterangan_status")
-      : null;
+      : getRecordValue(record, "status") ?? "Delivery Runsheet";
 
     return [
-      latestKeterangan
-        ? `${latestStatus} (${latestKeterangan})`
-        : latestStatus,
+      latestStatus,
       latestUpdate
-        ? getRecordValue(latestUpdate, "petugas")
+        ? formatYearMonthDayPart(getRecordValue(latestUpdate, "tanggal"))
+        : formatYearMonthDayPart(getRecordValue(record, "tanggal")),
+      latestUpdate
+        ? getRecordValue(latestUpdate, "petugas") ?? "-"
         : getRecordValue(record, "petugas_kurir") ??
           getRecordValue(record, "petugas_mandor") ??
           getRecordValue(record, "lokasi") ??
           "-",
-      latestUpdate
-        ? formatDateTimeParts(
-            getRecordValue(latestUpdate, "tanggal"),
-            getRecordValue(latestUpdate, "waktu")
-          )
-        : formatDateTimeParts(
-            getRecordValue(record, "tanggal"),
-            getRecordValue(record, "waktu")
-          ),
     ].join(" | ");
   }
 
@@ -476,14 +643,22 @@ export function formatColumnValue(row: SheetRow, column: ColumnDefinition) {
 }
 
 export function getColumnValueOptions(rows: SheetRow[], column: ColumnDefinition) {
-  return Array.from(
-    new Set(
-      rows
-        .map((row) => formatColumnValue(row, column))
-        .filter((value) => value !== "-")
-    )
-  ).sort((left, right) =>
-    left.localeCompare(right, "id", {
+  const optionCounts = new Map<string, number>();
+
+  for (const row of rows) {
+    const value = formatColumnValue(row, column);
+    if (value === "-") {
+      continue;
+    }
+
+    optionCounts.set(value, (optionCounts.get(value) ?? 0) + 1);
+  }
+
+  return Array.from(optionCounts, ([value, count]) => ({
+    value,
+    count,
+  })).sort((left, right) =>
+    left.value.localeCompare(right.value, "id", {
       sensitivity: "base",
       numeric: true,
     })
@@ -492,7 +667,7 @@ export function getColumnValueOptions(rows: SheetRow[], column: ColumnDefinition
 
 export function getColumnHeaderMinWidth(column: ColumnDefinition) {
   const estimatedLabelWidth = column.label.length * 8.5;
-  const headerChromeWidth = 74;
+  const headerChromeWidth = column.compact ? 42 : 74;
   return Math.max(column.minWidth ?? 100, Math.ceil(estimatedLabelWidth + headerChromeWidth));
 }
 
@@ -500,10 +675,12 @@ export function getEffectiveColumnWidth(
   column: ColumnDefinition,
   columnWidths: Record<string, number>
 ) {
-  return Math.max(
+  const width = Math.max(
     columnWidths[column.path] ?? column.defaultWidth,
     getColumnHeaderMinWidth(column)
   );
+
+  return column.maxWidth ? Math.min(width, column.maxWidth) : width;
 }
 
 export function getColumnToneClass(column: ColumnDefinition) {
@@ -648,6 +825,14 @@ export function assertValidSheetState(sheetState: SheetState) {
       throw new Error(`Row ${row.key} cannot be loading and errored at the same time.`);
     }
 
+    if (row.loading && row.queued) {
+      throw new Error(`Row ${row.key} cannot be loading and queued at the same time.`);
+    }
+
+    if (row.queued && row.trackingInput.trim() === "") {
+      throw new Error(`Row ${row.key} cannot be queued without a tracking input.`);
+    }
+
     if (row.stale && row.shipment === null) {
       throw new Error(`Row ${row.key} cannot be stale without a last-known-good shipment.`);
     }
@@ -657,7 +842,14 @@ export function assertValidSheetState(sheetState: SheetState) {
     }
 
     if (row.trackingInput.trim() === "") {
-      if (row.shipment !== null || row.loading || row.stale || row.dirty || row.error) {
+      if (
+        row.shipment !== null ||
+        row.loading ||
+        row.queued ||
+        row.stale ||
+        row.dirty ||
+        row.error
+      ) {
         throw new Error(`Row ${row.key} is empty but still carries tracking state.`);
       }
     }

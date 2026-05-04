@@ -1158,12 +1158,11 @@ button {
 .action-toast-stack {
   position: fixed;
   top: 16px;
-  left: 0;
-  right: 0;
+  right: 16px;
   z-index: 220;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-end;
   gap: 10px;
   pointer-events: none;
 }
@@ -2791,8 +2790,8 @@ button {
   top: calc(100% + 6px);
   right: 0;
   z-index: 30;
-  min-width: 180px;
-  max-width: 260px;
+  min-width: 270px;
+  max-width: 390px;
   padding: 8px;
   border: 1px solid #d6e0ea;
   border-radius: 12px;
@@ -2876,22 +2875,74 @@ button {
   padding: 2px 2px 4px;
 }
 
+.column-menu-value-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  border-radius: 8px;
+}
+
 .column-menu-checkbox {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 6px 8px;
   border-radius: 8px;
   color: #334155;
   font-size: 0.8rem;
 }
 
+.column-menu-value-actions {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+  opacity: 0;
+  pointer-events: none;
+  padding: 4px 4px 0 0;
+}
+
+.column-menu-value-option:hover,
+.column-menu-value-option:focus-within {
+  background: #eff6ff;
+}
+
+.column-menu-value-option:hover .column-menu-value-actions,
+.column-menu-value-option:focus-within .column-menu-value-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.column-menu-value-action {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #334155;
+  padding: 3px 6px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.column-menu-value-action:hover:not(:disabled) {
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+
+.column-menu-value-action:disabled {
+  color: #94a3b8;
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
 .column-menu-body-wide-filter .column-menu-checkbox span {
   word-break: break-word;
 }
 
-.column-menu-checkbox:hover {
-  background: #eff6ff;
+.column-menu-option-count {
+  color: #64748b;
+  font-weight: 700;
 }
 
 .column-menu-checkbox input {
@@ -3280,6 +3331,10 @@ button {
 }
 
 .status-stale {
+  background: #f59e0b;
+}
+
+.status-dirty {
   background: #f59e0b;
 }
 

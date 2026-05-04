@@ -51,6 +51,7 @@ pub const SERVICE_STATE_DIR_NAME: &str = "shipflow-service-runtime";
 const SERVICE_CONFIG_FILE_NAME: &str = "config.json";
 const DESKTOP_SERVICE_CONFIG_FILE_NAME: &str = "desktop-service-config.json";
 const SERVICE_RUNTIME_CONFIG_FILE_NAME: &str = "runtime-config.json";
+const SERVICE_TOKEN_VAULT_FILE_NAME: &str = "tokens.json";
 const SERVICE_PID_FILE_NAME: &str = "pid";
 const SERVICE_TRAY_PID_FILE_NAME: &str = "tray.pid";
 const DESKTOP_PID_FILE_NAME: &str = "desktop.pid";

@@ -286,6 +286,112 @@ fn pick_workspace_document_path_native(
     Err("Native file picker is not supported on this platform.".into())
 }
 
+#[cfg(target_os = "macos")]
+fn pick_csv_export_path_macos(suggested_name: &str) -> Result<Option<String>, String> {
+    let script = format!(
+        r#"set chosenFile to choose file name with prompt "Export ShipFlow CSV" default name "{}"
+POSIX path of chosenFile"#,
+        suggested_name.replace('"', "\\\"")
+    );
+
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .map_err(|error| format!("Unable to open native export picker: {error}"))?;
+
+    if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok((!path.is_empty()).then_some(path))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+        if stderr.contains("user canceled") || stderr.contains("cancelled") {
+            Ok(None)
+        } else {
+            Err(format!(
+                "Native export picker failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn pick_csv_export_path_windows(suggested_name: &str) -> Result<Option<String>, String> {
+    let file_name = suggested_name.replace('\'', "''");
+    let powershell = format!(
+        "Add-Type -AssemblyName System.Windows.Forms; \
+         $dialog = New-Object System.Windows.Forms.SaveFileDialog; \
+         $dialog.Filter = 'CSV files (*.csv)|*.csv|All files (*.*)|*.*'; \
+         $dialog.FileName = '{file_name}'; \
+         if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ Write-Output $dialog.FileName }}"
+    );
+
+    let mut command = Command::new("powershell");
+    command.args(["-NoProfile", "-Command", &powershell]);
+    prepare_platform_command(&mut command);
+    let output = command
+        .output()
+        .map_err(|error| format!("Unable to open native export picker: {error}"))?;
+
+    if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok((!path.is_empty()).then_some(path))
+    } else {
+        Err(format!(
+            "Native export picker failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn pick_csv_export_path_linux(suggested_name: &str) -> Result<Option<String>, String> {
+    let mut command = Command::new("zenity");
+    command.arg("--file-selection");
+    command.arg("--save");
+    command.arg("--confirm-overwrite");
+    command.arg(format!("--filename={suggested_name}"));
+
+    let output = command
+        .output()
+        .map_err(|error| format!("Unable to open native export picker: {error}"))?;
+
+    if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok((!path.is_empty()).then_some(path))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn pick_csv_export_path_runtime(suggested_name: &str) -> Result<Option<String>, String> {
+    let suggested_name = suggested_name.trim();
+    let suggested_name = if suggested_name.is_empty() {
+        "shipflow-export.csv"
+    } else {
+        suggested_name
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        return pick_csv_export_path_macos(suggested_name);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return pick_csv_export_path_windows(suggested_name);
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        return pick_csv_export_path_linux(suggested_name);
+    }
+
+    #[allow(unreachable_code)]
+    Err("Native CSV export picker is not supported on this platform.".into())
+}
+
 pub fn pick_workspace_document_path_runtime(
     mode: &str,
     suggested_name: Option<&str>,

@@ -12,6 +12,7 @@ import {
 import {
   sanitizeTextFilters,
   sanitizeValueFilters,
+  setValueFilterSelection,
   toggleColumnVisibilityState,
   togglePinnedColumnState,
   toggleValueFilterSelection,
@@ -35,6 +36,7 @@ export function setTrackingInputInSheet(
               trackingInput: nextTrackingInput,
               shipment: nextTrackingInputTrimmed === "" ? null : row.shipment,
               loading: false,
+              queued: false,
               stale:
                 nextTrackingInputTrimmed !== "" &&
                 row.shipment !== null &&
@@ -60,6 +62,7 @@ export function clearRowInSheet(sheetState: SheetState, rowKey: string) {
             ...row,
             shipment: null,
             loading: false,
+            queued: false,
             stale: false,
             dirty: false,
             error: "",
@@ -82,6 +85,7 @@ export function setRowServerUnavailableInSheet(
             ...row,
             shipment: row.shipment,
             loading: false,
+            queued: false,
             stale: row.shipment !== null,
             dirty: row.shipment !== null,
             error,
@@ -104,6 +108,7 @@ export function setRowLoadingInSheet(
             ...row,
             trackingInput,
             loading: true,
+            queued: false,
             stale: row.shipment !== null,
             dirty: row.shipment !== null,
             error: "",
@@ -129,6 +134,7 @@ export function setRowSuccessInSheet(
               trackingInput,
               shipment,
               loading: false,
+              queued: false,
               stale: false,
               dirty: false,
               error: "",
@@ -150,6 +156,7 @@ export function clearTrackingCellInSheet(sheetState: SheetState, rowKey: string)
               trackingInput: "",
               shipment: null,
               loading: false,
+              queued: false,
               stale: false,
               dirty: false,
               error: "",
@@ -173,12 +180,46 @@ export function setRowErrorInSheet(
             ...row,
             shipment: row.shipment,
             loading: false,
+            queued: false,
             stale: row.shipment !== null,
             dirty: row.shipment !== null,
             error,
           }
         : row
     ),
+  };
+}
+
+export function setRowsQueuedInSheet(
+  sheetState: SheetState,
+  entries: Array<{ key: string; value: string }>
+) {
+  if (entries.length === 0) {
+    return sheetState;
+  }
+
+  const queuedTrackingInputs = new Map(
+    entries.map((entry) => [entry.key, entry.value.trim()])
+  );
+
+  return {
+    ...sheetState,
+    rows: sheetState.rows.map((row) => {
+      const trackingInput = queuedTrackingInputs.get(row.key);
+      if (!trackingInput) {
+        return row;
+      }
+
+      return {
+        ...row,
+        trackingInput,
+        loading: false,
+        queued: true,
+        stale: false,
+        dirty: false,
+        error: "",
+      };
+    }),
   };
 }
 
@@ -199,6 +240,7 @@ export function applyBulkPasteToSheet(
       trackingInput: values[offset],
       shipment: null,
       loading: false,
+      queued: false,
       stale: false,
       dirty: false,
       error: "",
@@ -228,6 +270,7 @@ export function seedTrackingIdsInSheet(sheetState: SheetState, values: string[])
       trackingInput: values[index],
       shipment: null,
       loading: false,
+      queued: false,
       stale: false,
       dirty: false,
       error: "",
@@ -276,6 +319,7 @@ export function appendTrackingIdsToSheet(sheetState: SheetState, values: string[
       trackingInput: values[offset],
       shipment: null,
       loading: false,
+      queued: false,
       stale: false,
       dirty: false,
       error: "",
@@ -316,6 +360,17 @@ export function toggleValueFilterInSheet(
   return {
     ...sheetState,
     valueFilters: toggleValueFilterSelection(sheetState.valueFilters, path, value),
+  };
+}
+
+export function setValueFilterSelectionInSheet(
+  sheetState: SheetState,
+  path: string,
+  values: string[]
+) {
+  return {
+    ...sheetState,
+    valueFilters: setValueFilterSelection(sheetState.valueFilters, path, values),
   };
 }
 

@@ -68,6 +68,7 @@ describe("useWorkspaceTableControllers", () => {
       handleTrackingInputKeyDown: vi.fn(),
       openSourceLink: vi.fn(),
       setColumnSort: vi.fn(),
+      setColumnValueFilterSelection: vi.fn(),
       toggleColumnValueFilter: vi.fn(),
       toggleRowSelection: vi.fn(),
       toggleVisibleSelection: vi.fn(),

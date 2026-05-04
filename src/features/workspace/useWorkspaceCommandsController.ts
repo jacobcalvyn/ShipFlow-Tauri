@@ -1,4 +1,5 @@
 import { Dispatch, MutableRefObject, SetStateAction, useCallback, useEffect } from "react";
+import { exportWorkspaceCsv } from "../../backend/commands";
 import { COLUMNS } from "../sheet/columns";
 import {
   clearAllDataInSheet,
@@ -262,26 +263,33 @@ export function useWorkspaceCommandsController({
     );
 
     const csvContent = [header.join(","), ...lines].join("\n");
-    const blob = new Blob([csvContent], {
-      type: "text/csv;charset=utf-8;",
-    });
-    const objectUrl = URL.createObjectURL(blob);
-    const link = document.createElement("a");
     const dateSuffix = new Date().toISOString().slice(0, 10);
-
-    link.href = objectUrl;
-    link.download =
+    const suggestedName =
       selectedVisibleRowKeys.length > 0
         ? `shipflow-selected-${dateSuffix}.csv`
         : `shipflow-view-${dateSuffix}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(objectUrl);
-    showNotice({
-      tone: "success",
-      message: `${exportableRows.length} row berhasil diexport ke CSV.`,
-    });
+
+    void exportWorkspaceCsv({
+      suggestedName,
+      csvContent,
+      rowCount: exportableRows.length,
+    })
+      .then((result) => {
+        if (!result) {
+          return;
+        }
+
+        showNotice({
+          tone: "success",
+          message: `${result.rowCount} row berhasil diexport ke ${result.path}.`,
+        });
+      })
+      .catch((error) => {
+        showNotice({
+          tone: "error",
+          message: error instanceof Error ? error.message : "Gagal export CSV.",
+        });
+      });
   }, [exportableRows, selectedVisibleRowKeys.length, showNotice, visibleColumns]);
 
   const retrackAllRows = useCallback(() => {

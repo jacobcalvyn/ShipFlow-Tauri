@@ -5,6 +5,7 @@ export type SheetRow = {
   trackingInput: string;
   shipment: TrackResponse | null;
   loading: boolean;
+  queued?: boolean;
   stale: boolean;
   dirty: boolean;
   error: string;
@@ -25,8 +26,15 @@ export type ColumnDefinition = {
   type: ColumnType;
   defaultWidth: number;
   minWidth?: number;
+  maxWidth?: number;
   tone?: "pengirim" | "penerima" | "status" | "layanan" | "cod";
+  compact?: boolean;
   sticky?: boolean;
+};
+
+export type ValueFilterOption = {
+  value: string;
+  count: number;
 };
 
 export type SortState = {

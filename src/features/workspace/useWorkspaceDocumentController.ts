@@ -97,7 +97,7 @@ export function useWorkspaceDocumentController({
   const [documentMeta, setDocumentMeta] = useState<WorkspaceDocumentMeta>(
     () => loadWorkspaceDocumentMeta()
   );
-  const [windowStorageScope, setWindowStorageScope] = useState<string | null>("main");
+  const [windowStorageScope, setWindowStorageScope] = useState<string | null>(null);
   const [recentWorkspaceDocuments, setRecentWorkspaceDocuments] = useState<string[]>(
     loadRecentWorkspaceDocuments
   );
@@ -113,6 +113,7 @@ export function useWorkspaceDocumentController({
   const documentBaselineRef = useRef<string>("__unset__");
   const documentSaveInFlightRef = useRef(false);
   const documentAutosaveTimeoutRef = useRef<number | null>(null);
+  const documentHydrationKeyRef = useRef<string | null>(null);
   const canUseAutosave = documentMeta.path !== null;
   const isAutosaveActive = canUseAutosave && autosaveEnabled;
   const recentDocumentItems = useMemo(
@@ -337,6 +338,56 @@ export function useWorkspaceDocumentController({
     },
     [setWorkspaceState]
   );
+
+  useEffect(() => {
+    if (windowStorageScope === null) {
+      return;
+    }
+
+    const startupPath = documentMetaRef.current.path;
+    if (!startupPath) {
+      return;
+    }
+
+    const hydrationKey = `${windowStorageScope}:${startupPath}`;
+    if (documentHydrationKeyRef.current === hydrationKey) {
+      return;
+    }
+    documentHydrationKeyRef.current = hydrationKey;
+
+    let isDisposed = false;
+
+    void Promise.resolve(readWorkspaceDocument(startupPath))
+      .then((result) => {
+        if (isDisposed || documentMetaRef.current.path !== startupPath) {
+          return;
+        }
+
+        applyWorkspaceDocument(result.path, result.document);
+      })
+      .catch((error) => {
+        if (isDisposed || documentMetaRef.current.path !== startupPath) {
+          return;
+        }
+
+        const message =
+          error instanceof Error ? error.message : "Gagal memuat dokumen tersimpan.";
+
+        setDocumentMeta((current) => ({
+          ...current,
+          persistenceStatus: "error",
+          errorMessage: message,
+        }));
+        showNotice({
+          tone: "error",
+          message,
+        });
+      });
+
+    return () => {
+      isDisposed = true;
+    };
+  }, [applyWorkspaceDocument, showNotice, windowStorageScope]);
 
   const openWorkspaceDocumentFromPath = useCallback(
     async (path: string) => {

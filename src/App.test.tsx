@@ -181,6 +181,7 @@ describe("App workspace isolation", () => {
   const pendingRequests = new Map<string, Deferred<TrackResponse>>();
   const pendingBagRequests = new Map<string, Deferred<BagResponse>>();
   const pendingManifestRequests = new Map<string, Deferred<ManifestResponse>>();
+  const persistedWorkspaceDocuments = new Map<string, WorkspaceDocumentFile>();
   let infoSpy: ReturnType<typeof vi.spyOn>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
   let persistedServiceConfig: ServiceConfig | null;
@@ -216,6 +217,7 @@ describe("App workspace isolation", () => {
     pendingRequests.clear();
     pendingBagRequests.clear();
     pendingManifestRequests.clear();
+    persistedWorkspaceDocuments.clear();
     persistedServiceConfig = null;
     window.localStorage.clear();
     setShipFlowWindowKind("workspace");
@@ -364,6 +366,10 @@ describe("App workspace isolation", () => {
       }
 
       if (command === "write_workspace_document") {
+        if (args?.path && args.document) {
+          persistedWorkspaceDocuments.set(args.path, args.document);
+        }
+
         return Promise.resolve({
           path: args?.path ?? "/tmp/workspace.shipflow",
           savedAt: args?.document?.savedAt ?? "2026-04-18T00:00:00.000Z",
@@ -371,6 +377,15 @@ describe("App workspace isolation", () => {
       }
 
       if (command === "read_workspace_document") {
+        const storedDocument =
+          args?.path && persistedWorkspaceDocuments.get(args.path);
+        if (storedDocument) {
+          return Promise.resolve({
+            path: args?.path,
+            document: storedDocument,
+          });
+        }
+
         return Promise.resolve({
           path: args?.path ?? "/tmp/workspace.shipflow",
           document: {
@@ -2166,6 +2181,68 @@ describe("App workspace isolation", () => {
     openFileMenu();
     expect(screen.getByRole("menuitem", { name: "picked-save.shipflow" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Simpan Otomatis" })).not.toBeDisabled();
+  });
+
+  it("keeps tracked shipment data in saved workspace documents across reloads", async () => {
+    const firstRender = render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    fireEvent.change(firstInput, { target: { value: "PSAVEFULL1" } });
+    fireEvent.blur(firstInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 1);
+    });
+
+    resolveRequest("PSAVEFULL1");
+
+    await waitFor(() => {
+      expect(screen.getByText("INVEHICLE")).toBeInTheDocument();
+    });
+
+    openFileMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Simpan Sebagai" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("write_workspace_document")).toHaveLength(1);
+    });
+
+    const savedDocument = getInvokeCalls("write_workspace_document")[0]?.[1]
+      ?.document;
+    expect(savedDocument).toBeDefined();
+    const savedSheet =
+      savedDocument?.workspace.sheetsById[savedDocument.workspace.activeSheetId];
+    expect(savedSheet?.rows[0].shipment?.status_akhir.status).toBe("INVEHICLE");
+    expect(savedSheet?.rows[0].shipment?.detail.shipment_header.nomor_kiriman).toBe(
+      "PSAVEFULL1"
+    );
+
+    firstRender.unmount();
+
+    const inputsOnlyWorkspace = JSON.parse(
+      JSON.stringify(savedDocument?.workspace)
+    ) as WorkspaceDocumentFile["workspace"];
+    const inputsOnlySheet =
+      inputsOnlyWorkspace.sheetsById[inputsOnlyWorkspace.activeSheetId];
+    inputsOnlySheet.rows = inputsOnlySheet.rows.map((row) => ({
+      ...row,
+      shipment: null,
+      stale: false,
+      dirty: false,
+    }));
+    window.localStorage.setItem(
+      "shipflow-workspace-state",
+      JSON.stringify(inputsOnlyWorkspace)
+    );
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("INVEHICLE")).toBeInTheDocument();
+      expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue(
+        "PSAVEFULL1"
+      );
+    });
   });
 
   it("opens a workspace from a document file path", async () => {

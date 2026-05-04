@@ -100,6 +100,7 @@ describe("SheetTable benchmark", () => {
         onTogglePinnedColumn={vi.fn()}
         onToggleColumnVisibility={vi.fn()}
         onToggleValueFilter={vi.fn()}
+        onSetValueFilterSelection={vi.fn()}
         onClearValueFilter={vi.fn()}
         onCloseColumnMenu={vi.fn()}
         onColumnMenuRef={vi.fn()}
