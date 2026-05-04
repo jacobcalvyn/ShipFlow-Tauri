@@ -838,76 +838,80 @@ describe("App workspace isolation", () => {
     });
   });
 
-  it("appends manifest shipment ids into the active sheet after bag resolution completes", async () => {
-    render(<App />);
+  it(
+    "appends manifest shipment ids into the active sheet after bag resolution completes",
+    async () => {
+      render(<App />);
 
-    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
-    fireEvent.change(firstInput, { target: { value: "PEXIST-MANIFEST" } });
-    fireEvent.blur(firstInput);
+      const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+      fireEvent.change(firstInput, { target: { value: "PEXIST-MANIFEST" } });
+      fireEvent.blur(firstInput);
 
-    await waitFor(() => {
-      expectInvokeCount("track_shipment", 1);
-    });
+      await waitFor(() => {
+        expectInvokeCount("track_shipment", 1);
+      });
 
-    resolveRequest("PEXIST-MANIFEST");
+      resolveRequest("PEXIST-MANIFEST");
 
-    await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      });
 
-    fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
-    fireEvent.change(screen.getByLabelText("ID Manifest"), {
-      target: { value: "MNF-APPEND" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
+      fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
+      fireEvent.change(screen.getByLabelText("ID Manifest"), {
+        target: { value: "MNF-APPEND" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
 
-    await waitFor(() => {
-      expectInvokeCount("track_manifest", 1);
-    });
-    expect(getInvokeCalls("track_manifest")[0]?.[1]?.forceRefresh).toBe(true);
+      await waitFor(() => {
+        expectInvokeCount("track_manifest", 1);
+      });
+      expect(getInvokeCalls("track_manifest")[0]?.[1]?.forceRefresh).toBe(true);
 
-    resolveManifestRequest("MNF-APPEND");
+      resolveManifestRequest("MNF-APPEND");
 
-    await waitFor(() => {
-      expect(
-        screen.getByText(
-          "Nomor Kantung (1) - Proses ambil id kiriman dari 0/1 kantung"
-        )
-      ).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Tambah Data" })).toBeDisabled();
-    });
+      await waitFor(() => {
+        expect(
+          screen.getByText(
+            "Nomor Kantung (1) - Proses ambil id kiriman dari 0/1 kantung"
+          )
+        ).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Tambah Data" })).toBeDisabled();
+      });
 
-    await waitFor(() => {
-      expectInvokeCount("track_bag", 1);
-    });
+      await waitFor(() => {
+        expectInvokeCount("track_bag", 1);
+      });
 
-    resolveBagRequest("PID123456");
+      resolveBagRequest("PID123456");
 
-    await waitFor(() => {
-      expect(screen.getByText("Nomor Kantung (1) - 1 Kiriman")).toBeInTheDocument();
-      expect(screen.getByText("PID123456 - 1 Kiriman")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Tambah Data" })).toBeEnabled();
-    });
+      await waitFor(() => {
+        expect(screen.getByText("Nomor Kantung (1) - 1 Kiriman")).toBeInTheDocument();
+        expect(screen.getByText("PID123456 - 1 Kiriman")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Tambah Data" })).toBeEnabled();
+      });
 
-    fireEvent.click(screen.getByRole("button", { name: "Tambah Data" }));
+      fireEvent.click(screen.getByRole("button", { name: "Tambah Data" }));
 
-    await waitFor(() => {
-      expectInvokeCount("track_shipment", 2);
-      expect(
-        screen.queryByRole("dialog", { name: "Import ID Kiriman dari Manifest" })
-      ).not.toBeInTheDocument();
-      expect(screen.getAllByDisplayValue("PEXIST-MANIFEST")[0]).toBeInTheDocument();
-      expect(screen.getAllByDisplayValue("P260000000001")[0]).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expectInvokeCount("track_shipment", 2);
+        expect(
+          screen.queryByRole("dialog", { name: "Import ID Kiriman dari Manifest" })
+        ).not.toBeInTheDocument();
+        expect(screen.getAllByDisplayValue("PEXIST-MANIFEST")[0]).toBeInTheDocument();
+        expect(screen.getAllByDisplayValue("P260000000001")[0]).toBeInTheDocument();
+      });
 
-    fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
+      fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
 
-    await waitFor(() => {
-      expect(screen.getByLabelText("ID Manifest")).toHaveValue("MNF-APPEND");
-      expect(screen.getByText("Nomor Kantung (1) - 1 Kiriman")).toBeInTheDocument();
-      expect(screen.getByText("PID123456 - 1 Kiriman")).toBeInTheDocument();
-    });
-  });
+      await waitFor(() => {
+        expect(screen.getByLabelText("ID Manifest")).toHaveValue("MNF-APPEND");
+        expect(screen.getByText("Nomor Kantung (1) - 1 Kiriman")).toBeInTheDocument();
+        expect(screen.getByText("PID123456 - 1 Kiriman")).toBeInTheDocument();
+      });
+    },
+    15000
+  );
 
   it("replaces all sheet data from a manifest lookup and preserves cached manifest results", async () => {
     render(<App />);

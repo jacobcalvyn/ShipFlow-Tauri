@@ -274,7 +274,7 @@ fn replace_store_file(temp_path: PathBuf, path: PathBuf) -> Result<(), String> {
                     ErrorKind::AlreadyExists | ErrorKind::PermissionDenied
                 ) =>
             {
-                last_error = error.to_string();
+                std::thread::sleep(Duration::from_millis(2));
             }
             Err(error) => {
                 let _ = fs::remove_file(&temp_path);
