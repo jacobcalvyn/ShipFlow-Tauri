@@ -287,9 +287,12 @@ The main table currently focuses on:
 - Runtime lookup results for `track`, `bag`, and `manifest` now use one in-memory cache with in-flight coalescing, kind-specific TTL, and short negative-cache protection.
 - Successful lookup payloads are also persisted into a local user-state lookup store so repeated lookups can survive service restarts.
 - The persistent lookup store belongs to the `ShipFlow Service` app-data namespace, with a one-time legacy migration from the old `ShipFlow Desktop` namespace.
+- Persistent lookup-store writes run outside the lookup response path, so successful rows can return to Desktop without waiting for local disk persistence.
 - Persistent lookup-store writes use unique temporary files and OS-aware replacement, so repeated writes remain durable on Windows after the first cache file already exists.
 - Manual refresh flows such as `Lacak Ulang`, `Retry Gagal`, and bag/manifest modal fetches can explicitly bypass cache when the user intends a fresh lookup.
 - Runtime startup and source/config refresh paths now invalidate lookup cache explicitly before using the refreshed tracking configuration.
+- External API tracking uses the `/v1` route as authoritative when the configured base URL includes `/v1` or `/v1/openapi.json`, avoiding an unnecessary legacy fallback request on `404`.
+- External API tracking starts a hedged duplicate request when a request is still pending after a short delay, then uses whichever identical request finishes first to reduce random tail-latency spikes.
 - Active, dirty, and loading rows remain visible even while filters are active.
 - Filtered views now force selection to exactly the currently visible shipment IDs, and clearing filters stops that auto-follow mode before normal manual selection resumes.
 - Request telemetry is emitted for `start`, `success`, `fail`, and `abort` with `sheetId`, `rowKey`, and `shipmentId`.
@@ -316,6 +319,7 @@ The main table currently focuses on:
 - Desktop bag and manifest lookups no longer bypass `ShipFlow Service` with a direct POS fallback when the service request fails.
 - Desktop and service runtime events are written to per-process log files under the shared runtime state directory.
 - Runtime log files now also emit `[ShipFlowCacheMetrics]` summary lines with per-kind cache ratios and counters for operator audit.
+- Runtime log files also emit `[ShipFlowPerf]` timing lines for Desktop-to-Service, Service lookup, and external API lookup stages. These timings intentionally include route, lookup ID, duration, HTTP status, and byte counts, but never bearer tokens.
 - ShipFlow Service lookup endpoints now percent-encode bag and manifest IDs before issuing local HTTP requests.
 - ShipFlow Service now exposes a documented `/v1` API contract with response envelopes and batch tracking job endpoints.
 - Service tokens are written to a separate local token vault file and hydrated into runtime config when needed, so primary config files do not carry raw token fields.

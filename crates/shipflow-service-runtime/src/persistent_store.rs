@@ -8,6 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 const MAX_PERSISTED_LOOKUP_ENTRIES: usize = 2_000;
+const MAX_PERSISTED_LOOKUP_PAYLOAD_BYTES: usize = 128 * 1024;
+const EMBEDDED_DATA_IMAGE_MARKER: &str = "data:image";
 const SERVICE_STATE_DIR_NAME: &str = "shipflow-service-runtime";
 const LOOKUP_STORE_FILE_NAME: &str = "lookup-store.json";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -49,7 +51,8 @@ impl PersistentLookupStore {
     }
 
     pub fn open(path: PathBuf) -> Self {
-        let inner = fs::read(&path)
+        let loaded_from_disk = path.exists();
+        let mut inner = fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<PersistentLookupStoreFile>(&bytes).ok())
             .filter(|store| store.version == 1)
@@ -57,11 +60,23 @@ impl PersistentLookupStore {
                 version: 1,
                 entries: HashMap::new(),
             });
+        let should_persist_sanitized_store = loaded_from_disk && compact_store(&mut inner);
 
-        Self {
+        let store = Self {
             path,
             inner: Arc::new(Mutex::new(inner)),
+        };
+        if should_persist_sanitized_store {
+            let snapshot = store
+                .inner
+                .lock()
+                .expect("persistent lookup store lock poisoned")
+                .clone();
+            if let Err(error) = store.persist_snapshot(&snapshot) {
+                eprintln!("[ShipFlowService] {error}");
+            }
         }
+        store
     }
 
     pub fn load_success(&self, key: &str) -> Option<String> {
@@ -70,9 +85,13 @@ impl PersistentLookupStore {
             .inner
             .lock()
             .expect("persistent lookup store lock poisoned");
-        let entry = store.entries.get(key).cloned()?;
+        let should_remove = {
+            let entry = store.entries.get(key)?;
+            entry.expires_at_unix_ms <= now
+                || persistent_lookup_skip_reason(&entry.payload).is_some()
+        };
 
-        if entry.expires_at_unix_ms <= now {
+        if should_remove {
             store.entries.remove(key);
             let snapshot = store.clone();
             drop(store);
@@ -80,10 +99,15 @@ impl PersistentLookupStore {
             return None;
         }
 
-        Some(entry.payload.clone())
+        store.entries.get(key).map(|entry| entry.payload.clone())
     }
 
-    pub fn store_success(&self, key: String, payload: String, ttl: Duration) {
+    pub fn store_success(&self, key: String, payload: String, ttl: Duration) -> bool {
+        if persistent_lookup_skip_reason(&payload).is_some() {
+            self.remove_success(&key);
+            return false;
+        }
+
         let expires_at_unix_ms = unix_ms().saturating_add(ttl.as_millis());
         let snapshot = {
             let mut store = self
@@ -103,7 +127,27 @@ impl PersistentLookupStore {
 
         if let Err(error) = self.persist_snapshot(&snapshot) {
             eprintln!("[ShipFlowService] {error}");
+            return false;
         }
+        true
+    }
+
+    pub fn remove_success(&self, key: &str) -> bool {
+        let snapshot = {
+            let mut store = self
+                .inner
+                .lock()
+                .expect("persistent lookup store lock poisoned");
+            if store.entries.remove(key).is_none() {
+                return false;
+            }
+            store.clone()
+        };
+
+        if let Err(error) = self.persist_snapshot(&snapshot) {
+            eprintln!("[ShipFlowService] {error}");
+        }
+        true
     }
 
     fn persist_snapshot(&self, snapshot: &PersistentLookupStoreFile) -> Result<(), String> {
@@ -120,6 +164,18 @@ impl PersistentLookupStore {
             .map_err(|error| format!("Unable to write persistent lookup store: {error}"))?;
         replace_store_file(temp_path, self.path.clone())
     }
+}
+
+pub fn persistent_lookup_skip_reason(payload: &str) -> Option<&'static str> {
+    if payload.len() > MAX_PERSISTED_LOOKUP_PAYLOAD_BYTES {
+        return Some("payload_too_large");
+    }
+
+    if payload.contains(EMBEDDED_DATA_IMAGE_MARKER) {
+        return Some("embedded_data_image");
+    }
+
+    None
 }
 
 pub fn default_persistent_lookup_store_path() -> PathBuf {
@@ -337,14 +393,20 @@ fn replace_store_file(temp_path: PathBuf, path: PathBuf) -> Result<(), String> {
     })
 }
 
-fn compact_store(store: &mut PersistentLookupStoreFile) {
+fn compact_store(store: &mut PersistentLookupStoreFile) -> bool {
     let now = unix_ms();
-    store
-        .entries
-        .retain(|_, entry| entry.expires_at_unix_ms > now);
+    let mut removed_entries = false;
+    store.entries.retain(|_, entry| {
+        let keep = entry.expires_at_unix_ms > now
+            && persistent_lookup_skip_reason(&entry.payload).is_none();
+        if !keep {
+            removed_entries = true;
+        }
+        keep
+    });
 
     if store.entries.len() <= MAX_PERSISTED_LOOKUP_ENTRIES {
-        return;
+        return removed_entries;
     }
 
     let mut entries = store
@@ -359,7 +421,10 @@ fn compact_store(store: &mut PersistentLookupStoreFile) {
         .take(store.entries.len() - MAX_PERSISTED_LOOKUP_ENTRIES)
     {
         store.entries.remove(&key);
+        removed_entries = true;
     }
+
+    removed_entries
 }
 
 fn unix_ms() -> u128 {
@@ -371,9 +436,14 @@ fn unix_ms() -> u128 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::fs;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use super::PersistentLookupStore;
+    use super::{
+        persistent_lookup_skip_reason, unix_ms, PersistentLookupEntry, PersistentLookupStore,
+        PersistentLookupStoreFile, MAX_PERSISTED_LOOKUP_PAYLOAD_BYTES,
+    };
 
     fn unique_store_path() -> std::path::PathBuf {
         let timestamp = SystemTime::now()
@@ -387,11 +457,11 @@ mod tests {
     fn stores_and_loads_success_payload() {
         let path = unique_store_path();
         let store = PersistentLookupStore::open(path.clone());
-        store.store_success(
+        assert!(store.store_success(
             "track:1".into(),
             "{\"ok\":true}".into(),
             Duration::from_secs(60),
-        );
+        ));
 
         let reopened = PersistentLookupStore::open(path.clone());
         assert_eq!(
@@ -406,16 +476,16 @@ mod tests {
     fn overwrites_existing_success_payload() {
         let path = unique_store_path();
         let store = PersistentLookupStore::open(path.clone());
-        store.store_success(
+        assert!(store.store_success(
             "track:1".into(),
             "{\"ok\":false}".into(),
             Duration::from_secs(60),
-        );
-        store.store_success(
+        ));
+        assert!(store.store_success(
             "track:1".into(),
             "{\"ok\":true}".into(),
             Duration::from_secs(60),
-        );
+        ));
 
         let reopened = PersistentLookupStore::open(path.clone());
         assert_eq!(
@@ -430,14 +500,106 @@ mod tests {
     fn expired_entries_are_ignored() {
         let path = unique_store_path();
         let store = PersistentLookupStore::open(path.clone());
-        store.store_success(
+        assert!(store.store_success(
             "track:1".into(),
             "{\"ok\":true}".into(),
             Duration::from_millis(0),
-        );
+        ));
 
         assert!(store.load_success("track:1").is_none());
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn skips_embedded_data_image_payloads() {
+        let path = unique_store_path();
+        let store = PersistentLookupStore::open(path.clone());
+        let payload = r#"{"pod":{"photo1_url":"data:image/jpeg;base64,abc"}}"#;
+
+        assert_eq!(
+            persistent_lookup_skip_reason(payload),
+            Some("embedded_data_image")
+        );
+        assert!(!store.store_success("track:pod".into(), payload.into(), Duration::from_secs(60)));
+
+        let reopened = PersistentLookupStore::open(path.clone());
+        assert!(reopened.load_success("track:pod").is_none());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn skips_payloads_that_are_too_large_for_fast_startup() {
+        let path = unique_store_path();
+        let store = PersistentLookupStore::open(path.clone());
+        let payload = "x".repeat(MAX_PERSISTED_LOOKUP_PAYLOAD_BYTES + 1);
+
+        assert_eq!(
+            persistent_lookup_skip_reason(&payload),
+            Some("payload_too_large")
+        );
+        assert!(!store.store_success("track:large".into(), payload, Duration::from_secs(60)));
+
+        let reopened = PersistentLookupStore::open(path.clone());
+        assert!(reopened.load_success("track:large").is_none());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn drops_legacy_oversized_entries_when_opening_store() {
+        let path = unique_store_path();
+        let expires_at_unix_ms = unix_ms().saturating_add(Duration::from_secs(60).as_millis());
+        let mut entries = HashMap::new();
+        entries.insert(
+            "track:small".into(),
+            PersistentLookupEntry {
+                expires_at_unix_ms,
+                payload: "{\"ok\":true}".into(),
+            },
+        );
+        entries.insert(
+            "track:image".into(),
+            PersistentLookupEntry {
+                expires_at_unix_ms,
+                payload: r#"{"pod":{"signature_url":"data:image/png;base64,abc"}}"#.into(),
+            },
+        );
+        entries.insert(
+            "track:large".into(),
+            PersistentLookupEntry {
+                expires_at_unix_ms,
+                payload: "x".repeat(MAX_PERSISTED_LOOKUP_PAYLOAD_BYTES + 1),
+            },
+        );
+        let legacy_store = PersistentLookupStoreFile {
+            version: 1,
+            entries,
+        };
+        fs::write(
+            &path,
+            serde_json::to_vec(&legacy_store).expect("serialize legacy store"),
+        )
+        .expect("write legacy store");
+
+        let store = PersistentLookupStore::open(path.clone());
+
+        assert_eq!(
+            store.load_success("track:small").as_deref(),
+            Some("{\"ok\":true}")
+        );
+        assert!(store.load_success("track:image").is_none());
+        assert!(store.load_success("track:large").is_none());
+
+        let reopened = PersistentLookupStore::open(path.clone());
+        assert_eq!(
+            reopened.load_success("track:small").as_deref(),
+            Some("{\"ok\":true}")
+        );
+        assert!(reopened.load_success("track:image").is_none());
+        assert!(reopened.load_success("track:large").is_none());
+
+        let _ = fs::remove_file(path);
     }
 }

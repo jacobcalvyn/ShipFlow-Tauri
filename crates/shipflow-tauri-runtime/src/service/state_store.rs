@@ -16,10 +16,10 @@ use std::os::unix::fs::PermissionsExt;
 use super::{ApiServiceConfig, DesktopActivationRequest, DesktopServiceConnectionMode};
 use atomic_file::write_state_file;
 use paths::{
-    desktop_pid_path, desktop_request_path, desktop_service_config_path, legacy_service_state_dir,
-    service_config_path, service_pid_path, service_runtime_config_path, service_settings_pid_path,
-    service_settings_request_path, service_token_vault_path, service_tray_pid_path,
-    state_dir_override,
+    desktop_pid_path, desktop_request_path, desktop_service_config_path, legacy_service_state_dirs,
+    legacy_state_dir_override, service_config_path, service_pid_path, service_runtime_config_path,
+    service_settings_pid_path, service_settings_request_path, service_token_vault_path,
+    service_tray_pid_path, state_dir_override,
 };
 
 #[cfg(unix)]
@@ -33,11 +33,15 @@ pub(super) fn set_user_only_permissions(_path: &Path, _mode: u32) {}
 fn state_file_candidates(primary_path: &Path) -> Vec<PathBuf> {
     let mut candidates = vec![primary_path.to_path_buf()];
 
-    if state_dir_override().is_none() {
+    if state_dir_override().is_none() || legacy_state_dir_override().is_some() {
         if let Some(file_name) = primary_path.file_name() {
-            let legacy_path = legacy_service_state_dir().join(file_name);
-            if legacy_path != primary_path {
-                candidates.push(legacy_path);
+            for legacy_dir in legacy_service_state_dirs() {
+                let legacy_path = legacy_dir.join(file_name);
+                if legacy_path != primary_path
+                    && !candidates.iter().any(|path| path == &legacy_path)
+                {
+                    candidates.push(legacy_path);
+                }
             }
         }
     }
@@ -72,16 +76,70 @@ struct TokenVaultFile {
     tokens: HashMap<String, String>,
 }
 
-fn read_token_vault() -> Result<TokenVaultFile, String> {
-    match fs::read(service_token_vault_path()) {
-        Ok(bytes) => serde_json::from_slice::<TokenVaultFile>(&bytes)
-            .map_err(|error| format!("Unable to parse service token vault: {error}")),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(TokenVaultFile {
-            version: 1,
-            tokens: HashMap::new(),
-        }),
-        Err(error) => Err(format!("Unable to read service token vault: {error}")),
+fn empty_token_vault() -> TokenVaultFile {
+    TokenVaultFile {
+        version: 1,
+        tokens: HashMap::new(),
     }
+}
+
+fn read_token_vault() -> Result<TokenVaultFile, String> {
+    let primary_path = service_token_vault_path();
+    let mut vault = empty_token_vault();
+    let mut found_any = false;
+    let mut used_legacy = false;
+    let mut first_error = None;
+
+    for path in state_file_candidates(&primary_path) {
+        match fs::read(&path) {
+            Ok(bytes) => match serde_json::from_slice::<TokenVaultFile>(&bytes) {
+                Ok(candidate_vault) => {
+                    found_any = true;
+                    used_legacy |= path != primary_path;
+
+                    for (key, value) in candidate_vault.tokens {
+                        let trimmed = value.trim();
+                        if !trimmed.is_empty() {
+                            vault
+                                .tokens
+                                .entry(key)
+                                .or_insert_with(|| trimmed.to_string());
+                        }
+                    }
+                }
+                Err(error) => {
+                    first_error.get_or_insert_with(|| {
+                        format!(
+                            "Unable to parse service token vault from {}: {error}",
+                            path.to_string_lossy()
+                        )
+                    });
+                }
+            },
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                first_error.get_or_insert_with(|| {
+                    format!(
+                        "Unable to read service token vault from {}: {error}",
+                        path.to_string_lossy()
+                    )
+                });
+            }
+        }
+    }
+
+    if found_any {
+        if used_legacy {
+            let _ = write_token_vault(&vault);
+        }
+        return Ok(vault);
+    }
+
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+
+    Ok(vault)
 }
 
 fn write_token_vault(vault: &TokenVaultFile) -> Result<(), String> {
@@ -100,9 +158,7 @@ fn token_key(role: &str, field: &str) -> String {
 
 fn update_vault_token(tokens: &mut HashMap<String, String>, key: String, value: &str) {
     let trimmed = value.trim();
-    if trimmed.is_empty() {
-        tokens.remove(&key);
-    } else {
+    if !trimmed.is_empty() {
         tokens.insert(key, trimmed.to_string());
     }
 }
@@ -488,6 +544,33 @@ mod tests {
         }
     }
 
+    fn with_primary_and_legacy_state_dirs<T>(
+        prefix: &str,
+        run: impl FnOnce(std::path::PathBuf, std::path::PathBuf) -> T,
+    ) -> T {
+        let _guard = runtime_state_dir_test_lock()
+            .lock()
+            .expect("state dir test lock should not be poisoned");
+        let primary_dir = unique_temp_dir(&format!("{prefix}-primary"));
+        let legacy_dir = unique_temp_dir(&format!("{prefix}-legacy"));
+        let _ = fs::create_dir_all(&primary_dir);
+        let _ = fs::create_dir_all(&legacy_dir);
+
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            run(primary_dir.clone(), legacy_dir.clone())
+        }));
+
+        std::env::remove_var("SHIPFLOW_SERVICE_STATE_DIR_OVERRIDE");
+        std::env::remove_var("SHIPFLOW_LEGACY_SERVICE_STATE_DIR_OVERRIDE");
+        let _ = fs::remove_dir_all(&primary_dir);
+        let _ = fs::remove_dir_all(&legacy_dir);
+
+        match result {
+            Ok(value) => value,
+            Err(panic_payload) => panic::resume_unwind(panic_payload),
+        }
+    }
+
     fn sample_config() -> ApiServiceConfig {
         ApiServiceConfig {
             version: 1,
@@ -543,6 +626,53 @@ mod tests {
                 .expect("saved config should exist");
             assert_eq!(loaded, config);
         });
+    }
+
+    #[test]
+    fn empty_token_fields_do_not_clear_existing_token_vault_entries() {
+        with_state_dir("shipflow-service-token-preserve-test", || {
+            let config = sample_config();
+            persist_saved_config(&config).expect("saved config should persist");
+
+            let config_with_empty_tokens = ApiServiceConfig {
+                auth_token: String::new(),
+                external_api_auth_token: String::new(),
+                ..config.clone()
+            };
+            persist_saved_config(&config_with_empty_tokens)
+                .expect("empty token fields should not clear the vault");
+
+            let loaded = load_saved_config()
+                .expect("saved config should load")
+                .expect("saved config should exist");
+            assert_eq!(loaded, config);
+        });
+    }
+
+    #[test]
+    fn legacy_token_vault_is_migrated_to_primary_service_state_dir() {
+        with_primary_and_legacy_state_dirs(
+            "shipflow-service-token-vault-migration-test",
+            |primary_dir, legacy_dir| {
+                let config = sample_config();
+
+                std::env::set_var("SHIPFLOW_SERVICE_STATE_DIR_OVERRIDE", &legacy_dir);
+                persist_saved_config(&config).expect("legacy saved config should persist");
+
+                std::env::set_var("SHIPFLOW_SERVICE_STATE_DIR_OVERRIDE", &primary_dir);
+                std::env::set_var("SHIPFLOW_LEGACY_SERVICE_STATE_DIR_OVERRIDE", &legacy_dir);
+
+                let loaded = load_saved_config()
+                    .expect("legacy saved config should load")
+                    .expect("legacy saved config should exist");
+                assert_eq!(loaded, config);
+
+                let primary_vault = fs::read_to_string(service_token_vault_path())
+                    .expect("primary token vault should be migrated");
+                assert!(primary_vault.contains("sf_state_store_token"));
+                assert!(primary_vault.contains("external-token"));
+            },
+        );
     }
 
     #[test]

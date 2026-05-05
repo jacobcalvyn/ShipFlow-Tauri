@@ -8,6 +8,15 @@ use crate::service::{
     SERVICE_TOKEN_VAULT_FILE_NAME, SERVICE_TRAY_PID_FILE_NAME,
 };
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const SERVICE_APP_DATA_DIR_NAME: &str = "ShipFlow Service";
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const LEGACY_DESKTOP_APP_DATA_DIR_NAME: &str = "ShipFlow Desktop";
+#[cfg(all(unix, not(target_os = "macos")))]
+const SERVICE_XDG_DATA_DIR_NAME: &str = "shipflow-service";
+#[cfg(all(unix, not(target_os = "macos")))]
+const LEGACY_DESKTOP_XDG_DATA_DIR_NAME: &str = "shipflow-desktop";
+
 #[cfg(test)]
 pub(super) fn state_dir_override() -> Option<PathBuf> {
     env::var_os("SHIPFLOW_SERVICE_STATE_DIR_OVERRIDE").map(PathBuf::from)
@@ -22,13 +31,23 @@ pub(super) fn legacy_service_state_dir() -> PathBuf {
     env::temp_dir().join(SERVICE_STATE_DIR_NAME)
 }
 
+#[cfg(test)]
+pub(super) fn legacy_state_dir_override() -> Option<PathBuf> {
+    env::var_os("SHIPFLOW_LEGACY_SERVICE_STATE_DIR_OVERRIDE").map(PathBuf::from)
+}
+
+#[cfg(not(test))]
+pub(super) fn legacy_state_dir_override() -> Option<PathBuf> {
+    None
+}
+
 fn app_data_service_state_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         return env::var_os("HOME").map(PathBuf::from).map(|home| {
             home.join("Library")
                 .join("Application Support")
-                .join("ShipFlow Desktop")
+                .join(SERVICE_APP_DATA_DIR_NAME)
                 .join(SERVICE_STATE_DIR_NAME)
         });
     }
@@ -37,7 +56,7 @@ fn app_data_service_state_dir() -> Option<PathBuf> {
     {
         return env::var_os("APPDATA").map(PathBuf::from).map(|app_data| {
             app_data
-                .join("ShipFlow Desktop")
+                .join(SERVICE_APP_DATA_DIR_NAME)
                 .join(SERVICE_STATE_DIR_NAME)
         });
     }
@@ -47,7 +66,7 @@ fn app_data_service_state_dir() -> Option<PathBuf> {
         if let Some(xdg_data_home) = env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
             return Some(
                 xdg_data_home
-                    .join("shipflow-desktop")
+                    .join(SERVICE_XDG_DATA_DIR_NAME)
                     .join(SERVICE_STATE_DIR_NAME),
             );
         }
@@ -55,13 +74,76 @@ fn app_data_service_state_dir() -> Option<PathBuf> {
         return env::var_os("HOME").map(PathBuf::from).map(|home| {
             home.join(".local")
                 .join("share")
-                .join("shipflow-desktop")
+                .join(SERVICE_XDG_DATA_DIR_NAME)
                 .join(SERVICE_STATE_DIR_NAME)
         });
     }
 
     #[allow(unreachable_code)]
     None
+}
+
+fn legacy_app_data_service_state_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        return env::var_os("HOME").map(PathBuf::from).map(|home| {
+            home.join("Library")
+                .join("Application Support")
+                .join(LEGACY_DESKTOP_APP_DATA_DIR_NAME)
+                .join(SERVICE_STATE_DIR_NAME)
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return env::var_os("APPDATA").map(PathBuf::from).map(|app_data| {
+            app_data
+                .join(LEGACY_DESKTOP_APP_DATA_DIR_NAME)
+                .join(SERVICE_STATE_DIR_NAME)
+        });
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(xdg_data_home) = env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
+            return Some(
+                xdg_data_home
+                    .join(LEGACY_DESKTOP_XDG_DATA_DIR_NAME)
+                    .join(SERVICE_STATE_DIR_NAME),
+            );
+        }
+
+        return env::var_os("HOME").map(PathBuf::from).map(|home| {
+            home.join(".local")
+                .join("share")
+                .join(LEGACY_DESKTOP_XDG_DATA_DIR_NAME)
+                .join(SERVICE_STATE_DIR_NAME)
+        });
+    }
+
+    #[allow(unreachable_code)]
+    None
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|candidate| candidate == &path) {
+        paths.push(path);
+    }
+}
+
+pub(super) fn legacy_service_state_dirs() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Some(path) = legacy_state_dir_override() {
+        push_unique_path(&mut paths, path);
+        return paths;
+    }
+    if let Some(path) = legacy_app_data_service_state_dir() {
+        push_unique_path(&mut paths, path);
+    }
+    push_unique_path(&mut paths, legacy_service_state_dir());
+
+    paths
 }
 
 pub(super) fn service_state_dir() -> PathBuf {

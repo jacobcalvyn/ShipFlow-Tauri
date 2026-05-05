@@ -20,7 +20,7 @@ use shipflow_core::{
 };
 use tokio::sync::Notify;
 
-use crate::persistent_store::PersistentLookupStore;
+use crate::persistent_store::{persistent_lookup_skip_reason, PersistentLookupStore};
 
 const TRACK_CACHE_TTL_SECS: u64 = 30;
 const BAG_CACHE_TTL_SECS: u64 = 60;
@@ -450,25 +450,54 @@ impl LookupCacheState {
         cache_key: &str,
         entry: &CachedLookupEntry,
     ) {
-        let Some(persistent_store) = &self.persistent_store else {
+        let Some(persistent_store) = self.persistent_store.clone() else {
             return;
         };
         let CachedLookupValue::Success(payload) = &entry.value else {
             return;
         };
 
-        persistent_store.store_success(
-            cache_key.to_string(),
-            payload.clone(),
-            Duration::from_secs(PERSISTENT_SUCCESS_CACHE_TTL_SECS),
-        );
-        self.log(
-            "INFO",
-            format!(
-                "[ShipFlowCache] persistent_cache_store kind={} id={normalized_id} key={cache_key}",
-                lookup_kind_label(kind)
-            ),
-        );
+        let kind_label = lookup_kind_label(kind).to_string();
+        let normalized_id = normalized_id.to_string();
+        let cache_key = cache_key.to_string();
+        let log_sink = self.log_sink.clone();
+
+        if let Some(reason) = persistent_lookup_skip_reason(payload) {
+            let bytes = payload.len();
+            let reason = reason.to_string();
+            tokio::task::spawn_blocking(move || {
+                persistent_store.remove_success(&cache_key);
+                if let Some(log_sink) = log_sink {
+                    log_sink(
+                        "INFO",
+                        format!(
+                            "[ShipFlowCache] persistent_cache_store_skipped kind={kind_label} id={normalized_id} key={cache_key} reason={reason} bytes={bytes}"
+                        ),
+                    );
+                }
+            });
+            return;
+        }
+
+        let payload = payload.clone();
+        tokio::task::spawn_blocking(move || {
+            if !persistent_store.store_success(
+                cache_key.clone(),
+                payload,
+                Duration::from_secs(PERSISTENT_SUCCESS_CACHE_TTL_SECS),
+            ) {
+                return;
+            }
+
+            if let Some(log_sink) = log_sink {
+                log_sink(
+                    "INFO",
+                    format!(
+                        "[ShipFlowCache] persistent_cache_store kind={kind_label} id={normalized_id} key={cache_key}"
+                    ),
+                );
+            }
+        });
     }
 
     fn log(&self, level: &str, message: String) {

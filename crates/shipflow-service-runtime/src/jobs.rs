@@ -21,7 +21,7 @@ pub struct BatchJobRegistry {
     inner: Arc<Mutex<HashMap<String, BatchJobRecord>>>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchTrackJobStart {
     pub job_id: String,
@@ -30,7 +30,7 @@ pub struct BatchTrackJobStart {
     pub result_endpoint: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchJobSnapshot {
     pub job_id: String,
@@ -44,7 +44,7 @@ pub struct BatchJobSnapshot {
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchJobResultSnapshot {
     #[serde(flatten)]
@@ -52,7 +52,7 @@ pub struct BatchJobResultSnapshot {
     pub results: Vec<BatchTrackJobItemResult>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchTrackJobItemResult {
     pub id: String,
@@ -71,7 +71,7 @@ pub enum BatchJobStatus {
     Failed,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum BatchJobItemStatus {
     Success,

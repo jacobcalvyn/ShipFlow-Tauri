@@ -298,9 +298,9 @@ fn with_service_window_icon<'a, R: Runtime, M: Manager<R>>(
 
 pub fn build_tracking_client(user_agent: &str) -> reqwest::Client {
     reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(6))
-        .read_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(25))
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(90))
+        .timeout(Duration::from_secs(120))
         .user_agent(user_agent)
         .build()
         .expect("failed to create tracking client")

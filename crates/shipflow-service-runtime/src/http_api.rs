@@ -4,17 +4,28 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use reqwest::Client;
+use reqwest::{Client, StatusCode as ReqwestStatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use shipflow_core::model::{BagResponse, ManifestResponse, TrackResponse, TrackingError};
-use std::time::Duration;
+use shipflow_core::{
+    model::{
+        BagResponse, ManifestResponse, TrackResponse, TrackingError, TrackingSource,
+        TrackingSourceConfig,
+    },
+    upstream::parse_external_api_base_url,
+};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
+use tokio::task::JoinSet;
 
 use crate::api_contract::{
     envelope, error_response_v1, generate_request_id, legacy_error_response, REQUEST_ID_HEADER_NAME,
 };
 use crate::jobs::{
-    BatchJobRegistry, BatchTrackJobStart, MAX_BATCH_SHIPMENT_IDS, MAX_BATCH_SHIPMENT_ID_LENGTH,
+    BatchJobItemStatus, BatchJobRegistry, BatchJobResultSnapshot, BatchJobStatus,
+    BatchTrackJobStart, MAX_BATCH_SHIPMENT_IDS, MAX_BATCH_SHIPMENT_ID_LENGTH,
 };
 use crate::lookup_cache::{
     resolve_bag_request_cached, resolve_manifest_request_cached, resolve_tracking_request_cached,
@@ -34,6 +45,10 @@ const TRACK_SCHEMA_VERSION: &str = "shipflow.tracking.detail.v1";
 const BAG_SCHEMA_VERSION: &str = "shipflow.tracking.bag.v1";
 const MANIFEST_SCHEMA_VERSION: &str = "shipflow.tracking.manifest.v1";
 const JOB_SCHEMA_VERSION: &str = "shipflow.service.job.v1";
+const SERVICE_UPSTREAM_CONNECT_TIMEOUT_SECS: u64 = 10;
+const SERVICE_UPSTREAM_READ_TIMEOUT_SECS: u64 = 60;
+const SERVICE_UPSTREAM_REQUEST_TIMEOUT_SECS: u64 = 90;
+const MAX_CONCURRENT_BATCH_TRACK_LOOKUPS: usize = 10;
 
 #[derive(Clone)]
 pub struct HttpApiState {
@@ -67,11 +82,17 @@ struct CapabilitiesResponse {
     routes: Vec<&'static str>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BatchTrackRequest {
     shipment_ids: Vec<String>,
     force_refresh: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteApiEnvelope<T> {
+    data: T,
 }
 
 pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), String> {
@@ -90,9 +111,9 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
         })?;
 
     let client = Client::builder()
-        .connect_timeout(Duration::from_secs(6))
-        .read_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(25))
+        .connect_timeout(Duration::from_secs(SERVICE_UPSTREAM_CONNECT_TIMEOUT_SECS))
+        .read_timeout(Duration::from_secs(SERVICE_UPSTREAM_READ_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(SERVICE_UPSTREAM_REQUEST_TIMEOUT_SECS))
         .user_agent("ShipFlow Service/0.1")
         .build()
         .map_err(|error| format!("Unable to create service HTTP client: {error}"))?;
@@ -248,19 +269,29 @@ async fn track_handler(
     headers: HeaderMap,
     Path(shipment_id): Path<String>,
 ) -> Result<Json<TrackResponse>, (StatusCode, Json<Value>)> {
+    let started_at = Instant::now();
     authorize_request(&headers, &state.auth_token)?;
     let request_options = read_lookup_request_options(&headers);
+    let normalized_id = shipment_id.trim().to_string();
 
-    resolve_tracking_request_cached(
+    let result = resolve_tracking_request_cached(
         &state.lookup_cache,
         &state.client,
         &state.tracking_source,
-        shipment_id.trim(),
+        &normalized_id,
         request_options,
     )
-    .await
-    .map(Json)
-    .map_err(map_tracking_error)
+    .await;
+    log_service_tracking_timing(
+        "legacy",
+        &normalized_id,
+        started_at,
+        &state.tracking_source,
+        request_options.force_refresh,
+        result.is_ok(),
+    );
+
+    result.map(Json).map_err(map_tracking_error)
 }
 
 async fn v1_track_handler(
@@ -271,6 +302,7 @@ async fn v1_track_handler(
     Json<crate::api_contract::ApiEnvelope<TrackResponse>>,
     (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
 > {
+    let started_at = Instant::now();
     let request_id = authorize_request_id(&headers);
     authorize_request_message(&headers, &state.auth_token).map_err(|message| {
         error_response_v1(
@@ -282,17 +314,28 @@ async fn v1_track_handler(
     })?;
     let response_request_id = request_id.clone();
     let request_options = read_lookup_request_options(&headers);
+    let normalized_id = shipment_id.trim().to_string();
 
-    resolve_tracking_request_cached(
+    let result = resolve_tracking_request_cached(
         &state.lookup_cache,
         &state.client,
         &state.tracking_source,
-        shipment_id.trim(),
+        &normalized_id,
         request_options,
     )
-    .await
-    .map(|payload| envelope(TRACK_SCHEMA_VERSION, response_request_id, payload))
-    .map_err(|error| map_tracking_error_v1(error, TRACK_SCHEMA_VERSION, request_id))
+    .await;
+    log_service_tracking_timing(
+        "v1",
+        &normalized_id,
+        started_at,
+        &state.tracking_source,
+        request_options.force_refresh,
+        result.is_ok(),
+    );
+
+    result
+        .map(|payload| envelope(TRACK_SCHEMA_VERSION, response_request_id, payload))
+        .map_err(|error| map_tracking_error_v1(error, TRACK_SCHEMA_VERSION, request_id))
 }
 
 async fn bag_handler(
@@ -580,38 +623,323 @@ async fn run_track_batch_job(
 ) {
     state.job_registry.mark_running(&job_id);
 
-    for shipment_id in shipment_ids {
-        if state.job_registry.is_cancel_requested(&job_id) {
-            state
-                .job_registry
-                .push_cancelled(&job_id, shipment_id.to_string());
-            continue;
+    if try_run_external_api_batch_job(&state, &job_id, &shipment_ids, force_refresh).await {
+        return;
+    }
+
+    let mut queue = VecDeque::from(shipment_ids);
+    let mut tasks = JoinSet::new();
+
+    loop {
+        while tasks.len() < MAX_CONCURRENT_BATCH_TRACK_LOOKUPS && !queue.is_empty() {
+            if state.job_registry.is_cancel_requested(&job_id) {
+                break;
+            }
+
+            let Some(shipment_id) = queue.pop_front() else {
+                break;
+            };
+            let state_for_lookup = state.clone();
+            tasks.spawn(async move {
+                let result = resolve_tracking_request_cached(
+                    &state_for_lookup.lookup_cache,
+                    &state_for_lookup.client,
+                    &state_for_lookup.tracking_source,
+                    shipment_id.trim(),
+                    LookupRequestOptions { force_refresh },
+                )
+                .await;
+                (shipment_id, result)
+            });
         }
 
-        let result = resolve_tracking_request_cached(
-            &state.lookup_cache,
-            &state.client,
-            &state.tracking_source,
-            shipment_id.trim(),
-            LookupRequestOptions { force_refresh },
-        )
-        .await;
+        if state.job_registry.is_cancel_requested(&job_id) {
+            while let Some(shipment_id) = queue.pop_front() {
+                state.job_registry.push_cancelled(&job_id, shipment_id);
+            }
+        }
 
-        match result {
-            Ok(payload) => {
+        if tasks.is_empty() {
+            break;
+        }
+
+        match tasks.join_next().await {
+            Some(Ok((shipment_id, Ok(payload)))) => {
                 state
                     .job_registry
                     .push_success(&job_id, shipment_id, payload);
             }
-            Err(error) => {
+            Some(Ok((shipment_id, Err(error)))) => {
                 state
                     .job_registry
                     .push_error(&job_id, shipment_id, tracking_error_message(error));
             }
+            Some(Err(error)) => {
+                tasks.abort_all();
+                state
+                    .job_registry
+                    .fail(&job_id, format!("Batch worker failed: {error}"));
+                return;
+            }
+            None => break,
         }
     }
 
     state.job_registry.finish(&job_id);
+}
+
+async fn try_run_external_api_batch_job(
+    state: &HttpApiState,
+    job_id: &str,
+    shipment_ids: &[String],
+    force_refresh: bool,
+) -> bool {
+    if state.tracking_source.tracking_source != TrackingSource::ExternalApi {
+        return false;
+    }
+
+    match run_external_api_batch_job(state, job_id, shipment_ids, force_refresh).await {
+        Ok(ExternalBatchOutcome::Completed) => true,
+        Ok(ExternalBatchOutcome::Unsupported) => false,
+        Err(error) => {
+            state.job_registry.fail(job_id, error);
+            true
+        }
+    }
+}
+
+enum ExternalBatchOutcome {
+    Completed,
+    Unsupported,
+}
+
+async fn run_external_api_batch_job(
+    state: &HttpApiState,
+    job_id: &str,
+    shipment_ids: &[String],
+    force_refresh: bool,
+) -> Result<ExternalBatchOutcome, String> {
+    let source_config = &state.tracking_source;
+    let Some(auth_token) = external_api_auth_token(source_config) else {
+        return Err("External API bearer token is required.".into());
+    };
+    let base_url = parse_external_api_base_url(
+        &source_config.external_api_base_url,
+        source_config.allow_insecure_external_api_http,
+    )
+    .map_err(tracking_error_message)?;
+
+    let start_endpoint = base_url
+        .join("v1/jobs/track-batch")
+        .map_err(|error| format!("External API batch endpoint is invalid: {error}"))?;
+    let start_response = state
+        .client
+        .post(start_endpoint)
+        .bearer_auth(auth_token)
+        .header("content-type", "application/json")
+        .body(
+            serde_json::to_string(&BatchTrackRequest {
+                shipment_ids: shipment_ids.to_vec(),
+                force_refresh: Some(force_refresh),
+            })
+            .map_err(|error| format!("Unable to serialize External API batch request: {error}"))?,
+        )
+        .send()
+        .await
+        .map_err(|error| format!("External API batch request failed: {error}"))?;
+
+    if start_response.status() == ReqwestStatusCode::NOT_FOUND {
+        return Ok(ExternalBatchOutcome::Unsupported);
+    }
+
+    if !start_response.status().is_success() {
+        return Err(format!(
+            "External API batch request returned HTTP {}: {}",
+            start_response.status(),
+            start_response.text().await.unwrap_or_default()
+        ));
+    }
+
+    let start_body = start_response
+        .text()
+        .await
+        .map_err(|error| format!("External API batch start response could not be read: {error}"))?;
+    let start = serde_json::from_str::<RemoteApiEnvelope<BatchTrackJobStart>>(&start_body)
+        .map_err(|error| format!("External API batch start response is invalid: {error}"))?
+        .data;
+    let status_url = external_api_relative_url(&base_url, &start.status_endpoint)?;
+    let result_url = external_api_relative_url(&base_url, &start.result_endpoint)?;
+    let mut poll_count = 0_u16;
+
+    loop {
+        if state.job_registry.is_cancel_requested(job_id) {
+            let cancel_url =
+                external_api_relative_url(&base_url, &format!("/v1/jobs/{}/cancel", start.job_id))?;
+            let _ = state
+                .client
+                .post(cancel_url)
+                .bearer_auth(auth_token)
+                .send()
+                .await;
+        }
+
+        let status_response = state
+            .client
+            .get(status_url.clone())
+            .bearer_auth(auth_token)
+            .send()
+            .await
+            .map_err(|error| format!("External API batch status request failed: {error}"))?;
+
+        if !status_response.status().is_success() {
+            return Err(format!(
+                "External API batch status returned HTTP {}: {}",
+                status_response.status(),
+                status_response.text().await.unwrap_or_default()
+            ));
+        }
+
+        let status_body = status_response.text().await.map_err(|error| {
+            format!("External API batch status response could not be read: {error}")
+        })?;
+        let status =
+            serde_json::from_str::<RemoteApiEnvelope<crate::jobs::BatchJobSnapshot>>(&status_body)
+                .map_err(|error| format!("External API batch status response is invalid: {error}"))?
+                .data;
+
+        if matches!(
+            status.status,
+            BatchJobStatus::Completed | BatchJobStatus::Cancelled | BatchJobStatus::Failed
+        ) {
+            let result_response = state
+                .client
+                .get(result_url)
+                .bearer_auth(auth_token)
+                .send()
+                .await
+                .map_err(|error| format!("External API batch result request failed: {error}"))?;
+
+            if !result_response.status().is_success() {
+                return Err(format!(
+                    "External API batch result returned HTTP {}: {}",
+                    result_response.status(),
+                    result_response.text().await.unwrap_or_default()
+                ));
+            }
+
+            let result_body = result_response.text().await.map_err(|error| {
+                format!("External API batch result response could not be read: {error}")
+            })?;
+            let result =
+                serde_json::from_str::<RemoteApiEnvelope<BatchJobResultSnapshot>>(&result_body)
+                    .map_err(|error| {
+                        format!("External API batch result response is invalid: {error}")
+                    })?
+                    .data;
+
+            mirror_external_batch_results(state, job_id, shipment_ids, result);
+            return Ok(ExternalBatchOutcome::Completed);
+        }
+
+        poll_count = poll_count.saturating_add(1);
+        if poll_count >= 600 {
+            return Err("External API batch job timed out.".into());
+        }
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+fn mirror_external_batch_results(
+    state: &HttpApiState,
+    job_id: &str,
+    requested_ids: &[String],
+    result: BatchJobResultSnapshot,
+) {
+    let mut completed_ids = Vec::with_capacity(result.results.len());
+    for item in result.results {
+        completed_ids.push(item.id.clone());
+        match item.status {
+            BatchJobItemStatus::Success => {
+                if let Some(data) = item.data {
+                    state.job_registry.push_success(job_id, item.id, data);
+                } else {
+                    state.job_registry.push_error(
+                        job_id,
+                        item.id,
+                        "External API returned an empty result.".into(),
+                    );
+                }
+            }
+            BatchJobItemStatus::Error => {
+                state.job_registry.push_error(
+                    job_id,
+                    item.id,
+                    item.error
+                        .unwrap_or_else(|| "External API batch item failed.".into()),
+                );
+            }
+            BatchJobItemStatus::Cancelled => {
+                state.job_registry.push_cancelled(job_id, item.id);
+            }
+        }
+    }
+
+    for shipment_id in requested_ids {
+        if !completed_ids
+            .iter()
+            .any(|completed_id| completed_id == shipment_id)
+        {
+            state.job_registry.push_error(
+                job_id,
+                shipment_id.clone(),
+                "External API did not return this ID.".into(),
+            );
+        }
+    }
+
+    state.job_registry.finish(job_id);
+}
+
+fn external_api_auth_token(source_config: &TrackingSourceConfig) -> Option<&str> {
+    let token = source_config.external_api_auth_token.trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token)
+    }
+}
+
+fn external_api_relative_url(base_url: &Url, endpoint: &str) -> Result<Url, String> {
+    base_url
+        .join(endpoint.trim_start_matches('/'))
+        .map_err(|error| format!("External API batch URL is invalid: {error}"))
+}
+
+fn log_service_tracking_timing(
+    route: &str,
+    shipment_id: &str,
+    started_at: Instant,
+    tracking_source: &TrackingSourceConfig,
+    force_refresh: bool,
+    is_success: bool,
+) {
+    eprintln!(
+        "[ShipFlowPerf] service_tracking route={} id={} source={} forceRefresh={} durationMs={} result={}",
+        route,
+        shipment_id,
+        tracking_source_label(tracking_source),
+        force_refresh,
+        started_at.elapsed().as_millis(),
+        if is_success { "ok" } else { "error" }
+    );
+}
+
+fn tracking_source_label(tracking_source: &TrackingSourceConfig) -> &'static str {
+    match tracking_source.tracking_source {
+        TrackingSource::Default => "internal",
+        TrackingSource::ExternalApi => "external_api",
+    }
 }
 
 fn authorize_request(

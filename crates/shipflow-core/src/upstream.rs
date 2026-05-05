@@ -1,8 +1,11 @@
-use std::{error::Error as StdError, time::Duration};
+use std::{
+    error::Error as StdError,
+    time::{Duration, Instant},
+};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use reqwest::{Client, Response, StatusCode, Url};
+use reqwest::{header::ACCEPT, Client, Response, StatusCode, Url};
 use serde::Deserialize;
 
 use crate::bag::parse_bag_html;
@@ -22,11 +25,17 @@ pub const POS_MANIFEST_ENDPOINT: &str =
     "https://pid.posindonesia.co.id/lacak/admin/GetManifestR7_detil.php";
 const TRACKING_MAX_ATTEMPTS: u32 = 3;
 const TRACKING_RETRY_BASE_DELAY_MS: u64 = 250;
+const EXTERNAL_API_HEDGE_DELAY_MS: u64 = 2_500;
 pub const MAX_LOOKUP_ID_LENGTH: usize = 64;
 
 #[derive(Debug, Deserialize)]
 struct ExternalApiErrorResponse {
-    error: Option<String>,
+    error: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExternalApiDataEnvelope<T> {
+    data: T,
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,8 +228,10 @@ pub async fn fetch_external_api_tracking(
     allow_insecure_http: bool,
     shipment_id: &str,
 ) -> Result<TrackResponse, TrackingError> {
+    let total_started_at = Instant::now();
     let normalized_shipment_id = normalize_and_validate_shipment_id(shipment_id)?;
     let parsed_base_url = parse_external_api_base_url(base_url, allow_insecure_http)?;
+    let prefer_v1_contract = external_api_base_url_prefers_v1_contract(base_url);
     let trimmed_auth_token = auth_token.trim();
 
     if trimmed_auth_token.is_empty() {
@@ -230,29 +241,69 @@ pub async fn fetch_external_api_tracking(
     }
 
     let request_url = parsed_base_url
-        .join(&format!("track/{normalized_shipment_id}"))
+        .join(&format!("v1/track/{normalized_shipment_id}"))
         .map_err(|error| {
             TrackingError::BadRequest(format!("External API tracking URL is invalid: {error}"))
         })?;
 
-    let response = client
-        .get(request_url.clone())
-        .bearer_auth(trimmed_auth_token)
-        .send()
-        .await
-        .map_err(|error| {
-            if error.is_connect() {
-                TrackingError::Upstream(format!("External API connection failed: {error}"))
-            } else if error.is_timeout() {
-                TrackingError::Upstream(format!("External API request timed out: {error}"))
-            } else {
-                TrackingError::Upstream(format!("External API request failed: {error}"))
-            }
-        })?;
+    let http_started_at = Instant::now();
+    let response =
+        fetch_external_api_response(client, request_url.clone(), trimmed_auth_token).await?;
+    log_external_api_tracking_timing(
+        &normalized_shipment_id,
+        "http",
+        http_started_at,
+        format!("route=v1 status={}", response.status()),
+    );
 
+    if response.status() == StatusCode::NOT_FOUND && !prefer_v1_contract {
+        log_external_api_tracking_timing(
+            &normalized_shipment_id,
+            "fallback",
+            total_started_at,
+            "route=legacy reason=v1_not_found",
+        );
+        let legacy_request_url = parsed_base_url
+            .join(&format!("track/{normalized_shipment_id}"))
+            .map_err(|error| {
+                TrackingError::BadRequest(format!("External API tracking URL is invalid: {error}"))
+            })?;
+        let legacy_http_started_at = Instant::now();
+        let legacy_response =
+            fetch_external_api_response(client, legacy_request_url, trimmed_auth_token).await?;
+        log_external_api_tracking_timing(
+            &normalized_shipment_id,
+            "http",
+            legacy_http_started_at,
+            format!("route=legacy status={}", legacy_response.status()),
+        );
+        let result =
+            read_external_api_tracking_response(legacy_response, &normalized_shipment_id, "legacy")
+                .await;
+        log_external_api_tracking_result(&normalized_shipment_id, total_started_at, &result);
+        return result;
+    }
+
+    let result = read_external_api_tracking_response(response, &normalized_shipment_id, "v1").await;
+    log_external_api_tracking_result(&normalized_shipment_id, total_started_at, &result);
+    result
+}
+
+async fn read_external_api_tracking_response(
+    response: Response,
+    shipment_id: &str,
+    route_label: &str,
+) -> Result<TrackResponse, TrackingError> {
     if !response.status().is_success() {
         let status = response.status();
+        let error_read_started_at = Instant::now();
         let message = read_external_api_error_message(response).await;
+        log_external_api_tracking_timing(
+            shipment_id,
+            "error_body_read",
+            error_read_started_at,
+            format!("route={route_label} status={status}"),
+        );
 
         return Err(match status {
             StatusCode::BAD_REQUEST => TrackingError::BadRequest(message),
@@ -261,15 +312,29 @@ pub async fn fetch_external_api_tracking(
         });
     }
 
+    let body_read_started_at = Instant::now();
     let body = response.text().await.map_err(|error| {
         TrackingError::Upstream(format!("External API response could not be read: {error}"))
     })?;
+    log_external_api_tracking_timing(
+        shipment_id,
+        "body_read",
+        body_read_started_at,
+        format!("route={route_label} bytes={}", body.len()),
+    );
 
-    serde_json::from_str::<TrackResponse>(&body).map_err(|error| {
-        TrackingError::Upstream(format!(
-            "External API response could not be parsed: {error}"
-        ))
-    })
+    let parse_started_at = Instant::now();
+    let result = parse_external_api_track_response(&body);
+    log_external_api_tracking_timing(
+        shipment_id,
+        "parse",
+        parse_started_at,
+        format!(
+            "route={route_label} result={}",
+            if result.is_ok() { "ok" } else { "error" }
+        ),
+    );
+    result
 }
 
 pub async fn probe_external_api_status(
@@ -288,25 +353,36 @@ pub async fn probe_external_api_status(
         &source_config.external_api_base_url,
         source_config.allow_insecure_external_api_http,
     )?;
-    let request_url = parsed_base_url.join("status").map_err(|error| {
+    let prefer_v1_contract =
+        external_api_base_url_prefers_v1_contract(&source_config.external_api_base_url);
+    let request_url = parsed_base_url.join("v1/status").map_err(|error| {
         TrackingError::BadRequest(format!("External API status URL is invalid: {error}"))
     })?;
 
-    let response = client
-        .get(request_url.clone())
-        .bearer_auth(source_config.external_api_auth_token.trim())
-        .send()
-        .await
-        .map_err(|error| {
-            if error.is_connect() {
-                TrackingError::Upstream(format!("External API connection failed: {error}"))
-            } else if error.is_timeout() {
-                TrackingError::Upstream(format!("External API request timed out: {error}"))
-            } else {
-                TrackingError::Upstream(format!("External API request failed: {error}"))
-            }
-        })?;
+    let response = fetch_external_api_response(
+        client,
+        request_url.clone(),
+        source_config.external_api_auth_token.trim(),
+    )
+    .await?;
 
+    if response.status() == StatusCode::NOT_FOUND && !prefer_v1_contract {
+        let legacy_request_url = parsed_base_url.join("status").map_err(|error| {
+            TrackingError::BadRequest(format!("External API status URL is invalid: {error}"))
+        })?;
+        let legacy_response = fetch_external_api_response(
+            client,
+            legacy_request_url,
+            source_config.external_api_auth_token.trim(),
+        )
+        .await?;
+        return read_external_api_status_response(legacy_response).await;
+    }
+
+    read_external_api_status_response(response).await
+}
+
+async fn read_external_api_status_response(response: Response) -> Result<String, TrackingError> {
     if !response.status().is_success() {
         let status = response.status();
         let message = read_external_api_error_message(response).await;
@@ -318,18 +394,14 @@ pub async fn probe_external_api_status(
         });
     }
 
+    let response_url = response.url().clone();
     let body = response.text().await.map_err(|error| {
         TrackingError::Upstream(format!(
             "External API status response could not be read: {error}"
         ))
     })?;
 
-    let status_payload =
-        serde_json::from_str::<ExternalApiStatusResponse>(&body).map_err(|error| {
-            TrackingError::Upstream(format!(
-                "External API status response could not be parsed: {error}"
-            ))
-        })?;
+    let status_payload = parse_external_api_status_response(&body)?;
 
     if status_payload.service.as_deref() != Some("running") {
         return Err(TrackingError::Upstream(
@@ -339,16 +411,108 @@ pub async fn probe_external_api_status(
 
     let endpoint = match (status_payload.bind_address.as_deref(), status_payload.port) {
         (Some(bind_address), Some(port)) => format!("{bind_address}:{port}"),
-        _ => request_url
+        _ => response_url
             .host_str()
             .map(|host| host.to_string())
-            .unwrap_or_else(|| request_url.to_string()),
+            .unwrap_or_else(|| response_url.to_string()),
     };
     let mode = status_payload.mode.unwrap_or_else(|| "unknown".into());
 
     Ok(format!(
         "Koneksi berhasil. Akses API aktif via {mode} ({endpoint})."
     ))
+}
+
+async fn fetch_external_api_response(
+    client: &Client,
+    request_url: Url,
+    bearer_token: &str,
+) -> Result<Response, TrackingError> {
+    for attempt in 1..=TRACKING_MAX_ATTEMPTS {
+        match send_external_api_request_with_hedge(client, request_url.clone(), bearer_token).await
+        {
+            Ok(response) => {
+                if response.status().is_success()
+                    || attempt == TRACKING_MAX_ATTEMPTS
+                    || !is_retryable_status(response.status())
+                {
+                    return Ok(response);
+                }
+            }
+            Err(error) => {
+                if attempt == TRACKING_MAX_ATTEMPTS {
+                    let details = format_request_error_details(&error);
+                    let message = if error.is_connect() {
+                        format!("External API connection failed. Details: {details}")
+                    } else if error.is_timeout() {
+                        format!("External API request timed out. Details: {details}")
+                    } else {
+                        format!("External API request failed. Details: {details}")
+                    };
+                    return Err(TrackingError::Upstream(message));
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(
+            TRACKING_RETRY_BASE_DELAY_MS * u64::from(attempt),
+        ))
+        .await;
+    }
+
+    Err(TrackingError::Upstream(
+        "External API request exhausted retries.".into(),
+    ))
+}
+
+async fn send_external_api_request(
+    client: &Client,
+    request_url: Url,
+    bearer_token: String,
+) -> Result<Response, reqwest::Error> {
+    client
+        .get(request_url)
+        .bearer_auth(bearer_token)
+        .header(ACCEPT, "application/json")
+        .send()
+        .await
+}
+
+async fn send_external_api_request_with_hedge(
+    client: &Client,
+    request_url: Url,
+    bearer_token: &str,
+) -> Result<Response, reqwest::Error> {
+    let primary = send_external_api_request(client, request_url.clone(), bearer_token.to_string());
+    tokio::pin!(primary);
+
+    tokio::select! {
+        result = &mut primary => result,
+        _ = tokio::time::sleep(Duration::from_millis(EXTERNAL_API_HEDGE_DELAY_MS)) => {
+            eprintln!(
+                "[ShipFlowPerf] external_api_request stage=hedge_start path={} delayMs={}",
+                request_url.path(),
+                EXTERNAL_API_HEDGE_DELAY_MS
+            );
+            let secondary = send_external_api_request(
+                client,
+                request_url,
+                bearer_token.to_string(),
+            );
+            tokio::pin!(secondary);
+
+            tokio::select! {
+                result = &mut primary => {
+                    eprintln!("[ShipFlowPerf] external_api_request stage=hedge_result winner=primary");
+                    result
+                }
+                result = &mut secondary => {
+                    eprintln!("[ShipFlowPerf] external_api_request stage=hedge_result winner=secondary");
+                    result
+                }
+            }
+        }
+    }
 }
 
 pub async fn fetch_lookup_response(
@@ -442,7 +606,7 @@ pub fn resolve_pos_href(href: &str) -> String {
     }
 }
 
-fn parse_external_api_base_url(
+pub fn parse_external_api_base_url(
     base_url: &str,
     allow_insecure_http: bool,
 ) -> Result<Url, TrackingError> {
@@ -459,7 +623,7 @@ fn parse_external_api_base_url(
         format!("{trimmed}/")
     };
 
-    let parsed = Url::parse(&normalized).map_err(|error| {
+    let mut parsed = Url::parse(&normalized).map_err(|error| {
         TrackingError::BadRequest(format!("External API base URL is invalid: {error}"))
     })?;
 
@@ -476,7 +640,103 @@ fn parse_external_api_base_url(
         ));
     }
 
+    let mut path_segments = parsed
+        .path_segments()
+        .map(|segments| {
+            segments
+                .filter(|segment| !segment.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if path_segments
+        .windows(2)
+        .last()
+        .is_some_and(|segments| segments == ["v1", "openapi.json"])
+    {
+        path_segments.truncate(path_segments.len().saturating_sub(2));
+    } else if path_segments.last().is_some_and(|segment| segment == "v1") {
+        path_segments.truncate(path_segments.len().saturating_sub(1));
+    }
+
+    let normalized_path = if path_segments.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}/", path_segments.join("/"))
+    };
+    parsed.set_path(&normalized_path);
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+
     Ok(parsed)
+}
+
+fn external_api_base_url_prefers_v1_contract(base_url: &str) -> bool {
+    let Ok(url) = Url::parse(base_url.trim()) else {
+        return false;
+    };
+
+    url.path_segments().is_some_and(|segments| {
+        segments
+            .filter(|segment| !segment.trim().is_empty())
+            .any(|segment| {
+                let normalized = segment.trim().to_ascii_lowercase();
+                normalized == "v1" || normalized == "openapi.json"
+            })
+    })
+}
+
+fn log_external_api_tracking_timing(
+    shipment_id: &str,
+    stage: &str,
+    started_at: Instant,
+    detail: impl AsRef<str>,
+) {
+    eprintln!(
+        "[ShipFlowPerf] external_api_tracking id={} stage={} durationMs={} {}",
+        shipment_id,
+        stage,
+        started_at.elapsed().as_millis(),
+        detail.as_ref()
+    );
+}
+
+fn log_external_api_tracking_result(
+    shipment_id: &str,
+    started_at: Instant,
+    result: &Result<TrackResponse, TrackingError>,
+) {
+    log_external_api_tracking_timing(
+        shipment_id,
+        "total",
+        started_at,
+        format!("result={}", if result.is_ok() { "ok" } else { "error" }),
+    );
+}
+
+fn parse_external_api_track_response(body: &str) -> Result<TrackResponse, TrackingError> {
+    serde_json::from_str::<ExternalApiDataEnvelope<TrackResponse>>(body)
+        .map(|envelope| envelope.data)
+        .or_else(|_| serde_json::from_str::<TrackResponse>(body))
+        .map_err(|error| {
+            TrackingError::Upstream(format!(
+                "External API response could not be parsed: {error}"
+            ))
+        })
+}
+
+fn parse_external_api_status_response(
+    body: &str,
+) -> Result<ExternalApiStatusResponse, TrackingError> {
+    serde_json::from_str::<ExternalApiDataEnvelope<ExternalApiStatusResponse>>(body)
+        .map(|envelope| envelope.data)
+        .or_else(|_| serde_json::from_str::<ExternalApiStatusResponse>(body))
+        .map_err(|error| {
+            TrackingError::Upstream(format!(
+                "External API status response could not be parsed: {error}"
+            ))
+        })
 }
 
 async fn read_external_api_error_message(response: Response) -> String {
@@ -486,9 +746,20 @@ async fn read_external_api_error_message(response: Response) -> String {
         Ok(body) => {
             if let Ok(parsed) = serde_json::from_str::<ExternalApiErrorResponse>(&body) {
                 if let Some(error) = parsed.error {
-                    let trimmed = error.trim();
-                    if !trimmed.is_empty() {
-                        return trimmed.to_string();
+                    if let Some(message) = error.as_str() {
+                        let trimmed = message.trim();
+                        if !trimmed.is_empty() {
+                            return trimmed.to_string();
+                        }
+                    }
+
+                    if let Some(message) = error
+                        .get("message")
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    {
+                        return message.to_string();
                     }
                 }
             }
@@ -507,8 +778,11 @@ async fn read_external_api_error_message(response: Response) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_tracking_url, normalize_and_validate_bag_id, normalize_and_validate_manifest_id,
-        normalize_and_validate_shipment_id, validate_tracking_source_config, POS_TRACKING_ENDPOINT,
+        build_tracking_url, external_api_base_url_prefers_v1_contract,
+        normalize_and_validate_bag_id, normalize_and_validate_manifest_id,
+        normalize_and_validate_shipment_id, parse_external_api_base_url,
+        parse_external_api_status_response, parse_external_api_track_response,
+        validate_tracking_source_config, POS_TRACKING_ENDPOINT,
     };
     use crate::model::{TrackingError, TrackingSource, TrackingSourceConfig};
 
@@ -582,5 +856,105 @@ mod tests {
             allow_insecure_external_api_http: true,
         })
         .expect("http external API should be allowed only with explicit opt-in");
+    }
+
+    #[test]
+    fn normalizes_external_api_openapi_and_v1_urls_to_service_root() {
+        let root =
+            parse_external_api_base_url("https://scrappid3.example.test/v1/openapi.json", false)
+                .expect("OpenAPI URL should normalize");
+        assert_eq!(root.as_str(), "https://scrappid3.example.test/");
+
+        let nested_root = parse_external_api_base_url(
+            "https://scrappid3.example.test/proxy/v1/openapi.json",
+            false,
+        )
+        .expect("nested OpenAPI URL should normalize");
+        assert_eq!(
+            nested_root.as_str(),
+            "https://scrappid3.example.test/proxy/"
+        );
+
+        let v1_root = parse_external_api_base_url("https://scrappid3.example.test/v1", false)
+            .expect("v1 URL should normalize");
+        assert_eq!(v1_root.as_str(), "https://scrappid3.example.test/");
+    }
+
+    #[test]
+    fn treats_explicit_v1_external_api_urls_as_authoritative() {
+        assert!(external_api_base_url_prefers_v1_contract(
+            "https://scrappid3.example.test/v1/openapi.json"
+        ));
+        assert!(external_api_base_url_prefers_v1_contract(
+            "https://scrappid3.example.test/proxy/v1"
+        ));
+        assert!(!external_api_base_url_prefers_v1_contract(
+            "https://scrappid3.example.test"
+        ));
+    }
+
+    #[test]
+    fn parses_external_api_v1_tracking_envelope() {
+        let body = r#"{
+          "meta": {
+            "apiVersion": "v1",
+            "schemaVersion": "shipflow.tracking.detail.v1",
+            "requestId": "req-1",
+            "generatedAt": "2026-05-06T00:00:00Z"
+          },
+          "data": {
+            "url": "https://example.test/track/P1",
+            "detail": {
+              "shipment_header": {"nomor_kiriman": "P1"},
+              "origin_detail": {},
+              "package_detail": {},
+              "billing_detail": {"cod_info": {"is_cod": false}},
+              "actors": {"pengirim": {}, "penerima": {}},
+              "performance_detail": {}
+            },
+            "status_akhir": {},
+            "pod": {},
+            "history": [],
+            "history_summary": {
+              "irregularity": [],
+              "bagging_unbagging": [],
+              "manifest_r7": [],
+              "delivery_runsheet": []
+            }
+          },
+          "warnings": []
+        }"#;
+
+        let parsed = parse_external_api_track_response(body)
+            .expect("v1 envelope should parse into TrackResponse");
+
+        assert_eq!(parsed.detail.header.nomor_kiriman.as_deref(), Some("P1"));
+    }
+
+    #[test]
+    fn parses_external_api_v1_status_envelope() {
+        let body = r#"{
+          "meta": {
+            "apiVersion": "v1",
+            "schemaVersion": "shipflow.service.status.v1",
+            "requestId": "req-1",
+            "generatedAt": "2026-05-06T00:00:00Z"
+          },
+          "data": {
+            "service": "running",
+            "mode": "lan",
+            "bindAddress": "0.0.0.0",
+            "port": 18422
+          },
+          "warnings": []
+        }"#;
+
+        let parsed =
+            parse_external_api_status_response(body).expect("v1 status envelope should parse");
+
+        assert_eq!(parsed.service.as_deref(), Some("running"));
+        assert_eq!(parsed.mode.as_deref(), Some("lan"));
+        assert_eq!(parsed.bind_address.as_deref(), Some("0.0.0.0"));
+        assert_eq!(parsed.port, Some(18422));
     }
 }

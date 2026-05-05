@@ -42,6 +42,7 @@ pub fn run() {
         .plugin(build_main_webview_navigation_guard_plugin())
         .invoke_handler(tauri::generate_handler![
             commands::tracking::track_shipment,
+            commands::tracking::track_shipments_batch,
             commands::tracking::track_bag,
             commands::tracking::track_manifest,
             commands::tracking::resolve_pod_image,

@@ -3,7 +3,7 @@ import { ColumnDefinition } from "./types";
 export const INITIAL_ROW_COUNT = 50;
 export const MIN_EMPTY_TRAILING_ROWS = 5;
 export const SELECTOR_COLUMN_WIDTH = 52;
-export const MAX_CONCURRENT_BULK_REQUESTS = 4;
+export const MAX_CONCURRENT_BULK_REQUESTS = 10;
 export const TRACKING_COLUMN_PATH = "detail.shipment_header.nomor_kiriman";
 export const DAYS_SINCE_TRANSACTION_COLUMN_PATH = "computed.days_since_transaction";
 export const DAYS_SINCE_LAST_UNBAGGING_COLUMN_PATH =

@@ -379,12 +379,52 @@ Successful lookup payloads are also persisted into a bounded local user-state lo
 - ignores expired entries when loading
 - compacts itself to a bounded entry count
 - is used as a warm cache across service restarts
+- writes successful payloads outside the response path so local disk persistence does not delay the client response
 
 Manual refresh flows should send:
 
 ```http
 x-shipflow-force-refresh: true
 ```
+
+## External API Source Performance
+
+When `ShipFlow Service` uses `API ShipFlow Eksternal` as the tracking source, the service still owns the outbound request to the external API. Desktop only calls the local or LAN Service endpoint.
+
+For one-by-one tracking requests:
+
+- Service handles concurrent Desktop requests independently.
+- The external `/v1/track/:shipment_id` route is authoritative when the configured external base URL includes `/v1` or `/v1/openapi.json`.
+- In that explicit `/v1` mode, a `404` response is returned as the lookup result instead of trying an extra legacy `/track/:shipment_id` fallback.
+- If an external API request is still pending after a short delay, Service starts one duplicate hedged request and uses whichever identical request finishes first. This reduces random tail-latency spikes from a single slow socket or upstream worker.
+
+For batch tracking jobs:
+
+- Service can delegate to an external `/v1/jobs/track-batch` endpoint when that endpoint exists.
+- If the external batch endpoint is unavailable, Service falls back to capped parallel one-by-one lookups.
+- Job status/result APIs stay local to ShipFlow Service, so Desktop and LAN clients do not need to know which upstream strategy was used.
+
+## Runtime Performance Logs
+
+Runtime logs include `[ShipFlowPerf]` timing lines for tracking diagnostics. These lines are safe to share for debugging because they do not include bearer tokens.
+
+Typical stages:
+
+```text
+[ShipFlowPerf] desktop_service route=track id=P2603310114291 stage=http durationMs=812 status=200 OK
+[ShipFlowPerf] service_tracking route=v1 id=P2603310114291 source=external_api forceRefresh=false durationMs=809 result=ok
+[ShipFlowPerf] external_api_tracking id=P2603310114291 stage=http durationMs=786 route=v1 status=200 OK
+[ShipFlowPerf] external_api_tracking id=P2603310114291 stage=body_read durationMs=1 route=v1 bytes=123456
+[ShipFlowPerf] external_api_tracking id=P2603310114291 stage=parse durationMs=0 route=v1 result=ok
+```
+
+How to read the stages:
+
+- `desktop_service stage=http` is the full wait from Desktop to Service for that lookup.
+- `service_tracking` is the Service-side lookup duration for the active source.
+- `external_api_tracking stage=http` is the outbound wait from Service to the external API.
+- `body_read` and `parse` separate payload transfer/parsing from upstream wait time.
+- `external_api_request stage=hedge_start` means Service started the duplicate hedged external request because the first request had not returned yet.
 
 ## Security Notes
 
