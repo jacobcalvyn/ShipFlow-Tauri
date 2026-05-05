@@ -22,6 +22,54 @@ x-shipflow-request-id: sf_req_client_001
 
 If the header is omitted, the service generates one. The request id is returned in `meta.requestId` for `/v1` responses.
 
+## OpenAPI Discovery
+
+```http
+GET /v1/openapi.json
+```
+
+The OpenAPI endpoint returns an authenticated OpenAPI 3.1 JSON document for the current service port. It is intended for internal clients, agent tooling, Postman, Insomnia, Swagger Editor, and generated client experiments.
+
+This endpoint returns the raw OpenAPI document, not the normal `/v1` response envelope, so tools can import it directly.
+
+Authentication is still required:
+
+```bash
+curl \
+  -H "Authorization: Bearer sf_dev_token" \
+  "http://127.0.0.1:18422/v1/openapi.json"
+```
+
+Local agent setup:
+
+```text
+Base URL: http://127.0.0.1:18422
+OpenAPI: http://127.0.0.1:18422/v1/openapi.json
+Auth: Bearer <ShipFlow Service Token>
+```
+
+When LAN mode is enabled, the document includes a templated LAN server URL:
+
+```text
+http://{serviceHost}:18422
+```
+
+LAN agent setup:
+
+```text
+Base URL: http://<service-host-ip>:18422
+OpenAPI: http://<service-host-ip>:18422/v1/openapi.json
+Auth: Bearer <ShipFlow Service Token>
+```
+
+Do not hard-code the service token in another repository. Pass it through a local secret store, environment variable, or that project's connector settings.
+
+Troubleshooting:
+
+- `200 OK`: OpenAPI discovery is active and the token is accepted.
+- `401 Unauthorized`: the route exists, but the bearer token is missing or invalid.
+- `404 Not Found`: the request is reaching an older service binary or the wrong port.
+
 ## Legacy Routes
 
 Legacy routes return the raw payload shape or a simple `{ "error": "..." }` body. They are kept for compatibility and should not be used by new integrations.
@@ -151,6 +199,7 @@ Example response:
     "auth": "bearer",
     "forceRefreshHeader": "x-shipflow-force-refresh",
     "routes": [
+      "GET /v1/openapi.json",
       "GET /v1/status",
       "GET /v1/capabilities",
       "GET /v1/track/:shipment_id",

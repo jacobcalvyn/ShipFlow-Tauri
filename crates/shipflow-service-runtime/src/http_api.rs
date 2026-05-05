@@ -24,6 +24,7 @@ use crate::model::{
     validate_service_runtime_config, ServiceRuntimeConfig, ServiceRuntimeMode,
     SERVICE_STATUS_PRODUCT,
 };
+use crate::openapi::service_openapi_document;
 use crate::persistent_store::PersistentLookupStore;
 use crate::FORCE_REFRESH_HEADER_NAME;
 
@@ -122,6 +123,7 @@ fn build_router(app_state: HttpApiState) -> Router {
         .route("/bag/:bag_id", get(bag_handler))
         .route("/manifest/:manifest_id", get(manifest_handler))
         .route("/v1/status", get(v1_status_handler))
+        .route("/v1/openapi.json", get(v1_openapi_handler))
         .route("/v1/capabilities", get(v1_capabilities_handler))
         .route("/v1/track/:shipment_id", get(v1_track_handler))
         .route("/v1/bag/:bag_id", get(v1_bag_handler))
@@ -206,6 +208,7 @@ async fn v1_capabilities_handler(
             auth: "bearer",
             force_refresh_header: FORCE_REFRESH_HEADER_NAME,
             routes: vec![
+                "GET /v1/openapi.json",
                 "GET /v1/status",
                 "GET /v1/capabilities",
                 "GET /v1/track/:shipment_id",
@@ -218,6 +221,26 @@ async fn v1_capabilities_handler(
             ],
         },
     ))
+}
+
+async fn v1_openapi_handler(
+    State(state): State<HttpApiState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>)> {
+    let request_id = authorize_request_id(&headers);
+    authorize_request_message(&headers, &state.auth_token).map_err(|message| {
+        error_response_v1(
+            StatusCode::UNAUTHORIZED,
+            crate::openapi::OPENAPI_SCHEMA_VERSION,
+            request_id,
+            &message,
+        )
+    })?;
+
+    Ok(Json(service_openapi_document(
+        state.port,
+        state.mode == ServiceRuntimeMode::Lan,
+    )))
 }
 
 async fn track_handler(
@@ -694,10 +717,18 @@ fn tracking_error_message(error: TrackingError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
+    use axum::{
+        body::{to_bytes, Body},
+        http::{header::AUTHORIZATION, HeaderMap, Request, StatusCode},
+    };
+    use shipflow_core::model::TrackingSourceConfig;
+    use tower::ServiceExt;
 
-    use super::{authorize_request, read_lookup_request_options};
-    use crate::FORCE_REFRESH_HEADER_NAME;
+    use super::{authorize_request, build_router, read_lookup_request_options, HttpApiState};
+    use crate::{
+        jobs::BatchJobRegistry, lookup_cache::LookupCacheState, model::ServiceRuntimeMode,
+        FORCE_REFRESH_HEADER_NAME,
+    };
 
     #[test]
     fn rejects_missing_authorization_header() {
@@ -734,5 +765,56 @@ mod tests {
         let options = read_lookup_request_options(&headers);
 
         assert!(options.force_refresh);
+    }
+
+    #[tokio::test]
+    async fn serves_authenticated_openapi_document() {
+        let router = build_router(test_state());
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/openapi.json")
+                    .header(AUTHORIZATION, "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["openapi"], "3.1.0");
+        assert!(payload["paths"]["/v1/openapi.json"]["get"].is_object());
+    }
+
+    #[tokio::test]
+    async fn rejects_unauthenticated_openapi_document() {
+        let router = build_router(test_state());
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/openapi.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    fn test_state() -> HttpApiState {
+        HttpApiState {
+            client: reqwest::Client::new(),
+            auth_token: "secret-token".into(),
+            mode: ServiceRuntimeMode::Local,
+            bind_address: "127.0.0.1".into(),
+            port: 18422,
+            tracking_source: TrackingSourceConfig::default(),
+            lookup_cache: LookupCacheState::default(),
+            job_registry: BatchJobRegistry::default(),
+        }
     }
 }

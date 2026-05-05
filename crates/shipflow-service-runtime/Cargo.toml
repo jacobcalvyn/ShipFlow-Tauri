@@ -13,3 +13,6 @@ serde_json = { workspace = true }
 shipflow-core = { path = "../shipflow-core" }
 time = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }

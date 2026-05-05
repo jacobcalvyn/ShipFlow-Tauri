@@ -86,6 +86,7 @@ Current local service routes:
 
 Current versioned service API routes:
 
+- `GET /v1/openapi.json`
 - `GET /v1/status`
 - `GET /v1/capabilities`
 - `GET /v1/track/:shipment_id`
@@ -117,6 +118,7 @@ Envelope timestamps such as `generatedAt`, `createdAt`, and `updatedAt` use RFC3
 
 The API supports:
 
+- OpenAPI 3.1 discovery through `GET /v1/openapi.json`
 - authenticated status and product identity checks
 - capability discovery
 - shipment, bag, and manifest lookups
@@ -124,6 +126,24 @@ The API supports:
 - background batch tracking jobs with start/status/result/cancel endpoints
 
 See [docs/service-api-v1.md](./docs/service-api-v1.md) for endpoint details and example payloads.
+
+Quick setup for other projects and AI agents:
+
+```text
+Base URL: http://127.0.0.1:18422
+OpenAPI: http://127.0.0.1:18422/v1/openapi.json
+Auth: Bearer <ShipFlow Service Token>
+```
+
+For LAN clients, replace `127.0.0.1` with the machine IP that runs `ShipFlow Service`:
+
+```text
+Base URL: http://<service-host-ip>:18422
+OpenAPI: http://<service-host-ip>:18422/v1/openapi.json
+Auth: Bearer <ShipFlow Service Token>
+```
+
+Use the OpenAPI document as the source of truth for generated clients or agent tool schemas. A `401` response means the route exists but the bearer token is missing or invalid. A `404` response usually means the request is reaching an older service binary or the wrong port.
 
 ## Background Batch Jobs
 

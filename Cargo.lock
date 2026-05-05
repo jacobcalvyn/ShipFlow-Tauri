@@ -3399,6 +3399,7 @@ dependencies = [
  "shipflow-core",
  "time",
  "tokio",
+ "tower",
 ]
 
 [[package]]
