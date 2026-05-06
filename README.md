@@ -304,6 +304,7 @@ The main table currently focuses on:
 - Desktop startup no longer starts a service companion. Start the standalone service first, then configure Desktop with that service port/token.
 - Desktop/service readiness checks now require an authenticated `GET /status` response from `ShipFlow Service`, including a ShipFlow-specific product marker, before reusing an existing runtime process.
 - Windows release builds of `ShipFlow Service` use the Windows subsystem, so launching the installed service app does not open a console window.
+- Windows installers use fixed `C:\ShipFlow` locations: `C:\ShipFlow\Desktop` for Desktop, `C:\ShipFlow\Service` for Service, and `C:\ShipFlow\Data` for shared runtime state, lookup cache, token vault, PID files, and logs.
 - Launching `ShipFlow Service` normally starts it in the background and keeps only the system-tray/menu-bar entry visible.
 - Closing the `ShipFlow Service` settings window hides it and keeps the service tray companion available.
 - Reopening `ShipFlow Service` from the tray/menu-bar entry focuses or recreates the existing settings window instead of starting a duplicate settings instance.
@@ -493,11 +494,13 @@ npm run build:service:bundle:macos
 
 Windows distribution uses the Service installer produced by GitHub Actions, not the raw binary.
 
-Build the desktop installer:
+Build the Windows desktop installer on Windows:
 
 ```bash
-npm run build:bundle
+npm run build:bundle:nsis
 ```
+
+This builds the Desktop app binary and packages it with the custom NSIS installer that installs to `C:\ShipFlow\Desktop`.
 
 Build the macOS app bundle only:
 
@@ -551,6 +554,7 @@ What it does:
 - runs `cargo test --workspace --all-targets`
 - runs `cargo clippy --workspace --all-targets -- -D warnings`
 - builds the Desktop NSIS installer without bundling `ShipFlow Service`
+- installs Desktop to `C:\ShipFlow\Desktop` and prepares writable runtime data folders under `C:\ShipFlow\Data`
 - wires the Desktop NSIS installer to close running Desktop processes before reinstall or uninstall replacement
 - smoke-checks the Desktop executable and installer icon
 - uploads the Desktop NSIS installer artifact: `shipflow-desktop-windows-installer`
@@ -562,7 +566,7 @@ Triggers:
 
 The uploaded Windows output is:
 
-- `target/release/bundle/nsis/*.exe`
+- `target/release/ShipFlow-Desktop-Setup.exe`
 
 ## GitHub Actions Build Desktop macOS
 
@@ -623,7 +627,8 @@ What it does:
 - runs `cargo test --workspace --all-targets`
 - runs `cargo clippy --workspace --all-targets -- -D warnings`
 - builds `apps/service` in release mode with Tauri `custom-protocol` enabled
-- builds a per-user Windows installer with NSIS
+- builds an admin Windows installer with NSIS
+- installs Service to `C:\ShipFlow\Service` and prepares writable runtime data folders under `C:\ShipFlow\Data`
 - builds the Windows Service app without a console window, applies the Service icon to the app executable and installer, and closes running `shipflow-service.exe` processes before reinstall or uninstall replacement
 - smoke-checks the generated installer and Service icon
 - uploads the Windows Service installer artifact: `shipflow-service-windows-installer`

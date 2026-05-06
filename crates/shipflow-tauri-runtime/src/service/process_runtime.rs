@@ -30,6 +30,8 @@ use super::{
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(target_os = "windows")]
+const WINDOWS_SHIPFLOW_ROOT: &str = r"C:\ShipFlow";
 
 const SERVICE_PRODUCT_BASENAME: &str = "ShipFlow Service";
 
@@ -304,6 +306,10 @@ fn macos_app_executables(app_dir: PathBuf, binary_names: &[&str]) -> Vec<PathBuf
 fn windows_install_dirs(product_name: &str) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
+    if let Some(shipflow_dir) = windows_shipflow_install_dir(product_name) {
+        dirs.push(shipflow_dir);
+    }
+
     if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
         dirs.push(local_app_data.join("Programs").join(product_name));
         dirs.push(local_app_data.join(product_name));
@@ -318,6 +324,17 @@ fn windows_install_dirs(product_name: &str) -> Vec<PathBuf> {
     }
 
     dirs
+}
+
+#[cfg(target_os = "windows")]
+fn windows_shipflow_install_dir(product_name: &str) -> Option<PathBuf> {
+    let app_dir = match product_name {
+        SERVICE_PRODUCT_BASENAME => "Service",
+        DESKTOP_PRODUCT_BASENAME => "Desktop",
+        _ => return None,
+    };
+
+    Some(PathBuf::from(WINDOWS_SHIPFLOW_ROOT).join(app_dir))
 }
 
 fn launch_shipflow_desktop() -> Result<(), String> {

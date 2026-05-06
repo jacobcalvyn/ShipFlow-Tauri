@@ -151,6 +151,10 @@ function expectInvokeCount(command: string, count: number) {
   expect(getInvokeCalls(command)).toHaveLength(count);
 }
 
+function getTrackedShipmentIds() {
+  return getInvokeCalls("track_shipment").map(([, args]) => args?.shipmentId);
+}
+
 function openSheetTabMenu(name: string) {
   const tab = screen.getByRole("tab", { name });
   fireEvent.contextMenu(tab, {
@@ -1539,6 +1543,66 @@ describe("App workspace isolation", () => {
 
     await waitFor(() => {
       expectInvokeCount("track_shipment", 3);
+    });
+  });
+
+  it("appends bulk paste rows to the active sheet queue without restarting it", async () => {
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
+    const firstBatch = Array.from({ length: 12 }, (_, index) =>
+      `P${String(index + 1).padStart(3, "0")}`
+    ).join("\n");
+    const firstPasteEvent = createEvent.paste(firstInput);
+    Object.defineProperty(firstPasteEvent, "clipboardData", {
+      value: {
+        getData: (type: string) => (type === "text" ? firstBatch : ""),
+      },
+    });
+    fireEvent(firstInput, firstPasteEvent);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 10);
+    });
+    expect(getTrackedShipmentIds()).toEqual([
+      "P001",
+      "P002",
+      "P003",
+      "P004",
+      "P005",
+      "P006",
+      "P007",
+      "P008",
+      "P009",
+      "P010",
+    ]);
+
+    const appendInput = screen.getAllByPlaceholderText("Masukkan ID")[12];
+    const appendPasteEvent = createEvent.paste(appendInput);
+    Object.defineProperty(appendPasteEvent, "clipboardData", {
+      value: {
+        getData: (type: string) => (type === "text" ? "P013\nP014" : ""),
+      },
+    });
+    fireEvent(appendInput, appendPasteEvent);
+
+    expectInvokeCount("track_shipment", 10);
+
+    resolveRequest("P001");
+    await waitFor(() => {
+      expect(getTrackedShipmentIds()).toContain("P011");
+    });
+    expect(getTrackedShipmentIds()).not.toContain("P013");
+
+    resolveRequest("P002");
+    await waitFor(() => {
+      expect(getTrackedShipmentIds()).toContain("P012");
+    });
+    expect(getTrackedShipmentIds()).not.toContain("P013");
+
+    resolveRequest("P003");
+    await waitFor(() => {
+      expect(getTrackedShipmentIds()).toContain("P013");
     });
   });
 

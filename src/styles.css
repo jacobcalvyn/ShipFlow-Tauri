@@ -2686,6 +2686,10 @@ button {
   background: #f4f7fb;
 }
 
+.sheet-table thead .sticky-col.has-open-menu {
+  z-index: 90;
+}
+
 .sheet-table .filter-row .sticky-col {
   z-index: 6;
   background: #f8fbff;
@@ -2800,6 +2804,12 @@ button {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.column-menu-body-floating {
+  right: auto;
+  max-width: calc(100vw - 24px);
+  z-index: 1000;
 }
 
 .column-menu-body-wide-filter {

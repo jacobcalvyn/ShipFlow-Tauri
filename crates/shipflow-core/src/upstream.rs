@@ -6,7 +6,7 @@ use std::{
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use reqwest::{header::ACCEPT, Client, Response, StatusCode, Url};
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 
 use crate::bag::parse_bag_html;
 use crate::manifest::parse_manifest_html;
@@ -201,16 +201,42 @@ pub async fn resolve_tracking_request(
 
 pub async fn resolve_bag_request(
     client: &Client,
+    source_config: &TrackingSourceConfig,
     bag_id: &str,
 ) -> Result<BagResponse, TrackingError> {
-    scrape_pos_bag(client, bag_id).await
+    match source_config.tracking_source {
+        TrackingSource::Default => scrape_pos_bag(client, bag_id).await,
+        TrackingSource::ExternalApi => {
+            fetch_external_api_bag(
+                client,
+                &source_config.external_api_base_url,
+                &source_config.external_api_auth_token,
+                source_config.allow_insecure_external_api_http,
+                bag_id,
+            )
+            .await
+        }
+    }
 }
 
 pub async fn resolve_manifest_request(
     client: &Client,
+    source_config: &TrackingSourceConfig,
     manifest_id: &str,
 ) -> Result<ManifestResponse, TrackingError> {
-    scrape_pos_manifest(client, manifest_id).await
+    match source_config.tracking_source {
+        TrackingSource::Default => scrape_pos_manifest(client, manifest_id).await,
+        TrackingSource::ExternalApi => {
+            fetch_external_api_manifest(
+                client,
+                &source_config.external_api_base_url,
+                &source_config.external_api_auth_token,
+                source_config.allow_insecure_external_api_http,
+                manifest_id,
+            )
+            .await
+        }
+    }
 }
 
 pub fn normalize_and_validate_bag_id(input: &str) -> Result<String, TrackingError> {
@@ -289,6 +315,81 @@ pub async fn fetch_external_api_tracking(
     result
 }
 
+pub async fn fetch_external_api_bag(
+    client: &Client,
+    base_url: &str,
+    auth_token: &str,
+    allow_insecure_http: bool,
+    bag_id: &str,
+) -> Result<BagResponse, TrackingError> {
+    let normalized_bag_id = normalize_and_validate_bag_id(bag_id)?;
+    fetch_external_api_lookup(
+        client,
+        base_url,
+        auth_token,
+        allow_insecure_http,
+        LookupKind::Bag,
+        &normalized_bag_id,
+        parse_external_api_bag_response,
+    )
+    .await
+}
+
+pub async fn fetch_external_api_manifest(
+    client: &Client,
+    base_url: &str,
+    auth_token: &str,
+    allow_insecure_http: bool,
+    manifest_id: &str,
+) -> Result<ManifestResponse, TrackingError> {
+    let normalized_manifest_id = normalize_and_validate_manifest_id(manifest_id)?;
+    fetch_external_api_lookup(
+        client,
+        base_url,
+        auth_token,
+        allow_insecure_http,
+        LookupKind::Manifest,
+        &normalized_manifest_id,
+        parse_external_api_manifest_response,
+    )
+    .await
+}
+
+async fn fetch_external_api_lookup<T>(
+    client: &Client,
+    base_url: &str,
+    auth_token: &str,
+    allow_insecure_http: bool,
+    kind: LookupKind,
+    lookup_id: &str,
+    parser: fn(&str) -> Result<T, TrackingError>,
+) -> Result<T, TrackingError> {
+    let parsed_base_url = parse_external_api_base_url(base_url, allow_insecure_http)?;
+    let prefer_v1_contract = external_api_base_url_prefers_v1_contract(base_url);
+    let trimmed_auth_token = auth_token.trim();
+
+    if trimmed_auth_token.is_empty() {
+        return Err(TrackingError::BadRequest(
+            "External API bearer token is required.".into(),
+        ));
+    }
+
+    let request_url = build_external_api_lookup_url(&parsed_base_url, kind, lookup_id, true)?;
+
+    let response =
+        fetch_external_api_response(client, request_url.clone(), trimmed_auth_token).await?;
+
+    if response.status() == StatusCode::NOT_FOUND && !prefer_v1_contract {
+        let legacy_request_url =
+            build_external_api_lookup_url(&parsed_base_url, kind, lookup_id, false)?;
+        let legacy_response =
+            fetch_external_api_response(client, legacy_request_url, trimmed_auth_token).await?;
+        return read_external_api_json_response(legacy_response, parser).await;
+    }
+
+    read_external_api_json_response(response, parser).await
+}
+
 async fn read_external_api_tracking_response(
     response: Response,
     shipment_id: &str,
@@ -335,6 +436,28 @@ async fn read_external_api_tracking_response(
         ),
     );
     result
+}
+
+async fn read_external_api_json_response<T>(
+    response: Response,
+    parser: fn(&str) -> Result<T, TrackingError>,
+) -> Result<T, TrackingError> {
+    if !response.status().is_success() {
+        let status = response.status();
+        let message = read_external_api_error_message(response).await;
+
+        return Err(match status {
+            StatusCode::BAD_REQUEST => TrackingError::BadRequest(message),
+            StatusCode::NOT_FOUND => TrackingError::NotFound(message),
+            _ => TrackingError::Upstream(format!("External API returned HTTP {status}: {message}")),
+        });
+    }
+
+    let body = response.text().await.map_err(|error| {
+        TrackingError::Upstream(format!("External API response could not be read: {error}"))
+    })?;
+
+    parser(&body)
 }
 
 pub async fn probe_external_api_status(
@@ -716,27 +839,72 @@ fn log_external_api_tracking_result(
 }
 
 fn parse_external_api_track_response(body: &str) -> Result<TrackResponse, TrackingError> {
-    serde_json::from_str::<ExternalApiDataEnvelope<TrackResponse>>(body)
-        .map(|envelope| envelope.data)
-        .or_else(|_| serde_json::from_str::<TrackResponse>(body))
-        .map_err(|error| {
-            TrackingError::Upstream(format!(
-                "External API response could not be parsed: {error}"
-            ))
-        })
+    parse_external_api_data_or_plain(body).map_err(|error| {
+        TrackingError::Upstream(format!(
+            "External API response could not be parsed: {error}"
+        ))
+    })
+}
+
+fn parse_external_api_bag_response(body: &str) -> Result<BagResponse, TrackingError> {
+    parse_external_api_data_or_plain(body).map_err(|error| {
+        TrackingError::Upstream(format!(
+            "External API bag response could not be parsed: {error}"
+        ))
+    })
+}
+
+fn parse_external_api_manifest_response(body: &str) -> Result<ManifestResponse, TrackingError> {
+    parse_external_api_data_or_plain(body).map_err(|error| {
+        TrackingError::Upstream(format!(
+            "External API manifest response could not be parsed: {error}"
+        ))
+    })
 }
 
 fn parse_external_api_status_response(
     body: &str,
 ) -> Result<ExternalApiStatusResponse, TrackingError> {
-    serde_json::from_str::<ExternalApiDataEnvelope<ExternalApiStatusResponse>>(body)
+    parse_external_api_data_or_plain(body).map_err(|error| {
+        TrackingError::Upstream(format!(
+            "External API status response could not be parsed: {error}"
+        ))
+    })
+}
+
+fn parse_external_api_data_or_plain<T>(body: &str) -> Result<T, serde_json::Error>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_str::<ExternalApiDataEnvelope<T>>(body)
         .map(|envelope| envelope.data)
-        .or_else(|_| serde_json::from_str::<ExternalApiStatusResponse>(body))
-        .map_err(|error| {
-            TrackingError::Upstream(format!(
-                "External API status response could not be parsed: {error}"
-            ))
-        })
+        .or_else(|_| serde_json::from_str::<T>(body))
+}
+
+fn external_api_lookup_route(kind: LookupKind) -> &'static str {
+    match kind {
+        LookupKind::Track => "track",
+        LookupKind::Bag => "bag",
+        LookupKind::Manifest => "manifest",
+    }
+}
+
+fn build_external_api_lookup_url(
+    base_url: &Url,
+    kind: LookupKind,
+    lookup_id: &str,
+    use_v1_contract: bool,
+) -> Result<Url, TrackingError> {
+    let route_name = external_api_lookup_route(kind);
+    let route = if use_v1_contract {
+        format!("v1/{route_name}/{lookup_id}")
+    } else {
+        format!("{route_name}/{lookup_id}")
+    };
+
+    base_url.join(&route).map_err(|error| {
+        TrackingError::BadRequest(format!("External API {route_name} URL is invalid: {error}"))
+    })
 }
 
 async fn read_external_api_error_message(response: Response) -> String {
@@ -778,13 +946,14 @@ async fn read_external_api_error_message(response: Response) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_tracking_url, external_api_base_url_prefers_v1_contract,
-        normalize_and_validate_bag_id, normalize_and_validate_manifest_id,
-        normalize_and_validate_shipment_id, parse_external_api_base_url,
-        parse_external_api_status_response, parse_external_api_track_response,
-        validate_tracking_source_config, POS_TRACKING_ENDPOINT,
+        build_external_api_lookup_url, build_tracking_url,
+        external_api_base_url_prefers_v1_contract, normalize_and_validate_bag_id,
+        normalize_and_validate_manifest_id, normalize_and_validate_shipment_id,
+        parse_external_api_bag_response, parse_external_api_base_url,
+        parse_external_api_manifest_response, parse_external_api_status_response,
+        parse_external_api_track_response, validate_tracking_source_config, POS_TRACKING_ENDPOINT,
     };
-    use crate::model::{TrackingError, TrackingSource, TrackingSourceConfig};
+    use crate::model::{LookupKind, TrackingError, TrackingSource, TrackingSourceConfig};
 
     #[test]
     fn build_tracking_url_percent_encodes_base64_payload() {
@@ -929,6 +1098,71 @@ mod tests {
             .expect("v1 envelope should parse into TrackResponse");
 
         assert_eq!(parsed.detail.header.nomor_kiriman.as_deref(), Some("P1"));
+    }
+
+    #[test]
+    fn parses_external_api_v1_bag_envelope() {
+        let body = r#"{
+          "meta": {
+            "apiVersion": "v1",
+            "schemaVersion": "shipflow.bag.v1",
+            "requestId": "req-1",
+            "generatedAt": "2026-05-06T00:00:00Z"
+          },
+          "data": {
+            "url": "https://example.test/v1/bag/PID1",
+            "nomor_kantung": "PID1",
+            "items": [
+              {"no_resi": "P2601", "status": "UNBAGGING"}
+            ]
+          },
+          "warnings": []
+        }"#;
+
+        let parsed = parse_external_api_bag_response(body).expect("v1 bag envelope should parse");
+
+        assert_eq!(parsed.nomor_kantung.as_deref(), Some("PID1"));
+        assert_eq!(parsed.items[0].no_resi.as_deref(), Some("P2601"));
+    }
+
+    #[test]
+    fn builds_external_api_bag_v1_endpoint_from_openapi_url() {
+        let base_url =
+            parse_external_api_base_url("https://scrappid3.example.test/v1/openapi.json", false)
+                .expect("OpenAPI URL should normalize");
+        let request_url = build_external_api_lookup_url(&base_url, LookupKind::Bag, "PID1", true)
+            .expect("bag URL should build");
+
+        assert_eq!(
+            request_url.as_str(),
+            "https://scrappid3.example.test/v1/bag/PID1"
+        );
+    }
+
+    #[test]
+    fn parses_external_api_v1_manifest_envelope() {
+        let body = r#"{
+          "meta": {
+            "apiVersion": "v1",
+            "schemaVersion": "shipflow.manifest.v1",
+            "requestId": "req-1",
+            "generatedAt": "2026-05-06T00:00:00Z"
+          },
+          "data": {
+            "url": "https://example.test/v1/manifest/MAN1",
+            "total_berat": "1200",
+            "items": [
+              {"nomor_kantung": "PID1", "status": "BAGGING"}
+            ]
+          },
+          "warnings": []
+        }"#;
+
+        let parsed =
+            parse_external_api_manifest_response(body).expect("v1 manifest envelope should parse");
+
+        assert_eq!(parsed.total_berat.as_deref(), Some("1200"));
+        assert_eq!(parsed.items[0].nomor_kantung.as_deref(), Some("PID1"));
     }
 
     #[test]

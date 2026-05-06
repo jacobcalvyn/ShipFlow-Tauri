@@ -713,7 +713,7 @@ fn tracking_source_label(source: &TrackingSource) -> &'static str {
     }
 }
 
-fn source_fingerprint_for_tracking(source_config: &TrackingSourceConfig) -> String {
+fn source_fingerprint_for_lookup(source_config: &TrackingSourceConfig) -> String {
     let normalized_base_url = source_config
         .external_api_base_url
         .trim()
@@ -744,7 +744,7 @@ pub async fn resolve_tracking_request_cached(
     options: LookupRequestOptions,
 ) -> Result<TrackResponse, TrackingError> {
     let normalized_shipment_id = normalize_and_validate_shipment_id(shipment_id)?;
-    let source_fingerprint = source_fingerprint_for_tracking(source_config);
+    let source_fingerprint = source_fingerprint_for_lookup(source_config);
     let client = client.clone();
     let tracking_source = source_config.clone();
     let lookup_id = normalized_shipment_id.clone();
@@ -765,20 +765,23 @@ pub async fn resolve_tracking_request_cached(
 pub async fn resolve_bag_request_cached(
     lookup_cache: &LookupCacheState,
     client: &reqwest::Client,
+    source_config: &TrackingSourceConfig,
     bag_id: &str,
     options: LookupRequestOptions,
 ) -> Result<BagResponse, TrackingError> {
     let normalized_bag_id = normalize_and_validate_bag_id(bag_id)?;
+    let source_fingerprint = source_fingerprint_for_lookup(source_config);
     let client = client.clone();
+    let tracking_source = source_config.clone();
     let lookup_id = normalized_bag_id.clone();
 
     lookup_cache
         .resolve_cached_lookup(
             LookupKind::Bag,
             normalized_bag_id,
-            "pos-bag".into(),
+            source_fingerprint,
             options,
-            move || async move { resolve_bag_request(&client, &lookup_id).await },
+            move || async move { resolve_bag_request(&client, &tracking_source, &lookup_id).await },
         )
         .await
 }
@@ -786,20 +789,25 @@ pub async fn resolve_bag_request_cached(
 pub async fn resolve_manifest_request_cached(
     lookup_cache: &LookupCacheState,
     client: &reqwest::Client,
+    source_config: &TrackingSourceConfig,
     manifest_id: &str,
     options: LookupRequestOptions,
 ) -> Result<ManifestResponse, TrackingError> {
     let normalized_manifest_id = normalize_and_validate_manifest_id(manifest_id)?;
+    let source_fingerprint = source_fingerprint_for_lookup(source_config);
     let client = client.clone();
+    let tracking_source = source_config.clone();
     let lookup_id = normalized_manifest_id.clone();
 
     lookup_cache
         .resolve_cached_lookup(
             LookupKind::Manifest,
             normalized_manifest_id,
-            "pos-manifest".into(),
+            source_fingerprint,
             options,
-            move || async move { resolve_manifest_request(&client, &lookup_id).await },
+            move || async move {
+                resolve_manifest_request(&client, &tracking_source, &lookup_id).await
+            },
         )
         .await
 }
@@ -811,10 +819,12 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        source_fingerprint_for_tracking, LookupCacheMetricEvent, LookupCacheMetrics,
+        source_fingerprint_for_lookup, LookupCacheMetricEvent, LookupCacheMetrics,
         LookupCachePolicy, LookupCacheState, LookupRequestOptions,
     };
-    use shipflow_core::model::{BagResponse, LookupKind, TrackingError, TrackingSourceConfig};
+    use shipflow_core::model::{
+        BagResponse, LookupKind, TrackingError, TrackingSource, TrackingSourceConfig,
+    };
 
     fn create_test_policy() -> LookupCachePolicy {
         LookupCachePolicy {
@@ -848,6 +858,19 @@ mod tests {
         assert!(summary.contains("[ShipFlowCacheMetrics]"));
         assert!(summary.contains("track{ratio=0.0% served=0 fetch=10 hit=0 miss=10"));
         assert!(summary.contains("ratio=0.0%"));
+    }
+
+    #[test]
+    fn source_fingerprint_changes_when_lookup_source_changes() {
+        let internal = source_fingerprint_for_lookup(&TrackingSourceConfig::default());
+        let external = source_fingerprint_for_lookup(&TrackingSourceConfig {
+            tracking_source: TrackingSource::ExternalApi,
+            external_api_base_url: "https://scrappid3.example.test/v1/openapi.json".into(),
+            external_api_auth_token: "service-token".into(),
+            allow_insecure_external_api_http: false,
+        });
+
+        assert_ne!(internal, external);
     }
 
     #[test]
@@ -914,7 +937,7 @@ mod tests {
                 .resolve_cached_lookup(
                     LookupKind::Track,
                     "P2600001".into(),
-                    source_fingerprint_for_tracking(&TrackingSourceConfig::default()),
+                    source_fingerprint_for_lookup(&TrackingSourceConfig::default()),
                     LookupRequestOptions::default(),
                     {
                         let fetch_count = Arc::clone(&fetch_count);
@@ -938,7 +961,7 @@ mod tests {
                 .resolve_cached_lookup(
                     LookupKind::Track,
                     "P2600001".into(),
-                    source_fingerprint_for_tracking(&TrackingSourceConfig::default()),
+                    source_fingerprint_for_lookup(&TrackingSourceConfig::default()),
                     LookupRequestOptions {
                         force_refresh: true,
                     },

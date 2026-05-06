@@ -7,6 +7,7 @@ import {
   LATEST_DELIVERY_COLUMN_PATH,
   LATEST_MANIFEST_COLUMN_PATH,
   MIN_EMPTY_TRAILING_ROWS,
+  TRACKING_COLUMN_PATH,
 } from "./columns";
 import { ColumnDefinition, SheetRow, SheetState } from "./types";
 
@@ -16,6 +17,7 @@ export const MAX_TRACKING_INPUT_LENGTH = 64;
 const BAG_PRINT_SUFFIX = "5f9fae9b5fbe9d6e401ad0c5";
 const BAG_PRINT_OID = "NWY5ZmFlOWI1ZmJlOWQ2ZTQwMWFkMGM1";
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const TRACKING_VALUE_FILTER_PREFIX_LENGTH = 5;
 const HISTORY_SUMMARY_PATHS = new Set([
   "history_summary.irregularity",
   "history_summary.bagging_unbagging",
@@ -642,11 +644,45 @@ export function formatColumnValue(row: SheetRow, column: ColumnDefinition) {
   }
 }
 
+export function formatColumnValueFilterKey(row: SheetRow, column: ColumnDefinition) {
+  const value = formatColumnValue(row, column);
+
+  if (value === "-" || column.path !== TRACKING_COLUMN_PATH) {
+    return value;
+  }
+
+  return value.slice(0, TRACKING_VALUE_FILTER_PREFIX_LENGTH);
+}
+
+export function matchesColumnValueFilter(
+  row: SheetRow,
+  column: ColumnDefinition,
+  selectedValues: string[]
+) {
+  if (selectedValues.length === 0) {
+    return true;
+  }
+
+  const value = formatColumnValue(row, column);
+  if (value === "-") {
+    return false;
+  }
+
+  if (column.path === TRACKING_COLUMN_PATH) {
+    return (
+      selectedValues.includes(value.slice(0, TRACKING_VALUE_FILTER_PREFIX_LENGTH)) ||
+      selectedValues.includes(value)
+    );
+  }
+
+  return selectedValues.includes(value);
+}
+
 export function getColumnValueOptions(rows: SheetRow[], column: ColumnDefinition) {
   const optionCounts = new Map<string, number>();
 
   for (const row of rows) {
-    const value = formatColumnValue(row, column);
+    const value = formatColumnValueFilterKey(row, column);
     if (value === "-") {
       continue;
     }
@@ -657,12 +693,16 @@ export function getColumnValueOptions(rows: SheetRow[], column: ColumnDefinition
   return Array.from(optionCounts, ([value, count]) => ({
     value,
     count,
-  })).sort((left, right) =>
-    left.value.localeCompare(right.value, "id", {
+  })).sort((left, right) => {
+    if (left.count !== right.count) {
+      return right.count - left.count;
+    }
+
+    return left.value.localeCompare(right.value, "id", {
       sensitivity: "base",
       numeric: true,
-    })
-  );
+    });
+  });
 }
 
 export function getColumnHeaderMinWidth(column: ColumnDefinition) {

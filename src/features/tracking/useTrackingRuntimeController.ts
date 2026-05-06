@@ -49,6 +49,20 @@ type FetchRuntimeOptions = {
   forceRefresh?: boolean;
 };
 
+type BulkQueueEntry = {
+  key: string;
+  value: string;
+  options?: FetchRuntimeOptions;
+};
+
+type BulkRunState = {
+  queue: BulkQueueEntry[];
+  queuedKeys: Set<string>;
+  activeWorkers: number;
+  epoch: number;
+  waiters: Array<() => void>;
+};
+
 function getSheetRequestKey(sheetId: string, rowKey: string) {
   return `${sheetId}:${rowKey}`;
 }
@@ -153,12 +167,20 @@ export function useTrackingRuntimeController({
   const requestMetaRef = useRef(new Map<string, TrackingRequestMeta>());
   const requestEpochBySheetRef = useRef(new Map<string, number>());
   const bulkRunEpochBySheetRef = useRef(new Map<string, number>());
+  const bulkRunStateBySheetRef = useRef(new Map<string, BulkRunState>());
 
   useEffect(() => {
     return () => {
       requestControllersRef.current.forEach((controller) => controller.abort());
       requestControllersRef.current.clear();
       requestMetaRef.current.clear();
+      bulkRunStateBySheetRef.current.forEach((state) => {
+        state.queue = [];
+        state.queuedKeys.clear();
+        const waiters = state.waiters.splice(0);
+        waiters.forEach((resolve) => resolve());
+      });
+      bulkRunStateBySheetRef.current.clear();
     };
   }, []);
 
@@ -185,12 +207,63 @@ export function useTrackingRuntimeController({
   const forgetSheetTrackingRuntime = useCallback((sheetId: string) => {
     requestEpochBySheetRef.current.delete(sheetId);
     bulkRunEpochBySheetRef.current.delete(sheetId);
+    const bulkRunState = bulkRunStateBySheetRef.current.get(sheetId);
+    if (bulkRunState) {
+      bulkRunState.queue = [];
+      bulkRunState.queuedKeys.clear();
+      const waiters = bulkRunState.waiters.splice(0);
+      waiters.forEach((resolve) => resolve());
+      bulkRunStateBySheetRef.current.delete(sheetId);
+    }
   }, []);
+
+  const settleBulkRunIfIdle = useCallback((sheetId: string, state: BulkRunState) => {
+    if (state.activeWorkers > 0 || state.queue.length > 0) {
+      return;
+    }
+
+    const waiters = state.waiters.splice(0);
+    if (bulkRunStateBySheetRef.current.get(sheetId) === state) {
+      bulkRunStateBySheetRef.current.delete(sheetId);
+    }
+    waiters.forEach((resolve) => resolve());
+  }, []);
+
+  const removeQueuedBulkEntries = useCallback(
+    (sheetId: string, rowKeys?: string[]) => {
+      const bulkRunState = bulkRunStateBySheetRef.current.get(sheetId);
+      if (!bulkRunState) {
+        return;
+      }
+
+      if (!rowKeys) {
+        bulkRunState.queue = [];
+        bulkRunState.queuedKeys.clear();
+        const waiters = bulkRunState.waiters.splice(0);
+        waiters.forEach((resolve) => resolve());
+        bulkRunStateBySheetRef.current.delete(sheetId);
+        return;
+      }
+
+      const rowKeySet = new Set(rowKeys);
+      bulkRunState.queue = bulkRunState.queue.filter((entry) => {
+        if (!rowKeySet.has(entry.key)) {
+          return true;
+        }
+
+        bulkRunState.queuedKeys.delete(entry.key);
+        return false;
+      });
+      settleBulkRunIfIdle(sheetId, bulkRunState);
+    },
+    [settleBulkRunIfIdle]
+  );
 
   const invalidateSheetTrackingWork = useCallback(
     (sheetId: string) => {
       bumpSheetEpoch(requestEpochBySheetRef, sheetId);
       bumpSheetEpoch(bulkRunEpochBySheetRef, sheetId);
+      removeQueuedBulkEntries(sheetId);
 
       requestControllersRef.current.forEach((controller, requestKey) => {
         if (requestKey.startsWith(`${sheetId}:`)) {
@@ -206,7 +279,7 @@ export function useTrackingRuntimeController({
         }
       });
     },
-    [bumpSheetEpoch]
+    [bumpSheetEpoch, removeQueuedBulkEntries]
   );
 
   const abortRowTrackingWork = useCallback(
@@ -219,6 +292,8 @@ export function useTrackingRuntimeController({
         | "cell_cleared"
         | "bulk_paste_overwrite"
     ) => {
+      removeQueuedBulkEntries(sheetId, rowKeys);
+
       rowKeys.forEach((rowKey) => {
         const requestKey = getSheetRequestKey(sheetId, rowKey);
         const controller = requestControllersRef.current.get(requestKey);
@@ -233,7 +308,7 @@ export function useTrackingRuntimeController({
         requestMetaRef.current.delete(requestKey);
       });
     },
-    []
+    [removeQueuedBulkEntries]
   );
 
   const handleTrackingInputChange = useCallback(
@@ -459,32 +534,114 @@ export function useTrackingRuntimeController({
     [abortRowTrackingWork, updateSheet]
   );
 
+  const startBulkWorker = useCallback(
+    async (sheetId: string, state: BulkRunState) => {
+      state.activeWorkers += 1;
+
+      try {
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, 0);
+        });
+
+        while (
+          state.queue.length > 0 &&
+          getSheetEpoch(bulkRunEpochBySheetRef, sheetId) ===
+            state.epoch
+        ) {
+          const next = state.queue.shift();
+          if (!next) {
+            return;
+          }
+
+          state.queuedKeys.delete(next.key);
+
+          const targetSheet = workspaceRef.current.sheetsById[sheetId];
+          const targetRow = targetSheet?.rows.find((row) => row.key === next.key);
+          if (
+            !targetSheet ||
+            !targetRow ||
+            sanitizeTrackingInput(targetRow.trackingInput) !== next.value
+          ) {
+            continue;
+          }
+
+          await fetchShipmentIntoRow(sheetId, next.key, next.value, next.options);
+        }
+      } finally {
+        state.activeWorkers -= 1;
+        settleBulkRunIfIdle(sheetId, state);
+      }
+    },
+    [fetchShipmentIntoRow, getSheetEpoch, settleBulkRunIfIdle, workspaceRef]
+  );
+
+  const ensureBulkWorkers = useCallback(
+    (sheetId: string, state: BulkRunState) => {
+      const workerSlots = Math.max(0, MAX_CONCURRENT_BULK_REQUESTS - state.activeWorkers);
+      const workersToStart = Math.min(workerSlots, state.queue.length);
+
+      for (let index = 0; index < workersToStart; index += 1) {
+        void startBulkWorker(sheetId, state);
+      }
+    },
+    [startBulkWorker]
+  );
+
   const runBulkPasteFetches = useCallback(
     async (
       sheetId: string,
       entries: Array<{ key: string; value: string }>,
       options?: FetchRuntimeOptions
     ) => {
-      const runEpoch = bumpSheetEpoch(bulkRunEpochBySheetRef, sheetId);
-      const queue = entries
+      const validEntries = entries
         .map((entry) => ({
           key: entry.key,
           value: sanitizeTrackingInput(entry.value),
+          options,
         }))
         .filter(
           (entry) =>
             entry.value !== "" && !getTrackingInputValidationError(entry.value)
         );
-      const workerCount = Math.min(MAX_CONCURRENT_BULK_REQUESTS, queue.length);
 
-      if (queue.length === 0) {
+      if (validEntries.length === 0) {
         return;
       }
 
-      queue.forEach(({ key }) => {
-        const requestKey = getSheetRequestKey(sheetId, key);
+      const currentBulkEpoch = getSheetEpoch(bulkRunEpochBySheetRef, sheetId);
+      let bulkRunState = bulkRunStateBySheetRef.current.get(sheetId);
+      if (bulkRunState && bulkRunState.epoch !== currentBulkEpoch) {
+        bulkRunState.queue = [];
+        bulkRunState.queuedKeys.clear();
+        const waiters = bulkRunState.waiters.splice(0);
+        waiters.forEach((resolve) => resolve());
+        bulkRunState = undefined;
+      }
+
+      if (!bulkRunState) {
+        bulkRunState = {
+          queue: [],
+          queuedKeys: new Set(),
+          activeWorkers: 0,
+          epoch: currentBulkEpoch,
+          waiters: [],
+        };
+        bulkRunStateBySheetRef.current.set(sheetId, bulkRunState);
+      }
+
+      const queueUpdates: BulkQueueEntry[] = [];
+      validEntries.forEach((entry) => {
+        const requestKey = getSheetRequestKey(sheetId, entry.key);
         const controller = requestControllersRef.current.get(requestKey);
         const meta = requestMetaRef.current.get(requestKey);
+
+        if (
+          meta &&
+          meta.shipmentId === entry.value &&
+          options?.forceRefresh !== true
+        ) {
+          return;
+        }
 
         if (meta) {
           emitTrackingTelemetry("abort", meta, {
@@ -495,28 +652,37 @@ export function useTrackingRuntimeController({
         controller?.abort();
         requestControllersRef.current.delete(requestKey);
         requestMetaRef.current.delete(requestKey);
-      });
 
-      updateSheet(sheetId, (current) => setRowsQueuedInSheet(current, queue));
-
-      const workers = Array.from({ length: workerCount }, async () => {
-        while (queue.length > 0 && getSheetEpoch(bulkRunEpochBySheetRef, sheetId) === runEpoch) {
-          const next = queue.shift();
-          if (!next) {
-            return;
+        if (bulkRunState.queuedKeys.has(entry.key)) {
+          const queuedEntry = bulkRunState.queue.find(
+            (currentEntry) => currentEntry.key === entry.key
+          );
+          if (queuedEntry) {
+            queuedEntry.value = entry.value;
+            queuedEntry.options = entry.options;
           }
-
-          if (getSheetEpoch(bulkRunEpochBySheetRef, sheetId) !== runEpoch) {
-            return;
-          }
-
-          await fetchShipmentIntoRow(sheetId, next.key, next.value, options);
+        } else {
+          bulkRunState.queue.push(entry);
+          bulkRunState.queuedKeys.add(entry.key);
         }
+        queueUpdates.push(entry);
       });
 
-      await Promise.allSettled(workers);
+      if (queueUpdates.length === 0) {
+        return;
+      }
+
+      updateSheet(sheetId, (current) => setRowsQueuedInSheet(current, queueUpdates));
+
+      const runPromise = new Promise<void>((resolve) => {
+        bulkRunState.waiters.push(resolve);
+      });
+
+      ensureBulkWorkers(sheetId, bulkRunState);
+      settleBulkRunIfIdle(sheetId, bulkRunState);
+      await runPromise;
     },
-    [bumpSheetEpoch, fetchShipmentIntoRow, getSheetEpoch, updateSheet]
+    [ensureBulkWorkers, getSheetEpoch, settleBulkRunIfIdle, updateSheet]
   );
 
   const handleTrackingInputPaste = useCallback(

@@ -349,6 +349,7 @@ async fn bag_handler(
     resolve_bag_request_cached(
         &state.lookup_cache,
         &state.client,
+        &state.tracking_source,
         bag_id.trim(),
         request_options,
     )
@@ -380,6 +381,7 @@ async fn v1_bag_handler(
     resolve_bag_request_cached(
         &state.lookup_cache,
         &state.client,
+        &state.tracking_source,
         bag_id.trim(),
         request_options,
     )
@@ -399,6 +401,7 @@ async fn manifest_handler(
     resolve_manifest_request_cached(
         &state.lookup_cache,
         &state.client,
+        &state.tracking_source,
         manifest_id.trim(),
         request_options,
     )
@@ -430,6 +433,7 @@ async fn v1_manifest_handler(
     resolve_manifest_request_cached(
         &state.lookup_cache,
         &state.client,
+        &state.tracking_source,
         manifest_id.trim(),
         request_options,
     )

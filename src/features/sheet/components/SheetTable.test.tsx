@@ -83,11 +83,11 @@ describe("SheetTable", () => {
         allVisibleSelected={false}
         selectedRowKeySet={new Set()}
         filters={{}}
-        valueFilters={{ [visibleColumns[0].path]: ["P2603310114291"] }}
+        valueFilters={{ [visibleColumns[0].path]: ["P2603"] }}
         valueOptionsByPath={{
           [visibleColumns[0].path]: [
-            { value: "P2603310114291", count: 2 },
-            { value: "P2603310115000", count: 33 },
+            { value: "P2603", count: 2 },
+            { value: "P2604", count: 33 },
           ],
           [visibleColumns[1].path]: [{ value: "Alice", count: 1 }],
         }}
@@ -137,21 +137,20 @@ describe("SheetTable", () => {
     });
     expect(onFilterChange).toHaveBeenCalledWith(visibleColumns[0].path, "P2603");
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "P2603310114291 (2)" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "P2603 (2)" }));
     expect(onToggleValueFilter).toHaveBeenCalledWith(
       visibleColumns[0].path,
-      "P2603310114291"
+      "P2603"
     );
-    expect(screen.getByText("(33)")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Filter only P2603310115000" }));
+    fireEvent.click(screen.getByRole("button", { name: "Filter only P2603" }));
     expect(onSetValueFilterSelection).toHaveBeenCalledWith(visibleColumns[0].path, [
-      "P2603310115000",
+      "P2603",
     ]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Filter except P2603310115000" }));
+    fireEvent.click(screen.getByRole("button", { name: "Filter except P2603" }));
     expect(onSetValueFilterSelection).toHaveBeenCalledWith(visibleColumns[0].path, [
-      "P2603310114291",
+      "P2604",
     ]);
 
     fireEvent.click(screen.getByText("Sort Asc"));

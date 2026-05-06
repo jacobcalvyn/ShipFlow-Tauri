@@ -12,6 +12,7 @@ import {
   getColumnToneClass,
   getColumnValueOptions,
   getEffectiveColumnWidth,
+  matchesColumnValueFilter,
 } from "./utils";
 import { countActiveTextFilters, countActiveValueFilters } from "./state";
 
@@ -197,7 +198,7 @@ export function getDisplayedRows(
       }
 
       if (selectedValues.length > 0) {
-        return selectedValues.includes(formatColumnValue(row, column));
+        return matchesColumnValueFilter(row, column, selectedValues);
       }
 
       return true;

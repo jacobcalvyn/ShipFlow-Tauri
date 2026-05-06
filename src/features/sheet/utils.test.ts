@@ -4,7 +4,7 @@ import {
   DAYS_SINCE_TRANSACTION_COLUMN_PATH,
   MIN_EMPTY_TRAILING_ROWS,
 } from "./columns";
-import { SheetRow } from "./types";
+import { SheetRow, TrackResponse } from "./types";
 import {
   assertValidSheetState,
   compareRows,
@@ -13,6 +13,7 @@ import {
   getColumnValueOptions,
   getLatestBagPrintUrl,
   getRowStatus,
+  matchesColumnValueFilter,
   sanitizeTrackingInput,
   sanitizeTrackingPasteValues,
 } from "./utils";
@@ -28,6 +29,34 @@ function createRow(partial: Partial<SheetRow> = {}): SheetRow {
     stale: partial.stale ?? false,
     dirty: partial.dirty ?? false,
     error: partial.error ?? "",
+  };
+}
+
+function createShipmentWithStatus(status: string): TrackResponse {
+  return {
+    url: "https://example.test",
+    detail: {
+      shipment_header: {},
+      origin_detail: {},
+      package_detail: { berat_actual: 0, berat_volumetric: 0 },
+      billing_detail: {
+        bea_dasar: 0,
+        nilai_barang: 0,
+        htnb: 0,
+        cod_info: { is_cod: false, total_cod: 0 },
+      },
+      actors: { pengirim: {}, penerima: {} },
+      performance_detail: {},
+    },
+    status_akhir: { status },
+    pod: {},
+    history: [],
+    history_summary: {
+      irregularity: [],
+      bagging_unbagging: [],
+      manifest_r7: [],
+      delivery_runsheet: [],
+    },
   };
 }
 
@@ -267,6 +296,30 @@ describe("sheet utils", () => {
   });
 
   it("counts value filter options without changing their raw filter values", () => {
+    const statusColumn = COLUMNS.find((column) => column.path === "status_akhir.status")!;
+
+    expect(
+      getColumnValueOptions(
+        [
+          createRow({
+            shipment: createShipmentWithStatus("DELIVERED"),
+          }),
+          createRow({
+            shipment: createShipmentWithStatus("FAILED"),
+          }),
+          createRow({
+            shipment: createShipmentWithStatus("DELIVERED"),
+          }),
+        ],
+        statusColumn
+      )
+    ).toEqual([
+      { value: "DELIVERED", count: 2 },
+      { value: "FAILED", count: 1 },
+    ]);
+  });
+
+  it("groups tracking value filter options by their shipment prefix", () => {
     const trackingColumn = COLUMNS.find(
       (column) => column.path === "detail.shipment_header.nomor_kiriman"
     )!;
@@ -274,16 +327,33 @@ describe("sheet utils", () => {
     expect(
       getColumnValueOptions(
         [
-          createRow({ trackingInput: "PID94102398 - UNBAGGING" }),
-          createRow({ trackingInput: "PID91886166 - UNBAGGING" }),
-          createRow({ trackingInput: "PID94102398 - UNBAGGING" }),
+          createRow({ trackingInput: "P2604100064612" }),
+          createRow({ trackingInput: "P2604100152341" }),
+          createRow({ trackingInput: "P2604110008795" }),
+          createRow({ trackingInput: "P2604110012997" }),
+          createRow({ trackingInput: "P2605123456789" }),
         ],
         trackingColumn
       )
     ).toEqual([
-      { value: "PID91886166 - UNBAGGING", count: 1 },
-      { value: "PID94102398 - UNBAGGING", count: 2 },
+      { value: "P2604", count: 4 },
+      { value: "P2605", count: 1 },
     ]);
+
+    expect(
+      matchesColumnValueFilter(
+        createRow({ trackingInput: "P2604100064612" }),
+        trackingColumn,
+        ["P2604"]
+      )
+    ).toBe(true);
+    expect(
+      matchesColumnValueFilter(
+        createRow({ trackingInput: "P2605123456789" }),
+        trackingColumn,
+        ["P2604"]
+      )
+    ).toBe(false);
   });
 
   it("returns row status in the expected priority order", () => {

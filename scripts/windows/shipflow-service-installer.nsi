@@ -16,10 +16,13 @@ Unicode true
 !define ICON_FILE "..\..\src-tauri\icons\service-icon.ico"
 !endif
 
+!define SHIPFLOW_ROOT "C:\ShipFlow"
+!define SHIPFLOW_DATA_ROOT "${SHIPFLOW_ROOT}\Data"
+
 Name "ShipFlow Service"
 OutFile "${OUT_FILE}"
-InstallDir "$LOCALAPPDATA\Programs\ShipFlow Service"
-RequestExecutionLevel user
+InstallDir "${SHIPFLOW_ROOT}\Service"
+RequestExecutionLevel admin
 Icon "${ICON_FILE}"
 UninstallIcon "${ICON_FILE}"
 
@@ -41,39 +44,51 @@ UninstPage instfiles
   Sleep 500
 !macroend
 
+!macro SHIPFLOW_PREPARE_DATA_DIRS
+  CreateDirectory "${SHIPFLOW_ROOT}"
+  CreateDirectory "${SHIPFLOW_DATA_ROOT}"
+  CreateDirectory "${SHIPFLOW_DATA_ROOT}\Desktop"
+  CreateDirectory "${SHIPFLOW_DATA_ROOT}\Service"
+  CreateDirectory "${SHIPFLOW_DATA_ROOT}\Logs"
+  nsExec::ExecToLog '"$SYSDIR\icacls.exe" "${SHIPFLOW_DATA_ROOT}" /grant *S-1-5-32-545:(OI)(CI)M /T /C'
+!macroend
+
 Section "Install"
+  SetShellVarContext all
   !insertmacro SHIPFLOW_CLOSE_SERVICE_PROCESSES
+  !insertmacro SHIPFLOW_PREPARE_DATA_DIRS
 
   SetOutPath "$INSTDIR"
   File "/oname=shipflow-service.exe" "${SOURCE_EXE}"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
-  CreateDirectory "$SMPROGRAMS\ShipFlow Service"
-  CreateShortcut "$SMPROGRAMS\ShipFlow Service\ShipFlow Service.lnk" "$INSTDIR\shipflow-service.exe"
-  CreateShortcut "$SMPROGRAMS\ShipFlow Service\Uninstall ShipFlow Service.lnk" "$INSTDIR\Uninstall.exe"
+  CreateDirectory "$SMPROGRAMS\ShipFlow"
+  CreateShortcut "$SMPROGRAMS\ShipFlow\ShipFlow Service.lnk" "$INSTDIR\shipflow-service.exe"
+  CreateShortcut "$SMPROGRAMS\ShipFlow\Uninstall ShipFlow Service.lnk" "$INSTDIR\Uninstall.exe"
   CreateShortcut "$DESKTOP\ShipFlow Service.lnk" "$INSTDIR\shipflow-service.exe"
 
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "DisplayName" "ShipFlow Service"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "DisplayVersion" "${APP_VERSION}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "Publisher" "ShipFlow"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "DisplayIcon" "$INSTDIR\shipflow-service.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "UninstallString" "$INSTDIR\Uninstall.exe"
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "NoModify" 1
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "NoRepair" 1
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "DisplayName" "ShipFlow Service"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "DisplayVersion" "${APP_VERSION}"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "Publisher" "ShipFlow"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "DisplayIcon" "$INSTDIR\shipflow-service.exe"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "UninstallString" "$INSTDIR\Uninstall.exe"
+  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "NoModify" 1
+  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "NoRepair" 1
 SectionEnd
 
 Section "Uninstall"
+  SetShellVarContext all
   !insertmacro SHIPFLOW_CLOSE_SERVICE_PROCESSES
 
   Delete "$DESKTOP\ShipFlow Service.lnk"
-  Delete "$SMPROGRAMS\ShipFlow Service\ShipFlow Service.lnk"
-  Delete "$SMPROGRAMS\ShipFlow Service\Uninstall ShipFlow Service.lnk"
-  RMDir "$SMPROGRAMS\ShipFlow Service"
+  Delete "$SMPROGRAMS\ShipFlow\ShipFlow Service.lnk"
+  Delete "$SMPROGRAMS\ShipFlow\Uninstall ShipFlow Service.lnk"
+  RMDir "$SMPROGRAMS\ShipFlow"
 
   Delete "$INSTDIR\shipflow-service.exe"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService"
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService"
 SectionEnd

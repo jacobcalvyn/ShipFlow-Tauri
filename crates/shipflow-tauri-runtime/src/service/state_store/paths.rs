@@ -12,6 +12,10 @@ use crate::service::{
 const SERVICE_APP_DATA_DIR_NAME: &str = "ShipFlow Service";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const LEGACY_DESKTOP_APP_DATA_DIR_NAME: &str = "ShipFlow Desktop";
+#[cfg(target_os = "windows")]
+const WINDOWS_SHIPFLOW_DATA_ROOT: &str = r"C:\ShipFlow\Data";
+#[cfg(target_os = "windows")]
+const WINDOWS_SERVICE_DATA_DIR_NAME: &str = "Service";
 #[cfg(all(unix, not(target_os = "macos")))]
 const SERVICE_XDG_DATA_DIR_NAME: &str = "shipflow-service";
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -54,11 +58,11 @@ fn app_data_service_state_dir() -> Option<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        return env::var_os("APPDATA").map(PathBuf::from).map(|app_data| {
-            app_data
-                .join(SERVICE_APP_DATA_DIR_NAME)
-                .join(SERVICE_STATE_DIR_NAME)
-        });
+        if let Some(shipflow_data_dir) = windows_shipflow_service_state_dir() {
+            return Some(shipflow_data_dir);
+        }
+
+        return windows_app_data_service_state_dir();
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -81,6 +85,32 @@ fn app_data_service_state_dir() -> Option<PathBuf> {
 
     #[allow(unreachable_code)]
     None
+}
+
+#[cfg(target_os = "windows")]
+fn windows_shipflow_data_root() -> PathBuf {
+    env::var_os("SHIPFLOW_WINDOWS_DATA_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(WINDOWS_SHIPFLOW_DATA_ROOT))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_shipflow_service_state_dir() -> Option<PathBuf> {
+    let data_root = windows_shipflow_data_root();
+    data_root.exists().then(|| {
+        data_root
+            .join(WINDOWS_SERVICE_DATA_DIR_NAME)
+            .join(SERVICE_STATE_DIR_NAME)
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_app_data_service_state_dir() -> Option<PathBuf> {
+    env::var_os("APPDATA").map(PathBuf::from).map(|app_data| {
+        app_data
+            .join(SERVICE_APP_DATA_DIR_NAME)
+            .join(SERVICE_STATE_DIR_NAME)
+    })
 }
 
 fn legacy_app_data_service_state_dir() -> Option<PathBuf> {
@@ -137,6 +167,10 @@ pub(super) fn legacy_service_state_dirs() -> Vec<PathBuf> {
     if let Some(path) = legacy_state_dir_override() {
         push_unique_path(&mut paths, path);
         return paths;
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(path) = windows_app_data_service_state_dir() {
+        push_unique_path(&mut paths, path);
     }
     if let Some(path) = legacy_app_data_service_state_dir() {
         push_unique_path(&mut paths, path);

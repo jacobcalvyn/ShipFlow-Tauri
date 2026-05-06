@@ -1,4 +1,11 @@
-import { MouseEvent as ReactMouseEvent, memo } from "react";
+import {
+  CSSProperties,
+  MouseEvent as ReactMouseEvent,
+  memo,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { LATEST_DELIVERY_COLUMN_PATH, TRACKING_COLUMN_PATH } from "../columns";
 import { ColumnDefinition, ValueFilterOption } from "../types";
 import { getColumnToneClass, getColumnTypeClass } from "../utils";
@@ -10,6 +17,11 @@ const WIDE_FILTER_MENU_PATHS = new Set([
   "detail.actors.penerima.alamat",
   LATEST_DELIVERY_COLUMN_PATH,
 ]);
+
+const COLUMN_MENU_MARGIN = 12;
+const COLUMN_MENU_GAP = 6;
+const COLUMN_MENU_WIDTH = 390;
+const COLUMN_MENU_WIDE_WIDTH = 520;
 
 type ColumnHeaderCellProps = {
   column: ColumnDefinition;
@@ -67,9 +79,57 @@ export const ColumnHeaderCell = memo(function ColumnHeaderCell({
 }: ColumnHeaderCellProps) {
   const isTrackingColumn = column.path === TRACKING_COLUMN_PATH;
   const hasWideFilterMenu = WIDE_FILTER_MENU_PATHS.has(column.path);
+  const headerCellRef = useRef<HTMLTableCellElement | null>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const [menuLayout, setMenuLayout] = useState<CSSProperties | null>(null);
+
+  useLayoutEffect(() => {
+    if (!isMenuOpen) {
+      setMenuLayout(null);
+      return;
+    }
+
+    const updateMenuLayout = () => {
+      const headerCellRect = headerCellRef.current?.getBoundingClientRect();
+      const triggerRect = menuTriggerRef.current?.getBoundingClientRect();
+
+      if (!triggerRect) {
+        return;
+      }
+
+      const preferredWidth = hasWideFilterMenu ? COLUMN_MENU_WIDE_WIDTH : COLUMN_MENU_WIDTH;
+      const maxWidth = Math.max(270, window.innerWidth - COLUMN_MENU_MARGIN * 2);
+      const width = Math.min(preferredWidth, maxWidth);
+      const preferredLeft =
+        isPinned && headerCellRect
+          ? headerCellRect.left + COLUMN_MENU_MARGIN
+          : triggerRect.right - width;
+      const left = Math.min(
+        Math.max(preferredLeft, COLUMN_MENU_MARGIN),
+        window.innerWidth - width - COLUMN_MENU_MARGIN
+      );
+
+      setMenuLayout({
+        position: "fixed",
+        top: triggerRect.bottom + COLUMN_MENU_GAP,
+        left,
+        width,
+      });
+    };
+
+    updateMenuLayout();
+    window.addEventListener("resize", updateMenuLayout);
+    window.addEventListener("scroll", updateMenuLayout, true);
+
+    return () => {
+      window.removeEventListener("resize", updateMenuLayout);
+      window.removeEventListener("scroll", updateMenuLayout, true);
+    };
+  }, [hasWideFilterMenu, isMenuOpen, isPinned]);
 
   return (
     <th
+      ref={headerCellRef}
       data-column-path={column.path}
       title={column.path}
       style={{
@@ -105,6 +165,7 @@ export const ColumnHeaderCell = memo(function ColumnHeaderCell({
           ref={(element) => onMenuRef(column.path, element)}
         >
           <button
+            ref={menuTriggerRef}
             type="button"
             className="column-menu-trigger"
             aria-label={`Menu ${column.label}`}
@@ -117,10 +178,12 @@ export const ColumnHeaderCell = memo(function ColumnHeaderCell({
             <div
               className={[
                 "column-menu-body",
+                menuLayout ? "column-menu-body-floating" : "",
                 hasWideFilterMenu ? "column-menu-body-wide-filter" : "",
               ]
                 .filter(Boolean)
                 .join(" ")}
+              style={menuLayout ?? undefined}
             >
               <button
                 type="button"

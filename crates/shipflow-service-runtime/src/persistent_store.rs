@@ -16,6 +16,10 @@ const LOOKUP_STORE_FILE_NAME: &str = "lookup-store.json";
 const SERVICE_APP_DATA_DIR_NAME: &str = "ShipFlow Service";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const LEGACY_DESKTOP_APP_DATA_DIR_NAME: &str = "ShipFlow Desktop";
+#[cfg(target_os = "windows")]
+const WINDOWS_SHIPFLOW_DATA_ROOT: &str = r"C:\ShipFlow\Data";
+#[cfg(target_os = "windows")]
+const WINDOWS_SERVICE_DATA_DIR_NAME: &str = "Service";
 #[cfg(all(unix, not(target_os = "macos")))]
 const SERVICE_XDG_DATA_DIR_NAME: &str = "shipflow-service";
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -197,6 +201,10 @@ pub fn default_persistent_lookup_store_path() -> PathBuf {
 
     #[cfg(target_os = "windows")]
     {
+        if let Some(path) = windows_shipflow_lookup_store_path() {
+            return path;
+        }
+
         if let Some(app_data) = std::env::var_os("APPDATA").map(PathBuf::from) {
             return app_data
                 .join(SERVICE_APP_DATA_DIR_NAME)
@@ -229,6 +237,24 @@ pub fn default_persistent_lookup_store_path() -> PathBuf {
         .join(LOOKUP_STORE_FILE_NAME)
 }
 
+#[cfg(target_os = "windows")]
+fn windows_shipflow_data_root() -> PathBuf {
+    std::env::var_os("SHIPFLOW_WINDOWS_DATA_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(WINDOWS_SHIPFLOW_DATA_ROOT))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_shipflow_lookup_store_path() -> Option<PathBuf> {
+    let data_root = windows_shipflow_data_root();
+    data_root.exists().then(|| {
+        data_root
+            .join(WINDOWS_SERVICE_DATA_DIR_NAME)
+            .join(SERVICE_STATE_DIR_NAME)
+            .join(LOOKUP_STORE_FILE_NAME)
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn legacy_persistent_lookup_store_path() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from).map(|home_dir| {
@@ -242,15 +268,28 @@ fn legacy_persistent_lookup_store_path() -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
-fn legacy_persistent_lookup_store_path() -> Option<PathBuf> {
-    std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .map(|app_data| {
+fn legacy_persistent_lookup_store_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(app_data) = std::env::var_os("APPDATA").map(PathBuf::from) {
+        paths.push(
+            app_data
+                .join(SERVICE_APP_DATA_DIR_NAME)
+                .join(SERVICE_STATE_DIR_NAME)
+                .join(LOOKUP_STORE_FILE_NAME),
+        );
+        paths.push(
             app_data
                 .join(LEGACY_DESKTOP_APP_DATA_DIR_NAME)
                 .join(SERVICE_STATE_DIR_NAME)
-                .join(LOOKUP_STORE_FILE_NAME)
-        })
+                .join(LOOKUP_STORE_FILE_NAME),
+        );
+    }
+    paths
+}
+
+#[cfg(any(target_os = "macos", all(unix, not(target_os = "macos"))))]
+fn legacy_persistent_lookup_store_paths() -> Vec<PathBuf> {
+    legacy_persistent_lookup_store_path().into_iter().collect()
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -275,19 +314,12 @@ fn legacy_persistent_lookup_store_path() -> Option<PathBuf> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", unix)))]
-fn legacy_persistent_lookup_store_path() -> Option<PathBuf> {
-    None
+fn legacy_persistent_lookup_store_paths() -> Vec<PathBuf> {
+    Vec::new()
 }
 
 fn migrate_legacy_persistent_lookup_store(path: &Path) {
     if path.exists() {
-        return;
-    }
-
-    let Some(legacy_path) = legacy_persistent_lookup_store_path() else {
-        return;
-    };
-    if !legacy_path.exists() || legacy_path == path {
         return;
     }
 
@@ -298,7 +330,12 @@ fn migrate_legacy_persistent_lookup_store(path: &Path) {
         return;
     }
 
-    let _ = fs::copy(legacy_path, path);
+    for legacy_path in legacy_persistent_lookup_store_paths() {
+        if legacy_path.exists() && legacy_path != path {
+            let _ = fs::copy(legacy_path, path);
+            return;
+        }
+    }
 }
 
 fn unique_store_temp_path(path: &Path) -> PathBuf {
