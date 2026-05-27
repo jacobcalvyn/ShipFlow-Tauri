@@ -1,4 +1,5 @@
 import {
+  ANALYTICS_FIELD_COLUMN_PATHS,
   COLUMNS,
   DAYS_SINCE_LAST_UNBAGGING_COLUMN_PATH,
   DAYS_SINCE_TRANSACTION_COLUMN_PATH,
@@ -888,15 +889,10 @@ export function assertValidSheetState(sheetState: SheetState) {
     throw new Error("Invalid sheet analytics group paths.");
   }
 
-  const analyticsExcludedColumnPaths = new Set([
-    "history_summary.bagging_unbagging",
-    "history_summary.manifest_r7",
-    "history_summary.delivery_runsheet",
-    "pod.photo1_url",
-    "pod.photo2_url",
-  ]);
-  const analyticsColumnPaths = COLUMNS.filter(
-    (column) => !analyticsExcludedColumnPaths.has(column.path)
+  const analyticsColumnPaths = COLUMNS.filter((column) =>
+    ANALYTICS_FIELD_COLUMN_PATHS.includes(
+      column.path as (typeof ANALYTICS_FIELD_COLUMN_PATHS)[number]
+    )
   ).map((column) => column.path);
   const analyticsGroupPathSet = new Set(analyticsColumnPaths);
   for (const groupByPath of sheetState.analytics.groupByPaths) {

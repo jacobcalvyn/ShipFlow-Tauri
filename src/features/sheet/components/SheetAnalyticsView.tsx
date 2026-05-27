@@ -81,11 +81,15 @@ function formatMetricValue(metric: SheetAnalyticsMetricOption, value: number) {
     return formatCurrency(value);
   }
 
-  if (metric.format === "text") {
-    return `${formatNumber(value)} nilai`;
+  return formatNumber(value);
+}
+
+function formatMetricLabel(metric: SheetAnalyticsMetricOption) {
+  if (!metric.aggregationLabel || metric.key === "count") {
+    return metric.label;
   }
 
-  return formatNumber(value);
+  return `${metric.label} (${metric.aggregationLabel})`;
 }
 
 function formatMetricOptionValue(metric: SheetAnalyticsMetricOption, row: SheetAnalyticsRow) {
@@ -195,12 +199,20 @@ function AnalyticsFieldPicker({
   onSelectedKeysChange,
   onAggregationChange,
 }: AnalyticsFieldPickerProps) {
+  const [searchQuery, setSearchQuery] = useState("");
   const optionMap = new Map(options.map((option) => [option.key, option]));
   const selectedOptions = selectedKeys.flatMap((key) => {
     const option = optionMap.get(key);
     return option ? [option] : [];
   });
   const selectedKeySet = new Set(selectedOptions.map((option) => option.key));
+  const normalizedSearchQuery = searchQuery.trim().toLocaleLowerCase("id");
+  const visibleOptions =
+    normalizedSearchQuery === ""
+      ? options
+      : options.filter((option) =>
+          `${option.label} ${option.key}`.toLocaleLowerCase("id").includes(normalizedSearchQuery)
+        );
 
   const removeOption = (key: string) => {
     onSelectedKeysChange(selectedKeys.filter((item) => item !== key));
@@ -241,12 +253,23 @@ function AnalyticsFieldPicker({
   return (
     <div className="analytics-field analytics-field-picker">
       <span>{title}</span>
+      <input
+        type="search"
+        className="analytics-picker-search"
+        value={searchQuery}
+        aria-label={`Cari ${title}`}
+        placeholder={`Cari ${title.toLowerCase()}...`}
+        onChange={(event) => setSearchQuery(event.target.value)}
+      />
       <div
         className="analytics-option-list"
         role="group"
         aria-label={`Pilih ${title}`}
       >
-        {options.map((option) => {
+        {visibleOptions.length === 0 ? (
+          <span className="analytics-option-empty">Field tidak ditemukan</span>
+        ) : null}
+        {visibleOptions.map((option) => {
           const checked = selectedKeySet.has(option.key);
           return (
             <label
@@ -268,63 +291,69 @@ function AnalyticsFieldPicker({
         {selectedOptions.length === 0 ? (
           <span className="analytics-selected-empty">Belum ada field dipilih</span>
         ) : (
-          selectedOptions.map((option, index) => (
-            <div className="analytics-selected-row" key={option.key} role="listitem">
-              <span className="analytics-selected-label">{option.label}</span>
-              {onAggregationChange && option.format ? (
-                <select
-                  className="analytics-aggregation-select"
-                  aria-label={`Mode ${title} ${option.label}`}
-                  value={
-                    aggregationValues?.[option.key] ??
-                    option.aggregation ??
-                    getSheetAnalyticsMetricAggregationOptions(
-                      option as SheetAnalyticsMetricOption
-                    )[0].key
-                  }
-                  onChange={(event) =>
-                    onAggregationChange(
-                      option.key,
-                      event.target.value as SheetAnalyticsMetricAggregation
-                    )
-                  }
-                >
-                  {getSheetAnalyticsMetricAggregationOptions(
+          selectedOptions.map((option, index) => {
+            const aggregationOptions =
+              onAggregationChange && option.format
+                ? getSheetAnalyticsMetricAggregationOptions(
                     option as SheetAnalyticsMetricOption
-                  ).map((aggregationOption) => (
-                    <option key={aggregationOption.key} value={aggregationOption.key}>
-                      {aggregationOption.label}
-                    </option>
-                  ))}
-                </select>
-              ) : null}
-              <div className="analytics-selected-actions">
-                <button
-                  type="button"
-                  aria-label={`Naikkan ${title} ${option.label}`}
-                  disabled={index === 0}
-                  onClick={() => moveOption(option.key, -1)}
-                >
-                  ^
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Turunkan ${title} ${option.label}`}
-                  disabled={index === selectedOptions.length - 1}
-                  onClick={() => moveOption(option.key, 1)}
-                >
-                  v
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Hapus ${title} ${option.label}`}
-                  onClick={() => removeOption(option.key)}
-                >
-                  x
-                </button>
+                  )
+                : [];
+            const selectedAggregation =
+              aggregationValues?.[option.key] ?? option.aggregation;
+            const aggregationValue =
+              aggregationOptions.find((item) => item.key === selectedAggregation)?.key ??
+              aggregationOptions[0]?.key;
+
+            return (
+              <div className="analytics-selected-row" key={option.key} role="listitem">
+                <span className="analytics-selected-label">{option.label}</span>
+                {onAggregationChange && option.format && aggregationValue ? (
+                  <select
+                    className="analytics-aggregation-select"
+                    aria-label={`Mode ${title} ${option.label}`}
+                    value={aggregationValue}
+                    onChange={(event) =>
+                      onAggregationChange(
+                        option.key,
+                        event.target.value as SheetAnalyticsMetricAggregation
+                      )
+                    }
+                  >
+                    {aggregationOptions.map((aggregationOption) => (
+                      <option key={aggregationOption.key} value={aggregationOption.key}>
+                        {aggregationOption.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+                <div className="analytics-selected-actions">
+                  <button
+                    type="button"
+                    aria-label={`Naikkan ${title} ${option.label}`}
+                    disabled={index === 0}
+                    onClick={() => moveOption(option.key, -1)}
+                  >
+                    ^
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Turunkan ${title} ${option.label}`}
+                    disabled={index === selectedOptions.length - 1}
+                    onClick={() => moveOption(option.key, 1)}
+                  >
+                    v
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Hapus ${title} ${option.label}`}
+                    onClick={() => removeOption(option.key)}
+                  >
+                    x
+                  </button>
+                </div>
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>
@@ -362,7 +391,7 @@ export function SheetAnalyticsView({
   const maxMetricValue = Math.max(...chartRows.map((row) => row.metricValue), 0);
   const metricLabel =
     summary.metrics.length > 0
-      ? summary.metrics.map((metric) => metric.label).join(" + ")
+      ? summary.metrics.map(formatMetricLabel).join(" + ")
       : "Metric";
   const groupByKeys = analytics.groupByPaths;
   const metricKeys = analytics.metrics;
@@ -498,7 +527,7 @@ export function SheetAnalyticsView({
                               className="analytics-sort-header"
                               onClick={() => togglePivotSort(sortKey)}
                             >
-                              <span>{metric.label}</span>
+                              <span>{formatMetricLabel(metric)}</span>
                               <span className="sort-indicator is-active">
                                 {getSortIndicator(activePivotSort, sortKey)}
                               </span>

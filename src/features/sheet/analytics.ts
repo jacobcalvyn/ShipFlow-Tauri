@@ -1,4 +1,4 @@
-import { COLUMNS } from "./columns";
+import { ANALYTICS_FIELD_COLUMN_PATHS, COLUMNS } from "./columns";
 import {
   SheetAnalyticsMetric,
   SheetAnalyticsMetricAggregation,
@@ -10,13 +10,14 @@ import { formatColumnValue, getRawColumnValue } from "./utils";
 const COUNT_METRIC_KEY = "count";
 const LEGACY_COD_TOTAL_METRIC_KEY = "cod_total";
 const COD_TOTAL_COLUMN_PATH = "detail.billing_detail.cod_info.total_cod";
-export const ANALYTICS_EXCLUDED_COLUMN_PATHS = new Set([
-  "history_summary.bagging_unbagging",
-  "history_summary.manifest_r7",
-  "history_summary.delivery_runsheet",
-  "pod.photo1_url",
-  "pod.photo2_url",
-]);
+export const ANALYTICS_ALLOWED_COLUMN_PATHS = new Set<string>(
+  ANALYTICS_FIELD_COLUMN_PATHS
+);
+export const ANALYTICS_EXCLUDED_COLUMN_PATHS = new Set(
+  COLUMNS.filter((column) => !ANALYTICS_ALLOWED_COLUMN_PATHS.has(column.path)).map(
+    (column) => column.path
+  )
+);
 
 export type SheetAnalyticsGroupByOption = {
   path: string;
@@ -70,27 +71,25 @@ export type SheetAnalyticsMetricAggregationOption = {
 const NUMBER_AGGREGATION_OPTIONS: SheetAnalyticsMetricAggregationOption[] = [
   { key: "sum", label: "Jumlah" },
   { key: "average", label: "Rata-rata" },
-  { key: "min", label: "Minimum" },
-  { key: "max", label: "Maksimum" },
-  { key: "count", label: "Jumlah Terisi" },
-  { key: "count_unique", label: "Jumlah Unik" },
+  { key: "max", label: "Nilai Maksimum" },
+  { key: "min", label: "Nilai Minimum" },
+  { key: "count", label: "Jumlah Data" },
+  { key: "count_unique", label: "Banyaknya Nilai Berbeda" },
 ];
 
 const TEXT_AGGREGATION_OPTIONS: SheetAnalyticsMetricAggregationOption[] = [
-  { key: "unique_list", label: "Daftar Unik" },
-  { key: "count_unique", label: "Jumlah Unik" },
-  { key: "count", label: "Jumlah Terisi" },
-  { key: "most_frequent", label: "Terbanyak" },
+  { key: "unique_list", label: "Teks" },
+  { key: "most_frequent", label: "Paling Sering" },
   { key: "first", label: "Pertama" },
   { key: "last", label: "Terakhir" },
 ];
 
 const COUNT_AGGREGATION_OPTIONS: SheetAnalyticsMetricAggregationOption[] = [
-  { key: "count", label: "Jumlah" },
+  { key: "count", label: "Jumlah Data" },
 ];
 
 function isAnalyticsColumnAllowed(path: string) {
-  return !ANALYTICS_EXCLUDED_COLUMN_PATHS.has(path);
+  return ANALYTICS_ALLOWED_COLUMN_PATHS.has(path);
 }
 
 export function getSheetAnalyticsGroupByOptions(): SheetAnalyticsGroupByOption[] {
@@ -109,9 +108,7 @@ export function getSheetAnalyticsMetricOptions(): SheetAnalyticsMetricOption[] {
       format:
         column.type === "currency"
           ? "currency" as const
-          : column.type === "number" ||
-              column.type === "weight" ||
-              column.type === "boolean"
+          : column.type === "number" || column.type === "weight"
             ? "number" as const
             : "text" as const,
       path: column.path,

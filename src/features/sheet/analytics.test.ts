@@ -6,6 +6,7 @@ import {
 import {
   ANALYTICS_EXCLUDED_COLUMN_PATHS,
   getSheetAnalyticsGroupByOptions,
+  getSheetAnalyticsMetricAggregationOptions,
   getSheetAnalyticsMetricOptions,
   getSheetAnalyticsSummary,
 } from "./analytics";
@@ -82,14 +83,67 @@ function getDisplayedContext(sheetState: ReturnType<typeof createDefaultSheetSta
 
 describe("sheet analytics", () => {
   it("exposes sheet columns for group and metric fields except blocked raw media/history columns", () => {
-    const groupPaths = getSheetAnalyticsGroupByOptions().map((option) => option.path);
-    const metricKeys = getSheetAnalyticsMetricOptions().map((option) => option.key);
+    const groupOptions = getSheetAnalyticsGroupByOptions();
+    const groupPaths = groupOptions.map((option) => option.path);
+    const groupLabels = groupOptions.map((option) => option.label);
+    const metricOptions = getSheetAnalyticsMetricOptions();
+    const metricKeys = metricOptions.map((option) => option.key);
     const allowedColumnPaths = COLUMNS.filter(
       (column) => !ANALYTICS_EXCLUDED_COLUMN_PATHS.has(column.path)
     ).map((column) => column.path);
 
     expect(groupPaths).toEqual(allowedColumnPaths);
+    expect(groupLabels).toEqual([
+      "Nomor Kiriman",
+      "TRX - TODAY",
+      "TRX - UNBAG",
+      "PID/Kantong Terakhir",
+      "Manifest Terakhir",
+      "Status Akhir",
+      "Lokasi Akhir",
+      "Petugas Akhir",
+      "ID Petugas Akhir",
+      "Waktu Status Akhir",
+      "Nama Pengirim",
+      "Telepon Pengirim",
+      "Alamat Pengirim",
+      "Nama Penerima",
+      "Telepon Penerima",
+      "Alamat Penerima",
+      "Kode Pos Penerima",
+      "ID Pelanggan Korporat",
+      "Nama Kantor",
+      "ID Kantor",
+      "Nama Petugas",
+      "ID Petugas",
+      "Tanggal Input",
+      "Jenis Layanan",
+      "Is COD",
+      "Total COD",
+      "Status COD",
+      "SLA Target",
+      "SLA Category",
+      "SLA Days Diff",
+      "Jumlah Delivery Runsheet",
+    ]);
     expect(metricKeys).toEqual(["count", ...allowedColumnPaths]);
+    expect(
+      getSheetAnalyticsMetricAggregationOptions(
+        metricOptions.find((option) => option.key === "status_akhir.status")!
+      ).map((option) => option.key)
+    ).toEqual(["unique_list", "most_frequent", "first", "last"]);
+    expect(
+      getSheetAnalyticsMetricAggregationOptions(
+        metricOptions.find(
+          (option) => option.key === "detail.billing_detail.cod_info.total_cod"
+        )!
+      ).map((option) => option.key)
+    ).toEqual(["sum", "average", "max", "min", "count", "count_unique"]);
+    expect(
+      getSheetAnalyticsMetricAggregationOptions(
+        metricOptions.find((option) => option.key === "detail.billing_detail.cod_info.is_cod")!
+      ).map((option) => option.key)
+    ).toEqual(["unique_list", "most_frequent", "first", "last"]);
   });
 
   it("summarizes filtered rows from one sheet", () => {

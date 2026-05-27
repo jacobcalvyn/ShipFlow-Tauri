@@ -15,6 +15,39 @@ export const DELIVERY_RUNSHEET_COUNT_COLUMN_PATH =
   "computed.delivery_runsheet_count";
 export const HIDDEN_COLUMNS_STORAGE_KEY = "shipflow-hidden-columns";
 export const PINNED_COLUMNS_STORAGE_KEY = "shipflow-pinned-columns";
+export const ANALYTICS_FIELD_COLUMN_PATHS = [
+  TRACKING_COLUMN_PATH,
+  DAYS_SINCE_TRANSACTION_COLUMN_PATH,
+  DAYS_SINCE_LAST_UNBAGGING_COLUMN_PATH,
+  LATEST_BAG_STATUS_COLUMN_PATH,
+  LATEST_MANIFEST_COLUMN_PATH,
+  "status_akhir.status",
+  "status_akhir.location",
+  "status_akhir.officer_name",
+  "status_akhir.officer_id",
+  "status_akhir.datetime",
+  "detail.actors.pengirim.nama",
+  "detail.actors.pengirim.telepon",
+  "detail.actors.pengirim.alamat",
+  "detail.actors.penerima.nama",
+  "detail.actors.penerima.telepon",
+  "detail.actors.penerima.alamat",
+  "detail.actors.penerima.kode_pos",
+  "detail.shipment_header.id_pelanggan_korporat",
+  "detail.origin_detail.nama_kantor",
+  "detail.origin_detail.id_kantor",
+  "detail.origin_detail.nama_petugas",
+  "detail.origin_detail.id_petugas",
+  "detail.origin_detail.tanggal_input",
+  "detail.package_detail.jenis_layanan",
+  "detail.billing_detail.cod_info.is_cod",
+  "detail.billing_detail.cod_info.total_cod",
+  "detail.billing_detail.cod_info.status",
+  "detail.performance_detail.sla_target",
+  "detail.performance_detail.sla_category",
+  "detail.performance_detail.sla_days_diff",
+  DELIVERY_RUNSHEET_COUNT_COLUMN_PATH,
+] as const;
 
 export const COLUMNS: ColumnDefinition[] = [
   {

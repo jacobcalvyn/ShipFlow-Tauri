@@ -261,25 +261,55 @@ The analytics action panel contains:
 
 - `Sumber`: choose filtered rows, all rows, or selected rows
 - `Mode`: choose `Pivot`, `Bar`, or `Donut`
-- `Group`: multi-select fields used as grouping dimensions
-- `Metric`: multi-select fields used as values, aggregations, or pivot split fields
+- `Group`: searchable multi-select fields used as grouping dimensions
+- `Metric`: searchable multi-select fields used as values, aggregations, or pivot split fields
 
-`Group` and `Metric` can use every table column except heavy raw history/media fields:
+`Group` and `Metric` can use only this curated field list:
 
-- `history_summary.bagging_unbagging`
-- `history_summary.manifest_r7`
-- `history_summary.delivery_runsheet`
-- `pod.photo1_url`
-- `pod.photo2_url`
+| Field | Type |
+|---|---|
+| `Nomor Kiriman` | `text` |
+| `TRX - TODAY` | `number` |
+| `TRX - UNBAG` | `number` |
+| `PID/Kantong Terakhir` | `text` |
+| `Manifest Terakhir` | `text` |
+| `Status Akhir` | `text` |
+| `Lokasi Akhir` | `text` |
+| `Petugas Akhir` | `text` |
+| `ID Petugas Akhir` | `text` |
+| `Waktu Status Akhir` | `text` |
+| `Nama Pengirim` | `text` |
+| `Telepon Pengirim` | `text` |
+| `Alamat Pengirim` | `text` |
+| `Nama Penerima` | `text` |
+| `Telepon Penerima` | `text` |
+| `Alamat Penerima` | `text` |
+| `Kode Pos Penerima` | `text` |
+| `ID Pelanggan Korporat` | `text` |
+| `Nama Kantor` | `text` |
+| `ID Kantor` | `text` |
+| `Nama Petugas` | `text` |
+| `ID Petugas` | `text` |
+| `Tanggal Input` | `date` |
+| `Jenis Layanan` | `text` |
+| `Is COD` | `boolean` |
+| `Total COD` | `currency` |
+| `Status COD` | `text` |
+| `SLA Target` | `text` |
+| `SLA Category` | `text` |
+| `SLA Days Diff` | `number` |
+| `Jumlah Delivery Runsheet` | `number` |
 
 Metric behavior:
 
-- numeric, currency, boolean, and text columns can be selected as metrics
+- numeric, currency, weight, text, date, and boolean columns can be selected as metrics
 - selected metrics can be reordered and removed from the active metric list
-- numeric metrics support sum, average, min, max, filled count, and unique count
-- text metrics support unique list, unique count, filled count, most frequent, first, and last
-- in `Pivot` mode, text metrics using unique-list aggregation become split dimensions, so a field such as `Status Akhir` creates separate pivot rows instead of combining all statuses into one cell
-- `Jumlah Kiriman` remains available as a built-in count metric
+- numeric, currency, and weight metrics support `Jumlah`, `Rata-rata`, `Nilai Maksimum`, `Nilai Minimum`, `Jumlah Data`, and `Banyaknya Nilai Berbeda`
+- text, date, and boolean metrics support `Teks`, `Paling Sering`, `Pertama`, and `Terakhir`
+- the metric formula menu is type-aware, so text fields do not offer numeric formulas such as `Jumlah`, `Rata-rata`, `Nilai Maksimum`, or `Nilai Minimum`
+- in `Pivot` mode, text metrics using the text aggregation become split dimensions, so a field such as `Status Akhir` creates separate pivot rows instead of combining all statuses into one cell
+- count-style analysis for text categories should use the text field as `Group` and `Jumlah Kiriman` as the metric
+- `Jumlah Kiriman` remains available as a built-in count metric and uses the `Jumlah Data` formula
 
 Pivot table behavior:
 

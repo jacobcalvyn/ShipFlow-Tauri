@@ -552,6 +552,11 @@ describe("App workspace isolation", () => {
         (item) => item.textContent
       );
     const groupList = screen.getByRole("list", { name: "Group aktif" });
+    fireEvent.change(screen.getByLabelText("Cari Group"), {
+      target: { value: "layanan" },
+    });
+    expect(screen.getByLabelText("Pilih Group Jenis Layanan")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Pilih Group Status Akhir")).not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Pilih Group Jenis Layanan"));
 
     expect(within(groupList).getByText("Jenis Layanan")).toBeInTheDocument();
@@ -567,6 +572,11 @@ describe("App workspace isolation", () => {
     expect(within(groupList).getByText("Belum ada field dipilih")).toBeInTheDocument();
 
     const metricList = screen.getByRole("list", { name: "Metric aktif" });
+    fireEvent.change(screen.getByLabelText("Cari Metric"), {
+      target: { value: "cod" },
+    });
+    expect(screen.getByLabelText("Pilih Metric Total COD")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Pilih Metric Jumlah Kiriman")).not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Pilih Metric Total COD"));
 
     expect(within(metricList).getByText("Total COD")).toBeInTheDocument();
