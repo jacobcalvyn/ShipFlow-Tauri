@@ -1,6 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  DELIVERY_RUNSHEET_COUNT_COLUMN_PATH,
   LATEST_BAG_STATUS_COLUMN_PATH,
   LATEST_DELIVERY_COLUMN_PATH,
   LATEST_MANIFEST_COLUMN_PATH,
@@ -123,6 +124,7 @@ function buildOptions() {
       "history_summary.bagging_unbagging",
       "history_summary.manifest_r7",
       "history_summary.delivery_runsheet",
+      DELIVERY_RUNSHEET_COUNT_COLUMN_PATH,
     ].includes(column.path)
   );
 
@@ -200,6 +202,7 @@ describe("useWorkspaceCommandsController", () => {
     expect(csvContent).toContain("PID/Kantong Terakhir");
     expect(csvContent).toContain("Manifest Terakhir");
     expect(csvContent).toContain("Delivery Terakhir");
+    expect(csvContent).toContain("Jumlah Delivery Runsheet");
     expect(csvContent).toContain("Status Akhir");
 
     expect(csvContent).not.toContain("POD Photo 1");

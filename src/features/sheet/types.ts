@@ -67,7 +67,42 @@ export type ImportSourceLookupStates = Record<
   ImportSourceLookupState
 >;
 
+export type SheetViewMode = "workspace" | "analytics";
+
+export type SheetAnalyticsSourceScope =
+  | "all_rows"
+  | "filtered_rows"
+  | "selected_rows";
+
+export type SheetAnalyticsMetric = string;
+
+export type SheetAnalyticsChartType = "bar" | "donut" | "pivot";
+
+export type SheetAnalyticsMetricAggregation =
+  | "sum"
+  | "average"
+  | "min"
+  | "max"
+  | "count"
+  | "count_unique"
+  | "unique_list"
+  | "most_frequent"
+  | "first"
+  | "last";
+
+export type SheetAnalyticsState = {
+  sourceScope: SheetAnalyticsSourceScope;
+  groupByPaths: string[];
+  metrics: SheetAnalyticsMetric[];
+  metricAggregations?: Partial<
+    Record<SheetAnalyticsMetric, SheetAnalyticsMetricAggregation>
+  >;
+  chartType: SheetAnalyticsChartType;
+};
+
 export type SheetState = {
+  activeMode: SheetViewMode;
+  analytics: SheetAnalyticsState;
   rows: SheetRow[];
   filters: Record<string, string>;
   valueFilters: Record<string, string[]>;

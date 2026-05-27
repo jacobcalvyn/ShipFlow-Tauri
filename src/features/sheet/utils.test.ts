@@ -2,6 +2,7 @@ import {
   COLUMNS,
   DAYS_SINCE_LAST_UNBAGGING_COLUMN_PATH,
   DAYS_SINCE_TRANSACTION_COLUMN_PATH,
+  DELIVERY_RUNSHEET_COUNT_COLUMN_PATH,
   MIN_EMPTY_TRAILING_ROWS,
 } from "./columns";
 import { SheetRow, TrackResponse } from "./types";
@@ -205,6 +206,9 @@ describe("sheet utils", () => {
     const deliveryColumn = COLUMNS.find(
       (column) => column.path === "history_summary.delivery_runsheet"
     )!;
+    const deliveryRunsheetCountColumn = COLUMNS.find(
+      (column) => column.path === DELIVERY_RUNSHEET_COUNT_COLUMN_PATH
+    )!;
 
     expect(formatColumnValue(row, beratColumn)).toBe("1,25 Kg");
     expect(formatColumnValue(row, codColumn)).toBe("Ya");
@@ -230,6 +234,19 @@ describe("sheet utils", () => {
     expect(formatColumnValue(row, deliveryColumn)).toBe(
       "FAILEDTODELIVERED | 2026-04-15 | Gabriel Erick Taurui (560000529)"
     );
+    expect(formatColumnValue(row, deliveryRunsheetCountColumn)).toBe("1");
+  });
+
+  it("places the delivery runsheet count next to the raw delivery runsheet summary", () => {
+    const deliveryRunsheetIndex = COLUMNS.findIndex(
+      (column) => column.path === "history_summary.delivery_runsheet"
+    );
+    const deliveryRunsheetCountIndex = COLUMNS.findIndex(
+      (column) => column.path === DELIVERY_RUNSHEET_COUNT_COLUMN_PATH
+    );
+
+    expect(deliveryRunsheetIndex).toBeGreaterThanOrEqual(0);
+    expect(deliveryRunsheetCountIndex).toBe(deliveryRunsheetIndex + 1);
   });
 
   it("formats elapsed day columns from transaction and latest unbagging dates", () => {

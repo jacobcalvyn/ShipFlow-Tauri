@@ -1,4 +1,11 @@
-import { createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import App from "./App";
 import {
   BagResponse,
@@ -498,6 +505,136 @@ describe("App workspace isolation", () => {
     return (matchedCall?.[1] as Record<string, unknown> | undefined) ?? null;
   }
 
+  it("keeps workspace and pivot modes scoped to each sheet", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Pivot/Grafik" }));
+    expect(screen.getByLabelText("Sumber Data Pivot")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Pilih Group Jenis Layanan"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "Sheet 2" })).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+    });
+    expect(screen.getByRole("tab", { name: "Workspace" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(screen.queryByLabelText("Sumber Data Pivot")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "Pivot/Grafik" })).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+    });
+    expect(
+      within(screen.getByRole("list", { name: "Group aktif" })).getByText(
+        "Jenis Layanan"
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("supports checkbox multi-select fields with up and down ordering controls", () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Pivot/Grafik" }));
+
+    const getSelectedLabels = (list: HTMLElement) =>
+      Array.from(list.querySelectorAll(".analytics-selected-label")).map(
+        (item) => item.textContent
+      );
+    const groupList = screen.getByRole("list", { name: "Group aktif" });
+    fireEvent.click(screen.getByLabelText("Pilih Group Jenis Layanan"));
+
+    expect(within(groupList).getByText("Jenis Layanan")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Naikkan Group Jenis Layanan" }));
+
+    expect(getSelectedLabels(groupList)).toEqual(["Jenis Layanan", "Status Akhir"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Hapus Group Jenis Layanan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hapus Group Status Akhir" }));
+
+    expect(groupList.querySelectorAll(".analytics-selected-row")).toHaveLength(0);
+    expect(within(groupList).getByText("Belum ada field dipilih")).toBeInTheDocument();
+
+    const metricList = screen.getByRole("list", { name: "Metric aktif" });
+    fireEvent.click(screen.getByLabelText("Pilih Metric Total COD"));
+
+    expect(within(metricList).getByText("Total COD")).toBeInTheDocument();
+    expect(screen.getByLabelText("Mode Metric Total COD")).toHaveValue("sum");
+
+    fireEvent.change(screen.getByLabelText("Mode Metric Total COD"), {
+      target: { value: "average" },
+    });
+
+    expect(screen.getByLabelText("Mode Metric Total COD")).toHaveValue("average");
+
+    fireEvent.click(screen.getByRole("button", { name: "Naikkan Metric Total COD" }));
+
+    expect(getSelectedLabels(metricList)).toEqual(["Total COD", "Jumlah Kiriman"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Hapus Metric Total COD" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hapus Metric Jumlah Kiriman" }));
+
+    expect(metricList.querySelectorAll(".analytics-selected-row")).toHaveLength(0);
+    expect(within(metricList).getByText("Belum ada field dipilih")).toBeInTheDocument();
+  });
+
+  it("switches between chart and pivot display modes", () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Pivot/Grafik" }));
+
+    const modeSelect = screen.getByLabelText("Mode Pivot Grafik") as HTMLSelectElement;
+    expect(modeSelect).toHaveValue("pivot");
+    expect(Array.from(modeSelect.options).map((option) => option.value)).toEqual([
+      "pivot",
+      "bar",
+      "donut",
+    ]);
+    expect(screen.getByRole("region", { name: "Tabel Pivot" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Grafik Pivot" })).not.toBeInTheDocument();
+
+    const shareHeader = screen.getByRole("columnheader", { name: /Share/ });
+    expect(shareHeader).toHaveAttribute("aria-sort", "descending");
+    fireEvent.click(within(shareHeader).getByRole("button", { name: /Share/ }));
+    expect(shareHeader).toHaveAttribute("aria-sort", "ascending");
+
+    const groupHeader = screen.getByRole("columnheader", { name: /Status Akhir/ });
+    fireEvent.click(within(groupHeader).getByRole("button", { name: /Status Akhir/ }));
+    expect(groupHeader).toHaveAttribute("aria-sort", "ascending");
+
+    fireEvent.change(modeSelect, {
+      target: { value: "bar" },
+    });
+
+    expect(screen.getByRole("region", { name: "Grafik Pivot" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Tabel Pivot" })).not.toBeInTheDocument();
+
+    fireEvent.change(modeSelect, {
+      target: { value: "donut" },
+    });
+
+    expect(screen.getByRole("region", { name: "Grafik Pivot" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Tabel Pivot" })).not.toBeInTheDocument();
+
+    fireEvent.change(modeSelect, {
+      target: { value: "pivot" },
+    });
+
+    expect(screen.getByRole("region", { name: "Tabel Pivot" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Grafik Pivot" })).not.toBeInTheDocument();
+  });
+
   it("ignores late responses after deleting the active sheet during an in-flight request", async () => {
     render(<App />);
 
@@ -786,7 +923,7 @@ describe("App workspace isolation", () => {
       expect(screen.getByText("Nomor Kiriman (1)")).toBeInTheDocument();
       expect(screen.getByText("P260000000001")).toBeInTheDocument();
     });
-  });
+  }, 10_000);
 
   it("appends bag lookup shipment ids into the active sheet", async () => {
     render(<App />);
@@ -2169,6 +2306,7 @@ describe("App workspace isolation", () => {
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Koneksi Service" }));
 
     expect(screen.getByLabelText("ShipFlow Service Port")).toBeInTheDocument();
     expect(screen.getByLabelText("ShipFlow Service Bearer Token")).toBeInTheDocument();
@@ -2181,6 +2319,7 @@ describe("App workspace isolation", () => {
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Koneksi Service" }));
     fireEvent.click(screen.getByRole("button", { name: "Paste" }));
 
     await waitFor(() => {

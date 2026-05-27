@@ -11,6 +11,8 @@ export const DAYS_SINCE_LAST_UNBAGGING_COLUMN_PATH =
 export const LATEST_BAG_STATUS_COLUMN_PATH = "history_summary.latest_bagging_status";
 export const LATEST_MANIFEST_COLUMN_PATH = "history_summary.latest_manifest_r7";
 export const LATEST_DELIVERY_COLUMN_PATH = "history_summary.latest_delivery_runsheet";
+export const DELIVERY_RUNSHEET_COUNT_COLUMN_PATH =
+  "computed.delivery_runsheet_count";
 export const HIDDEN_COLUMNS_STORAGE_KEY = "shipflow-hidden-columns";
 export const PINNED_COLUMNS_STORAGE_KEY = "shipflow-pinned-columns";
 
@@ -367,5 +369,14 @@ export const COLUMNS: ColumnDefinition[] = [
     type: "json",
     defaultWidth: 320,
     minWidth: 260,
+  },
+  {
+    path: DELIVERY_RUNSHEET_COUNT_COLUMN_PATH,
+    label: "Jumlah Delivery Runsheet",
+    type: "number",
+    defaultWidth: 160,
+    minWidth: 150,
+    maxWidth: 170,
+    compact: true,
   },
 ];

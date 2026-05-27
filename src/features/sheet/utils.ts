@@ -2,6 +2,7 @@ import {
   COLUMNS,
   DAYS_SINCE_LAST_UNBAGGING_COLUMN_PATH,
   DAYS_SINCE_TRANSACTION_COLUMN_PATH,
+  DELIVERY_RUNSHEET_COUNT_COLUMN_PATH,
   INITIAL_ROW_COUNT,
   LATEST_BAG_STATUS_COLUMN_PATH,
   LATEST_DELIVERY_COLUMN_PATH,
@@ -253,6 +254,10 @@ export function getRawColumnValue(row: SheetRow, column: ColumnDefinition): unkn
     return getLatestDeliveryText(row.shipment.history_summary);
   }
 
+  if (column.path === DELIVERY_RUNSHEET_COUNT_COLUMN_PATH) {
+    return getDeliveryRunsheetCount(row.shipment.history_summary);
+  }
+
   return getByPath(row.shipment, column.path);
 }
 
@@ -472,6 +477,15 @@ function getLatestDeliveryText(historySummary: unknown) {
   }
 
   return getHistorySummaryLatestText(rawValue, "history_summary.delivery_runsheet");
+}
+
+function getDeliveryRunsheetCount(historySummary: unknown) {
+  if (!historySummary || typeof historySummary !== "object") {
+    return 0;
+  }
+
+  const rawValue = (historySummary as Record<string, unknown>).delivery_runsheet;
+  return Array.isArray(rawValue) ? rawValue.length : 0;
 }
 
 export function getLatestBagPrintUrl(historySummary: unknown) {
@@ -853,6 +867,103 @@ export function isBrowserReady() {
 }
 
 export function assertValidSheetState(sheetState: SheetState) {
+  if (
+    sheetState.activeMode !== "workspace" &&
+    sheetState.activeMode !== "analytics"
+  ) {
+    throw new Error(`Invalid sheet mode: ${String(sheetState.activeMode)}`);
+  }
+
+  if (
+    sheetState.analytics.sourceScope !== "all_rows" &&
+    sheetState.analytics.sourceScope !== "filtered_rows" &&
+    sheetState.analytics.sourceScope !== "selected_rows"
+  ) {
+    throw new Error(
+      `Invalid sheet analytics source scope: ${String(sheetState.analytics.sourceScope)}`
+    );
+  }
+
+  if (!Array.isArray(sheetState.analytics.groupByPaths)) {
+    throw new Error("Invalid sheet analytics group paths.");
+  }
+
+  const analyticsExcludedColumnPaths = new Set([
+    "history_summary.bagging_unbagging",
+    "history_summary.manifest_r7",
+    "history_summary.delivery_runsheet",
+    "pod.photo1_url",
+    "pod.photo2_url",
+  ]);
+  const analyticsColumnPaths = COLUMNS.filter(
+    (column) => !analyticsExcludedColumnPaths.has(column.path)
+  ).map((column) => column.path);
+  const analyticsGroupPathSet = new Set(analyticsColumnPaths);
+  for (const groupByPath of sheetState.analytics.groupByPaths) {
+    if (!analyticsGroupPathSet.has(groupByPath)) {
+      throw new Error(`Invalid sheet analytics group path: ${groupByPath}`);
+    }
+  }
+
+  if (!Array.isArray(sheetState.analytics.metrics)) {
+    throw new Error("Invalid sheet analytics metrics.");
+  }
+
+  const analyticsMetricSet = new Set(["count", ...analyticsColumnPaths]);
+  for (const metric of sheetState.analytics.metrics) {
+    if (!analyticsMetricSet.has(metric)) {
+      throw new Error(`Invalid sheet analytics metric: ${String(metric)}`);
+    }
+  }
+
+  if (
+    sheetState.analytics.metricAggregations !== undefined &&
+    (!sheetState.analytics.metricAggregations ||
+      typeof sheetState.analytics.metricAggregations !== "object" ||
+      Array.isArray(sheetState.analytics.metricAggregations))
+  ) {
+    throw new Error("Invalid sheet analytics metric aggregations.");
+  }
+
+  const analyticsMetricAggregationSet = new Set([
+    "sum",
+    "average",
+    "min",
+    "max",
+    "count",
+    "count_unique",
+    "unique_list",
+    "most_frequent",
+    "first",
+    "last",
+  ]);
+  for (const [metric, aggregation] of Object.entries(
+    sheetState.analytics.metricAggregations ?? {}
+  )) {
+    if (!analyticsMetricSet.has(metric)) {
+      throw new Error(`Invalid sheet analytics metric aggregation key: ${metric}`);
+    }
+
+    if (
+      typeof aggregation !== "string" ||
+      !analyticsMetricAggregationSet.has(aggregation)
+    ) {
+      throw new Error(
+        `Invalid sheet analytics metric aggregation: ${String(aggregation)}`
+      );
+    }
+  }
+
+  if (
+    sheetState.analytics.chartType !== "bar" &&
+    sheetState.analytics.chartType !== "donut" &&
+    sheetState.analytics.chartType !== "pivot"
+  ) {
+    throw new Error(
+      `Invalid sheet analytics chart type: ${String(sheetState.analytics.chartType)}`
+    );
+  }
+
   const rowKeySet = new Set<string>();
 
   for (const row of sheetState.rows) {

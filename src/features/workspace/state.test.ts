@@ -17,6 +17,8 @@ import {
   getWorkspaceTabs,
 } from "./selectors";
 
+const COD_TOTAL_COLUMN_PATH = "detail.billing_detail.cod_info.total_cod";
+
 describe("workspace state", () => {
   it("creates a workspace with one active sheet", () => {
     const workspace = createDefaultWorkspaceState();
@@ -38,10 +40,23 @@ describe("workspace state", () => {
     const next = updateSheetInWorkspace(workspace, secondSheetId, (sheet) => ({
       ...sheet,
       deleteAllArmed: true,
+      activeMode: "analytics",
+      analytics: {
+        ...sheet.analytics,
+        groupByPaths: ["detail.package_detail.jenis_layanan"],
+      },
     }));
 
     expect(next.sheetsById[firstSheetId].deleteAllArmed).toBe(false);
     expect(next.sheetsById[secondSheetId].deleteAllArmed).toBe(true);
+    expect(next.sheetsById[firstSheetId].activeMode).toBe("workspace");
+    expect(next.sheetsById[secondSheetId].activeMode).toBe("analytics");
+    expect(next.sheetsById[firstSheetId].analytics.groupByPaths).toEqual([
+      "status_akhir.status",
+    ]);
+    expect(next.sheetsById[secondSheetId].analytics.groupByPaths).toEqual([
+      "detail.package_detail.jenis_layanan",
+    ]);
   });
 
   it("updates the active sheet and can switch active tabs", () => {
@@ -90,6 +105,13 @@ describe("workspace state", () => {
 
     workspace = updateActiveSheetInWorkspace(workspace, (sheet) => ({
       ...sheet,
+      activeMode: "analytics",
+      analytics: {
+        sourceScope: "selected_rows",
+        groupByPaths: ["detail.package_detail.jenis_layanan", "status_akhir.status"],
+        metrics: [COD_TOTAL_COLUMN_PATH, "count"],
+        chartType: "donut",
+      },
       rows: sheet.rows.map((row, index) =>
         index === 0
           ? {
@@ -108,6 +130,13 @@ describe("workspace state", () => {
     const duplicatedSheet = getActiveSheet(duplicated);
 
     expect(getActiveSheetName(duplicated)).toBe("Sheet 1 - 1");
+    expect(duplicatedSheet.activeMode).toBe("analytics");
+    expect(duplicatedSheet.analytics).toEqual({
+      sourceScope: "selected_rows",
+      groupByPaths: ["detail.package_detail.jenis_layanan", "status_akhir.status"],
+      metrics: [COD_TOTAL_COLUMN_PATH, "count"],
+      chartType: "donut",
+    });
     expect(duplicatedSheet.rows[0].trackingInput).toBe("P2603310114291");
     expect(duplicatedSheet.rows[0].loading).toBe(false);
     expect(duplicatedSheet.rows[0].error).toBe("");

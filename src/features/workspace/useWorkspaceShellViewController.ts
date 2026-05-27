@@ -1,4 +1,20 @@
-import { ComponentProps } from "react";
+import { ComponentProps, useCallback } from "react";
+import {
+  setSheetAnalyticsChartTypeInSheet,
+  setSheetAnalyticsGroupByPathsInSheet,
+  setSheetAnalyticsMetricAggregationInSheet,
+  setSheetAnalyticsMetricsInSheet,
+  setSheetAnalyticsSourceScopeInSheet,
+  setSheetViewModeInSheet,
+} from "../sheet/actions";
+import {
+  SheetAnalyticsChartType,
+  SheetAnalyticsMetric,
+  SheetAnalyticsMetricAggregation,
+  SheetAnalyticsSourceScope,
+  SheetState,
+  SheetViewMode,
+} from "../sheet/types";
 import { WorkspaceShellView } from "./components/WorkspaceShellView";
 import { useWorkspaceActionBarProps } from "./useWorkspaceActionBarProps";
 import { useWorkspaceDeleteArmController } from "./useWorkspaceDeleteArmController";
@@ -15,6 +31,7 @@ type UseWorkspaceShellViewControllerOptions = {
   activeSheet: ReturnType<typeof useWorkspaceStateController>["activeSheet"];
   activeSheetId: ReturnType<typeof useWorkspaceStateController>["activeSheetId"];
   workspaceTabs: ReturnType<typeof useWorkspaceStateController>["workspaceTabs"];
+  updateActiveSheet: (updater: (sheetState: SheetState) => SheetState) => void;
   surface: ReturnType<typeof useWorkspaceShellSurfaceController>;
   deleteArm: ReturnType<typeof useWorkspaceDeleteArmController>;
   sheetViewModel: ReturnType<typeof useWorkspaceSheetViewModel>;
@@ -26,6 +43,7 @@ export function useWorkspaceShellViewController({
   activeSheet,
   activeSheetId,
   workspaceTabs,
+  updateActiveSheet,
   surface,
   deleteArm,
   sheetViewModel,
@@ -34,6 +52,58 @@ export function useWorkspaceShellViewController({
 }: UseWorkspaceShellViewControllerOptions): ComponentProps<
   typeof WorkspaceShellView
 > {
+  const setActiveSheetMode = useCallback(
+    (mode: SheetViewMode) => {
+      updateActiveSheet((current) => setSheetViewModeInSheet(current, mode));
+    },
+    [updateActiveSheet]
+  );
+
+  const setAnalyticsSourceScope = useCallback(
+    (sourceScope: SheetAnalyticsSourceScope) => {
+      updateActiveSheet((current) =>
+        setSheetAnalyticsSourceScopeInSheet(current, sourceScope)
+      );
+    },
+    [updateActiveSheet]
+  );
+
+  const setAnalyticsGroupByPaths = useCallback(
+    (groupByPaths: string[]) => {
+      updateActiveSheet((current) =>
+        setSheetAnalyticsGroupByPathsInSheet(current, groupByPaths)
+      );
+    },
+    [updateActiveSheet]
+  );
+
+  const setAnalyticsMetrics = useCallback(
+    (metrics: SheetAnalyticsMetric[]) => {
+      updateActiveSheet((current) =>
+        setSheetAnalyticsMetricsInSheet(current, metrics)
+      );
+    },
+    [updateActiveSheet]
+  );
+
+  const setAnalyticsMetricAggregation = useCallback(
+    (metric: SheetAnalyticsMetric, aggregation: SheetAnalyticsMetricAggregation) => {
+      updateActiveSheet((current) =>
+        setSheetAnalyticsMetricAggregationInSheet(current, metric, aggregation)
+      );
+    },
+    [updateActiveSheet]
+  );
+
+  const setAnalyticsChartType = useCallback(
+    (chartType: SheetAnalyticsChartType) => {
+      updateActiveSheet((current) =>
+        setSheetAnalyticsChartTypeInSheet(current, chartType)
+      );
+    },
+    [updateActiveSheet]
+  );
+
   const sheetTabsProps = useWorkspaceTabsProps({
     workspaceTabs,
     activeSheetId,
@@ -180,8 +250,24 @@ export function useWorkspaceShellViewController({
   return {
     actionNotices: surface.actionNotices,
     displayScale: surface.effectiveDisplayScale,
+    activeSheetMode: activeSheet.activeMode,
     sheetTabsProps,
+    sheetModeSwitchProps: {
+      activeMode: activeSheet.activeMode,
+      onModeChange: setActiveSheetMode,
+    },
     sheetActionBarProps,
+    sheetAnalyticsViewProps: {
+      analytics: activeSheet.analytics,
+      groupByOptions: sheetViewModel.analyticsGroupByOptions,
+      metricOptions: sheetViewModel.analyticsMetricOptions,
+      summary: sheetViewModel.analyticsSummary,
+      onSourceScopeChange: setAnalyticsSourceScope,
+      onGroupByPathsChange: setAnalyticsGroupByPaths,
+      onMetricsChange: setAnalyticsMetrics,
+      onMetricAggregationChange: setAnalyticsMetricAggregation,
+      onChartTypeChange: setAnalyticsChartType,
+    },
     sheetTableProps,
     documentDialogsProps,
   };

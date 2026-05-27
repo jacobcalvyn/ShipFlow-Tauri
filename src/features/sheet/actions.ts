@@ -3,7 +3,22 @@ import {
   INITIAL_ROW_COUNT,
   TRACKING_COLUMN_PATH,
 } from "./columns";
-import { ImportSourceModalKind, SheetState } from "./types";
+import {
+  getDefaultSheetAnalyticsMetricAggregation,
+  getSheetAnalyticsGroupByOptions,
+  getSheetAnalyticsMetricOptions,
+  isValidSheetAnalyticsMetricAggregation,
+} from "./analytics";
+import { createDefaultSheetAnalyticsState } from "./default-state";
+import {
+  ImportSourceModalKind,
+  SheetAnalyticsChartType,
+  SheetAnalyticsMetric,
+  SheetAnalyticsMetricAggregation,
+  SheetAnalyticsSourceScope,
+  SheetState,
+  SheetViewMode,
+} from "./types";
 import {
   createEmptyRows,
   ensureRowCapacity,
@@ -17,6 +32,205 @@ import {
   togglePinnedColumnState,
   toggleValueFilterSelection,
 } from "./state";
+
+export function setSheetViewModeInSheet(
+  sheetState: SheetState,
+  activeMode: SheetViewMode
+) {
+  if (sheetState.activeMode === activeMode) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    activeMode,
+    openColumnMenuPath: null,
+    highlightedColumnPath: null,
+  };
+}
+
+export function setSheetAnalyticsSourceScopeInSheet(
+  sheetState: SheetState,
+  sourceScope: SheetAnalyticsSourceScope
+) {
+  if (sheetState.analytics.sourceScope === sourceScope) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    analytics: {
+      ...sheetState.analytics,
+      sourceScope,
+    },
+  };
+}
+
+function areStringArraysEqual(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function dedupeValidStrings(values: string[], validValues: Set<string>) {
+  const nextValues: string[] = [];
+  for (const value of values) {
+    if (validValues.has(value) && !nextValues.includes(value)) {
+      nextValues.push(value);
+    }
+  }
+  return nextValues;
+}
+
+function normalizeAnalyticsGroupByPaths(groupByPaths: string[]) {
+  const validPaths = new Set(getSheetAnalyticsGroupByOptions().map((option) => option.path));
+  return dedupeValidStrings(groupByPaths, validPaths);
+}
+
+function normalizeAnalyticsMetrics(metrics: SheetAnalyticsMetric[]) {
+  const validMetrics = new Set(getSheetAnalyticsMetricOptions().map((option) => option.key));
+  const normalizedMetrics = metrics.map((metric) =>
+    metric === "cod_total" ? "detail.billing_detail.cod_info.total_cod" : metric
+  );
+  return dedupeValidStrings(normalizedMetrics, validMetrics) as SheetAnalyticsMetric[];
+}
+
+function normalizeAnalyticsMetricAggregations(
+  metrics: SheetAnalyticsMetric[],
+  metricAggregations?: Partial<Record<SheetAnalyticsMetric, SheetAnalyticsMetricAggregation>>
+) {
+  const metricOptionMap = new Map(
+    getSheetAnalyticsMetricOptions().map((option) => [option.key, option])
+  );
+  const nextAggregations: Partial<
+    Record<SheetAnalyticsMetric, SheetAnalyticsMetricAggregation>
+  > = {};
+
+  for (const metric of metrics) {
+    const metricOption = metricOptionMap.get(metric);
+    if (!metricOption) {
+      continue;
+    }
+
+    const selectedAggregation = metricAggregations?.[metric];
+    nextAggregations[metric] = isValidSheetAnalyticsMetricAggregation(
+      metricOption,
+      selectedAggregation
+    )
+      ? selectedAggregation
+      : getDefaultSheetAnalyticsMetricAggregation(metricOption);
+  }
+
+  return nextAggregations;
+}
+
+export function setSheetAnalyticsGroupByPathsInSheet(
+  sheetState: SheetState,
+  groupByPaths: string[]
+) {
+  const normalizedGroupByPaths = normalizeAnalyticsGroupByPaths(groupByPaths);
+  if (areStringArraysEqual(sheetState.analytics.groupByPaths, normalizedGroupByPaths)) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    analytics: {
+      ...sheetState.analytics,
+      groupByPaths: normalizedGroupByPaths,
+    },
+  };
+}
+
+export function setSheetAnalyticsGroupByInSheet(
+  sheetState: SheetState,
+  groupByPath: string | null
+) {
+  return setSheetAnalyticsGroupByPathsInSheet(sheetState, groupByPath ? [groupByPath] : []);
+}
+
+export function setSheetAnalyticsMetricsInSheet(
+  sheetState: SheetState,
+  metrics: SheetAnalyticsMetric[]
+) {
+  const normalizedMetrics = normalizeAnalyticsMetrics(metrics);
+  const metricAggregations = normalizeAnalyticsMetricAggregations(
+    normalizedMetrics,
+    sheetState.analytics.metricAggregations
+  );
+  if (
+    areStringArraysEqual(sheetState.analytics.metrics, normalizedMetrics) &&
+    JSON.stringify(sheetState.analytics.metricAggregations ?? {}) ===
+      JSON.stringify(metricAggregations)
+  ) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    analytics: {
+      ...sheetState.analytics,
+      metrics: normalizedMetrics,
+      metricAggregations,
+    },
+  };
+}
+
+export function setSheetAnalyticsMetricInSheet(
+  sheetState: SheetState,
+  metric: SheetAnalyticsMetric
+) {
+  return setSheetAnalyticsMetricsInSheet(sheetState, [metric]);
+}
+
+export function setSheetAnalyticsMetricAggregationInSheet(
+  sheetState: SheetState,
+  metric: SheetAnalyticsMetric,
+  aggregation: SheetAnalyticsMetricAggregation
+) {
+  const normalizedMetrics = normalizeAnalyticsMetrics([metric]);
+  const normalizedMetric = normalizedMetrics[0];
+  if (!normalizedMetric || !sheetState.analytics.metrics.includes(normalizedMetric)) {
+    return sheetState;
+  }
+
+  const metricOption = getSheetAnalyticsMetricOptions().find(
+    (option) => option.key === normalizedMetric
+  );
+  if (!metricOption || !isValidSheetAnalyticsMetricAggregation(metricOption, aggregation)) {
+    return sheetState;
+  }
+
+  if (sheetState.analytics.metricAggregations?.[normalizedMetric] === aggregation) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    analytics: {
+      ...sheetState.analytics,
+      metricAggregations: {
+        ...sheetState.analytics.metricAggregations,
+        [normalizedMetric]: aggregation,
+      },
+    },
+  };
+}
+
+export function setSheetAnalyticsChartTypeInSheet(
+  sheetState: SheetState,
+  chartType: SheetAnalyticsChartType
+) {
+  if (sheetState.analytics.chartType === chartType) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    analytics: {
+      ...sheetState.analytics,
+      chartType,
+    },
+  };
+}
 
 export function setTrackingInputInSheet(
   sheetState: SheetState,
@@ -760,6 +974,8 @@ export function deleteRowsInSheet(
 export function clearAllDataInSheet(sheetState: SheetState) {
   return {
     ...sheetState,
+    activeMode: "workspace" as const,
+    analytics: createDefaultSheetAnalyticsState(),
     rows: createEmptyRows(INITIAL_ROW_COUNT),
     filters: {},
     valueFilters: {},
@@ -801,6 +1017,8 @@ export function clearAllDataInSheet(sheetState: SheetState) {
 export function clearSheetDataPreservingImportStateInSheet(sheetState: SheetState) {
   return {
     ...sheetState,
+    activeMode: "workspace" as const,
+    analytics: createDefaultSheetAnalyticsState(),
     rows: createEmptyRows(INITIAL_ROW_COUNT),
     filters: {},
     valueFilters: {},

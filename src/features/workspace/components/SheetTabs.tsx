@@ -76,6 +76,7 @@ type SheetTabsProps = {
 };
 
 type SheetDropTransferMode = "copy" | "move";
+type DesktopSettingsTab = "display" | "service" | "release";
 
 const DEFAULT_DESKTOP_SERVICE_PORT = 18422;
 
@@ -194,6 +195,7 @@ export function SheetTabs({
     left: number;
   } | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [activeSettingsTab, setActiveSettingsTab] = useState<DesktopSettingsTab>("display");
   const [isConfirmingSettings, setIsConfirmingSettings] = useState(false);
   const [isDesktopTokenVisible, setIsDesktopTokenVisible] = useState(false);
   const [isTestingServiceConnection, setIsTestingServiceConnection] = useState(false);
@@ -346,6 +348,7 @@ export function SheetTabs({
     setSheetMenuPosition(null);
     setDeleteArmedSheetId(null);
     setIsFileMenuOpen(false);
+    setActiveSettingsTab("display");
     setIsSettingsOpen(true);
   }, [settingsOpenRequestToken]);
 
@@ -523,6 +526,7 @@ export function SheetTabs({
     setOpenSheetMenuSheetId(null);
     setSheetMenuPosition(null);
     setDeleteArmedSheetId(null);
+    setActiveSettingsTab("display");
     setIsSettingsOpen(true);
   };
 
@@ -962,78 +966,172 @@ export function SheetTabs({
                 <div className="settings-modal-header">
                   <h3>Setting</h3>
                 </div>
-                <div className="settings-content settings-content-single">
-                  <section className="settings-pane">
-                    <div className="settings-pane-header">
-                      <h4>Ukuran Tampilan</h4>
-                      <p>Pilih ukuran workspace sesuai kenyamanan kerja di desktop.</p>
-                    </div>
-                    <div
-                      className="settings-scale-options"
-                      role="radiogroup"
-                      aria-label="Ukuran Tampilan"
+                <div className="settings-layout settings-layout-tabs">
+                  <div className="settings-sidebar" role="tablist" aria-label="Setting">
+                    <button
+                      type="button"
+                      id="desktop-settings-display-tab"
+                      className={[
+                        "settings-nav-button",
+                        activeSettingsTab === "display" ? "is-active" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      role="tab"
+                      aria-selected={activeSettingsTab === "display"}
+                      aria-controls="desktop-settings-display-panel"
+                      onClick={() => setActiveSettingsTab("display")}
                     >
-                      <button
-                        type="button"
-                        className={[
-                          "settings-scale-option",
-                          displayScale === "small" ? "is-active" : "",
-                        ]
-                          .filter(Boolean)
-                          .join(" ")}
-                        role="radio"
-                        aria-checked={displayScale === "small"}
-                        onClick={() => onPreviewDisplayScale("small")}
+                      Ukuran Tampilan
+                    </button>
+                    <button
+                      type="button"
+                      id="desktop-settings-service-tab"
+                      className={[
+                        "settings-nav-button",
+                        activeSettingsTab === "service" ? "is-active" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      role="tab"
+                      aria-selected={activeSettingsTab === "service"}
+                      aria-controls="desktop-settings-service-panel"
+                      onClick={() => setActiveSettingsTab("service")}
+                    >
+                      Koneksi Service
+                    </button>
+                    <button
+                      type="button"
+                      id="desktop-settings-release-tab"
+                      className={[
+                        "settings-nav-button",
+                        activeSettingsTab === "release" ? "is-active" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      role="tab"
+                      aria-selected={activeSettingsTab === "release"}
+                      aria-controls="desktop-settings-release-panel"
+                      onClick={() => setActiveSettingsTab("release")}
+                    >
+                      Release Health
+                    </button>
+                  </div>
+                  <div className="settings-content">
+                    {activeSettingsTab === "display" ? (
+                      <section
+                        id="desktop-settings-display-panel"
+                        className="settings-pane"
+                        role="tabpanel"
+                        aria-labelledby="desktop-settings-display-tab"
                       >
-                        Kecil
-                      </button>
-                      <button
-                        type="button"
-                        className={[
-                          "settings-scale-option",
-                          displayScale === "medium" ? "is-active" : "",
-                        ]
-                          .filter(Boolean)
-                          .join(" ")}
-                        role="radio"
-                        aria-checked={displayScale === "medium"}
-                        onClick={() => onPreviewDisplayScale("medium")}
+                        <div className="settings-pane-header">
+                          <h4>Ukuran Tampilan</h4>
+                          <p>Pilih ukuran workspace sesuai kenyamanan kerja di desktop.</p>
+                        </div>
+                        <div
+                          className="settings-scale-options"
+                          role="radiogroup"
+                          aria-label="Ukuran Tampilan"
+                        >
+                          <button
+                            type="button"
+                            className={[
+                              "settings-scale-option",
+                              displayScale === "small" ? "is-active" : "",
+                            ]
+                              .filter(Boolean)
+                              .join(" ")}
+                            role="radio"
+                            aria-checked={displayScale === "small"}
+                            onClick={() => onPreviewDisplayScale("small")}
+                          >
+                            Kecil
+                          </button>
+                          <button
+                            type="button"
+                            className={[
+                              "settings-scale-option",
+                              displayScale === "medium" ? "is-active" : "",
+                            ]
+                              .filter(Boolean)
+                              .join(" ")}
+                            role="radio"
+                            aria-checked={displayScale === "medium"}
+                            onClick={() => onPreviewDisplayScale("medium")}
+                          >
+                            Sedang
+                          </button>
+                          <button
+                            type="button"
+                            className={[
+                              "settings-scale-option",
+                              displayScale === "large" ? "is-active" : "",
+                            ]
+                              .filter(Boolean)
+                              .join(" ")}
+                            role="radio"
+                            aria-checked={displayScale === "large"}
+                            onClick={() => onPreviewDisplayScale("large")}
+                          >
+                            Besar
+                          </button>
+                        </div>
+                      </section>
+                    ) : null}
+                    {activeSettingsTab === "service" ? (
+                      <section
+                        id="desktop-settings-service-panel"
+                        role="tabpanel"
+                        aria-labelledby="desktop-settings-service-tab"
                       >
-                        Sedang
-                      </button>
-                      <button
-                        type="button"
-                        className={[
-                          "settings-scale-option",
-                          displayScale === "large" ? "is-active" : "",
-                        ]
-                          .filter(Boolean)
-                          .join(" ")}
-                        role="radio"
-                        aria-checked={displayScale === "large"}
-                        onClick={() => onPreviewDisplayScale("large")}
+                        <DesktopServiceConnectionPanel
+                          panel="connection"
+                          serviceConfig={serviceConfig}
+                          desktopServicePortDraft={desktopServicePortDraft}
+                          isDesktopServicePortValid={isDesktopServicePortValid}
+                          isDesktopTokenVisible={isDesktopTokenVisible}
+                          isTestingServiceConnection={isTestingServiceConnection}
+                          serviceConnectionTestResult={serviceConnectionTestResult}
+                          onDesktopServicePortDraftChange={handleDesktopServicePortDraftChange}
+                          onPreviewDesktopServiceAuthToken={onPreviewDesktopServiceAuthToken}
+                          onClearConnectionTestResult={() => setServiceConnectionTestResult(null)}
+                          onToggleDesktopTokenVisibility={() =>
+                            setIsDesktopTokenVisible((current) => !current)
+                          }
+                          onCopyServiceToken={onCopyServiceToken}
+                          onPasteDesktopServiceAuthToken={onPasteDesktopServiceAuthToken}
+                          onTestServiceConnection={handleTestServiceConnection}
+                        />
+                      </section>
+                    ) : null}
+                    {activeSettingsTab === "release" ? (
+                      <section
+                        id="desktop-settings-release-panel"
+                        role="tabpanel"
+                        aria-labelledby="desktop-settings-release-tab"
                       >
-                        Besar
-                      </button>
-                    </div>
-                    <DesktopServiceConnectionPanel
-                      serviceConfig={serviceConfig}
-                      desktopServicePortDraft={desktopServicePortDraft}
-                      isDesktopServicePortValid={isDesktopServicePortValid}
-                      isDesktopTokenVisible={isDesktopTokenVisible}
-                      isTestingServiceConnection={isTestingServiceConnection}
-                      serviceConnectionTestResult={serviceConnectionTestResult}
-                      onDesktopServicePortDraftChange={handleDesktopServicePortDraftChange}
-                      onPreviewDesktopServiceAuthToken={onPreviewDesktopServiceAuthToken}
-                      onClearConnectionTestResult={() => setServiceConnectionTestResult(null)}
-                      onToggleDesktopTokenVisibility={() =>
-                        setIsDesktopTokenVisible((current) => !current)
-                      }
-                      onCopyServiceToken={onCopyServiceToken}
-                      onPasteDesktopServiceAuthToken={onPasteDesktopServiceAuthToken}
-                      onTestServiceConnection={handleTestServiceConnection}
-                    />
-                  </section>
+                        <DesktopServiceConnectionPanel
+                          panel="release"
+                          serviceConfig={serviceConfig}
+                          desktopServicePortDraft={desktopServicePortDraft}
+                          isDesktopServicePortValid={isDesktopServicePortValid}
+                          isDesktopTokenVisible={isDesktopTokenVisible}
+                          isTestingServiceConnection={isTestingServiceConnection}
+                          serviceConnectionTestResult={serviceConnectionTestResult}
+                          onDesktopServicePortDraftChange={handleDesktopServicePortDraftChange}
+                          onPreviewDesktopServiceAuthToken={onPreviewDesktopServiceAuthToken}
+                          onClearConnectionTestResult={() => setServiceConnectionTestResult(null)}
+                          onToggleDesktopTokenVisibility={() =>
+                            setIsDesktopTokenVisible((current) => !current)
+                          }
+                          onCopyServiceToken={onCopyServiceToken}
+                          onPasteDesktopServiceAuthToken={onPasteDesktopServiceAuthToken}
+                          onTestServiceConnection={handleTestServiceConnection}
+                        />
+                      </section>
+                    ) : null}
+                  </div>
                 </div>
                 <div className="settings-modal-footer">
                   <button

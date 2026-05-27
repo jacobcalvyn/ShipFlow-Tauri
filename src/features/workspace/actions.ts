@@ -21,6 +21,7 @@ import {
 function cloneSheetState(sourceSheet: SheetState): SheetState {
   return {
     ...sourceSheet,
+    analytics: { ...sourceSheet.analytics },
     rows: sourceSheet.rows.map((row) => ({
       ...row,
       loading: false,

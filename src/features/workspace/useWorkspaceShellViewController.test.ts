@@ -2,6 +2,8 @@ import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkspaceShellViewController } from "./useWorkspaceShellViewController";
 
+const COD_TOTAL_COLUMN_PATH = "detail.billing_detail.cod_info.total_cod";
+
 const mocks = vi.hoisted(() => ({
   useWorkspaceTabsPropsMock: vi.fn(),
   useWorkspaceActionBarPropsMock: vi.fn(),
@@ -32,6 +34,13 @@ describe("useWorkspaceShellViewController", () => {
 
   it("maps surface, view model, refs, and interaction runtime into shell view props", () => {
     const activeSheet = {
+      activeMode: "workspace",
+      analytics: {
+        sourceScope: "filtered_rows",
+        groupByPaths: ["status_akhir.status"],
+        metrics: ["count"],
+        chartType: "bar",
+      },
       deleteAllArmed: false,
       filters: { status: "loaded" },
       valueFilters: { courier: ["JNE"] },
@@ -126,6 +135,37 @@ describe("useWorkspaceShellViewController", () => {
       allVisibleSelected: false,
       selectedRowKeySet: new Set(["row-1"]),
       valueOptionsByPath: { courier: [{ value: "JNE", count: 1 }] },
+      analyticsGroupByOptions: [
+        { path: "status_akhir.status", label: "Status Akhir" },
+      ],
+      analyticsMetricOptions: [
+        { key: "count", label: "Jumlah Kiriman", format: "number" },
+        { key: COD_TOTAL_COLUMN_PATH, label: "Total COD", format: "currency" },
+      ],
+      analyticsSummary: {
+        sourceRowCount: 1,
+        loadedRowCount: 1,
+        selectedRowCount: 1,
+        totalCod: 0,
+        totalMetricValue: 1,
+        groupByPaths: ["status_akhir.status"],
+        groupByLabel: "Status Akhir",
+        groupByLabels: ["Status Akhir"],
+        metrics: [{ key: "count", label: "Jumlah Kiriman", format: "number" }],
+        primaryMetric: "count",
+        primaryMetricOption: { key: "count", label: "Jumlah Kiriman", format: "number" },
+        rows: [
+          {
+            label: "INVEHICLE",
+            groupValues: ["INVEHICLE"],
+            count: 1,
+            codTotal: 0,
+            metricValues: { count: 1, [COD_TOTAL_COLUMN_PATH]: 0 },
+            metricValue: 1,
+            share: 100,
+          },
+        ],
+      },
     };
     const interactionRefs = {
       hoveredColumn: 2,
@@ -190,6 +230,7 @@ describe("useWorkspaceShellViewController", () => {
     const sheetActionBarProps = { id: "action-bar-props" };
     const sheetTableProps = { id: "table-props" };
     const documentDialogsProps = { id: "dialogs-props" };
+    const updateActiveSheet = vi.fn();
 
     mocks.useWorkspaceTabsPropsMock.mockReturnValue(sheetTabsProps);
     mocks.useWorkspaceActionBarPropsMock.mockReturnValue(sheetActionBarProps);
@@ -211,6 +252,7 @@ describe("useWorkspaceShellViewController", () => {
             isActive: true,
           },
         ],
+        updateActiveSheet,
         surface: surface as never,
         deleteArm: deleteArm as never,
         sheetViewModel: sheetViewModel as never,
@@ -280,8 +322,24 @@ describe("useWorkspaceShellViewController", () => {
     expect(result.current).toEqual({
       actionNotices: surface.actionNotices,
       displayScale: surface.effectiveDisplayScale,
+      activeSheetMode: activeSheet.activeMode,
       sheetTabsProps,
+      sheetModeSwitchProps: {
+        activeMode: activeSheet.activeMode,
+        onModeChange: expect.any(Function),
+      },
       sheetActionBarProps,
+      sheetAnalyticsViewProps: {
+        analytics: activeSheet.analytics,
+        groupByOptions: sheetViewModel.analyticsGroupByOptions,
+        metricOptions: sheetViewModel.analyticsMetricOptions,
+        summary: sheetViewModel.analyticsSummary,
+        onSourceScopeChange: expect.any(Function),
+        onGroupByPathsChange: expect.any(Function),
+        onMetricsChange: expect.any(Function),
+        onMetricAggregationChange: expect.any(Function),
+        onChartTypeChange: expect.any(Function),
+      },
       sheetTableProps,
       documentDialogsProps,
     });

@@ -1,5 +1,10 @@
 import { useMemo } from "react";
 import {
+  getSheetAnalyticsGroupByOptions,
+  getSheetAnalyticsMetricOptions,
+  getSheetAnalyticsSummary,
+} from "../sheet/analytics";
+import {
   getActiveFilterCount,
   getAllTrackingIds,
   getColumnShortcuts,
@@ -167,10 +172,33 @@ export function useWorkspaceSheetViewModel(activeSheet: SheetState) {
     [visibleColumnPathSet]
   );
 
+  const analyticsGroupByOptions = useMemo(
+    () => getSheetAnalyticsGroupByOptions(),
+    []
+  );
+  const analyticsMetricOptions = useMemo(
+    () => getSheetAnalyticsMetricOptions(),
+    []
+  );
+
+  const analyticsSummary = useMemo(
+    () =>
+      getSheetAnalyticsSummary({
+        sheetState: activeSheet,
+        nonEmptyRows,
+        displayedRows,
+        selectedVisibleRowKeys,
+      }),
+    [activeSheet, displayedRows, nonEmptyRows, selectedVisibleRowKeys]
+  );
+
   return {
     activeFilterCount,
     allTrackingIds,
     allVisibleSelected,
+    analyticsGroupByOptions,
+    analyticsMetricOptions,
+    analyticsSummary,
     columnShortcuts,
     displayedRows,
     effectiveColumnWidths,

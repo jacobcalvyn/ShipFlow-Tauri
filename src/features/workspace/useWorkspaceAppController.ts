@@ -67,6 +67,7 @@ export function useWorkspaceAppController(): ComponentProps<
     activeSheet: workspaceState.activeSheet,
     activeSheetId: workspaceState.activeSheetId,
     workspaceTabs: workspaceState.workspaceTabs,
+    updateActiveSheet: workspaceState.updateActiveSheet,
     surface,
     deleteArm,
     sheetViewModel,

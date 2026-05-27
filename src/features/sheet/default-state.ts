@@ -13,6 +13,8 @@ import {
 
 export function createDefaultSheetState(): SheetState {
   return {
+    activeMode: "workspace",
+    analytics: createDefaultSheetAnalyticsState(),
     rows: createEmptyRows(INITIAL_ROW_COUNT),
     filters: {},
     valueFilters: {},
@@ -54,5 +56,17 @@ export function createDefaultSheetState(): SheetState {
         manifestBagStates: [],
       },
     },
+  };
+}
+
+export function createDefaultSheetAnalyticsState(): SheetState["analytics"] {
+  return {
+    sourceScope: "filtered_rows",
+    groupByPaths: ["status_akhir.status"],
+    metrics: ["count"],
+    metricAggregations: {
+      count: "count",
+    },
+    chartType: "pivot",
   };
 }

@@ -8,6 +8,7 @@ type ServiceConnectionTestResult = {
 } | null;
 
 type DesktopServiceConnectionPanelProps = {
+  panel: "connection" | "release";
   serviceConfig: ServiceConfig;
   desktopServicePortDraft: string;
   isDesktopServicePortValid: boolean;
@@ -24,6 +25,7 @@ type DesktopServiceConnectionPanelProps = {
 };
 
 export function DesktopServiceConnectionPanel({
+  panel,
   serviceConfig,
   desktopServicePortDraft,
   isDesktopServicePortValid,
@@ -52,15 +54,39 @@ export function DesktopServiceConnectionPanel({
       );
   };
 
-  return (
-    <>
-      <div className="settings-service-launcher">
-        <div className="settings-service-launcher-copy">
-          <div className="settings-service-launcher-title">Koneksi Service</div>
-          <div className="settings-service-launcher-description">
-            Atur port localhost dan token ShipFlow Service yang dipakai Desktop untuk lacak.
-          </div>
+  if (panel === "release") {
+    return (
+      <div className="settings-pane">
+        <div className="settings-pane-header">
+          <h4>Release Health</h4>
+          <p>Cek versi app, platform, dan jenis build yang sedang berjalan.</p>
         </div>
+        <div className="service-settings-stack">
+          <button type="button" className="sheet-tab-action" onClick={showReleaseHealth}>
+            Cek Health
+          </button>
+          {releaseHealth ? (
+            <div className="settings-field-help settings-field-help-info" role="status">
+              {releaseHealth.packageName} {releaseHealth.appVersion} · {releaseHealth.targetOs}/
+              {releaseHealth.targetArch}
+              {releaseHealth.debugBuild ? " · debug" : " · release"}
+            </div>
+          ) : null}
+          {releaseHealthError ? (
+            <div className="settings-field-help settings-field-help-error" role="status">
+              {releaseHealthError}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="settings-pane">
+      <div className="settings-pane-header">
+        <h4>Koneksi Service</h4>
+        <p>Atur port localhost dan token ShipFlow Service yang dipakai Desktop untuk lacak.</p>
       </div>
       <div className="service-settings-stack">
         <label className="settings-text-field settings-text-field-port">
@@ -145,30 +171,7 @@ export function DesktopServiceConnectionPanel({
             {serviceConnectionTestResult.message}
           </div>
         ) : null}
-        <div className="settings-service-launcher settings-release-health">
-          <div className="settings-service-launcher-copy">
-            <div className="settings-service-launcher-title">Release Health</div>
-            <div className="settings-service-launcher-description">
-              Cek versi app, platform, dan jenis build yang sedang berjalan.
-            </div>
-          </div>
-          <button type="button" className="sheet-tab-action" onClick={showReleaseHealth}>
-            Cek Health
-          </button>
-        </div>
-        {releaseHealth ? (
-          <div className="settings-field-help settings-field-help-info" role="status">
-            {releaseHealth.packageName} {releaseHealth.appVersion} · {releaseHealth.targetOs}/
-            {releaseHealth.targetArch}
-            {releaseHealth.debugBuild ? " · debug" : " · release"}
-          </div>
-        ) : null}
-        {releaseHealthError ? (
-          <div className="settings-field-help settings-field-help-error" role="status">
-            {releaseHealthError}
-          </div>
-        ) : null}
       </div>
-    </>
+    </div>
   );
 }

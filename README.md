@@ -2,7 +2,7 @@
 
 Desktop shipment tracking workspace built with Tauri, Rust, React, and Vite.
 
-The app is optimized for spreadsheet-style operational analysis. Each row represents one shipment. The first data column accepts a shipment ID, then the app asks `ShipFlow Service` for tracking data and fills the rest of the row. A sheet is treated as one independent workspace.
+The app is optimized for spreadsheet-style operational analysis. Each row represents one shipment. The first data column accepts a shipment ID, then the app asks `ShipFlow Service` for tracking data and fills the rest of the row. A sheet is treated as one independent workspace with its own `Workspace` mode and `Pivot/Grafik` mode.
 
 The runtime foundation now supports POS bag and manifest lookups through the shared Rust core and the local service API. The desktop workspace still stays shipment-first, but each sheet can now import shipment IDs from bag and manifest lookups through sheet-local modal flows.
 
@@ -27,6 +27,7 @@ Architecture references:
 - Supports both text filters and per-column multi-select value filters with value counts and quick include/exclude actions
 - Supports retracking all current shipments from the action bar
 - Supports multiple sheets, where each sheet is an isolated tracking workspace
+- Supports per-sheet `Workspace` and `Pivot/Grafik` modes without changing other sheets
 - Supports creating a new sheet from selected shipment IDs only
 - Supports appending selected shipment IDs into another existing sheet
 - Uses a standalone `ShipFlow Service` for Desktop tracking and optional API access for other apps
@@ -241,6 +242,59 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
   - `status` as the final delivery status
   - `keterangan_status` as the delivery failure/detail reason when available
 
+## Sheet Modes And Pivot Analytics
+
+Each sheet owns its mode and analytics configuration independently. Switching one sheet to `Pivot/Grafik`, changing groups, changing metrics, or changing chart mode does not affect another sheet.
+
+Sheet modes:
+
+- `Workspace`: the shipment tracking table and sheet action workflow
+- `Pivot/Grafik`: the sheet-local analytics workspace for pivot tables and charts
+
+`Pivot/Grafik` defaults to `Pivot`. The mode selector is ordered as:
+
+1. `Pivot`
+2. `Bar`
+3. `Donut`
+
+The analytics action panel contains:
+
+- `Sumber`: choose filtered rows, all rows, or selected rows
+- `Mode`: choose `Pivot`, `Bar`, or `Donut`
+- `Group`: multi-select fields used as grouping dimensions
+- `Metric`: multi-select fields used as values, aggregations, or pivot split fields
+
+`Group` and `Metric` can use every table column except heavy raw history/media fields:
+
+- `history_summary.bagging_unbagging`
+- `history_summary.manifest_r7`
+- `history_summary.delivery_runsheet`
+- `pod.photo1_url`
+- `pod.photo2_url`
+
+Metric behavior:
+
+- numeric, currency, boolean, and text columns can be selected as metrics
+- selected metrics can be reordered and removed from the active metric list
+- numeric metrics support sum, average, min, max, filled count, and unique count
+- text metrics support unique list, unique count, filled count, most frequent, first, and last
+- in `Pivot` mode, text metrics using unique-list aggregation become split dimensions, so a field such as `Status Akhir` creates separate pivot rows instead of combining all statuses into one cell
+- `Jumlah Kiriman` remains available as a built-in count metric
+
+Pivot table behavior:
+
+- pivot rows are grouped by the selected `Group` fields plus text metric split fields
+- pivot columns show the selected display metrics and a `Share` column when a primary metric exists
+- `Share` in `Pivot` mode is based on row count share for each pivot group
+- pivot headers are sortable for group columns, metric columns, and `Share`
+- the default pivot table sort is `Share` descending
+
+Chart behavior:
+
+- `Bar` and `Donut` use the primary selected metric as the chart value
+- chart rows are sorted by metric value descending before label tie-breaks
+- `Share` in chart calculations follows the selected metric value, while `Pivot` share follows row count share
+
 ## Current Data Shown In The Table
 
 The main table currently focuses on:
@@ -346,6 +400,8 @@ The main table currently focuses on:
 - [src/features/workspace/components/DesktopServiceConnectionPanel.tsx](./src/features/workspace/components/DesktopServiceConnectionPanel.tsx): Desktop-to-Service port/token settings panel
 - [src/features/sheet/components/SheetActionBar.tsx](./src/features/sheet/components/SheetActionBar.tsx): sheet action bar shell
 - [src/features/sheet/components/ImportSourceModal.tsx](./src/features/sheet/components/ImportSourceModal.tsx): bag/manifest import modal
+- [src/features/sheet/components/SheetAnalyticsView.tsx](./src/features/sheet/components/SheetAnalyticsView.tsx): sheet-local `Pivot/Grafik` side panel, chart view, and sortable pivot table
+- [src/features/sheet/analytics.ts](./src/features/sheet/analytics.ts): analytics field eligibility, metric aggregation, pivot grouping, share, and summary logic
 - [src/features/sheet/components](./src/features/sheet/components): table, header, row, and action bar components
 - [src/features/workspace](./src/features/workspace): workspace controllers, adapters, dialogs, and shell components
 
@@ -706,6 +762,8 @@ Current frontend tests cover:
 - `SheetTable` interaction smoke test
 - `SheetActionBar` interaction smoke test
 - multi-sheet app-level isolation and stress scenarios
+- sheet-local `Workspace` / `Pivot/Grafik` mode isolation
+- pivot analytics grouping, text metric split behavior, share calculation, and field eligibility
 - per-sheet bag / manifest modal isolation, cache, append, replace, and auto-track flows
 - concurrent manifest lookups across multiple sheets with stale-result protection
 - tracking telemetry and malformed-response guards

@@ -320,7 +320,8 @@ describe("SheetTabs", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
-    expect(screen.getByText("Koneksi Service")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Koneksi Service" }));
+    expect(screen.getByRole("heading", { name: "Koneksi Service" })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("ShipFlow Service Port"), {
       target: { value: "18423" },
     });

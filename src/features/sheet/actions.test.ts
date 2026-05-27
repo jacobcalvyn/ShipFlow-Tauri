@@ -7,6 +7,12 @@ import {
   deleteRowsInSheet,
   forceSelectionToVisibleRowsInSheet,
   openImportSourceModalInSheet,
+  setSheetAnalyticsChartTypeInSheet,
+  setSheetAnalyticsGroupByPathsInSheet,
+  setSheetAnalyticsMetricAggregationInSheet,
+  setSheetAnalyticsMetricsInSheet,
+  setSheetAnalyticsSourceScopeInSheet,
+  setSheetViewModeInSheet,
   setImportSourceDraftInSheet,
   setRowErrorInSheet,
   setRowLoadingInSheet,
@@ -18,6 +24,8 @@ import {
   toggleRowSelectionInSheet,
 } from "./actions";
 import { assertValidSheetState } from "./utils";
+
+const COD_TOTAL_COLUMN_PATH = "detail.billing_detail.cod_info.total_cod";
 
 describe("sheet actions", () => {
   it("updates tracking input without affecting unrelated rows", () => {
@@ -57,6 +65,13 @@ describe("sheet actions", () => {
       filters: { "status_akhir.status": "INVEHICLE" },
       hiddenColumnPaths: ["detail.origin_detail.id_kantor"],
       pinnedColumnPaths: ["detail.shipment_header.nomor_kiriman"],
+      activeMode: "analytics" as const,
+      analytics: {
+        sourceScope: "all_rows" as const,
+        groupByPaths: ["detail.package_detail.jenis_layanan"],
+        metrics: [COD_TOTAL_COLUMN_PATH],
+        chartType: "donut" as const,
+      },
       deleteAllArmed: true,
     };
 
@@ -69,8 +84,61 @@ describe("sheet actions", () => {
     expect(next.filters).toEqual({});
     expect(next.selectedRowKeys).toEqual([]);
     expect(next.deleteAllArmed).toBe(false);
+    expect(next.activeMode).toBe("workspace");
+    expect(next.analytics).toEqual(createDefaultSheetState().analytics);
     expect(next.hiddenColumnPaths).toEqual(changed.hiddenColumnPaths);
     expect(next.pinnedColumnPaths).toEqual(changed.pinnedColumnPaths);
+  });
+
+  it("updates analytics mode and configuration inside the sheet state", () => {
+    const initial = createDefaultSheetState();
+
+    const next = setSheetAnalyticsChartTypeInSheet(
+      setSheetAnalyticsMetricsInSheet(
+        setSheetAnalyticsGroupByPathsInSheet(
+          setSheetAnalyticsSourceScopeInSheet(
+            setSheetViewModeInSheet(initial, "analytics"),
+            "selected_rows"
+          ),
+          ["detail.package_detail.jenis_layanan", "status_akhir.location"]
+        ),
+        ["cod_total", "count"]
+      ),
+      "pivot"
+    );
+
+    expect(next.activeMode).toBe("analytics");
+    expect(next.analytics).toEqual({
+      sourceScope: "selected_rows",
+      groupByPaths: ["detail.package_detail.jenis_layanan", "status_akhir.location"],
+      metrics: [COD_TOTAL_COLUMN_PATH, "count"],
+      metricAggregations: {
+        [COD_TOTAL_COLUMN_PATH]: "sum",
+        count: "count",
+      },
+      chartType: "pivot",
+    });
+    expect(() => assertValidSheetState(next)).not.toThrow();
+
+    const empty = setSheetAnalyticsMetricsInSheet(
+      setSheetAnalyticsGroupByPathsInSheet(next, []),
+      []
+    );
+
+    expect(empty.analytics.groupByPaths).toEqual([]);
+    expect(empty.analytics.metrics).toEqual([]);
+    expect(() => assertValidSheetState(empty)).not.toThrow();
+
+    const averaged = setSheetAnalyticsMetricAggregationInSheet(
+      next,
+      COD_TOTAL_COLUMN_PATH,
+      "average"
+    );
+
+    expect(averaged.analytics.metricAggregations).toEqual({
+      [COD_TOTAL_COLUMN_PATH]: "average",
+      count: "count",
+    });
   });
 
   it("removes selected rows and compacts remaining data upward", () => {

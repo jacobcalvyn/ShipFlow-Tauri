@@ -173,6 +173,7 @@ describe("useWorkspaceAppController", () => {
       activeSheet: state.activeSheet,
       activeSheetId: state.activeSheetId,
       workspaceTabs: state.workspaceTabs,
+      updateActiveSheet: state.updateActiveSheet,
       surface,
       deleteArm,
       sheetViewModel,

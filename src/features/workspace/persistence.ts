@@ -1,5 +1,18 @@
 import { COLUMNS } from "../sheet/columns";
-import { createDefaultSheetState } from "../sheet/default-state";
+import {
+  getDefaultSheetAnalyticsMetricAggregation,
+  getSheetAnalyticsGroupByOptions,
+  getSheetAnalyticsMetricOptions,
+  isValidSheetAnalyticsMetricAggregation,
+} from "../sheet/analytics";
+import {
+  createDefaultSheetAnalyticsState,
+  createDefaultSheetState,
+} from "../sheet/default-state";
+import type {
+  SheetAnalyticsMetric,
+  SheetAnalyticsMetricAggregation,
+} from "../sheet/types";
 import { assertValidSheetState, createEmptyRow, ensureTrailingEmptyRows, isBrowserReady } from "../sheet/utils";
 import { TrackResponse } from "../../types";
 import { createDefaultWorkspaceState } from "./default-state";
@@ -122,6 +135,111 @@ function shouldAssertSheetState() {
   return import.meta.env.DEV || import.meta.env.MODE === "test";
 }
 
+function normalizeStringArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function dedupeStrings(values: string[]) {
+  const nextValues: string[] = [];
+  for (const value of values) {
+    if (!nextValues.includes(value)) {
+      nextValues.push(value);
+    }
+  }
+  return nextValues;
+}
+
+function normalizePersistedSheetAnalyticsState(candidate: unknown) {
+  const fallback = createDefaultSheetAnalyticsState();
+  if (!candidate || typeof candidate !== "object") {
+    return fallback;
+  }
+
+  const record = candidate as Record<string, unknown>;
+  const sourceScope =
+    record.sourceScope === "all_rows" ||
+    record.sourceScope === "filtered_rows" ||
+    record.sourceScope === "selected_rows"
+      ? record.sourceScope
+      : fallback.sourceScope;
+  const validPathSet = new Set(getSheetAnalyticsGroupByOptions().map((option) => option.path));
+  const rawGroupByPaths = normalizeStringArray(record.groupByPaths);
+  const persistedGroupByPaths = dedupeStrings(
+    rawGroupByPaths.filter((path) => validPathSet.has(path))
+  );
+  const legacyGroupByPath =
+    typeof record.groupByPath === "string" && validPathSet.has(record.groupByPath)
+      ? record.groupByPath
+      : null;
+  const groupByPaths: string[] =
+    Array.isArray(record.groupByPaths) &&
+    (rawGroupByPaths.length === 0 || persistedGroupByPaths.length > 0)
+      ? persistedGroupByPaths
+      : legacyGroupByPath
+        ? [legacyGroupByPath]
+        : fallback.groupByPaths;
+  const validMetricSet = new Set(getSheetAnalyticsMetricOptions().map((option) => option.key));
+  const rawMetrics = normalizeStringArray(record.metrics).map((metric) =>
+    metric === "cod_total" ? "detail.billing_detail.cod_info.total_cod" : metric
+  );
+  const persistedMetrics = dedupeStrings(rawMetrics).filter((metric) =>
+    validMetricSet.has(metric)
+  );
+  const legacyMetric: SheetAnalyticsMetric | null =
+    record.metric === "cod_total"
+      ? "detail.billing_detail.cod_info.total_cod"
+      : record.metric === "count" ||
+          (typeof record.metric === "string" && validMetricSet.has(record.metric))
+        ? record.metric
+        : null;
+  const metrics: SheetAnalyticsMetric[] =
+    Array.isArray(record.metrics) && (rawMetrics.length === 0 || persistedMetrics.length > 0)
+      ? persistedMetrics
+      : legacyMetric
+        ? [legacyMetric]
+        : fallback.metrics;
+  const rawMetricAggregations =
+    record.metricAggregations && typeof record.metricAggregations === "object"
+      ? (record.metricAggregations as Record<string, unknown>)
+      : {};
+  const metricOptionMap = new Map(
+    getSheetAnalyticsMetricOptions().map((option) => [option.key, option])
+  );
+  const metricAggregations: Partial<
+    Record<SheetAnalyticsMetric, SheetAnalyticsMetricAggregation>
+  > = {};
+  for (const metric of metrics) {
+    const metricOption = metricOptionMap.get(metric);
+    if (!metricOption) {
+      continue;
+    }
+
+    const selectedAggregation = rawMetricAggregations[metric];
+    metricAggregations[metric] = isValidSheetAnalyticsMetricAggregation(
+      metricOption,
+      selectedAggregation
+    )
+      ? selectedAggregation
+      : getDefaultSheetAnalyticsMetricAggregation(metricOption);
+  }
+  const chartType =
+    record.chartType === "bar" ||
+    record.chartType === "donut" ||
+    record.chartType === "pivot"
+      ? record.chartType
+      : fallback.chartType;
+
+  return {
+    sourceScope,
+    groupByPaths,
+    metrics,
+    metricAggregations,
+    chartType,
+  };
+}
+
 export function normalizePersistedWorkspaceState(
   workspace: Partial<WorkspaceState> | null | undefined
 ): WorkspaceState {
@@ -201,6 +319,17 @@ export function normalizePersistedWorkspaceState(
 
       const nextSheet = {
         ...baseSheet,
+        activeMode:
+          candidate &&
+          typeof candidate === "object" &&
+          (candidate as { activeMode?: unknown }).activeMode === "analytics"
+            ? "analytics" as const
+            : "workspace" as const,
+        analytics: normalizePersistedSheetAnalyticsState(
+          candidate && typeof candidate === "object"
+            ? (candidate as { analytics?: unknown }).analytics
+            : null
+        ),
         rows: normalizedRows,
         filters:
           candidate && typeof candidate === "object" && "filters" in candidate
