@@ -216,7 +216,11 @@ function normalizePersistedSheetAnalyticsState(candidate: unknown) {
       continue;
     }
 
-    const selectedAggregation = rawMetricAggregations[metric];
+    const selectedAggregation =
+      rawMetricAggregations[metric] ??
+      (metric === "detail.billing_detail.cod_info.total_cod"
+        ? rawMetricAggregations.cod_total
+        : undefined);
     metricAggregations[metric] = isValidSheetAnalyticsMetricAggregation(
       metricOption,
       selectedAggregation
@@ -258,8 +262,8 @@ export function normalizePersistedWorkspaceState(
   const parsedSheets =
     workspace.sheetsById && typeof workspace.sheetsById === "object" ? workspace.sheetsById : {};
 
-  const normalizedSheetOrder = parsedSheetOrder.filter(
-    (sheetId) => sheetId in parsedMeta && sheetId in parsedSheets
+  const normalizedSheetOrder = dedupeStrings(
+    parsedSheetOrder.filter((sheetId) => sheetId in parsedMeta && sheetId in parsedSheets)
   );
 
   if (normalizedSheetOrder.length === 0) {
@@ -276,6 +280,19 @@ export function normalizePersistedWorkspaceState(
       const parsedRows = Array.isArray((candidate as { rows?: unknown[] } | null)?.rows)
         ? ((candidate as { rows: unknown[] }).rows as unknown[])
         : [];
+      const usedRowKeys = new Set<string>();
+      const getUniqueRowKey = (preferredKey: string, fallbackKey: string) => {
+        let nextKey = preferredKey && !usedRowKeys.has(preferredKey)
+          ? preferredKey
+          : fallbackKey;
+
+        while (usedRowKeys.has(nextKey)) {
+          nextKey = createEmptyRow().key;
+        }
+
+        usedRowKeys.add(nextKey);
+        return nextKey;
+      };
       const normalizedRows = ensureTrailingEmptyRows(
         parsedRows.length > 0
           ? parsedRows.map((row) => {
@@ -294,16 +311,17 @@ export function normalizePersistedWorkspaceState(
                 typeof candidateRow.key === "string" && candidateRow.key
                   ? candidateRow.key
                   : baseRow.key;
+              const uniqueRowKey = getUniqueRowKey(rowKey, baseRow.key);
 
               if (trackingInput.trim() === "") {
                 return {
                   ...baseRow,
-                  key: rowKey,
+                  key: uniqueRowKey,
                 };
               }
 
               return {
-                key: rowKey,
+                key: uniqueRowKey,
                 trackingInput,
                 shipment,
                 loading: false,
@@ -365,8 +383,11 @@ export function normalizePersistedWorkspaceState(
             : baseSheet.sortState,
         selectedRowKeys:
           candidate && typeof candidate === "object" && Array.isArray((candidate as { selectedRowKeys?: unknown[] }).selectedRowKeys)
-            ? (candidate as { selectedRowKeys: unknown[] }).selectedRowKeys.filter(
-                (rowKey): rowKey is string => typeof rowKey === "string" && rowKeySet.has(rowKey)
+            ? dedupeStrings(
+                (candidate as { selectedRowKeys: unknown[] }).selectedRowKeys.filter(
+                  (rowKey): rowKey is string =>
+                    typeof rowKey === "string" && rowKeySet.has(rowKey)
+                )
               )
             : baseSheet.selectedRowKeys,
         selectionFollowsVisibleRows: Boolean(

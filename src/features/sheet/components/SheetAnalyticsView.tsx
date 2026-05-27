@@ -64,6 +64,10 @@ const DEFAULT_PIVOT_SORT = {
   key: "share",
   direction: "desc",
 } as const;
+const EMPTY_PIVOT_SORT = {
+  key: "",
+  direction: "asc",
+} as const;
 
 type PivotSortDirection = "asc" | "desc";
 
@@ -169,10 +173,36 @@ function comparePivotRows(
   }
 
   if (result === 0) {
-    result = compareTextValues(left.label, right.label);
+    return compareTextValues(left.label, right.label);
   }
 
   return applySortDirection(result, sortState.direction);
+}
+
+function getFallbackPivotSort(
+  summary: SheetAnalyticsSummary,
+  hasPrimaryMetric: boolean
+): PivotSortState {
+  if (hasPrimaryMetric) {
+    return DEFAULT_PIVOT_SORT;
+  }
+
+  if (summary.groupByLabels.length > 0) {
+    return {
+      key: "group:0",
+      direction: "asc",
+    };
+  }
+
+  const firstMetric = summary.metrics[0];
+  if (firstMetric) {
+    return {
+      key: `metric:${firstMetric.key}`,
+      direction: "desc",
+    };
+  }
+
+  return EMPTY_PIVOT_SORT;
 }
 
 function getSortIndicator(sortState: PivotSortState, sortKey: string) {
@@ -400,9 +430,10 @@ export function SheetAnalyticsView({
   const hasPrimaryMetric = primaryMetric !== null;
   const isPivotMode = analytics.chartType === "pivot";
   const [pivotSort, setPivotSort] = useState<PivotSortState>(DEFAULT_PIVOT_SORT);
+  const fallbackPivotSort = getFallbackPivotSort(summary, hasPrimaryMetric);
   const activePivotSort = isPivotSortAvailable(pivotSort.key, summary, hasPrimaryMetric)
     ? pivotSort
-    : DEFAULT_PIVOT_SORT;
+    : fallbackPivotSort;
   const pivotRows = useMemo(
     () => [...summary.rows].sort((left, right) =>
       comparePivotRows(left, right, activePivotSort)
@@ -566,7 +597,7 @@ export function SheetAnalyticsView({
                       </tr>
                     ) : (
                       pivotRows.map((row) => (
-                        <tr key={row.label}>
+                        <tr key={row.key}>
                           {summary.groupByLabels.map((label, index) => (
                             <td key={`${label}-${index}`}>
                               {row.groupValues[index] ?? "-"}
@@ -607,7 +638,7 @@ export function SheetAnalyticsView({
                   </div>
                   <div className="analytics-legend">
                     {chartRows.map((row, index) => (
-                      <div className="analytics-legend-row" key={row.label}>
+                      <div className="analytics-legend-row" key={row.key}>
                         <span
                           className="analytics-legend-swatch"
                           style={{
@@ -630,7 +661,7 @@ export function SheetAnalyticsView({
                     const barWidth =
                       maxMetricValue > 0 ? (row.metricValue / maxMetricValue) * 100 : 0;
                     return (
-                      <div className="analytics-bar-row" key={row.label}>
+                      <div className="analytics-bar-row" key={row.key}>
                         <span className="analytics-bar-label">{row.label}</span>
                         <div className="analytics-bar-track">
                           <span

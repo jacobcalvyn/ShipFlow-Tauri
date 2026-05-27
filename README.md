@@ -304,20 +304,26 @@ Metric behavior:
 
 - numeric, currency, weight, text, date, and boolean columns can be selected as metrics
 - selected metrics can be reordered and removed from the active metric list
+- selected metric order is preserved by summaries, chart primary metric selection, and pivot display
 - numeric, currency, and weight metrics support `Jumlah`, `Rata-rata`, `Nilai Maksimum`, `Nilai Minimum`, `Jumlah Data`, and `Banyaknya Nilai Berbeda`
 - text, date, and boolean metrics support `Teks`, `Paling Sering`, `Pertama`, and `Terakhir`
 - the metric formula menu is type-aware, so text fields do not offer numeric formulas such as `Jumlah`, `Rata-rata`, `Nilai Maksimum`, or `Nilai Minimum`
 - in `Pivot` mode, text metrics using the text aggregation become split dimensions, so a field such as `Status Akhir` creates separate pivot rows instead of combining all statuses into one cell
 - count-style analysis for text categories should use the text field as `Group` and `Jumlah Kiriman` as the metric
 - `Jumlah Kiriman` remains available as a built-in count metric and uses the `Jumlah Data` formula
+- missing numeric, currency, or weight group values render as `0`
+- missing text, date, boolean, or text split values render as `-`
 
 Pivot table behavior:
 
 - pivot rows are grouped by the selected `Group` fields plus text metric split fields
+- when no `Group` is selected, text metric split fields become the pivot row dimensions directly without adding a synthetic `Semua Row` column
 - pivot columns show the selected display metrics and a `Share` column when a primary metric exists
 - `Share` in `Pivot` mode is based on row count share for each pivot group
 - pivot headers are sortable for group columns, metric columns, and `Share`
 - the default pivot table sort is `Share` descending
+- when `Share` is not available because no primary metric is selected, pivot sorting falls back to the first visible group or metric column
+- pivot rows use stable internal keys, so rows with identical joined display labels still render independently
 
 Chart behavior:
 
@@ -382,6 +388,10 @@ The main table currently focuses on:
 - Request telemetry is emitted for `start`, `success`, `fail`, and `abort` with `sheetId`, `rowKey`, and `shipmentId`.
 - `Delete All` resets rows, filters, value filters, sort state, and in-flight tracking work so the table returns to a clean input state.
 - `Lacak Ulang` marks all target rows as queued first, then promotes only the active worker row to loading while preserving completed/failed row status.
+- Sheet duplication deep-copies analytics arrays and aggregation maps, so the duplicate sheet cannot mutate the source sheet's pivot configuration by shared reference.
+- Workspace persistence repairs duplicate persisted sheet IDs, duplicate row keys, and duplicate selected row keys during load instead of allowing corrupted saved state to destabilize the workspace.
+- Legacy persisted `cod_total` metric aggregations are migrated to the current `Total COD` analytics field key.
+- Browser-only frontend dev sessions guard Tauri event listeners before subscribing, so missing Tauri internals do not produce runtime console errors outside the desktop shell.
 - Delivery-runsheet parsing is hardened so `FAILEDTODELIVERED` cases are not incorrectly split into two updates on the latest runsheet.
 - Delivery-runsheet parsing now keeps only the latest effective update for a runsheet summary.
 - Desktop no longer manages service tray/background lifecycle.
@@ -425,6 +435,8 @@ The main table currently focuses on:
 - [src/features/service/useServiceSettingsController.ts](./src/features/service/useServiceSettingsController.ts): service-settings controller
 - [src/features/service/components/ServiceSettingsWindow.tsx](./src/features/service/components/ServiceSettingsWindow.tsx): service-settings window UI
 - [src/backend/commands.ts](./src/backend/commands.ts): typed frontend boundary for Tauri commands
+- [src/backend/events.ts](./src/backend/events.ts): guarded frontend boundary for Tauri event listeners
+- [public/favicon.svg](./public/favicon.svg): browser/dev favicon asset
 - [src/features/workspace/components/SheetTabs.tsx](./src/features/workspace/components/SheetTabs.tsx): sheet tab shell and tab/menu orchestration
 - [src/features/workspace/components/SheetFileMenu.tsx](./src/features/workspace/components/SheetFileMenu.tsx): workspace file menu
 - [src/features/workspace/components/DesktopServiceConnectionPanel.tsx](./src/features/workspace/components/DesktopServiceConnectionPanel.tsx): Desktop-to-Service port/token settings panel
@@ -492,6 +504,15 @@ Latest CLI/runtime smoke baseline, verified on 2026-04-25:
 - `npm run build`, `cargo fmt --all -- --check`, and `cargo clippy --workspace --all-targets -- -D warnings` pass after the runtime smoke test.
 
 The CLI smoke test does not replace a visual Desktop smoke pass. Still verify the Tauri window flow for standalone service settings, POD hover previews, and native workspace save dialogs before a user-facing release.
+
+Latest frontend workspace and pivot/grafik audit baseline, verified on 2026-05-27:
+
+- `npm test` passes `174` tests across `22` frontend/backend test files.
+- `npm run build` passes the TypeScript and Vite production build.
+- `git diff --check` passes for whitespace validation.
+- Playwright opens the local Vite app, switches into `Pivot/Grafik`, renders the pivot action panel and pivot table without a blank screen, and reports no app runtime console errors.
+- The only console entry in the final browser check is the React DevTools informational development message.
+- The audit specifically covers per-sheet workspace isolation, pivot/grafik mode isolation, metric order preservation, empty field display by column type, pivot text split behavior, stable row keys for colliding pivot labels, visible fallback sorting when metrics are empty, persisted workspace repair, and guarded Tauri event listeners in browser/dev mode.
 
 ### Reference Only
 

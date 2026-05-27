@@ -1,5 +1,6 @@
 import { ANALYTICS_FIELD_COLUMN_PATHS, COLUMNS } from "./columns";
 import {
+  ColumnDefinition,
   SheetAnalyticsMetric,
   SheetAnalyticsMetricAggregation,
   SheetRow,
@@ -34,6 +35,7 @@ export type SheetAnalyticsMetricOption = {
 };
 
 export type SheetAnalyticsRow = {
+  key: string;
   label: string;
   groupValues: string[];
   count: number;
@@ -90,6 +92,21 @@ const COUNT_AGGREGATION_OPTIONS: SheetAnalyticsMetricAggregationOption[] = [
 
 function isAnalyticsColumnAllowed(path: string) {
   return ANALYTICS_ALLOWED_COLUMN_PATHS.has(path);
+}
+
+function isNumericAnalyticsColumn(column: ColumnDefinition) {
+  return (
+    column.type === "currency" || column.type === "number" || column.type === "weight"
+  );
+}
+
+function getEmptyAnalyticsColumnValue(column: ColumnDefinition) {
+  return isNumericAnalyticsColumn(column) ? "0" : "-";
+}
+
+function getAnalyticsGroupValue(row: SheetRow, column: ColumnDefinition) {
+  const value = formatColumnValue(row, column).trim();
+  return value === "-" || value === "" ? getEmptyAnalyticsColumnValue(column) : value;
 }
 
 export function getSheetAnalyticsGroupByOptions(): SheetAnalyticsGroupByOption[] {
@@ -190,20 +207,13 @@ function getActiveGroupByPaths(sheetState: SheetState) {
 }
 
 function getActiveMetrics(sheetState: SheetState) {
-  const validMetricSet = new Set(ANALYTICS_METRIC_OPTIONS.map((option) => option.key));
   const metricOptions = getSheetAnalyticsMetricOptions();
   const metricKeySet = new Set(metricOptions.map((option) => option.key));
   const normalizedMetrics = sheetState.analytics.metrics.map((metric) =>
     metric === LEGACY_COD_TOTAL_METRIC_KEY ? COD_TOTAL_COLUMN_PATH : metric
   );
-  const selectedMetrics = dedupeByKey(normalizedMetrics).filter((metric) =>
-    validMetricSet.has(metric)
-  );
 
-  return dedupeByKey([
-    ...selectedMetrics,
-    ...normalizedMetrics.filter((metric) => metricKeySet.has(metric)),
-  ]);
+  return dedupeByKey(normalizedMetrics.filter((metric) => metricKeySet.has(metric)));
 }
 
 function getActiveMetricOption(
@@ -479,6 +489,7 @@ export function getSheetAnalyticsSummary(params: {
   const groups = new Map<
     string,
     {
+      key: string;
       label: string;
       groupValues: string[];
       count: number;
@@ -488,19 +499,18 @@ export function getSheetAnalyticsSummary(params: {
   >();
 
   for (const row of sourceRows) {
-    const groupValues = groupByColumns.map((column) => {
-      const rawValue = formatColumnValue(row, column);
-      return rawValue === "-" ? "Tanpa Data" : rawValue;
-    });
-    const normalizedGroupValues = groupValues.length > 0 ? groupValues : ["Semua Row"];
+    const groupValues = groupByColumns.map((column) => getAnalyticsGroupValue(row, column));
     const pivotSplitValues = pivotSplitMetricOptions.map((metricOption) => {
       const metricValues = getMetricRawValues(row, metricOption);
-      return metricValues?.textValue ?? "Tanpa Data";
+      return metricValues?.textValue ?? "-";
     });
+    const normalizedGroupValues =
+      groupValues.length > 0 ? groupValues : pivotSplitValues.length > 0 ? [] : ["Semua Row"];
     const allGroupValues = [...normalizedGroupValues, ...pivotSplitValues];
     const label = allGroupValues.join(" / ");
     const key = JSON.stringify(allGroupValues);
     const current = groups.get(key) ?? {
+      key,
       label,
       groupValues: allGroupValues,
       count: 0,
@@ -516,6 +526,7 @@ export function getSheetAnalyticsSummary(params: {
       );
     }
     groups.set(key, {
+      key: current.key,
       label: current.label,
       groupValues: current.groupValues,
       count: current.count + 1,
@@ -543,6 +554,7 @@ export function getSheetAnalyticsSummary(params: {
       }
     }
     return {
+      key: group.key,
       label: group.label,
       groupValues: group.groupValues,
       count: group.count,

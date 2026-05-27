@@ -1,5 +1,5 @@
-import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
+import { listenToTauriEvent } from "../../backend/events";
 import { isBrowserReady } from "../sheet/utils";
 
 export type DisplayScale = "small" | "medium" | "large";
@@ -112,36 +112,39 @@ export function useWorkspaceShellController({
     let isDisposed = false;
     let unlistenAppMenu: null | (() => void) = null;
 
-    void listen<AppMenuCommandPayload>("shipflow://app-menu-command", (event) => {
-      switch (event.payload.command) {
-        case "new-document":
-          createNewWorkspaceDocument();
-          break;
-        case "open-document":
-          void openWorkspaceDocumentWithPicker();
-          break;
-        case "save-document":
-          void saveCurrentWorkspaceDocument();
-          break;
-        case "save-document-as":
-          void saveWorkspaceDocumentAs();
-          break;
-        case "new-window":
-          void createNewWorkspaceWindow();
-          break;
-        case "open-document-in-new-window":
-          void openWorkspaceInNewWindow();
-          break;
-        case "show-settings":
-          setSettingsOpenRequestToken((current) => current + 1);
-          break;
-        case "show-service-settings":
-          void openShipFlowServiceApp();
-          break;
-        default:
-          break;
+    void listenToTauriEvent<AppMenuCommandPayload>(
+      "shipflow://app-menu-command",
+      (event) => {
+        switch (event.payload.command) {
+          case "new-document":
+            createNewWorkspaceDocument();
+            break;
+          case "open-document":
+            void openWorkspaceDocumentWithPicker();
+            break;
+          case "save-document":
+            void saveCurrentWorkspaceDocument();
+            break;
+          case "save-document-as":
+            void saveWorkspaceDocumentAs();
+            break;
+          case "new-window":
+            void createNewWorkspaceWindow();
+            break;
+          case "open-document-in-new-window":
+            void openWorkspaceInNewWindow();
+            break;
+          case "show-settings":
+            setSettingsOpenRequestToken((current) => current + 1);
+            break;
+          case "show-service-settings":
+            void openShipFlowServiceApp();
+            break;
+          default:
+            break;
+        }
       }
-    }).then((unlisten) => {
+    ).then((unlisten) => {
       if (isDisposed) {
         void unlisten();
         return;

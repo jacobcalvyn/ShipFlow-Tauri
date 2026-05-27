@@ -363,6 +363,52 @@ describe("sheet analytics", () => {
     ]);
   });
 
+  it("preserves selected metric order for charts", () => {
+    let sheet = createDefaultSheetState();
+    sheet = setRowSuccessInSheet(
+      sheet,
+      sheet.rows[0].key,
+      "P1",
+      createShipment({
+        shipmentId: "P1",
+        status: "DELIVERED",
+        service: "Q9",
+        isCod: true,
+        codTotal: 125_000,
+      })
+    );
+    sheet = {
+      ...sheet,
+      analytics: {
+        sourceScope: "all_rows",
+        groupByPaths: ["status_akhir.status"],
+        metrics: [COD_TOTAL_COLUMN_PATH, "count"],
+        metricAggregations: {
+          [COD_TOTAL_COLUMN_PATH]: "sum",
+          count: "count",
+        },
+        chartType: "bar",
+      },
+    };
+
+    const summary = getSheetAnalyticsSummary({
+      sheetState: sheet,
+      selectedVisibleRowKeys: [],
+      ...getDisplayedContext(sheet),
+    });
+
+    expect(summary.metrics.map((metric) => metric.key)).toEqual([
+      COD_TOTAL_COLUMN_PATH,
+      "count",
+    ]);
+    expect(summary.primaryMetric).toBe(COD_TOTAL_COLUMN_PATH);
+    expect(summary.rows[0]).toEqual(
+      expect.objectContaining({
+        metricValue: 125_000,
+      })
+    );
+  });
+
   it("splits pivot rows by text metric values and keeps pivot share based on row count", () => {
     let sheet = createDefaultSheetState();
     sheet = setRowSuccessInSheet(
@@ -490,6 +536,158 @@ describe("sheet analytics", () => {
         }),
       ])
     );
+  });
+
+  it("splits pivot by text metric without adding a synthetic group column", () => {
+    let sheet = createDefaultSheetState();
+    sheet = setRowSuccessInSheet(
+      sheet,
+      sheet.rows[0].key,
+      "P1",
+      createShipment({
+        shipmentId: "P1",
+        status: "DELIVERED",
+        service: "Q9",
+        isCod: false,
+        codTotal: 0,
+      })
+    );
+    sheet = setRowSuccessInSheet(
+      sheet,
+      sheet.rows[1].key,
+      "P2",
+      createShipment({
+        shipmentId: "P2",
+        status: "INVEHICLE",
+        service: "Q9",
+        isCod: false,
+        codTotal: 0,
+      })
+    );
+    sheet = {
+      ...sheet,
+      analytics: {
+        sourceScope: "all_rows",
+        groupByPaths: [],
+        metrics: ["status_akhir.status", "count"],
+        chartType: "pivot",
+      },
+    };
+
+    const summary = getSheetAnalyticsSummary({
+      sheetState: sheet,
+      selectedVisibleRowKeys: [],
+      ...getDisplayedContext(sheet),
+    });
+
+    expect(summary.groupByLabels).toEqual(["Status Akhir"]);
+    expect(summary.rows.map((row) => row.groupValues)).toEqual([
+      ["DELIVERED"],
+      ["INVEHICLE"],
+    ]);
+    expect(summary.rows.every((row) => !row.groupValues.includes("Semua Row"))).toBe(
+      true
+    );
+  });
+
+  it("keeps stable unique row keys when joined pivot labels collide", () => {
+    let sheet = createDefaultSheetState();
+    sheet = setRowSuccessInSheet(
+      sheet,
+      sheet.rows[0].key,
+      "P1",
+      createShipment({
+        shipmentId: "P1",
+        status: "B / C",
+        service: "A",
+        isCod: false,
+        codTotal: 0,
+      })
+    );
+    sheet = setRowSuccessInSheet(
+      sheet,
+      sheet.rows[1].key,
+      "P2",
+      createShipment({
+        shipmentId: "P2",
+        status: "C",
+        service: "A / B",
+        isCod: false,
+        codTotal: 0,
+      })
+    );
+    sheet = {
+      ...sheet,
+      analytics: {
+        sourceScope: "all_rows",
+        groupByPaths: ["detail.package_detail.jenis_layanan"],
+        metrics: ["status_akhir.status", "count"],
+        chartType: "pivot",
+      },
+    };
+
+    const summary = getSheetAnalyticsSummary({
+      sheetState: sheet,
+      selectedVisibleRowKeys: [],
+      ...getDisplayedContext(sheet),
+    });
+
+    expect(summary.rows).toHaveLength(2);
+    expect(summary.rows.map((row) => row.label)).toEqual([
+      "A / B / C",
+      "A / B / C",
+    ]);
+    expect(new Set(summary.rows.map((row) => row.key)).size).toBe(2);
+  });
+
+  it("uses typed empty values for pivot group columns", () => {
+    let sheet = createDefaultSheetState();
+    sheet = setRowSuccessInSheet(
+      sheet,
+      sheet.rows[0].key,
+      "P1",
+      createShipment({
+        shipmentId: "P1",
+        status: "DELIVERED",
+        service: "Q9",
+        isCod: false,
+        codTotal: 0,
+      })
+    );
+    sheet = {
+      ...sheet,
+      analytics: {
+        sourceScope: "all_rows",
+        groupByPaths: [
+          "detail.performance_detail.sla_category",
+          "detail.performance_detail.sla_days_diff",
+        ],
+        metrics: ["status_akhir.location", "count"],
+        chartType: "pivot",
+      },
+    };
+
+    const summary = getSheetAnalyticsSummary({
+      sheetState: sheet,
+      selectedVisibleRowKeys: [],
+      ...getDisplayedContext(sheet),
+    });
+
+    expect(summary.groupByLabels).toEqual([
+      "SLA Category",
+      "SLA Days Diff",
+      "Lokasi Akhir",
+    ]);
+    expect(summary.metrics.map((metric) => metric.key)).toEqual(["count"]);
+    expect(summary.rows).toEqual([
+      expect.objectContaining({
+        label: "- / 0 / -",
+        groupValues: ["-", "0", "-"],
+        count: 1,
+        metricValue: 1,
+        share: 100,
+      }),
+    ]);
   });
 
   it("allows empty group and metric selections while still counting source rows", () => {

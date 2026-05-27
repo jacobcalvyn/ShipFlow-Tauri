@@ -110,6 +110,10 @@ describe("workspace state", () => {
         sourceScope: "selected_rows",
         groupByPaths: ["detail.package_detail.jenis_layanan", "status_akhir.status"],
         metrics: [COD_TOTAL_COLUMN_PATH, "count"],
+        metricAggregations: {
+          [COD_TOTAL_COLUMN_PATH]: "sum",
+          count: "count",
+        },
         chartType: "donut",
       },
       rows: sheet.rows.map((row, index) =>
@@ -135,8 +139,21 @@ describe("workspace state", () => {
       sourceScope: "selected_rows",
       groupByPaths: ["detail.package_detail.jenis_layanan", "status_akhir.status"],
       metrics: [COD_TOTAL_COLUMN_PATH, "count"],
+      metricAggregations: {
+        [COD_TOTAL_COLUMN_PATH]: "sum",
+        count: "count",
+      },
       chartType: "donut",
     });
+    expect(duplicatedSheet.analytics.groupByPaths).not.toBe(
+      workspace.sheetsById[sourceSheetId].analytics.groupByPaths
+    );
+    expect(duplicatedSheet.analytics.metrics).not.toBe(
+      workspace.sheetsById[sourceSheetId].analytics.metrics
+    );
+    expect(duplicatedSheet.analytics.metricAggregations).not.toBe(
+      workspace.sheetsById[sourceSheetId].analytics.metricAggregations
+    );
     expect(duplicatedSheet.rows[0].trackingInput).toBe("P2603310114291");
     expect(duplicatedSheet.rows[0].loading).toBe(false);
     expect(duplicatedSheet.rows[0].error).toBe("");

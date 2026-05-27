@@ -1,4 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
 import {
   Dispatch,
   SetStateAction,
@@ -20,6 +19,7 @@ import {
   takePendingWorkspaceWindowRequest,
   writeWorkspaceDocument,
 } from "../../backend/commands";
+import { listenToTauriEvent } from "../../backend/events";
 import { createDefaultWorkspaceState } from "./default-state";
 import {
   createDefaultWorkspaceDocumentMeta,
@@ -642,15 +642,18 @@ export function useWorkspaceDocumentController({
     let isDisposed = false;
     let unlistenWindowCloseRequest: null | (() => void) = null;
 
-    void listen<WindowCloseRequestPayload>("shipflow://window-close-requested", (event) => {
-      if (isDisposed) {
-        return;
-      }
+    void listenToTauriEvent<WindowCloseRequestPayload>(
+      "shipflow://window-close-requested",
+      (event) => {
+        if (isDisposed) {
+          return;
+        }
 
-      setPendingWindowCloseRequest({
-        documentName: event.payload.documentName,
-      });
-    }).then((unlisten) => {
+        setPendingWindowCloseRequest({
+          documentName: event.payload.documentName,
+        });
+      }
+    ).then((unlisten) => {
       if (isDisposed) {
         void unlisten();
         return;

@@ -21,7 +21,14 @@ import {
 function cloneSheetState(sourceSheet: SheetState): SheetState {
   return {
     ...sourceSheet,
-    analytics: { ...sourceSheet.analytics },
+    analytics: {
+      ...sourceSheet.analytics,
+      groupByPaths: [...sourceSheet.analytics.groupByPaths],
+      metrics: [...sourceSheet.analytics.metrics],
+      metricAggregations: sourceSheet.analytics.metricAggregations
+        ? { ...sourceSheet.analytics.metricAggregations }
+        : undefined,
+    },
     rows: sourceSheet.rows.map((row) => ({
       ...row,
       loading: false,

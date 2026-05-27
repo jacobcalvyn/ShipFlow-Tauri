@@ -114,6 +114,9 @@ describe("workspace persistence", () => {
             sourceScope: "selected_rows",
             groupByPath: "detail.package_detail.jenis_layanan",
             metric: "cod_total",
+            metricAggregations: {
+              cod_total: "average",
+            },
             chartType: "donut",
           },
         },
@@ -125,7 +128,7 @@ describe("workspace persistence", () => {
       groupByPaths: ["detail.package_detail.jenis_layanan"],
       metrics: [COD_TOTAL_COLUMN_PATH],
       metricAggregations: {
-        [COD_TOTAL_COLUMN_PATH]: "sum",
+        [COD_TOTAL_COLUMN_PATH]: "average",
       },
       chartType: "donut",
     });
@@ -157,5 +160,43 @@ describe("workspace persistence", () => {
       metricAggregations: {},
       chartType: "bar",
     });
+  });
+
+  it("repairs duplicate persisted sheet and row keys", () => {
+    const workspace = createDefaultWorkspaceState();
+    const sheetId = workspace.activeSheetId;
+    const sheet = workspace.sheetsById[sheetId];
+
+    const normalized = normalizePersistedWorkspaceState({
+      ...workspace,
+      sheetOrder: [sheetId, sheetId],
+      sheetsById: {
+        [sheetId]: {
+          ...sheet,
+          rows: [
+            {
+              ...sheet.rows[0],
+              key: "duplicate-row",
+              trackingInput: "P1",
+            },
+            {
+              ...sheet.rows[1],
+              key: "duplicate-row",
+              trackingInput: "P2",
+            },
+          ],
+          selectedRowKeys: ["duplicate-row", "duplicate-row"],
+        },
+      },
+    });
+
+    const normalizedSheet = normalized.sheetsById[sheetId];
+    const normalizedRowKeys = normalizedSheet.rows.slice(0, 2).map((row) => row.key);
+
+    expect(normalized.sheetOrder).toEqual([sheetId]);
+    expect(normalizedSheet.rows[0].trackingInput).toBe("P1");
+    expect(normalizedSheet.rows[1].trackingInput).toBe("P2");
+    expect(new Set(normalizedRowKeys).size).toBe(2);
+    expect(normalizedSheet.selectedRowKeys).toEqual(["duplicate-row"]);
   });
 });

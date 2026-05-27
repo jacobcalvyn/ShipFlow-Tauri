@@ -623,6 +623,10 @@ describe("App workspace isolation", () => {
     fireEvent.click(within(groupHeader).getByRole("button", { name: /Status Akhir/ }));
     expect(groupHeader).toHaveAttribute("aria-sort", "ascending");
 
+    fireEvent.click(screen.getByRole("button", { name: "Hapus Metric Jumlah Kiriman" }));
+    expect(screen.queryByRole("columnheader", { name: /Share/ })).not.toBeInTheDocument();
+    expect(groupHeader).toHaveAttribute("aria-sort", "ascending");
+
     fireEvent.change(modeSelect, {
       target: { value: "bar" },
     });
@@ -643,6 +647,19 @@ describe("App workspace isolation", () => {
 
     expect(screen.getByRole("region", { name: "Tabel Pivot" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Grafik Pivot" })).not.toBeInTheDocument();
+  });
+
+  it("falls back to a visible pivot sort column when metrics are empty", () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Pivot/Grafik" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hapus Metric Jumlah Kiriman" }));
+
+    expect(screen.queryByRole("columnheader", { name: /Share/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /Status Akhir/ })).toHaveAttribute(
+      "aria-sort",
+      "ascending"
+    );
   });
 
   it("ignores late responses after deleting the active sheet during an in-flight request", async () => {
