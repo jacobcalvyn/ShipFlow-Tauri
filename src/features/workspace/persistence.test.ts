@@ -24,11 +24,10 @@ describe("workspace persistence", () => {
     expect(normalized.sheetsById[sheetId].activeMode).toBe("workspace");
     expect(normalized.sheetsById[sheetId].analytics).toEqual({
       sourceScope: "filtered_rows",
-      groupByPaths: ["status_akhir.status"],
-      metrics: ["count"],
-      metricAggregations: {
-        count: "count",
-      },
+      rowPaths: ["status_akhir.status"],
+      columnPaths: [],
+      valueMetrics: [],
+      metricAggregations: {},
       chartType: "pivot",
     });
   });
@@ -45,12 +44,13 @@ describe("workspace persistence", () => {
           activeMode: "analytics",
           analytics: {
             sourceScope: "selected_rows",
-            groupByPaths: [
+            rowPaths: [
               "detail.package_detail.jenis_layanan",
               "status_akhir.location",
               "status_akhir.location",
             ],
-            metrics: [COD_TOTAL_COLUMN_PATH, "count", "count"],
+            columnPaths: ["status_akhir.status", "status_akhir.status"],
+            valueMetrics: [COD_TOTAL_COLUMN_PATH, "count", "count"],
             metricAggregations: {
               [COD_TOTAL_COLUMN_PATH]: "average",
               count: "count",
@@ -64,11 +64,11 @@ describe("workspace persistence", () => {
     expect(normalized.sheetsById[sheetId].activeMode).toBe("analytics");
     expect(normalized.sheetsById[sheetId].analytics).toEqual({
       sourceScope: "selected_rows",
-      groupByPaths: ["detail.package_detail.jenis_layanan", "status_akhir.location"],
-      metrics: [COD_TOTAL_COLUMN_PATH, "count"],
+      rowPaths: ["detail.package_detail.jenis_layanan", "status_akhir.location"],
+      columnPaths: ["status_akhir.status"],
+      valueMetrics: [COD_TOTAL_COLUMN_PATH],
       metricAggregations: {
         [COD_TOTAL_COLUMN_PATH]: "average",
-        count: "count",
       },
       chartType: "pivot",
     });
@@ -92,11 +92,10 @@ describe("workspace persistence", () => {
     expect(invalid.sheetsById[sheetId].activeMode).toBe("workspace");
     expect(invalid.sheetsById[sheetId].analytics).toEqual({
       sourceScope: "filtered_rows",
-      groupByPaths: ["status_akhir.status"],
-      metrics: ["count"],
-      metricAggregations: {
-        count: "count",
-      },
+      rowPaths: ["status_akhir.status"],
+      columnPaths: [],
+      valueMetrics: [],
+      metricAggregations: {},
       chartType: "pivot",
     });
   });
@@ -125,8 +124,9 @@ describe("workspace persistence", () => {
 
     expect(normalized.sheetsById[sheetId].analytics).toEqual({
       sourceScope: "selected_rows",
-      groupByPaths: ["detail.package_detail.jenis_layanan"],
-      metrics: [COD_TOTAL_COLUMN_PATH],
+      rowPaths: ["detail.package_detail.jenis_layanan"],
+      columnPaths: [],
+      valueMetrics: [COD_TOTAL_COLUMN_PATH],
       metricAggregations: {
         [COD_TOTAL_COLUMN_PATH]: "average",
       },
@@ -145,8 +145,9 @@ describe("workspace persistence", () => {
           ...workspace.sheetsById[sheetId],
           analytics: {
             sourceScope: "filtered_rows",
-            groupByPaths: [],
-            metrics: [],
+            rowPaths: [],
+            columnPaths: [],
+            valueMetrics: [],
             chartType: "bar",
           },
         },
@@ -155,8 +156,9 @@ describe("workspace persistence", () => {
 
     expect(normalized.sheetsById[sheetId].analytics).toEqual({
       sourceScope: "filtered_rows",
-      groupByPaths: [],
-      metrics: [],
+      rowPaths: [],
+      columnPaths: [],
+      valueMetrics: [],
       metricAggregations: {},
       chartType: "bar",
     });

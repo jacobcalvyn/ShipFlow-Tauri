@@ -68,8 +68,9 @@ describe("sheet actions", () => {
       activeMode: "analytics" as const,
       analytics: {
         sourceScope: "all_rows" as const,
-        groupByPaths: ["detail.package_detail.jenis_layanan"],
-        metrics: [COD_TOTAL_COLUMN_PATH],
+        rowPaths: ["detail.package_detail.jenis_layanan"],
+        columnPaths: [],
+        valueMetrics: [COD_TOTAL_COLUMN_PATH],
         chartType: "donut" as const,
       },
       deleteAllArmed: true,
@@ -110,11 +111,11 @@ describe("sheet actions", () => {
     expect(next.activeMode).toBe("analytics");
     expect(next.analytics).toEqual({
       sourceScope: "selected_rows",
-      groupByPaths: ["detail.package_detail.jenis_layanan", "status_akhir.location"],
-      metrics: [COD_TOTAL_COLUMN_PATH, "count"],
+      rowPaths: ["detail.package_detail.jenis_layanan", "status_akhir.location"],
+      columnPaths: [],
+      valueMetrics: [COD_TOTAL_COLUMN_PATH],
       metricAggregations: {
         [COD_TOTAL_COLUMN_PATH]: "sum",
-        count: "count",
       },
       chartType: "pivot",
     });
@@ -125,8 +126,8 @@ describe("sheet actions", () => {
       []
     );
 
-    expect(empty.analytics.groupByPaths).toEqual([]);
-    expect(empty.analytics.metrics).toEqual([]);
+    expect(empty.analytics.rowPaths).toEqual([]);
+    expect(empty.analytics.valueMetrics).toEqual([]);
     expect(() => assertValidSheetState(empty)).not.toThrow();
 
     const averaged = setSheetAnalyticsMetricAggregationInSheet(
@@ -137,7 +138,6 @@ describe("sheet actions", () => {
 
     expect(averaged.analytics.metricAggregations).toEqual({
       [COD_TOTAL_COLUMN_PATH]: "average",
-      count: "count",
     });
   });
 

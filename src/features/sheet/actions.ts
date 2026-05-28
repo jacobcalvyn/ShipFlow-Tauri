@@ -80,12 +80,12 @@ function dedupeValidStrings(values: string[], validValues: Set<string>) {
   return nextValues;
 }
 
-function normalizeAnalyticsGroupByPaths(groupByPaths: string[]) {
+function normalizeAnalyticsColumnPaths(paths: string[]) {
   const validPaths = new Set(getSheetAnalyticsGroupByOptions().map((option) => option.path));
-  return dedupeValidStrings(groupByPaths, validPaths);
+  return dedupeValidStrings(paths, validPaths);
 }
 
-function normalizeAnalyticsMetrics(metrics: SheetAnalyticsMetric[]) {
+function normalizeAnalyticsValueMetrics(metrics: SheetAnalyticsMetric[]) {
   const validMetrics = new Set(getSheetAnalyticsMetricOptions().map((option) => option.key));
   const normalizedMetrics = metrics.map((metric) =>
     metric === "cod_total" ? "detail.billing_detail.cod_info.total_cod" : metric
@@ -122,12 +122,12 @@ function normalizeAnalyticsMetricAggregations(
   return nextAggregations;
 }
 
-export function setSheetAnalyticsGroupByPathsInSheet(
+export function setSheetAnalyticsRowPathsInSheet(
   sheetState: SheetState,
-  groupByPaths: string[]
+  rowPaths: string[]
 ) {
-  const normalizedGroupByPaths = normalizeAnalyticsGroupByPaths(groupByPaths);
-  if (areStringArraysEqual(sheetState.analytics.groupByPaths, normalizedGroupByPaths)) {
+  const normalizedRowPaths = normalizeAnalyticsColumnPaths(rowPaths);
+  if (areStringArraysEqual(sheetState.analytics.rowPaths, normalizedRowPaths)) {
     return sheetState;
   }
 
@@ -135,29 +135,40 @@ export function setSheetAnalyticsGroupByPathsInSheet(
     ...sheetState,
     analytics: {
       ...sheetState.analytics,
-      groupByPaths: normalizedGroupByPaths,
+      rowPaths: normalizedRowPaths,
     },
   };
 }
 
-export function setSheetAnalyticsGroupByInSheet(
+export function setSheetAnalyticsColumnPathsInSheet(
   sheetState: SheetState,
-  groupByPath: string | null
+  columnPaths: string[]
 ) {
-  return setSheetAnalyticsGroupByPathsInSheet(sheetState, groupByPath ? [groupByPath] : []);
+  const normalizedColumnPaths = normalizeAnalyticsColumnPaths(columnPaths);
+  if (areStringArraysEqual(sheetState.analytics.columnPaths, normalizedColumnPaths)) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    analytics: {
+      ...sheetState.analytics,
+      columnPaths: normalizedColumnPaths,
+    },
+  };
 }
 
-export function setSheetAnalyticsMetricsInSheet(
+export function setSheetAnalyticsValueMetricsInSheet(
   sheetState: SheetState,
   metrics: SheetAnalyticsMetric[]
 ) {
-  const normalizedMetrics = normalizeAnalyticsMetrics(metrics);
+  const normalizedMetrics = normalizeAnalyticsValueMetrics(metrics);
   const metricAggregations = normalizeAnalyticsMetricAggregations(
     normalizedMetrics,
     sheetState.analytics.metricAggregations
   );
   if (
-    areStringArraysEqual(sheetState.analytics.metrics, normalizedMetrics) &&
+    areStringArraysEqual(sheetState.analytics.valueMetrics, normalizedMetrics) &&
     JSON.stringify(sheetState.analytics.metricAggregations ?? {}) ===
       JSON.stringify(metricAggregations)
   ) {
@@ -168,17 +179,38 @@ export function setSheetAnalyticsMetricsInSheet(
     ...sheetState,
     analytics: {
       ...sheetState.analytics,
-      metrics: normalizedMetrics,
+      valueMetrics: normalizedMetrics,
       metricAggregations,
     },
   };
+}
+
+export function setSheetAnalyticsGroupByPathsInSheet(
+  sheetState: SheetState,
+  groupByPaths: string[]
+) {
+  return setSheetAnalyticsRowPathsInSheet(sheetState, groupByPaths);
+}
+
+export function setSheetAnalyticsGroupByInSheet(
+  sheetState: SheetState,
+  groupByPath: string | null
+) {
+  return setSheetAnalyticsRowPathsInSheet(sheetState, groupByPath ? [groupByPath] : []);
+}
+
+export function setSheetAnalyticsMetricsInSheet(
+  sheetState: SheetState,
+  metrics: SheetAnalyticsMetric[]
+) {
+  return setSheetAnalyticsValueMetricsInSheet(sheetState, metrics);
 }
 
 export function setSheetAnalyticsMetricInSheet(
   sheetState: SheetState,
   metric: SheetAnalyticsMetric
 ) {
-  return setSheetAnalyticsMetricsInSheet(sheetState, [metric]);
+  return setSheetAnalyticsValueMetricsInSheet(sheetState, [metric]);
 }
 
 export function setSheetAnalyticsMetricAggregationInSheet(
@@ -186,9 +218,9 @@ export function setSheetAnalyticsMetricAggregationInSheet(
   metric: SheetAnalyticsMetric,
   aggregation: SheetAnalyticsMetricAggregation
 ) {
-  const normalizedMetrics = normalizeAnalyticsMetrics([metric]);
+  const normalizedMetrics = normalizeAnalyticsValueMetrics([metric]);
   const normalizedMetric = normalizedMetrics[0];
-  if (!normalizedMetric || !sheetState.analytics.metrics.includes(normalizedMetric)) {
+  if (!normalizedMetric || !sheetState.analytics.valueMetrics.includes(normalizedMetric)) {
     return sheetState;
   }
 

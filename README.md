@@ -41,10 +41,10 @@ Architecture references:
 4. The service runtime resolves the active tracking source:
    - internal POS scraper
    - external ShipFlow API
-5. For the internal scraper, the Rust tracking layer converts the shipment ID to Base64 and calls:
+5. For the internal scraper, the Rust tracking layer sends the shipment ID directly to the lacak-mitra endpoint:
 
 ```text
-https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=...
+https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=...
 ```
 
 6. The response is normalized into the app's JSON shape
@@ -59,7 +59,7 @@ P2603310114291
 Example generated upstream URL:
 
 ```text
-https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=UDI2MDMzMTAxMTQyOTE%3D
+https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=BAC19052633D04464929
 ```
 
 ## Lookup Kinds
@@ -244,7 +244,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 
 ## Sheet Modes And Pivot Analytics
 
-Each sheet owns its mode and analytics configuration independently. Switching one sheet to `Pivot/Grafik`, changing groups, changing metrics, or changing chart mode does not affect another sheet.
+Each sheet owns its mode and analytics configuration independently. Switching one sheet to `Pivot/Grafik`, changing rows, changing columns, changing values, or changing chart mode does not affect another sheet.
 
 Sheet modes:
 
@@ -261,10 +261,11 @@ The analytics action panel contains:
 
 - `Sumber`: choose filtered rows, all rows, or selected rows
 - `Mode`: choose `Pivot`, `Bar`, or `Donut`
-- `Group`: searchable multi-select fields used as grouping dimensions
-- `Metric`: searchable multi-select fields used as values, aggregations, or pivot split fields
+- `Row`: searchable multi-select fields used as pivot row dimensions and chart groups
+- `Column`: searchable multi-select fields used as pivot column dimensions
+- `Value`: searchable multi-select fields used as pivot/chart values with type-aware formulas
 
-`Group` and `Metric` can use only this curated field list:
+`Row`, `Column`, and `Value` can use only this curated field list:
 
 | Field | Type |
 |---|---|
@@ -300,36 +301,37 @@ The analytics action panel contains:
 | `SLA Days Diff` | `number` |
 | `Jumlah Delivery Runsheet` | `number` |
 
-Metric behavior:
+Value behavior:
 
-- numeric, currency, weight, text, date, and boolean columns can be selected as metrics
-- selected metrics can be reordered and removed from the active metric list
-- selected metric order is preserved by summaries, chart primary metric selection, and pivot display
-- numeric, currency, and weight metrics support `Jumlah`, `Rata-rata`, `Nilai Maksimum`, `Nilai Minimum`, `Jumlah Data`, and `Banyaknya Nilai Berbeda`
-- text, date, and boolean metrics support `Teks`, `Paling Sering`, `Pertama`, and `Terakhir`
-- the metric formula menu is type-aware, so text fields do not offer numeric formulas such as `Jumlah`, `Rata-rata`, `Nilai Maksimum`, or `Nilai Minimum`
-- in `Pivot` mode, text metrics using the text aggregation become split dimensions, so a field such as `Status Akhir` creates separate pivot rows instead of combining all statuses into one cell
-- count-style analysis for text categories should use the text field as `Group` and `Jumlah Kiriman` as the metric
-- `Jumlah Kiriman` remains available as a built-in count metric and uses the `Jumlah Data` formula
-- missing numeric, currency, or weight group values render as `0`
-- missing text, date, boolean, or text split values render as `-`
+- numeric, currency, weight, text, date, and boolean columns can be selected as values
+- selected values can be reordered and removed from the active value list
+- selected value order is preserved by summaries, chart primary value selection, and pivot display
+- numeric, currency, and weight values support `Jumlah`, `Rata-rata`, `Nilai Maksimum`, `Nilai Minimum`, `Jumlah Data`, and `Banyaknya Nilai Berbeda`
+- text, date, and boolean values support `Teks`, `Paling Sering`, `Pertama`, and `Terakhir`
+- the value formula menu is type-aware, so text fields do not offer numeric formulas such as `Jumlah`, `Rata-rata`, `Nilai Maksimum`, or `Nilai Minimum`
+- the `Value` list only contains allowed sheet columns, without built-in virtual values
+- missing numeric, currency, or weight row/column values render as `0`
+- missing text, date, or boolean row/column values render as `-`
 
 Pivot table behavior:
 
-- pivot rows are grouped by the selected `Group` fields plus text metric split fields
-- when no `Group` is selected, text metric split fields become the pivot row dimensions directly without adding a synthetic `Semua Row` column
-- pivot columns show the selected display metrics and a `Share` column when a primary metric exists
+- pivot rows are grouped by the selected `Row` fields
+- pivot columns are grouped by the selected `Column` fields
+- when no `Row` is selected, the pivot uses a single `Semua Row` row
+- when no `Column` is selected, the selected `Value` fields render as normal value columns
+- selected `Value` fields fill pivot cells using their selected formulas
 - `Share` in `Pivot` mode is based on row count share for each pivot group
-- pivot headers are sortable for group columns, metric columns, and `Share`
+- pivot headers are sortable for row columns, pivot value columns, and `Share`
 - the default pivot table sort is `Share` descending
-- when `Share` is not available because no primary metric is selected, pivot sorting falls back to the first visible group or metric column
+- when `Share` is not available because no primary value is selected, pivot sorting falls back to the first visible row or value column
 - pivot rows use stable internal keys, so rows with identical joined display labels still render independently
 
 Chart behavior:
 
-- `Bar` and `Donut` use the primary selected metric as the chart value
-- chart rows are sorted by metric value descending before label tie-breaks
-- `Share` in chart calculations follows the selected metric value, while `Pivot` share follows row count share
+- `Bar` and `Donut` use the selected `Row` fields for grouping and the primary selected `Value` as the chart value
+- `Column` fields are preserved in the sheet config but only affect `Pivot` mode
+- chart rows are sorted by value descending before label tie-breaks
+- `Share` in chart calculations follows the selected value, while `Pivot` share follows row count share
 
 ## Current Data Shown In The Table
 
@@ -390,7 +392,7 @@ The main table currently focuses on:
 - `Lacak Ulang` marks all target rows as queued first, then promotes only the active worker row to loading while preserving completed/failed row status.
 - Sheet duplication deep-copies analytics arrays and aggregation maps, so the duplicate sheet cannot mutate the source sheet's pivot configuration by shared reference.
 - Workspace persistence repairs duplicate persisted sheet IDs, duplicate row keys, and duplicate selected row keys during load instead of allowing corrupted saved state to destabilize the workspace.
-- Legacy persisted `cod_total` metric aggregations are migrated to the current `Total COD` analytics field key.
+- Legacy persisted `cod_total` value aggregations are migrated to the current `Total COD` analytics field key.
 - Browser-only frontend dev sessions guard Tauri event listeners before subscribing, so missing Tauri internals do not produce runtime console errors outside the desktop shell.
 - Delivery-runsheet parsing is hardened so `FAILEDTODELIVERED` cases are not incorrectly split into two updates on the latest runsheet.
 - Delivery-runsheet parsing now keeps only the latest effective update for a runsheet summary.
@@ -443,7 +445,7 @@ The main table currently focuses on:
 - [src/features/sheet/components/SheetActionBar.tsx](./src/features/sheet/components/SheetActionBar.tsx): sheet action bar shell
 - [src/features/sheet/components/ImportSourceModal.tsx](./src/features/sheet/components/ImportSourceModal.tsx): bag/manifest import modal
 - [src/features/sheet/components/SheetAnalyticsView.tsx](./src/features/sheet/components/SheetAnalyticsView.tsx): sheet-local `Pivot/Grafik` side panel, chart view, and sortable pivot table
-- [src/features/sheet/analytics.ts](./src/features/sheet/analytics.ts): analytics field eligibility, metric aggregation, pivot grouping, share, and summary logic
+- [src/features/sheet/analytics.ts](./src/features/sheet/analytics.ts): analytics field eligibility, value aggregation, pivot grouping, share, and summary logic
 - [src/features/sheet/components](./src/features/sheet/components): table, header, row, and action bar components
 - [src/features/workspace](./src/features/workspace): workspace controllers, adapters, dialogs, and shell components
 
@@ -512,7 +514,7 @@ Latest frontend workspace and pivot/grafik audit baseline, verified on 2026-05-2
 - `git diff --check` passes for whitespace validation.
 - Playwright opens the local Vite app, switches into `Pivot/Grafik`, renders the pivot action panel and pivot table without a blank screen, and reports no app runtime console errors.
 - The only console entry in the final browser check is the React DevTools informational development message.
-- The audit specifically covers per-sheet workspace isolation, pivot/grafik mode isolation, metric order preservation, empty field display by column type, pivot text split behavior, stable row keys for colliding pivot labels, visible fallback sorting when metrics are empty, persisted workspace repair, and guarded Tauri event listeners in browser/dev mode.
+- The audit specifically covers per-sheet workspace isolation, pivot/grafik mode isolation, value order preservation, empty field display by column type, Row/Column/Value pivot behavior, stable row keys for colliding pivot labels, visible fallback sorting when values are empty, persisted workspace repair, and guarded Tauri event listeners in browser/dev mode.
 
 ### Reference Only
 
@@ -814,7 +816,7 @@ Current frontend tests cover:
 - `SheetActionBar` interaction smoke test
 - multi-sheet app-level isolation and stress scenarios
 - sheet-local `Workspace` / `Pivot/Grafik` mode isolation
-- pivot analytics grouping, text metric split behavior, share calculation, and field eligibility
+- pivot analytics Row/Column/Value behavior, share calculation, and field eligibility
 - per-sheet bag / manifest modal isolation, cache, append, replace, and auto-track flows
 - concurrent manifest lookups across multiple sheets with stale-result protection
 - tracking telemetry and malformed-response guards
@@ -826,7 +828,7 @@ Rust tests are now split by domain and cover:
 - Service API v1 response envelope timestamp formatting
 - Service API batch-job status/result bookkeeping
 - persistent lookup-store overwrite durability
-- Base64 + percent-encoded tracking URL generation
+- raw lacak-mitra shipment detail URL generation
 - embedded API bearer-auth validation
 - authenticated service readiness probing and ShipFlow service identity checks
 - service settings activation, single-instance detection, and tray companion lifecycle checks

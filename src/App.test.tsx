@@ -158,6 +158,48 @@ function expectInvokeCount(command: string, count: number) {
   expect(getInvokeCalls(command)).toHaveLength(count);
 }
 
+function createDragDataTransfer(): DataTransfer {
+  const values = new Map<string, string>();
+
+  return {
+    dropEffect: "none",
+    effectAllowed: "all",
+    files: [] as unknown as FileList,
+    items: [] as unknown as DataTransferItemList,
+    types: [] as unknown as readonly string[],
+    clearData: vi.fn((format?: string) => {
+      if (format) {
+        values.delete(format);
+      } else {
+        values.clear();
+      }
+    }),
+    getData: vi.fn((format: string) => values.get(format) ?? ""),
+    setData: vi.fn((format: string, data: string) => {
+      values.set(format, data);
+    }),
+    setDragImage: vi.fn(),
+  } as unknown as DataTransfer;
+}
+
+function dragElementToList(source: HTMLElement, target: HTMLElement) {
+  const dataTransfer = createDragDataTransfer();
+  fireEvent.dragStart(source, { dataTransfer });
+  fireEvent.dragEnter(target, { dataTransfer });
+  fireEvent.dragOver(target, { dataTransfer });
+  fireEvent.drop(target, { dataTransfer });
+  fireEvent.dragEnd(source, { dataTransfer });
+  return dataTransfer;
+}
+
+function startDragElementOverList(source: HTMLElement, target: HTMLElement) {
+  const dataTransfer = createDragDataTransfer();
+  fireEvent.dragStart(source, { dataTransfer });
+  fireEvent.dragEnter(target, { dataTransfer });
+  fireEvent.dragOver(target, { dataTransfer });
+  return dataTransfer;
+}
+
 function getTrackedShipmentIds() {
   return getInvokeCalls("track_shipment").map(([, args]) => args?.shipmentId);
 }
@@ -511,7 +553,10 @@ describe("App workspace isolation", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Pivot/Grafik" }));
     expect(screen.getByLabelText("Sumber Data Pivot")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByLabelText("Pilih Group Jenis Layanan"));
+    dragElementToList(
+      screen.getByRole("listitem", { name: "Field Jenis Layanan" }),
+      screen.getByRole("list", { name: "Row aktif" })
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
 
@@ -536,13 +581,13 @@ describe("App workspace isolation", () => {
       );
     });
     expect(
-      within(screen.getByRole("list", { name: "Group aktif" })).getByText(
+      within(screen.getByRole("list", { name: "Row aktif" })).getByText(
         "Jenis Layanan"
       )
     ).toBeInTheDocument();
   });
 
-  it("supports checkbox multi-select fields with up and down ordering controls", () => {
+  it("supports dragging fields into active pivot rows", async () => {
     render(<App />);
 
     fireEvent.click(screen.getByRole("tab", { name: "Pivot/Grafik" }));
@@ -551,52 +596,92 @@ describe("App workspace isolation", () => {
       Array.from(list.querySelectorAll(".analytics-selected-label")).map(
         (item) => item.textContent
       );
-    const groupList = screen.getByRole("list", { name: "Group aktif" });
-    fireEvent.change(screen.getByLabelText("Cari Group"), {
+    const getSelectedChip = (list: HTMLElement, label: string) => {
+      const chip = within(list).getByText(label).closest(".analytics-selected-row");
+      expect(chip).not.toBeNull();
+      return chip as HTMLElement;
+    };
+    const fieldList = screen.getByRole("list", { name: "Field tersedia" });
+    const getField = (label: string) =>
+      within(fieldList).getByRole("listitem", { name: `Field ${label}` });
+    const groupList = screen.getByRole("list", { name: "Row aktif" });
+    const columnList = screen.getByRole("list", { name: "Column aktif" });
+    fireEvent.change(screen.getByLabelText("Cari Field"), {
       target: { value: "layanan" },
     });
-    expect(screen.getByLabelText("Pilih Group Jenis Layanan")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Pilih Group Status Akhir")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText("Pilih Group Jenis Layanan"));
+    expect(getField("Jenis Layanan")).toBeInTheDocument();
+    expect(
+      within(fieldList).queryByRole("listitem", { name: "Field Status Akhir" })
+    ).not.toBeInTheDocument();
+    dragElementToList(getField("Jenis Layanan"), groupList);
 
     expect(within(groupList).getByText("Jenis Layanan")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Naikkan Group Jenis Layanan" }));
+    dragElementToList(getSelectedChip(groupList, "Status Akhir"), groupList);
 
     expect(getSelectedLabels(groupList)).toEqual(["Jenis Layanan", "Status Akhir"]);
+    expect(screen.queryByRole("button", { name: /Naikkan/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Turunkan/ })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Hapus Group Jenis Layanan" }));
-    fireEvent.click(screen.getByRole("button", { name: "Hapus Group Status Akhir" }));
+    fireEvent.change(screen.getByLabelText("Cari Field"), {
+      target: { value: "lokasi" },
+    });
+    dragElementToList(getField("Lokasi Akhir"), columnList);
 
-    expect(groupList.querySelectorAll(".analytics-selected-row")).toHaveLength(0);
-    expect(within(groupList).getByText("Belum ada field dipilih")).toBeInTheDocument();
+    expect(within(columnList).getByText("Lokasi Akhir")).toBeInTheDocument();
+    const locationChip = getSelectedChip(columnList, "Lokasi Akhir");
+    const locationDrag = startDragElementOverList(
+      locationChip,
+      groupList
+    );
+    await waitFor(() => expect(locationChip).toHaveClass("is-dragging"));
+    fireEvent.drop(groupList, { dataTransfer: locationDrag });
+    fireEvent.dragEnd(locationChip, { dataTransfer: locationDrag });
+    await waitFor(() => {
+      expect(getSelectedLabels(groupList)).toEqual([
+        "Jenis Layanan",
+        "Status Akhir",
+        "Lokasi Akhir",
+      ]);
+      expect(columnList.querySelectorAll(".analytics-selected-row")).toHaveLength(0);
+    });
 
-    const metricList = screen.getByRole("list", { name: "Metric aktif" });
-    fireEvent.change(screen.getByLabelText("Cari Metric"), {
+    const metricList = screen.getByRole("list", { name: "Value aktif" });
+    fireEvent.change(screen.getByLabelText("Cari Field"), {
       target: { value: "cod" },
     });
-    expect(screen.getByLabelText("Pilih Metric Total COD")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Pilih Metric Jumlah Kiriman")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText("Pilih Metric Total COD"));
+    expect(getField("Total COD")).toBeInTheDocument();
+    expect(
+      within(fieldList).queryByRole("listitem", { name: "Field Jumlah Kiriman" })
+    ).not.toBeInTheDocument();
+    dragElementToList(getField("Total COD"), metricList);
 
     expect(within(metricList).getByText("Total COD")).toBeInTheDocument();
-    expect(screen.getByLabelText("Mode Metric Total COD")).toHaveValue("sum");
+    expect(screen.getByLabelText("Mode Value Total COD")).toHaveValue("sum");
 
-    fireEvent.change(screen.getByLabelText("Mode Metric Total COD"), {
+    fireEvent.change(screen.getByLabelText("Mode Value Total COD"), {
       target: { value: "average" },
     });
 
-    expect(screen.getByLabelText("Mode Metric Total COD")).toHaveValue("average");
+    expect(screen.getByLabelText("Mode Value Total COD")).toHaveValue("average");
 
-    fireEvent.click(screen.getByRole("button", { name: "Naikkan Metric Total COD" }));
+    dragElementToList(getSelectedChip(groupList, "Status Akhir"), metricList);
 
-    expect(getSelectedLabels(metricList)).toEqual(["Total COD", "Jumlah Kiriman"]);
+    expect(getSelectedLabels(groupList)).toEqual(["Jenis Layanan", "Lokasi Akhir"]);
+    expect(getSelectedLabels(metricList)).toEqual(["Total COD", "Status Akhir"]);
+    expect(screen.getByLabelText("Mode Value Status Akhir")).toHaveValue("unique_list");
 
-    fireEvent.click(screen.getByRole("button", { name: "Hapus Metric Total COD" }));
-    fireEvent.click(screen.getByRole("button", { name: "Hapus Metric Jumlah Kiriman" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hapus Value Total COD" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hapus Value Status Akhir" }));
 
     expect(metricList.querySelectorAll(".analytics-selected-row")).toHaveLength(0);
     expect(within(metricList).getByText("Belum ada field dipilih")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Hapus Row Jenis Layanan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hapus Row Lokasi Akhir" }));
+
+    expect(groupList.querySelectorAll(".analytics-selected-row")).toHaveLength(0);
+    expect(within(groupList).getByText("Belum ada field dipilih")).toBeInTheDocument();
   });
 
   it("switches between chart and pivot display modes", () => {
@@ -614,6 +699,14 @@ describe("App workspace isolation", () => {
     expect(screen.getByRole("region", { name: "Tabel Pivot" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Grafik Pivot" })).not.toBeInTheDocument();
 
+    fireEvent.change(screen.getByLabelText("Cari Field"), {
+      target: { value: "cod" },
+    });
+    dragElementToList(
+      screen.getByRole("listitem", { name: "Field Total COD" }),
+      screen.getByRole("list", { name: "Value aktif" })
+    );
+
     const shareHeader = screen.getByRole("columnheader", { name: /Share/ });
     expect(shareHeader).toHaveAttribute("aria-sort", "descending");
     fireEvent.click(within(shareHeader).getByRole("button", { name: /Share/ }));
@@ -623,7 +716,7 @@ describe("App workspace isolation", () => {
     fireEvent.click(within(groupHeader).getByRole("button", { name: /Status Akhir/ }));
     expect(groupHeader).toHaveAttribute("aria-sort", "ascending");
 
-    fireEvent.click(screen.getByRole("button", { name: "Hapus Metric Jumlah Kiriman" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hapus Value Total COD" }));
     expect(screen.queryByRole("columnheader", { name: /Share/ })).not.toBeInTheDocument();
     expect(groupHeader).toHaveAttribute("aria-sort", "ascending");
 
@@ -653,7 +746,6 @@ describe("App workspace isolation", () => {
     render(<App />);
 
     fireEvent.click(screen.getByRole("tab", { name: "Pivot/Grafik" }));
-    fireEvent.click(screen.getByRole("button", { name: "Hapus Metric Jumlah Kiriman" }));
 
     expect(screen.queryByRole("columnheader", { name: /Share/ })).not.toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: /Status Akhir/ })).toHaveAttribute(

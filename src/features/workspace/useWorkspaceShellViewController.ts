@@ -1,10 +1,11 @@
 import { ComponentProps, useCallback } from "react";
 import {
   setSheetAnalyticsChartTypeInSheet,
-  setSheetAnalyticsGroupByPathsInSheet,
+  setSheetAnalyticsColumnPathsInSheet,
   setSheetAnalyticsMetricAggregationInSheet,
-  setSheetAnalyticsMetricsInSheet,
+  setSheetAnalyticsRowPathsInSheet,
   setSheetAnalyticsSourceScopeInSheet,
+  setSheetAnalyticsValueMetricsInSheet,
   setSheetViewModeInSheet,
 } from "../sheet/actions";
 import {
@@ -68,19 +69,28 @@ export function useWorkspaceShellViewController({
     [updateActiveSheet]
   );
 
-  const setAnalyticsGroupByPaths = useCallback(
-    (groupByPaths: string[]) => {
+  const setAnalyticsRowPaths = useCallback(
+    (rowPaths: string[]) => {
       updateActiveSheet((current) =>
-        setSheetAnalyticsGroupByPathsInSheet(current, groupByPaths)
+        setSheetAnalyticsRowPathsInSheet(current, rowPaths)
       );
     },
     [updateActiveSheet]
   );
 
-  const setAnalyticsMetrics = useCallback(
-    (metrics: SheetAnalyticsMetric[]) => {
+  const setAnalyticsColumnPaths = useCallback(
+    (columnPaths: string[]) => {
       updateActiveSheet((current) =>
-        setSheetAnalyticsMetricsInSheet(current, metrics)
+        setSheetAnalyticsColumnPathsInSheet(current, columnPaths)
+      );
+    },
+    [updateActiveSheet]
+  );
+
+  const setAnalyticsValueMetrics = useCallback(
+    (valueMetrics: SheetAnalyticsMetric[]) => {
+      updateActiveSheet((current) =>
+        setSheetAnalyticsValueMetricsInSheet(current, valueMetrics)
       );
     },
     [updateActiveSheet]
@@ -263,8 +273,9 @@ export function useWorkspaceShellViewController({
       metricOptions: sheetViewModel.analyticsMetricOptions,
       summary: sheetViewModel.analyticsSummary,
       onSourceScopeChange: setAnalyticsSourceScope,
-      onGroupByPathsChange: setAnalyticsGroupByPaths,
-      onMetricsChange: setAnalyticsMetrics,
+      onRowPathsChange: setAnalyticsRowPaths,
+      onColumnPathsChange: setAnalyticsColumnPaths,
+      onValueMetricsChange: setAnalyticsValueMetrics,
       onMetricAggregationChange: setAnalyticsMetricAggregation,
       onChartTypeChange: setAnalyticsChartType,
     },

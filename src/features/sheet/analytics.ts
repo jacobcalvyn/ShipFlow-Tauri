@@ -8,7 +8,6 @@ import {
 } from "./types";
 import { formatColumnValue, getRawColumnValue } from "./utils";
 
-const COUNT_METRIC_KEY = "count";
 const LEGACY_COD_TOTAL_METRIC_KEY = "cod_total";
 const COD_TOTAL_COLUMN_PATH = "detail.billing_detail.cod_info.total_cod";
 export const ANALYTICS_ALLOWED_COLUMN_PATHS = new Set<string>(
@@ -37,13 +36,30 @@ export type SheetAnalyticsMetricOption = {
 export type SheetAnalyticsRow = {
   key: string;
   label: string;
+  rowValues: string[];
   groupValues: string[];
   count: number;
   codTotal: number;
   metricValues: Record<SheetAnalyticsMetric, number>;
   metricDisplayValues: Record<SheetAnalyticsMetric, string>;
+  pivotMetricValues: Record<string, number>;
+  pivotMetricDisplayValues: Record<string, string>;
   metricValue: number;
   share: number;
+};
+
+export type SheetAnalyticsPivotColumn = {
+  key: string;
+  label: string;
+  values: string[];
+};
+
+export type SheetAnalyticsPivotValueColumn = {
+  key: string;
+  label: string;
+  columnKey: string;
+  columnValues: string[];
+  metric: SheetAnalyticsMetricOption;
 };
 
 export type SheetAnalyticsSummary = {
@@ -52,6 +68,15 @@ export type SheetAnalyticsSummary = {
   selectedRowCount: number;
   totalCod: number;
   totalMetricValue: number;
+  rowPaths: string[];
+  rowLabel: string;
+  rowLabels: string[];
+  columnPaths: string[];
+  columnLabel: string;
+  columnLabels: string[];
+  valueMetrics: SheetAnalyticsMetricOption[];
+  pivotColumns: SheetAnalyticsPivotColumn[];
+  pivotValueColumns: SheetAnalyticsPivotValueColumn[];
   groupByPaths: string[];
   groupByLabel: string;
   groupByLabels: string[];
@@ -60,10 +85,6 @@ export type SheetAnalyticsSummary = {
   primaryMetricOption: SheetAnalyticsMetricOption | null;
   rows: SheetAnalyticsRow[];
 };
-
-const ANALYTICS_METRIC_OPTIONS: SheetAnalyticsMetricOption[] = [
-  { key: COUNT_METRIC_KEY, label: "Jumlah Kiriman", format: "number" },
-];
 
 export type SheetAnalyticsMetricAggregationOption = {
   key: SheetAnalyticsMetricAggregation;
@@ -81,13 +102,11 @@ const NUMBER_AGGREGATION_OPTIONS: SheetAnalyticsMetricAggregationOption[] = [
 
 const TEXT_AGGREGATION_OPTIONS: SheetAnalyticsMetricAggregationOption[] = [
   { key: "unique_list", label: "Teks" },
+  { key: "count", label: "Jumlah Data" },
+  { key: "count_unique", label: "Banyaknya Nilai Berbeda" },
   { key: "most_frequent", label: "Paling Sering" },
   { key: "first", label: "Pertama" },
   { key: "last", label: "Terakhir" },
-];
-
-const COUNT_AGGREGATION_OPTIONS: SheetAnalyticsMetricAggregationOption[] = [
-  { key: "count", label: "Jumlah Data" },
 ];
 
 function isAnalyticsColumnAllowed(path: string) {
@@ -117,29 +136,22 @@ export function getSheetAnalyticsGroupByOptions(): SheetAnalyticsGroupByOption[]
 }
 
 export function getSheetAnalyticsMetricOptions(): SheetAnalyticsMetricOption[] {
-  return [
-    ...ANALYTICS_METRIC_OPTIONS,
-    ...COLUMNS.filter((column) => isAnalyticsColumnAllowed(column.path)).map((column) => ({
-      key: column.path,
-      label: column.label,
-      format:
-        column.type === "currency"
-          ? "currency" as const
-          : column.type === "number" || column.type === "weight"
-            ? "number" as const
-            : "text" as const,
-      path: column.path,
-    })),
-  ];
+  return COLUMNS.filter((column) => isAnalyticsColumnAllowed(column.path)).map((column) => ({
+    key: column.path,
+    label: column.label,
+    format:
+      column.type === "currency"
+        ? "currency" as const
+        : column.type === "number" || column.type === "weight"
+          ? "number" as const
+          : "text" as const,
+    path: column.path,
+  }));
 }
 
 export function getSheetAnalyticsMetricAggregationOptions(
   metricOption: SheetAnalyticsMetricOption
 ): SheetAnalyticsMetricAggregationOption[] {
-  if (metricOption.key === COUNT_METRIC_KEY) {
-    return COUNT_AGGREGATION_OPTIONS;
-  }
-
   return metricOption.format === "text"
     ? TEXT_AGGREGATION_OPTIONS
     : NUMBER_AGGREGATION_OPTIONS;
@@ -148,10 +160,6 @@ export function getSheetAnalyticsMetricAggregationOptions(
 export function getDefaultSheetAnalyticsMetricAggregation(
   metricOption: SheetAnalyticsMetricOption
 ): SheetAnalyticsMetricAggregation {
-  if (metricOption.key === COUNT_METRIC_KEY) {
-    return "count";
-  }
-
   return metricOption.format === "text" ? "unique_list" : "sum";
 }
 
@@ -175,6 +183,14 @@ export function getSheetAnalyticsMetricAggregationLabel(
   );
 }
 
+function getMetricOptionDisplayLabel(metricOption: SheetAnalyticsMetricOption) {
+  if (!metricOption.aggregationLabel) {
+    return metricOption.label;
+  }
+
+  return `${metricOption.label} (${metricOption.aggregationLabel})`;
+}
+
 function getCodTotal(row: SheetRow) {
   const rawValue = row.shipment?.detail.billing_detail.cod_info.total_cod;
   return typeof rawValue === "number" && Number.isFinite(rawValue) ? rawValue : 0;
@@ -196,20 +212,31 @@ function dedupeByKey<T extends string>(values: T[]) {
   });
 }
 
-function getActiveGroupByPaths(sheetState: SheetState) {
+function getActiveAnalyticsColumnPaths(paths: string[]) {
   const groupByOptions = getSheetAnalyticsGroupByOptions();
   const validPathSet = new Set(groupByOptions.map((option) => option.path));
-  const selectedPaths = dedupeByKey(sheetState.analytics.groupByPaths).filter((path) =>
-    validPathSet.has(path)
-  );
-
-  return selectedPaths;
+  return dedupeByKey(paths).filter((path) => validPathSet.has(path));
 }
 
-function getActiveMetrics(sheetState: SheetState) {
+function getActiveRowPaths(sheetState: SheetState) {
+  const analytics = sheetState.analytics as SheetState["analytics"] & {
+    groupByPaths?: string[];
+  };
+  return getActiveAnalyticsColumnPaths(analytics.rowPaths ?? analytics.groupByPaths ?? []);
+}
+
+function getActiveColumnPaths(sheetState: SheetState) {
+  return getActiveAnalyticsColumnPaths(sheetState.analytics.columnPaths ?? []);
+}
+
+function getActiveValueMetrics(sheetState: SheetState) {
+  const analytics = sheetState.analytics as SheetState["analytics"] & {
+    metrics?: SheetAnalyticsMetric[];
+  };
   const metricOptions = getSheetAnalyticsMetricOptions();
   const metricKeySet = new Set(metricOptions.map((option) => option.key));
-  const normalizedMetrics = sheetState.analytics.metrics.map((metric) =>
+  const selectedMetrics = analytics.valueMetrics ?? analytics.metrics ?? [];
+  const normalizedMetrics = selectedMetrics.map((metric) =>
     metric === LEGACY_COD_TOTAL_METRIC_KEY ? COD_TOTAL_COLUMN_PATH : metric
   );
 
@@ -250,13 +277,6 @@ type MetricAccumulator = {
 };
 
 function getMetricRawValues(row: SheetRow, metricOption: SheetAnalyticsMetricOption) {
-  if (metricOption.key === COUNT_METRIC_KEY) {
-    return {
-      numericValue: 1,
-      textValue: "1",
-    };
-  }
-
   const column = metricOption.path
     ? COLUMNS.find((item) => item.path === metricOption.path) ?? null
     : null;
@@ -444,42 +464,25 @@ export function getSheetAnalyticsSummary(params: {
   selectedVisibleRowKeys: string[];
 }): SheetAnalyticsSummary {
   const { sheetState, nonEmptyRows, displayedRows, selectedVisibleRowKeys } = params;
-  const groupByPaths = getActiveGroupByPaths(sheetState);
-  const groupByColumns = groupByPaths
+  const rowPaths = getActiveRowPaths(sheetState);
+  const rowColumns = rowPaths
     .map((path) => COLUMNS.find((column) => column.path === path) ?? null)
     .filter((column): column is NonNullable<typeof column> => column !== null);
-  const metrics = getActiveMetrics(sheetState);
+  const columnPaths = getActiveColumnPaths(sheetState);
+  const columnColumns = columnPaths
+    .map((path) => COLUMNS.find((column) => column.path === path) ?? null)
+    .filter((column): column is NonNullable<typeof column> => column !== null);
+  const valueMetrics = getActiveValueMetrics(sheetState);
   const metricOptions = getSheetAnalyticsMetricOptions();
-  const activeMetricOptions = metrics.map((metric) =>
+  const activeMetricOptions = valueMetrics.map((metric) =>
     getActiveMetricOption(metric, metricOptions, sheetState)
   );
-  const pivotSplitMetricOptions =
-    sheetState.analytics.chartType === "pivot"
-      ? activeMetricOptions.filter(
-          (metricOption) =>
-            metricOption.format === "text" &&
-            metricOption.aggregation === "unique_list"
-        )
-      : [];
-  const pivotSplitMetricKeySet = new Set(
-    pivotSplitMetricOptions.map((metricOption) => metricOption.key)
-  );
-  const displayMetricOptions =
-    sheetState.analytics.chartType === "pivot"
-      ? activeMetricOptions.filter(
-          (metricOption) => !pivotSplitMetricKeySet.has(metricOption.key)
-        )
-      : activeMetricOptions;
   const primaryMetric =
     sheetState.analytics.chartType === "pivot"
-      ? displayMetricOptions.find((metricOption) => metricOption.key === COUNT_METRIC_KEY)
-          ?.key ?? displayMetricOptions[0]?.key ?? null
-      : metrics[0] ?? null;
+      ? activeMetricOptions[0]?.key ?? null
+      : valueMetrics[0] ?? null;
   const primaryMetricOption =
-    (sheetState.analytics.chartType === "pivot"
-      ? displayMetricOptions
-      : activeMetricOptions
-    ).find((option) => option.key === primaryMetric) ?? null;
+    activeMetricOptions.find((option) => option.key === primaryMetric) ?? null;
   const sourceRows = getSheetAnalyticsSourceRows({
     sheetState,
     nonEmptyRows,
@@ -495,35 +498,53 @@ export function getSheetAnalyticsSummary(params: {
       count: number;
       codTotal: number;
       metricAccumulators: Record<string, MetricAccumulator>;
+      pivotMetricAccumulators: Record<string, Record<string, MetricAccumulator>>;
     }
   >();
+  const pivotColumnMap = new Map<string, SheetAnalyticsPivotColumn>();
 
   for (const row of sourceRows) {
-    const groupValues = groupByColumns.map((column) => getAnalyticsGroupValue(row, column));
-    const pivotSplitValues = pivotSplitMetricOptions.map((metricOption) => {
-      const metricValues = getMetricRawValues(row, metricOption);
-      return metricValues?.textValue ?? "-";
-    });
-    const normalizedGroupValues =
-      groupValues.length > 0 ? groupValues : pivotSplitValues.length > 0 ? [] : ["Semua Row"];
-    const allGroupValues = [...normalizedGroupValues, ...pivotSplitValues];
-    const label = allGroupValues.join(" / ");
-    const key = JSON.stringify(allGroupValues);
+    const rowValues = rowColumns.map((column) => getAnalyticsGroupValue(row, column));
+    const normalizedRowValues = rowValues.length > 0 ? rowValues : ["Semua Row"];
+    const label = normalizedRowValues.join(" / ");
+    const key = JSON.stringify(normalizedRowValues);
+    const columnValues = columnColumns.map((column) => getAnalyticsGroupValue(row, column));
+    const pivotColumnKey = JSON.stringify(columnValues);
+    if (columnColumns.length > 0 && !pivotColumnMap.has(pivotColumnKey)) {
+      pivotColumnMap.set(pivotColumnKey, {
+        key: pivotColumnKey,
+        label: columnValues.join(" / "),
+        values: columnValues,
+      });
+    }
     const current = groups.get(key) ?? {
       key,
       label,
-      groupValues: allGroupValues,
+      groupValues: normalizedRowValues,
       count: 0,
       codTotal: 0,
       metricAccumulators: {},
+      pivotMetricAccumulators: {},
     };
     const nextMetricAccumulators = { ...current.metricAccumulators };
+    const currentPivotMetricAccumulators =
+      current.pivotMetricAccumulators[pivotColumnKey] ?? {};
+    const nextPivotMetricAccumulators = {
+      ...current.pivotMetricAccumulators,
+      [pivotColumnKey]: { ...currentPivotMetricAccumulators },
+    };
     for (const metricOption of activeMetricOptions) {
       nextMetricAccumulators[metricOption.key] = addMetricAccumulatorValue(
         nextMetricAccumulators[metricOption.key],
         row,
         metricOption
       );
+      nextPivotMetricAccumulators[pivotColumnKey][metricOption.key] =
+        addMetricAccumulatorValue(
+          nextPivotMetricAccumulators[pivotColumnKey][metricOption.key],
+          row,
+          metricOption
+        );
     }
     groups.set(key, {
       key: current.key,
@@ -532,17 +553,50 @@ export function getSheetAnalyticsSummary(params: {
       count: current.count + 1,
       codTotal: current.codTotal + getCodTotal(row),
       metricAccumulators: nextMetricAccumulators,
+      pivotMetricAccumulators: nextPivotMetricAccumulators,
     });
   }
 
   const totalCod = sourceRows.reduce((total, row) => total + getCodTotal(row), 0);
   const usesPivotCountShare = sheetState.analytics.chartType === "pivot";
+  const pivotColumns = Array.from(pivotColumnMap.values()).sort((left, right) =>
+    left.label.localeCompare(right.label, "id", {
+      sensitivity: "base",
+      numeric: true,
+    })
+  );
+  const pivotValueColumns =
+    pivotColumns.length > 0
+      ? pivotColumns.flatMap((column) =>
+          activeMetricOptions.map((metricOption) => {
+            const metricLabel = getMetricOptionDisplayLabel(metricOption);
+            return {
+              key: `${column.key}:${metricOption.key}`,
+              label:
+                activeMetricOptions.length > 1
+                  ? `${column.label} / ${metricLabel}`
+                  : column.label,
+              columnKey: column.key,
+              columnValues: column.values,
+              metric: metricOption,
+            };
+          })
+        )
+      : activeMetricOptions.map((metricOption) => ({
+          key: `value:${metricOption.key}`,
+          label: getMetricOptionDisplayLabel(metricOption),
+          columnKey: "[]",
+          columnValues: [],
+          metric: metricOption,
+        }));
   const rows = Array.from(groups.values(), (group) => {
     const metricValues: Record<string, number> = {
       count: group.count,
       [COD_TOTAL_COLUMN_PATH]: group.codTotal,
     };
     const metricDisplayValues: Record<string, string> = {};
+    const pivotMetricValues: Record<string, number> = {};
+    const pivotMetricDisplayValues: Record<string, string> = {};
     for (const metricOption of activeMetricOptions) {
       const aggregate = getMetricAggregate(
         group.metricAccumulators[metricOption.key],
@@ -553,14 +607,30 @@ export function getSheetAnalyticsSummary(params: {
         metricDisplayValues[metricOption.key] = aggregate.displayValue;
       }
     }
+    for (const pivotValueColumn of pivotValueColumns) {
+      const accumulator =
+        pivotColumns.length > 0
+          ? group.pivotMetricAccumulators[pivotValueColumn.columnKey]?.[
+              pivotValueColumn.metric.key
+            ]
+          : group.metricAccumulators[pivotValueColumn.metric.key];
+      const aggregate = getMetricAggregate(accumulator, pivotValueColumn.metric);
+      pivotMetricValues[pivotValueColumn.key] = aggregate.numericValue;
+      if (aggregate.displayValue !== null) {
+        pivotMetricDisplayValues[pivotValueColumn.key] = aggregate.displayValue;
+      }
+    }
     return {
       key: group.key,
       label: group.label,
+      rowValues: group.groupValues,
       groupValues: group.groupValues,
       count: group.count,
       codTotal: group.codTotal,
       metricValues,
       metricDisplayValues,
+      pivotMetricValues,
+      pivotMetricDisplayValues,
       metricValue: primaryMetric ? metricValues[primaryMetric] : 0,
       share: 0,
     };
@@ -582,6 +652,11 @@ export function getSheetAnalyticsSummary(params: {
   const totalShareValue = usesPivotCountShare
     ? rows.reduce((total, row) => total + row.count, 0)
     : totalMetricValue;
+  const rowLabels =
+    rowColumns.length > 0 ? rowColumns.map((column) => column.label) : ["Semua Row"];
+  const rowLabel = rowLabels.join(" / ");
+  const columnLabels = columnColumns.map((column) => column.label);
+  const columnLabel = columnLabels.join(" / ");
 
   return {
     sourceRowCount: sourceRows.length,
@@ -589,22 +664,19 @@ export function getSheetAnalyticsSummary(params: {
     selectedRowCount: selectedVisibleRowKeys.length,
     totalCod,
     totalMetricValue,
-    groupByPaths,
-    groupByLabel:
-      groupByColumns.length > 0 || pivotSplitMetricOptions.length > 0
-        ? [
-            ...groupByColumns.map((column) => column.label),
-            ...pivotSplitMetricOptions.map((metricOption) => metricOption.label),
-          ].join(" / ")
-        : "Semua Row",
-    groupByLabels:
-      groupByColumns.length > 0 || pivotSplitMetricOptions.length > 0
-        ? [
-            ...groupByColumns.map((column) => column.label),
-            ...pivotSplitMetricOptions.map((metricOption) => metricOption.label),
-          ]
-        : ["Semua Row"],
-    metrics: displayMetricOptions,
+    rowPaths,
+    rowLabel,
+    rowLabels,
+    columnPaths,
+    columnLabel,
+    columnLabels,
+    valueMetrics: activeMetricOptions,
+    pivotColumns,
+    pivotValueColumns,
+    groupByPaths: rowPaths,
+    groupByLabel: rowLabel,
+    groupByLabels: rowLabels,
+    metrics: activeMetricOptions,
     primaryMetric,
     primaryMetricOption,
     rows: rows.map((row) => ({

@@ -885,8 +885,12 @@ export function assertValidSheetState(sheetState: SheetState) {
     );
   }
 
-  if (!Array.isArray(sheetState.analytics.groupByPaths)) {
-    throw new Error("Invalid sheet analytics group paths.");
+  if (!Array.isArray(sheetState.analytics.rowPaths)) {
+    throw new Error("Invalid sheet analytics row paths.");
+  }
+
+  if (!Array.isArray(sheetState.analytics.columnPaths)) {
+    throw new Error("Invalid sheet analytics column paths.");
   }
 
   const analyticsColumnPaths = COLUMNS.filter((column) =>
@@ -895,20 +899,26 @@ export function assertValidSheetState(sheetState: SheetState) {
     )
   ).map((column) => column.path);
   const analyticsGroupPathSet = new Set(analyticsColumnPaths);
-  for (const groupByPath of sheetState.analytics.groupByPaths) {
-    if (!analyticsGroupPathSet.has(groupByPath)) {
-      throw new Error(`Invalid sheet analytics group path: ${groupByPath}`);
+  for (const rowPath of sheetState.analytics.rowPaths) {
+    if (!analyticsGroupPathSet.has(rowPath)) {
+      throw new Error(`Invalid sheet analytics row path: ${rowPath}`);
     }
   }
 
-  if (!Array.isArray(sheetState.analytics.metrics)) {
-    throw new Error("Invalid sheet analytics metrics.");
+  for (const columnPath of sheetState.analytics.columnPaths) {
+    if (!analyticsGroupPathSet.has(columnPath)) {
+      throw new Error(`Invalid sheet analytics column path: ${columnPath}`);
+    }
   }
 
-  const analyticsMetricSet = new Set(["count", ...analyticsColumnPaths]);
-  for (const metric of sheetState.analytics.metrics) {
+  if (!Array.isArray(sheetState.analytics.valueMetrics)) {
+    throw new Error("Invalid sheet analytics values.");
+  }
+
+  const analyticsMetricSet = new Set(analyticsColumnPaths);
+  for (const metric of sheetState.analytics.valueMetrics) {
     if (!analyticsMetricSet.has(metric)) {
-      throw new Error(`Invalid sheet analytics metric: ${String(metric)}`);
+      throw new Error(`Invalid sheet analytics value: ${String(metric)}`);
     }
   }
 

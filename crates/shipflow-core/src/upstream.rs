@@ -17,8 +17,8 @@ use crate::model::{
 use crate::parser::parse_tracking_html;
 
 pub const POS_TRACKING_ENDPOINT: &str =
-    "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php";
-pub const POS_TRACKING_BASE_URL: &str = "https://pid.posindonesia.co.id/lacak/admin/";
+    "https://lacak-mitra.posindonesia.co.id/lacak_barcode.php";
+pub const POS_TRACKING_BASE_URL: &str = "https://lacak-mitra.posindonesia.co.id/";
 pub const POS_BAG_ENDPOINT: &str =
     "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak_bag.php";
 pub const POS_MANIFEST_ENDPOINT: &str =
@@ -119,7 +119,7 @@ pub async fn scrape_pos_tracking(
 
 pub async fn scrape_pos_bag(client: &Client, bag_id: &str) -> Result<BagResponse, TrackingError> {
     let normalized_bag_id = normalize_and_validate_bag_id(bag_id)?;
-    let request_url = build_tracking_url(POS_BAG_ENDPOINT, &normalized_bag_id);
+    let request_url = build_encoded_pos_lookup_url(POS_BAG_ENDPOINT, &normalized_bag_id);
     let response = fetch_lookup_response(client, &request_url).await?;
 
     if !response.status().is_success() {
@@ -141,7 +141,7 @@ pub async fn scrape_pos_manifest(
     manifest_id: &str,
 ) -> Result<ManifestResponse, TrackingError> {
     let normalized_manifest_id = normalize_and_validate_manifest_id(manifest_id)?;
-    let request_url = build_tracking_url(POS_MANIFEST_ENDPOINT, &normalized_manifest_id);
+    let request_url = build_encoded_pos_lookup_url(POS_MANIFEST_ENDPOINT, &normalized_manifest_id);
     let response = fetch_lookup_response(client, &request_url).await?;
 
     if !response.status().is_success() {
@@ -709,8 +709,12 @@ pub fn is_retryable_status(status: StatusCode) -> bool {
 }
 
 pub fn build_tracking_url(base_url: &str, shipment_id: &str) -> String {
+    format!("{base_url}?id={shipment_id}")
+}
+
+fn build_encoded_pos_lookup_url(base_url: &str, lookup_id: &str) -> String {
     let encoded_id = STANDARD
-        .encode(shipment_id)
+        .encode(lookup_id)
         .replace('+', "%2B")
         .replace('/', "%2F")
         .replace('=', "%3D");
@@ -723,7 +727,7 @@ pub fn resolve_pos_href(href: &str) -> String {
     if href.starts_with("https://") || href.starts_with("http://") {
         href.to_string()
     } else if href.starts_with('/') {
-        format!("https://pid.posindonesia.co.id{href}")
+        format!("https://lacak-mitra.posindonesia.co.id{href}")
     } else {
         format!("{POS_TRACKING_BASE_URL}{href}")
     }
@@ -956,12 +960,12 @@ mod tests {
     use crate::model::{LookupKind, TrackingError, TrackingSource, TrackingSourceConfig};
 
     #[test]
-    fn build_tracking_url_percent_encodes_base64_payload() {
-        let url = build_tracking_url(POS_TRACKING_ENDPOINT, "P2603310114291");
+    fn build_tracking_url_uses_raw_lacak_mitra_id() {
+        let url = build_tracking_url(POS_TRACKING_ENDPOINT, "BAC19052633D04464929");
 
         assert_eq!(
             url,
-            "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=UDI2MDMzMTAxMTQyOTE%3D"
+            "https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=BAC19052633D04464929"
         );
     }
 

@@ -62,11 +62,10 @@ export function createDefaultSheetState(): SheetState {
 export function createDefaultSheetAnalyticsState(): SheetState["analytics"] {
   return {
     sourceScope: "filtered_rows",
-    groupByPaths: ["status_akhir.status"],
-    metrics: ["count"],
-    metricAggregations: {
-      count: "count",
-    },
+    rowPaths: ["status_akhir.status"],
+    columnPaths: [],
+    valueMetrics: [],
+    metricAggregations: {},
     chartType: "pivot",
   };
 }

@@ -92,8 +92,9 @@ export type SheetAnalyticsMetricAggregation =
 
 export type SheetAnalyticsState = {
   sourceScope: SheetAnalyticsSourceScope;
-  groupByPaths: string[];
-  metrics: SheetAnalyticsMetric[];
+  rowPaths: string[];
+  columnPaths: string[];
+  valueMetrics: SheetAnalyticsMetric[];
   metricAggregations?: Partial<
     Record<SheetAnalyticsMetric, SheetAnalyticsMetricAggregation>
   >;

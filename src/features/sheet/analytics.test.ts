@@ -126,12 +126,19 @@ describe("sheet analytics", () => {
       "SLA Days Diff",
       "Jumlah Delivery Runsheet",
     ]);
-    expect(metricKeys).toEqual(["count", ...allowedColumnPaths]);
+    expect(metricKeys).toEqual(allowedColumnPaths);
     expect(
       getSheetAnalyticsMetricAggregationOptions(
         metricOptions.find((option) => option.key === "status_akhir.status")!
       ).map((option) => option.key)
-    ).toEqual(["unique_list", "most_frequent", "first", "last"]);
+    ).toEqual([
+      "unique_list",
+      "count",
+      "count_unique",
+      "most_frequent",
+      "first",
+      "last",
+    ]);
     expect(
       getSheetAnalyticsMetricAggregationOptions(
         metricOptions.find(
@@ -143,7 +150,117 @@ describe("sheet analytics", () => {
       getSheetAnalyticsMetricAggregationOptions(
         metricOptions.find((option) => option.key === "detail.billing_detail.cod_info.is_cod")!
       ).map((option) => option.key)
-    ).toEqual(["unique_list", "most_frequent", "first", "last"]);
+    ).toEqual([
+      "unique_list",
+      "count",
+      "count_unique",
+      "most_frequent",
+      "first",
+      "last",
+    ]);
+  });
+
+  it("supports count and distinct count aggregations for text value fields", () => {
+    let sheet = createDefaultSheetState();
+    sheet = setRowSuccessInSheet(
+      sheet,
+      sheet.rows[0].key,
+      "P1",
+      createShipment({
+        shipmentId: "P1",
+        status: "DELIVERED",
+        service: "Q9",
+        isCod: false,
+        codTotal: 0,
+      })
+    );
+    sheet = setRowSuccessInSheet(
+      sheet,
+      sheet.rows[1].key,
+      "P2",
+      createShipment({
+        shipmentId: "P2",
+        status: "DELIVERED",
+        service: "Q9",
+        isCod: false,
+        codTotal: 0,
+      })
+    );
+    sheet = setRowSuccessInSheet(
+      sheet,
+      sheet.rows[2].key,
+      "P3",
+      createShipment({
+        shipmentId: "P3",
+        status: "INVEHICLE",
+        service: "Q9",
+        isCod: false,
+        codTotal: 0,
+      })
+    );
+    sheet = {
+      ...sheet,
+      analytics: {
+        sourceScope: "all_rows",
+        rowPaths: ["detail.package_detail.jenis_layanan"],
+        columnPaths: [],
+        valueMetrics: ["status_akhir.status"],
+        metricAggregations: {
+          "status_akhir.status": "count",
+        },
+        chartType: "pivot",
+      },
+    };
+
+    const countSummary = getSheetAnalyticsSummary({
+      sheetState: sheet,
+      selectedVisibleRowKeys: [],
+      ...getDisplayedContext(sheet),
+    });
+
+    expect(countSummary.valueMetrics[0]).toEqual(
+      expect.objectContaining({
+        key: "status_akhir.status",
+        aggregation: "count",
+        aggregationLabel: "Jumlah Data",
+      })
+    );
+    expect(countSummary.rows[0]).toEqual(
+      expect.objectContaining({
+        metricValues: expect.objectContaining({
+          "status_akhir.status": 3,
+        }),
+      })
+    );
+
+    const distinctSummary = getSheetAnalyticsSummary({
+      sheetState: {
+        ...sheet,
+        analytics: {
+          ...sheet.analytics,
+          metricAggregations: {
+            "status_akhir.status": "count_unique",
+          },
+        },
+      },
+      selectedVisibleRowKeys: [],
+      ...getDisplayedContext(sheet),
+    });
+
+    expect(distinctSummary.valueMetrics[0]).toEqual(
+      expect.objectContaining({
+        key: "status_akhir.status",
+        aggregation: "count_unique",
+        aggregationLabel: "Banyaknya Nilai Berbeda",
+      })
+    );
+    expect(distinctSummary.rows[0]).toEqual(
+      expect.objectContaining({
+        metricValues: expect.objectContaining({
+          "status_akhir.status": 2,
+        }),
+      })
+    );
   });
 
   it("summarizes filtered rows from one sheet", () => {
@@ -169,7 +286,7 @@ describe("sheet analytics", () => {
         status: "INVEHICLE",
         service: "Q9",
         isCod: false,
-        codTotal: 0,
+        codTotal: 50_000,
       })
     );
     sheet = setRowSuccessInSheet(
@@ -189,8 +306,9 @@ describe("sheet analytics", () => {
       ...sheet,
       analytics: {
         sourceScope: "filtered_rows",
-        groupByPaths: ["detail.package_detail.jenis_layanan"],
-        metrics: ["cod_total"],
+        rowPaths: ["detail.package_detail.jenis_layanan"],
+        columnPaths: [],
+        valueMetrics: ["cod_total"],
         chartType: "bar",
       },
     };
@@ -250,15 +368,16 @@ describe("sheet analytics", () => {
         status: "INVEHICLE",
         service: "Q9",
         isCod: false,
-        codTotal: 0,
+        codTotal: 50_000,
       })
     );
     sheet = {
       ...sheet,
       analytics: {
         sourceScope: "selected_rows",
-        groupByPaths: ["status_akhir.status"],
-        metrics: ["count"],
+        rowPaths: ["status_akhir.status"],
+        columnPaths: [],
+        valueMetrics: [COD_TOTAL_COLUMN_PATH],
         chartType: "donut",
       },
     };
@@ -274,7 +393,7 @@ describe("sheet analytics", () => {
       expect.objectContaining({
         label: "INVEHICLE",
         count: 1,
-        metricValue: 1,
+        metricValue: 50_000,
         share: 100,
       }),
     ]);
@@ -322,8 +441,9 @@ describe("sheet analytics", () => {
       ...sheet,
       analytics: {
         sourceScope: "all_rows",
-        groupByPaths: ["status_akhir.status", "detail.package_detail.jenis_layanan"],
-        metrics: ["count", "cod_total"],
+        rowPaths: ["status_akhir.status", "detail.package_detail.jenis_layanan"],
+        columnPaths: [],
+        valueMetrics: ["cod_total", "status_akhir.status"],
         chartType: "bar",
       },
     };
@@ -334,31 +454,33 @@ describe("sheet analytics", () => {
       ...getDisplayedContext(sheet),
     });
 
-    expect(summary.groupByLabel).toBe("Status Akhir / Jenis Layanan");
-    expect(summary.metrics.map((metric) => metric.key)).toEqual([
-      "count",
+    expect(summary.rowLabel).toBe("Status Akhir / Jenis Layanan");
+    expect(summary.valueMetrics.map((metric) => metric.key)).toEqual([
       COD_TOTAL_COLUMN_PATH,
+      "status_akhir.status",
     ]);
     expect(summary.rows).toEqual([
       expect.objectContaining({
         label: "DELIVERED / Q9",
         count: 2,
         codTotal: 250_000,
-        metricValues: {
+        metricValues: expect.objectContaining({
           count: 2,
           [COD_TOTAL_COLUMN_PATH]: 250_000,
-        },
-        metricValue: 2,
+          "status_akhir.status": 1,
+        }),
+        metricValue: 250_000,
       }),
       expect.objectContaining({
         label: "DELIVERED / QCOMM",
         count: 1,
         codTotal: 0,
-        metricValues: {
+        metricValues: expect.objectContaining({
           count: 1,
           [COD_TOTAL_COLUMN_PATH]: 0,
-        },
-        metricValue: 1,
+          "status_akhir.status": 1,
+        }),
+        metricValue: 0,
       }),
     ]);
   });
@@ -381,11 +503,12 @@ describe("sheet analytics", () => {
       ...sheet,
       analytics: {
         sourceScope: "all_rows",
-        groupByPaths: ["status_akhir.status"],
-        metrics: [COD_TOTAL_COLUMN_PATH, "count"],
+        rowPaths: ["status_akhir.status"],
+        columnPaths: [],
+        valueMetrics: [COD_TOTAL_COLUMN_PATH, "status_akhir.status"],
         metricAggregations: {
           [COD_TOTAL_COLUMN_PATH]: "sum",
-          count: "count",
+          "status_akhir.status": "unique_list",
         },
         chartType: "bar",
       },
@@ -397,9 +520,9 @@ describe("sheet analytics", () => {
       ...getDisplayedContext(sheet),
     });
 
-    expect(summary.metrics.map((metric) => metric.key)).toEqual([
+    expect(summary.valueMetrics.map((metric) => metric.key)).toEqual([
       COD_TOTAL_COLUMN_PATH,
-      "count",
+      "status_akhir.status",
     ]);
     expect(summary.primaryMetric).toBe(COD_TOTAL_COLUMN_PATH);
     expect(summary.rows[0]).toEqual(
@@ -409,7 +532,7 @@ describe("sheet analytics", () => {
     );
   });
 
-  it("splits pivot rows by text metric values and keeps pivot share based on row count", () => {
+  it("builds pivot columns from column fields and keeps pivot share based on row count", () => {
     let sheet = createDefaultSheetState();
     sheet = setRowSuccessInSheet(
       sheet,
@@ -467,8 +590,9 @@ describe("sheet analytics", () => {
       ...sheet,
       analytics: {
         sourceScope: "all_rows",
-        groupByPaths: ["detail.package_detail.jenis_layanan"],
-        metrics: ["status_akhir.status", COD_TOTAL_COLUMN_PATH],
+        rowPaths: ["detail.package_detail.jenis_layanan"],
+        columnPaths: ["status_akhir.status"],
+        valueMetrics: [COD_TOTAL_COLUMN_PATH],
         chartType: "pivot",
       },
     };
@@ -487,50 +611,49 @@ describe("sheet analytics", () => {
       })
     );
     expect(summary.primaryMetric).toBe(COD_TOTAL_COLUMN_PATH);
-    expect(summary.groupByLabels).toEqual(["Jenis Layanan", "Status Akhir"]);
-    expect(summary.metrics.map((metric) => metric.key)).toEqual([COD_TOTAL_COLUMN_PATH]);
-    expect(summary.rows).toHaveLength(3);
+    expect(summary.rowLabels).toEqual(["Jenis Layanan"]);
+    expect(summary.columnLabels).toEqual(["Status Akhir"]);
+    expect(summary.valueMetrics.map((metric) => metric.key)).toEqual([COD_TOTAL_COLUMN_PATH]);
+    expect(summary.pivotValueColumns.map((column) => column.label)).toEqual([
+      "DELIVERED",
+      "INVEHICLE",
+    ]);
+    const deliveredColumn = summary.pivotValueColumns.find(
+      (column) => column.label === "DELIVERED"
+    );
+    const inVehicleColumn = summary.pivotValueColumns.find(
+      (column) => column.label === "INVEHICLE"
+    );
+    expect(deliveredColumn).toBeDefined();
+    expect(inVehicleColumn).toBeDefined();
+    expect(summary.rows).toHaveLength(2);
     expect(summary.rows).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          label: "Q9 / DELIVERED",
-          groupValues: ["Q9", "DELIVERED"],
+          label: "Q9",
+          groupValues: ["Q9"],
           metricValues: expect.objectContaining({
-            [COD_TOTAL_COLUMN_PATH]: 300_000,
-            count: 2,
-            "status_akhir.status": 1,
+            [COD_TOTAL_COLUMN_PATH]: 1_000_000,
+            count: 3,
           }),
-          metricDisplayValues: {
-            "status_akhir.status": "DELIVERED",
-          },
-          metricValue: 300_000,
-          share: 50,
+          pivotMetricValues: expect.objectContaining({
+            [deliveredColumn?.key ?? ""]: 300_000,
+            [inVehicleColumn?.key ?? ""]: 700_000,
+          }),
+          metricValue: 1_000_000,
+          share: 75,
         }),
         expect.objectContaining({
-          label: "Q9 / INVEHICLE",
-          groupValues: ["Q9", "INVEHICLE"],
-          metricValues: expect.objectContaining({
-            [COD_TOTAL_COLUMN_PATH]: 700_000,
-            count: 1,
-            "status_akhir.status": 1,
-          }),
-          metricDisplayValues: {
-            "status_akhir.status": "INVEHICLE",
-          },
-          metricValue: 700_000,
-          share: 25,
-        }),
-        expect.objectContaining({
-          label: "QCOMM / DELIVERED",
-          groupValues: ["QCOMM", "DELIVERED"],
+          label: "QCOMM",
+          groupValues: ["QCOMM"],
           metricValues: expect.objectContaining({
             [COD_TOTAL_COLUMN_PATH]: 500_000,
             count: 1,
-            "status_akhir.status": 1,
           }),
-          metricDisplayValues: {
-            "status_akhir.status": "DELIVERED",
-          },
+          pivotMetricValues: expect.objectContaining({
+            [deliveredColumn?.key ?? ""]: 500_000,
+            [inVehicleColumn?.key ?? ""]: 0,
+          }),
           metricValue: 500_000,
           share: 25,
         }),
@@ -538,7 +661,7 @@ describe("sheet analytics", () => {
     );
   });
 
-  it("splits pivot by text metric without adding a synthetic group column", () => {
+  it("uses pivot columns without replacing empty row fields with column fields", () => {
     let sheet = createDefaultSheetState();
     sheet = setRowSuccessInSheet(
       sheet,
@@ -549,7 +672,7 @@ describe("sheet analytics", () => {
         status: "DELIVERED",
         service: "Q9",
         isCod: false,
-        codTotal: 0,
+        codTotal: 100_000,
       })
     );
     sheet = setRowSuccessInSheet(
@@ -561,15 +684,16 @@ describe("sheet analytics", () => {
         status: "INVEHICLE",
         service: "Q9",
         isCod: false,
-        codTotal: 0,
+        codTotal: 200_000,
       })
     );
     sheet = {
       ...sheet,
       analytics: {
         sourceScope: "all_rows",
-        groupByPaths: [],
-        metrics: ["status_akhir.status", "count"],
+        rowPaths: [],
+        columnPaths: ["status_akhir.status"],
+        valueMetrics: [COD_TOTAL_COLUMN_PATH],
         chartType: "pivot",
       },
     };
@@ -580,13 +704,21 @@ describe("sheet analytics", () => {
       ...getDisplayedContext(sheet),
     });
 
-    expect(summary.groupByLabels).toEqual(["Status Akhir"]);
-    expect(summary.rows.map((row) => row.groupValues)).toEqual([
-      ["DELIVERED"],
-      ["INVEHICLE"],
+    expect(summary.rowLabels).toEqual(["Semua Row"]);
+    expect(summary.columnLabels).toEqual(["Status Akhir"]);
+    expect(summary.pivotValueColumns.map((column) => column.label)).toEqual([
+      "DELIVERED",
+      "INVEHICLE",
     ]);
-    expect(summary.rows.every((row) => !row.groupValues.includes("Semua Row"))).toBe(
-      true
+    expect(summary.rows).toHaveLength(1);
+    expect(summary.rows[0]).toEqual(
+      expect.objectContaining({
+        label: "Semua Row",
+        groupValues: ["Semua Row"],
+        count: 2,
+        metricValue: 300_000,
+        share: 100,
+      })
     );
   });
 
@@ -601,7 +733,7 @@ describe("sheet analytics", () => {
         status: "B / C",
         service: "A",
         isCod: false,
-        codTotal: 0,
+        codTotal: 1_000,
       })
     );
     sheet = setRowSuccessInSheet(
@@ -613,15 +745,16 @@ describe("sheet analytics", () => {
         status: "C",
         service: "A / B",
         isCod: false,
-        codTotal: 0,
+        codTotal: 2_000,
       })
     );
     sheet = {
       ...sheet,
       analytics: {
         sourceScope: "all_rows",
-        groupByPaths: ["detail.package_detail.jenis_layanan"],
-        metrics: ["status_akhir.status", "count"],
+        rowPaths: ["detail.package_detail.jenis_layanan", "status_akhir.status"],
+        columnPaths: [],
+        valueMetrics: [COD_TOTAL_COLUMN_PATH],
         chartType: "pivot",
       },
     };
@@ -640,7 +773,7 @@ describe("sheet analytics", () => {
     expect(new Set(summary.rows.map((row) => row.key)).size).toBe(2);
   });
 
-  it("uses typed empty values for pivot group columns", () => {
+  it("uses typed empty values for pivot row and column fields", () => {
     let sheet = createDefaultSheetState();
     sheet = setRowSuccessInSheet(
       sheet,
@@ -658,11 +791,12 @@ describe("sheet analytics", () => {
       ...sheet,
       analytics: {
         sourceScope: "all_rows",
-        groupByPaths: [
+        rowPaths: [
           "detail.performance_detail.sla_category",
           "detail.performance_detail.sla_days_diff",
         ],
-        metrics: ["status_akhir.location", "count"],
+        columnPaths: ["status_akhir.location"],
+        valueMetrics: [COD_TOTAL_COLUMN_PATH],
         chartType: "pivot",
       },
     };
@@ -673,18 +807,19 @@ describe("sheet analytics", () => {
       ...getDisplayedContext(sheet),
     });
 
-    expect(summary.groupByLabels).toEqual([
+    expect(summary.rowLabels).toEqual([
       "SLA Category",
       "SLA Days Diff",
-      "Lokasi Akhir",
     ]);
-    expect(summary.metrics.map((metric) => metric.key)).toEqual(["count"]);
+    expect(summary.columnLabels).toEqual(["Lokasi Akhir"]);
+    expect(summary.pivotValueColumns.map((column) => column.label)).toEqual(["-"]);
+    expect(summary.valueMetrics.map((metric) => metric.key)).toEqual([COD_TOTAL_COLUMN_PATH]);
     expect(summary.rows).toEqual([
       expect.objectContaining({
-        label: "- / 0 / -",
-        groupValues: ["-", "0", "-"],
+        label: "- / 0",
+        groupValues: ["-", "0"],
         count: 1,
-        metricValue: 1,
+        metricValue: 0,
         share: 100,
       }),
     ]);
@@ -708,8 +843,9 @@ describe("sheet analytics", () => {
       ...sheet,
       analytics: {
         sourceScope: "all_rows",
-        groupByPaths: [],
-        metrics: [],
+        rowPaths: [],
+        columnPaths: [],
+        valueMetrics: [],
         chartType: "bar",
       },
     };
@@ -721,8 +857,8 @@ describe("sheet analytics", () => {
     });
 
     expect(summary.sourceRowCount).toBe(1);
-    expect(summary.groupByLabel).toBe("Semua Row");
-    expect(summary.metrics).toEqual([]);
+    expect(summary.rowLabel).toBe("Semua Row");
+    expect(summary.valueMetrics).toEqual([]);
     expect(summary.primaryMetric).toBeNull();
     expect(summary.rows).toEqual([
       expect.objectContaining({

@@ -1,5 +1,9 @@
-import { useMemo, useState } from "react";
-import type { CSSProperties } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import type {
+  CSSProperties,
+  DragEvent as ReactDragEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
 import {
   getSheetAnalyticsMetricAggregationOptions,
   SheetAnalyticsGroupByOption,
@@ -22,8 +26,9 @@ type SheetAnalyticsViewProps = {
   metricOptions: SheetAnalyticsMetricOption[];
   summary: SheetAnalyticsSummary;
   onSourceScopeChange: (sourceScope: SheetAnalyticsSourceScope) => void;
-  onGroupByPathsChange: (groupByPaths: string[]) => void;
-  onMetricsChange: (metrics: SheetAnalyticsMetric[]) => void;
+  onRowPathsChange: (rowPaths: string[]) => void;
+  onColumnPathsChange: (columnPaths: string[]) => void;
+  onValueMetricsChange: (valueMetrics: SheetAnalyticsMetric[]) => void;
   onMetricAggregationChange: (
     metric: SheetAnalyticsMetric,
     aggregation: SheetAnalyticsMetricAggregation
@@ -38,8 +43,21 @@ type AnalyticsPickerOption = {
   aggregation?: SheetAnalyticsMetricOption["aggregation"];
 };
 
-type AnalyticsFieldPickerProps = {
+type AnalyticsFieldSourceListProps = {
   title: string;
+  options: AnalyticsPickerOption[];
+  onDragStart: (payload: AnalyticsDragPayload) => void;
+  onPointerDragStart: (
+    payload: AnalyticsPointerDragPayload,
+    event: ReactPointerEvent<HTMLElement>
+  ) => void;
+  onDragMove: (event: ReactDragEvent<HTMLElement>) => void;
+  onDragEnd: () => void;
+};
+
+type AnalyticsSelectedFieldListProps = {
+  title: string;
+  zone: AnalyticsSelectedZone;
   options: AnalyticsPickerOption[];
   selectedKeys: string[];
   aggregationValues?: Partial<Record<string, SheetAnalyticsMetricAggregation>>;
@@ -48,6 +66,17 @@ type AnalyticsFieldPickerProps = {
     key: string,
     aggregation: SheetAnalyticsMetricAggregation
   ) => void;
+  draggedField: AnalyticsDragPayload | null;
+  onDragStart: (payload: AnalyticsDragPayload) => void;
+  onPointerDragStart: (
+    payload: AnalyticsPointerDragPayload,
+    event: ReactPointerEvent<HTMLElement>
+  ) => void;
+  onDragMove: (event: ReactDragEvent<HTMLElement>) => void;
+  onDragEnd: () => void;
+  dropPreview: AnalyticsDropPreview | null;
+  onDropPreviewChange: (preview: AnalyticsDropPreview | null) => void;
+  onFieldDrop: (params: AnalyticsFieldDropParams) => void;
 };
 
 const CHART_COLORS = [
@@ -76,6 +105,40 @@ type PivotSortState = {
   direction: PivotSortDirection;
 };
 
+type AnalyticsSelectedZone = "row" | "column" | "value";
+
+type AnalyticsDragSource = AnalyticsSelectedZone | "field";
+
+type AnalyticsDragPayload = {
+  source: AnalyticsDragSource;
+  key: string;
+};
+
+type AnalyticsPointerDragPayload = AnalyticsDragPayload & {
+  label: string;
+};
+
+type AnalyticsPointerDragState = AnalyticsPointerDragPayload & {
+  active: boolean;
+  currentX: number;
+  currentY: number;
+  startX: number;
+  startY: number;
+};
+
+type AnalyticsDropPreview = {
+  zone: AnalyticsSelectedZone;
+  key: string;
+  index: number;
+};
+
+type AnalyticsFieldDropParams = AnalyticsDragPayload & {
+  target: AnalyticsSelectedZone;
+  targetIndex: number;
+};
+
+const ANALYTICS_FIELD_DRAG_MIME = "application/x-shipflow-analytics-field";
+
 function formatCurrency(value: number) {
   return `Rp ${formatNumber(value)}`;
 }
@@ -89,7 +152,7 @@ function formatMetricValue(metric: SheetAnalyticsMetricOption, value: number) {
 }
 
 function formatMetricLabel(metric: SheetAnalyticsMetricOption) {
-  if (!metric.aggregationLabel || metric.key === "count") {
+  if (!metric.aggregationLabel) {
     return metric.label;
   }
 
@@ -105,6 +168,21 @@ function formatMetricOptionValue(metric: SheetAnalyticsMetricOption, row: SheetA
   return formatMetricValue(metric, row.metricValues[metric.key] ?? 0);
 }
 
+function formatPivotValueColumnValue(
+  pivotValueColumn: SheetAnalyticsSummary["pivotValueColumns"][number],
+  row: SheetAnalyticsRow
+) {
+  const displayValue = row.pivotMetricDisplayValues[pivotValueColumn.key];
+  if (displayValue) {
+    return displayValue;
+  }
+
+  return formatMetricValue(
+    pivotValueColumn.metric,
+    row.pivotMetricValues[pivotValueColumn.key] ?? 0
+  );
+}
+
 function compareTextValues(left: string, right: string) {
   return left.localeCompare(right, "id", {
     sensitivity: "base",
@@ -117,7 +195,7 @@ function applySortDirection(value: number, direction: PivotSortDirection) {
 }
 
 function getPivotSortDirection(sortKey: string) {
-  return sortKey.startsWith("group:") ? "asc" : "desc";
+  return sortKey.startsWith("row:") ? "asc" : "desc";
 }
 
 function isPivotSortAvailable(
@@ -129,18 +207,18 @@ function isPivotSortAvailable(
     return hasPrimaryMetric;
   }
 
-  if (sortKey.startsWith("group:")) {
-    const groupIndex = Number(sortKey.slice("group:".length));
+  if (sortKey.startsWith("row:")) {
+    const groupIndex = Number(sortKey.slice("row:".length));
     return (
       Number.isInteger(groupIndex) &&
       groupIndex >= 0 &&
-      groupIndex < summary.groupByLabels.length
+      groupIndex < summary.rowLabels.length
     );
   }
 
-  if (sortKey.startsWith("metric:")) {
-    const metricKey = sortKey.slice("metric:".length);
-    return summary.metrics.some((metric) => metric.key === metricKey);
+  if (sortKey.startsWith("pivot:")) {
+    const pivotColumnKey = sortKey.slice("pivot:".length);
+    return summary.pivotValueColumns.some((column) => column.key === pivotColumnKey);
   }
 
   return false;
@@ -154,20 +232,21 @@ function comparePivotRows(
   let result = 0;
   if (sortState.key === "share") {
     result = left.share - right.share;
-  } else if (sortState.key.startsWith("group:")) {
-    const groupIndex = Number(sortState.key.slice("group:".length));
+  } else if (sortState.key.startsWith("row:")) {
+    const groupIndex = Number(sortState.key.slice("row:".length));
     result = compareTextValues(
-      left.groupValues[groupIndex] ?? "",
-      right.groupValues[groupIndex] ?? ""
+      left.rowValues[groupIndex] ?? "",
+      right.rowValues[groupIndex] ?? ""
     );
-  } else if (sortState.key.startsWith("metric:")) {
-    const metricKey = sortState.key.slice("metric:".length);
+  } else if (sortState.key.startsWith("pivot:")) {
+    const metricKey = sortState.key.slice("pivot:".length);
     result =
-      (left.metricValues[metricKey] ?? 0) - (right.metricValues[metricKey] ?? 0);
+      (left.pivotMetricValues[metricKey] ?? 0) -
+      (right.pivotMetricValues[metricKey] ?? 0);
     if (result === 0) {
       result = compareTextValues(
-        left.metricDisplayValues[metricKey] ?? "",
-        right.metricDisplayValues[metricKey] ?? ""
+        left.pivotMetricDisplayValues[metricKey] ?? "",
+        right.pivotMetricDisplayValues[metricKey] ?? ""
       );
     }
   }
@@ -187,17 +266,17 @@ function getFallbackPivotSort(
     return DEFAULT_PIVOT_SORT;
   }
 
-  if (summary.groupByLabels.length > 0) {
+  if (summary.rowLabels.length > 0) {
     return {
-      key: "group:0",
+      key: "row:0",
       direction: "asc",
     };
   }
 
-  const firstMetric = summary.metrics[0];
-  if (firstMetric) {
+  const firstPivotValueColumn = summary.pivotValueColumns[0];
+  if (firstPivotValueColumn) {
     return {
-      key: `metric:${firstMetric.key}`,
+      key: `pivot:${firstPivotValueColumn.key}`,
       direction: "desc",
     };
   }
@@ -221,21 +300,316 @@ function getSortAria(sortState: PivotSortState, sortKey: string) {
   return sortState.direction === "asc" ? "ascending" as const : "descending" as const;
 }
 
-function AnalyticsFieldPicker({
+function getAnalyticsDragPayload(
+  event: ReactDragEvent<HTMLElement>,
+  fallback: AnalyticsDragPayload | null
+): AnalyticsDragPayload | null {
+  const rawPayload = event.dataTransfer.getData(ANALYTICS_FIELD_DRAG_MIME);
+  if (rawPayload) {
+    try {
+      const parsedPayload = JSON.parse(rawPayload) as Partial<AnalyticsDragPayload>;
+      if (
+        (parsedPayload.source === "row" ||
+          parsedPayload.source === "column" ||
+          parsedPayload.source === "value" ||
+          parsedPayload.source === "field") &&
+        typeof parsedPayload.key === "string"
+      ) {
+        return {
+          source: parsedPayload.source,
+          key: parsedPayload.key,
+        };
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return fallback;
+}
+
+function isInteractiveDragTarget(target: EventTarget | null) {
+  return target instanceof HTMLElement
+    ? target.closest("button, select, input, textarea, a") !== null
+    : false;
+}
+
+function getAnalyticsDropZone(value: string | null): AnalyticsSelectedZone | null {
+  if (value === "row" || value === "column" || value === "value") {
+    return value;
+  }
+
+  return null;
+}
+
+function AnalyticsSelectedFieldList({
   title,
+  zone,
   options,
   selectedKeys,
   aggregationValues,
   onSelectedKeysChange,
   onAggregationChange,
-}: AnalyticsFieldPickerProps) {
-  const [searchQuery, setSearchQuery] = useState("");
+  draggedField,
+  onDragStart,
+  onPointerDragStart,
+  onDragMove,
+  onDragEnd,
+  dropPreview,
+  onDropPreviewChange,
+  onFieldDrop,
+}: AnalyticsSelectedFieldListProps) {
   const optionMap = new Map(options.map((option) => [option.key, option]));
   const selectedOptions = selectedKeys.flatMap((key) => {
     const option = optionMap.get(key);
     return option ? [option] : [];
   });
-  const selectedKeySet = new Set(selectedOptions.map((option) => option.key));
+
+  const removeOption = (key: string) => {
+    onSelectedKeysChange(selectedKeys.filter((item) => item !== key));
+  };
+
+  const getValidDragPayload = (event: ReactDragEvent<HTMLElement>) => {
+    const payload = getAnalyticsDragPayload(event, draggedField);
+    return payload && optionMap.has(payload.key) ? payload : null;
+  };
+
+  const clampDropIndex = (targetIndex: number) =>
+    Math.max(0, Math.min(targetIndex, selectedOptions.length));
+
+  const updateDropPreview = (
+    event: ReactDragEvent<HTMLElement>,
+    targetIndex: number = selectedOptions.length
+  ) => {
+    const payload = getValidDragPayload(event);
+    if (!payload) {
+      onDropPreviewChange(null);
+      return null;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+
+    const nextIndex = clampDropIndex(targetIndex);
+    onDropPreviewChange({
+      zone,
+      key: payload.key,
+      index: nextIndex,
+    });
+    return payload;
+  };
+
+  const handleListDragEnter = (event: ReactDragEvent<HTMLElement>) => {
+    updateDropPreview(event);
+  };
+
+  const handleListDragOver = (event: ReactDragEvent<HTMLElement>) => {
+    updateDropPreview(event);
+  };
+
+  const handleItemDragOver = (event: ReactDragEvent<HTMLElement>, index: number) => {
+    event.stopPropagation();
+    const target = event.currentTarget;
+    const rect = target.getBoundingClientRect();
+    const targetIndex = event.clientX > rect.left + rect.width / 2 ? index + 1 : index;
+    updateDropPreview(event, targetIndex);
+  };
+
+  const handleDrop = (
+    event: ReactDragEvent<HTMLElement>,
+    targetIndex: number = selectedOptions.length
+  ) => {
+    const payload = getValidDragPayload(event);
+    if (!payload) {
+      onDropPreviewChange(null);
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    onFieldDrop({
+      ...payload,
+      target: zone,
+      targetIndex,
+    });
+    onDropPreviewChange(null);
+  };
+  const previewOption =
+    dropPreview?.zone === zone ? optionMap.get(dropPreview.key) : null;
+  const normalizedDropPreviewIndex =
+    previewOption && dropPreview?.zone === zone
+      ? clampDropIndex(dropPreview.index)
+      : null;
+  const hasDropPreview = previewOption !== undefined && normalizedDropPreviewIndex !== null;
+  const renderDropPreview = (key: string) =>
+    previewOption ? (
+      <div
+        className="analytics-selected-row analytics-selected-drop-preview"
+        key={key}
+        role="presentation"
+      >
+        <span className="analytics-selected-label">{previewOption.label}</span>
+      </div>
+    ) : null;
+
+  return (
+    <div className="analytics-selected-field-row">
+      <span className="analytics-selected-title">{title}</span>
+      <div
+        className={`analytics-selected-list${hasDropPreview ? " is-drop-target" : ""}`}
+        role="list"
+        aria-label={`${title} aktif`}
+        data-analytics-drop-zone={zone}
+        onDragEnter={handleListDragEnter}
+        onDragOver={handleListDragOver}
+        onDrop={handleDrop}
+        onDragLeave={(event) => {
+          if (
+            event.relatedTarget instanceof Node &&
+            !event.currentTarget.contains(event.relatedTarget)
+          ) {
+            onDropPreviewChange(null);
+          }
+        }}
+      >
+        {selectedOptions.length === 0 ? (
+          <>
+            {normalizedDropPreviewIndex === 0 ? renderDropPreview("preview-empty") : null}
+            {normalizedDropPreviewIndex === null ? (
+              <span className="analytics-selected-empty">Belum ada field dipilih</span>
+            ) : null}
+          </>
+        ) : (
+          <>
+            {selectedOptions.map((option, index) => {
+              const isDragged =
+                draggedField?.source === zone && draggedField.key === option.key;
+              const aggregationOptions =
+                onAggregationChange && option.format
+                  ? getSheetAnalyticsMetricAggregationOptions(
+                      option as SheetAnalyticsMetricOption
+                    )
+                  : [];
+              const selectedAggregation =
+                aggregationValues?.[option.key] ?? option.aggregation;
+              const aggregationValue =
+                aggregationOptions.find((item) => item.key === selectedAggregation)?.key ??
+                aggregationOptions[0]?.key;
+              const hasAggregationSelect =
+                !!onAggregationChange && !!option.format && !!aggregationValue;
+
+              return (
+                <Fragment key={option.key}>
+                  {normalizedDropPreviewIndex === index
+                    ? renderDropPreview(`preview-before-${option.key}`)
+                    : null}
+                  <div
+                    className={`analytics-selected-row${
+                      hasAggregationSelect ? " has-aggregation" : ""
+                    }${isDragged ? " is-dragging" : ""}`}
+                    role="listitem"
+                    draggable={false}
+                    aria-label={`${title} ${option.label}`}
+                    onPointerDown={(event) => {
+                      if (
+                        event.button !== 0 ||
+                        isInteractiveDragTarget(event.target)
+                      ) {
+                        return;
+                      }
+
+                      event.preventDefault();
+                      event.currentTarget.setPointerCapture?.(event.pointerId);
+                      onPointerDragStart(
+                        {
+                          source: zone,
+                          key: option.key,
+                          label: option.label,
+                        },
+                        event
+                      );
+                    }}
+                    onDragStart={(event) => {
+                      if (isInteractiveDragTarget(event.target)) {
+                        event.preventDefault();
+                        return;
+                      }
+
+                      const payload = { source: zone, key: option.key };
+                      event.dataTransfer.effectAllowed = "move";
+                      event.dataTransfer.setData(
+                        ANALYTICS_FIELD_DRAG_MIME,
+                        JSON.stringify(payload)
+                      );
+                      event.dataTransfer.setData("text/plain", option.label);
+                      onDragStart(payload);
+                    }}
+                    onDrag={onDragMove}
+                    onDragOver={(event) => handleItemDragOver(event, index)}
+                    onDrop={(event) => {
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      const targetIndex =
+                        event.clientX > rect.left + rect.width / 2 ? index + 1 : index;
+                      handleDrop(event, targetIndex);
+                    }}
+                    onDragEnd={() => {
+                      onDragEnd();
+                    }}
+                  >
+                    <span className="analytics-selected-label">{option.label}</span>
+                    {hasAggregationSelect ? (
+                      <select
+                        className="analytics-aggregation-select"
+                        aria-label={`Mode ${title} ${option.label}`}
+                        value={aggregationValue}
+                        onChange={(event) =>
+                          onAggregationChange?.(
+                            option.key,
+                            event.target.value as SheetAnalyticsMetricAggregation
+                          )
+                        }
+                      >
+                        {aggregationOptions.map((aggregationOption) => (
+                          <option key={aggregationOption.key} value={aggregationOption.key}>
+                            {aggregationOption.label}
+                          </option>
+                        ))}
+                      </select>
+                    ) : null}
+                    <div className="analytics-selected-actions">
+                      <button
+                        type="button"
+                        className="analytics-selected-delete"
+                        aria-label={`Hapus ${title} ${option.label}`}
+                        onClick={() => removeOption(option.key)}
+                      >
+                        x
+                      </button>
+                    </div>
+                  </div>
+                </Fragment>
+              );
+            })}
+            {normalizedDropPreviewIndex !== null &&
+            normalizedDropPreviewIndex >= selectedOptions.length
+              ? renderDropPreview("preview-end")
+              : null}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AnalyticsFieldSourceList({
+  title,
+  options,
+  onDragStart,
+  onPointerDragStart,
+  onDragMove,
+  onDragEnd,
+}: AnalyticsFieldSourceListProps) {
+  const [searchQuery, setSearchQuery] = useState("");
   const normalizedSearchQuery = searchQuery.trim().toLocaleLowerCase("id");
   const visibleOptions =
     normalizedSearchQuery === ""
@@ -243,42 +617,6 @@ function AnalyticsFieldPicker({
       : options.filter((option) =>
           `${option.label} ${option.key}`.toLocaleLowerCase("id").includes(normalizedSearchQuery)
         );
-
-  const removeOption = (key: string) => {
-    onSelectedKeysChange(selectedKeys.filter((item) => item !== key));
-  };
-
-  const toggleOption = (key: string, checked: boolean) => {
-    if (!optionMap.has(key)) {
-      return;
-    }
-
-    if (checked) {
-      if (selectedKeySet.has(key)) {
-        return;
-      }
-
-      onSelectedKeysChange([...selectedKeys, key]);
-      return;
-    }
-
-    removeOption(key);
-  };
-
-  const moveOption = (key: string, direction: -1 | 1) => {
-    const currentIndex = selectedKeys.indexOf(key);
-    const targetIndex = currentIndex + direction;
-    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= selectedKeys.length) {
-      return;
-    }
-
-    const nextKeys = [...selectedKeys];
-    [nextKeys[currentIndex], nextKeys[targetIndex]] = [
-      nextKeys[targetIndex],
-      nextKeys[currentIndex],
-    ];
-    onSelectedKeysChange(nextKeys);
-  };
 
   return (
     <div className="analytics-field analytics-field-picker">
@@ -293,98 +631,51 @@ function AnalyticsFieldPicker({
       />
       <div
         className="analytics-option-list"
-        role="group"
-        aria-label={`Pilih ${title}`}
+        role="list"
+        aria-label={`${title} tersedia`}
       >
         {visibleOptions.length === 0 ? (
           <span className="analytics-option-empty">Field tidak ditemukan</span>
         ) : null}
-        {visibleOptions.map((option) => {
-          const checked = selectedKeySet.has(option.key);
-          return (
-            <label
-              className={`analytics-option-row${checked ? " is-selected" : ""}`}
-              key={option.key}
-            >
-              <input
-                type="checkbox"
-                checked={checked}
-                aria-label={`Pilih ${title} ${option.label}`}
-                onChange={(event) => toggleOption(option.key, event.target.checked)}
-              />
-              <span>{option.label}</span>
-            </label>
-          );
-        })}
-      </div>
-      <div className="analytics-selected-list" role="list" aria-label={`${title} aktif`}>
-        {selectedOptions.length === 0 ? (
-          <span className="analytics-selected-empty">Belum ada field dipilih</span>
-        ) : (
-          selectedOptions.map((option, index) => {
-            const aggregationOptions =
-              onAggregationChange && option.format
-                ? getSheetAnalyticsMetricAggregationOptions(
-                    option as SheetAnalyticsMetricOption
-                  )
-                : [];
-            const selectedAggregation =
-              aggregationValues?.[option.key] ?? option.aggregation;
-            const aggregationValue =
-              aggregationOptions.find((item) => item.key === selectedAggregation)?.key ??
-              aggregationOptions[0]?.key;
+        {visibleOptions.map((option) => (
+          <div
+            className="analytics-option-row"
+            key={option.key}
+            role="listitem"
+            draggable={false}
+            aria-label={`Field ${option.label}`}
+            onPointerDown={(event) => {
+              if (event.button !== 0 || isInteractiveDragTarget(event.target)) {
+                return;
+              }
 
-            return (
-              <div className="analytics-selected-row" key={option.key} role="listitem">
-                <span className="analytics-selected-label">{option.label}</span>
-                {onAggregationChange && option.format && aggregationValue ? (
-                  <select
-                    className="analytics-aggregation-select"
-                    aria-label={`Mode ${title} ${option.label}`}
-                    value={aggregationValue}
-                    onChange={(event) =>
-                      onAggregationChange(
-                        option.key,
-                        event.target.value as SheetAnalyticsMetricAggregation
-                      )
-                    }
-                  >
-                    {aggregationOptions.map((aggregationOption) => (
-                      <option key={aggregationOption.key} value={aggregationOption.key}>
-                        {aggregationOption.label}
-                      </option>
-                    ))}
-                  </select>
-                ) : null}
-                <div className="analytics-selected-actions">
-                  <button
-                    type="button"
-                    aria-label={`Naikkan ${title} ${option.label}`}
-                    disabled={index === 0}
-                    onClick={() => moveOption(option.key, -1)}
-                  >
-                    ^
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Turunkan ${title} ${option.label}`}
-                    disabled={index === selectedOptions.length - 1}
-                    onClick={() => moveOption(option.key, 1)}
-                  >
-                    v
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Hapus ${title} ${option.label}`}
-                    onClick={() => removeOption(option.key)}
-                  >
-                    x
-                  </button>
-                </div>
-              </div>
-            );
-          })
-        )}
+              event.preventDefault();
+              event.currentTarget.setPointerCapture?.(event.pointerId);
+              onPointerDragStart(
+                {
+                  source: "field",
+                  key: option.key,
+                  label: option.label,
+                },
+                event
+              );
+            }}
+            onDragStart={(event) => {
+              const payload = { source: "field" as const, key: option.key };
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData(
+                ANALYTICS_FIELD_DRAG_MIME,
+                JSON.stringify(payload)
+              );
+              event.dataTransfer.setData("text/plain", option.label);
+              onDragStart(payload);
+            }}
+            onDrag={onDragMove}
+            onDragEnd={onDragEnd}
+          >
+            <span>{option.label}</span>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -412,23 +703,43 @@ export function SheetAnalyticsView({
   metricOptions,
   summary,
   onSourceScopeChange,
-  onGroupByPathsChange,
-  onMetricsChange,
+  onRowPathsChange,
+  onColumnPathsChange,
+  onValueMetricsChange,
   onMetricAggregationChange,
   onChartTypeChange,
 }: SheetAnalyticsViewProps) {
   const chartRows = summary.rows.slice(0, 12);
   const maxMetricValue = Math.max(...chartRows.map((row) => row.metricValue), 0);
   const metricLabel =
-    summary.metrics.length > 0
-      ? summary.metrics.map(formatMetricLabel).join(" + ")
-      : "Metric";
-  const groupByKeys = analytics.groupByPaths;
-  const metricKeys = analytics.metrics;
+    summary.valueMetrics.length > 0
+      ? summary.valueMetrics.map(formatMetricLabel).join(" + ")
+      : "Value";
+  const rowKeys = analytics.rowPaths;
+  const columnKeys = analytics.columnPaths;
+  const valueKeys = analytics.valueMetrics;
   const primaryMetric = summary.primaryMetric;
   const primaryMetricOption = summary.primaryMetricOption;
   const hasPrimaryMetric = primaryMetric !== null;
   const isPivotMode = analytics.chartType === "pivot";
+  const dimensionOptions = groupByOptions.map((option) => ({
+    key: option.path,
+    label: option.label,
+  }));
+  const fieldSourceOptions = [
+    ...dimensionOptions,
+    ...metricOptions.filter(
+      (metricOption) =>
+        !dimensionOptions.some((dimensionOption) => dimensionOption.key === metricOption.key)
+    ),
+  ];
+  const dimensionKeySet = new Set(dimensionOptions.map((option) => option.key));
+  const metricKeySet = new Set(metricOptions.map((option) => option.key));
+  const [draggedField, setDraggedField] = useState<AnalyticsDragPayload | null>(null);
+  const [dropPreview, setDropPreview] = useState<AnalyticsDropPreview | null>(null);
+  const [pointerDrag, setPointerDrag] = useState<AnalyticsPointerDragState | null>(
+    null
+  );
   const [pivotSort, setPivotSort] = useState<PivotSortState>(DEFAULT_PIVOT_SORT);
   const fallbackPivotSort = getFallbackPivotSort(summary, hasPrimaryMetric);
   const activePivotSort = isPivotSortAvailable(pivotSort.key, summary, hasPrimaryMetric)
@@ -458,9 +769,311 @@ export function SheetAnalyticsView({
       };
     });
   };
+  const getSelectedKeysByZone = (zone: AnalyticsSelectedZone) => {
+    switch (zone) {
+      case "row":
+        return rowKeys;
+      case "column":
+        return columnKeys;
+      case "value":
+        return valueKeys;
+      default:
+        return [];
+    }
+  };
+  const setSelectedKeysByZone = (zone: AnalyticsSelectedZone, keys: string[]) => {
+    switch (zone) {
+      case "row":
+        onRowPathsChange(keys);
+        break;
+      case "column":
+        onColumnPathsChange(keys);
+        break;
+      case "value":
+        onValueMetricsChange(keys as SheetAnalyticsMetric[]);
+        break;
+    }
+  };
+  const getDropIndexFromPointer = (
+    dropList: HTMLElement,
+    clientX: number,
+    clientY: number
+  ) => {
+    const chips = Array.from(
+      dropList.querySelectorAll<HTMLElement>(
+        ".analytics-selected-row:not(.analytics-selected-drop-preview)"
+      )
+    );
+
+    for (const [index, chip] of chips.entries()) {
+      const rect = chip.getBoundingClientRect();
+      const midpointX = rect.left + rect.width / 2;
+      const midpointY = rect.top + rect.height / 2;
+      const isBeforeChip =
+        clientY < midpointY || (clientY <= rect.bottom && clientX < midpointX);
+      if (isBeforeChip) {
+        return index;
+      }
+    }
+
+    return chips.length;
+  };
+  const getDropPreviewFromPointer = (
+    activeDocument: Document,
+    clientX: number,
+    clientY: number,
+    draggedKey: string
+  ): AnalyticsDropPreview | null => {
+    if (
+      clientX === 0 && clientY === 0 ||
+      typeof activeDocument.elementFromPoint !== "function"
+    ) {
+      return null;
+    }
+
+    const hoveredElement = activeDocument.elementFromPoint(clientX, clientY);
+    const dropList = hoveredElement?.closest<HTMLElement>("[data-analytics-drop-zone]");
+    const target = getAnalyticsDropZone(
+      dropList?.getAttribute("data-analytics-drop-zone") ?? null
+    );
+    if (!dropList || !target) {
+      return null;
+    }
+
+    const validTargetKeys = target === "value" ? metricKeySet : dimensionKeySet;
+    if (!validTargetKeys.has(draggedKey)) {
+      return null;
+    }
+
+    return {
+      zone: target,
+      key: draggedKey,
+      index: getDropIndexFromPointer(dropList, clientX, clientY),
+    };
+  };
+  const updateDropPreviewFromPointer = (
+    activeDocument: Document,
+    clientX: number,
+    clientY: number,
+    draggedKey: string
+  ) => {
+    const nextDropPreview = getDropPreviewFromPointer(
+      activeDocument,
+      clientX,
+      clientY,
+      draggedKey
+    );
+    if (!nextDropPreview) {
+      setDropPreview(null);
+      return false;
+    }
+
+    setDropPreview({
+      zone: nextDropPreview.zone,
+      key: nextDropPreview.key,
+      index: nextDropPreview.index,
+    });
+    return true;
+  };
+  const handleSelectedFieldDragMove = (event: ReactDragEvent<HTMLElement>) => {
+    if (!draggedField) {
+      return;
+    }
+
+    updateDropPreviewFromPointer(
+      event.currentTarget.ownerDocument,
+      event.clientX,
+      event.clientY,
+      draggedField.key
+    );
+  };
+  const handleSelectedFieldPointerDragStart = (
+    payload: AnalyticsPointerDragPayload,
+    event: ReactPointerEvent<HTMLElement>
+  ) => {
+    setDraggedField({
+      source: payload.source,
+      key: payload.key,
+    });
+    setPointerDrag({
+      ...payload,
+      active: false,
+      currentX: event.clientX,
+      currentY: event.clientY,
+      startX: event.clientX,
+      startY: event.clientY,
+    });
+  };
+  useEffect(() => {
+    if (!draggedField) {
+      return undefined;
+    }
+
+    const handleDocumentDragOver = (event: DragEvent) => {
+      const didUpdatePreview = updateDropPreviewFromPointer(
+        document,
+        event.clientX,
+        event.clientY,
+        draggedField.key
+      );
+      if (didUpdatePreview) {
+        event.preventDefault();
+      }
+    };
+    const clearDocumentDragPreview = () => {
+      setDropPreview(null);
+    };
+
+    document.addEventListener("dragover", handleDocumentDragOver);
+    document.addEventListener("drop", clearDocumentDragPreview);
+    document.addEventListener("dragend", clearDocumentDragPreview);
+
+    return () => {
+      document.removeEventListener("dragover", handleDocumentDragOver);
+      document.removeEventListener("drop", clearDocumentDragPreview);
+      document.removeEventListener("dragend", clearDocumentDragPreview);
+    };
+  }, [draggedField, dimensionKeySet, metricKeySet]);
+  const handleSelectedFieldDrop = ({
+    source,
+    target,
+    key,
+    targetIndex,
+  }: AnalyticsFieldDropParams) => {
+    const validTargetKeys = target === "value" ? metricKeySet : dimensionKeySet;
+    if (!validTargetKeys.has(key)) {
+      setDraggedField(null);
+      setDropPreview(null);
+      setPointerDrag(null);
+      return;
+    }
+
+    const sourceKeys = source === "field" ? [] : getSelectedKeysByZone(source);
+    if (source !== "field" && !sourceKeys.includes(key)) {
+      setDraggedField(null);
+      setDropPreview(null);
+      setPointerDrag(null);
+      return;
+    }
+
+    const targetKeys = getSelectedKeysByZone(target);
+    const sourceIndex = source === "field" ? -1 : sourceKeys.indexOf(key);
+    const nextSourceKeys =
+      source === "field" ? sourceKeys : sourceKeys.filter((item) => item !== key);
+    const targetKeysWithoutDragged =
+      source === target ? nextSourceKeys : targetKeys.filter((item) => item !== key);
+    const adjustedTargetIndex =
+      source === target && sourceIndex >= 0 && sourceIndex < targetIndex
+        ? targetIndex - 1
+        : targetIndex;
+    const nextTargetIndex = Math.max(
+      0,
+      Math.min(adjustedTargetIndex, targetKeysWithoutDragged.length)
+    );
+    const nextTargetKeys = [
+      ...targetKeysWithoutDragged.slice(0, nextTargetIndex),
+      key,
+      ...targetKeysWithoutDragged.slice(nextTargetIndex),
+    ];
+
+    if (source === target || source === "field") {
+      setSelectedKeysByZone(target, nextTargetKeys);
+    } else {
+      setSelectedKeysByZone(source, nextSourceKeys);
+      setSelectedKeysByZone(target, nextTargetKeys);
+    }
+    setDraggedField(null);
+    setDropPreview(null);
+    setPointerDrag(null);
+  };
+  const handleSelectedFieldDragEnd = () => {
+    setDraggedField(null);
+    setDropPreview(null);
+    setPointerDrag(null);
+  };
+  useEffect(() => {
+    if (!pointerDrag) {
+      return undefined;
+    }
+
+    const getHasStartedDrag = (event: PointerEvent) =>
+      pointerDrag.active ||
+      Math.hypot(event.clientX - pointerDrag.startX, event.clientY - pointerDrag.startY) >
+        3;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const isActive = getHasStartedDrag(event);
+      setPointerDrag((current) =>
+        current
+          ? {
+              ...current,
+              active: isActive,
+              currentX: event.clientX,
+              currentY: event.clientY,
+            }
+          : null
+      );
+
+      if (!isActive) {
+        return;
+      }
+
+      event.preventDefault();
+      updateDropPreviewFromPointer(document, event.clientX, event.clientY, pointerDrag.key);
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      const isActive = getHasStartedDrag(event);
+      const pointerDropPreview = getDropPreviewFromPointer(
+        document,
+        event.clientX,
+        event.clientY,
+        pointerDrag.key
+      );
+      if (isActive && pointerDropPreview) {
+        handleSelectedFieldDrop({
+          source: pointerDrag.source,
+          key: pointerDrag.key,
+          target: pointerDropPreview.zone,
+          targetIndex: pointerDropPreview.index,
+        });
+      } else {
+        setDraggedField(null);
+        setDropPreview(null);
+        setPointerDrag(null);
+      }
+    };
+
+    const cancelPointerDrag = () => {
+      setDraggedField(null);
+      setDropPreview(null);
+      setPointerDrag(null);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove, { passive: false });
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", cancelPointerDrag);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", cancelPointerDrag);
+    };
+  }, [pointerDrag, dropPreview, dimensionKeySet, metricKeySet]);
 
   return (
     <div className="sheet-analytics-view">
+      {pointerDrag?.active ? (
+        <div
+          className="analytics-selected-pointer-ghost"
+          style={{
+            left: pointerDrag.currentX,
+            top: pointerDrag.currentY,
+          }}
+        >
+          {pointerDrag.label}
+        </div>
+      ) : null}
       <aside className="analytics-action-panel" aria-label="Panel Aksi Pivot Grafik">
         <div className="analytics-inline-controls">
           <label className="analytics-field analytics-select-field">
@@ -492,24 +1105,13 @@ export function SheetAnalyticsView({
             </select>
           </label>
         </div>
-        <AnalyticsFieldPicker
-          title="Group"
-          options={groupByOptions.map((option) => ({
-            key: option.path,
-            label: option.label,
-          }))}
-          selectedKeys={groupByKeys}
-          onSelectedKeysChange={onGroupByPathsChange}
-        />
-        <AnalyticsFieldPicker
-          title="Metric"
-          options={metricOptions}
-          selectedKeys={metricKeys}
-          aggregationValues={analytics.metricAggregations}
-          onSelectedKeysChange={(keys) => onMetricsChange(keys as SheetAnalyticsMetric[])}
-          onAggregationChange={(metric, aggregation) =>
-            onMetricAggregationChange(metric as SheetAnalyticsMetric, aggregation)
-          }
+        <AnalyticsFieldSourceList
+          title="Field"
+          options={fieldSourceOptions}
+          onDragStart={setDraggedField}
+          onPointerDragStart={handleSelectedFieldPointerDragStart}
+          onDragMove={handleSelectedFieldDragMove}
+          onDragEnd={handleSelectedFieldDragEnd}
         />
       </aside>
 
@@ -518,6 +1120,57 @@ export function SheetAnalyticsView({
         role="region"
         aria-label="Panel Utama Pivot Grafik"
       >
+        <div className="analytics-selected-panel" aria-label="Field Aktif Pivot Grafik">
+          <AnalyticsSelectedFieldList
+            title="Row"
+            zone="row"
+            options={dimensionOptions}
+            selectedKeys={rowKeys}
+            onSelectedKeysChange={onRowPathsChange}
+            draggedField={draggedField}
+            onDragStart={setDraggedField}
+            onPointerDragStart={handleSelectedFieldPointerDragStart}
+            onDragMove={handleSelectedFieldDragMove}
+            onDragEnd={handleSelectedFieldDragEnd}
+            dropPreview={dropPreview}
+            onDropPreviewChange={setDropPreview}
+            onFieldDrop={handleSelectedFieldDrop}
+          />
+          <AnalyticsSelectedFieldList
+            title="Column"
+            zone="column"
+            options={dimensionOptions}
+            selectedKeys={columnKeys}
+            onSelectedKeysChange={onColumnPathsChange}
+            draggedField={draggedField}
+            onDragStart={setDraggedField}
+            onPointerDragStart={handleSelectedFieldPointerDragStart}
+            onDragMove={handleSelectedFieldDragMove}
+            onDragEnd={handleSelectedFieldDragEnd}
+            dropPreview={dropPreview}
+            onDropPreviewChange={setDropPreview}
+            onFieldDrop={handleSelectedFieldDrop}
+          />
+          <AnalyticsSelectedFieldList
+            title="Value"
+            zone="value"
+            options={metricOptions}
+            selectedKeys={valueKeys}
+            aggregationValues={analytics.metricAggregations}
+            onSelectedKeysChange={(keys) => onValueMetricsChange(keys as SheetAnalyticsMetric[])}
+            onAggregationChange={(metric, aggregation) =>
+              onMetricAggregationChange(metric as SheetAnalyticsMetric, aggregation)
+            }
+            draggedField={draggedField}
+            onDragStart={setDraggedField}
+            onPointerDragStart={handleSelectedFieldPointerDragStart}
+            onDragMove={handleSelectedFieldDragMove}
+            onDragEnd={handleSelectedFieldDragEnd}
+            dropPreview={dropPreview}
+            onDropPreviewChange={setDropPreview}
+            onFieldDrop={handleSelectedFieldDrop}
+          />
+        </div>
         <div className="analytics-content-stack">
           {isPivotMode ? (
             <section className="analytics-summary-panel" aria-label="Tabel Pivot">
@@ -529,8 +1182,8 @@ export function SheetAnalyticsView({
                 <table className="analytics-summary-table">
                   <thead>
                     <tr>
-                      {summary.groupByLabels.map((label, index) => {
-                        const sortKey = `group:${index}`;
+                      {summary.rowLabels.map((label, index) => {
+                        const sortKey = `row:${index}`;
                         return (
                           <th key={label} aria-sort={getSortAria(activePivotSort, sortKey)}>
                             <button
@@ -546,11 +1199,11 @@ export function SheetAnalyticsView({
                           </th>
                         );
                       })}
-                      {summary.metrics.map((metric) => {
-                        const sortKey = `metric:${metric.key}`;
+                      {summary.pivotValueColumns.map((pivotValueColumn) => {
+                        const sortKey = `pivot:${pivotValueColumn.key}`;
                         return (
                           <th
-                            key={metric.key}
+                            key={pivotValueColumn.key}
                             aria-sort={getSortAria(activePivotSort, sortKey)}
                           >
                             <button
@@ -558,7 +1211,7 @@ export function SheetAnalyticsView({
                               className="analytics-sort-header"
                               onClick={() => togglePivotSort(sortKey)}
                             >
-                              <span>{formatMetricLabel(metric)}</span>
+                              <span>{pivotValueColumn.label}</span>
                               <span className="sort-indicator is-active">
                                 {getSortIndicator(activePivotSort, sortKey)}
                               </span>
@@ -587,8 +1240,8 @@ export function SheetAnalyticsView({
                       <tr>
                         <td
                           colSpan={
-                            summary.groupByLabels.length +
-                            summary.metrics.length +
+                            summary.rowLabels.length +
+                            summary.pivotValueColumns.length +
                             (hasPrimaryMetric ? 1 : 0)
                           }
                         >
@@ -598,14 +1251,14 @@ export function SheetAnalyticsView({
                     ) : (
                       pivotRows.map((row) => (
                         <tr key={row.key}>
-                          {summary.groupByLabels.map((label, index) => (
+                          {summary.rowLabels.map((label, index) => (
                             <td key={`${label}-${index}`}>
-                              {row.groupValues[index] ?? "-"}
+                              {row.rowValues[index] ?? "-"}
                             </td>
                           ))}
-                          {summary.metrics.map((metric) => (
-                            <td key={metric.key}>
-                              {formatMetricOptionValue(metric, row)}
+                          {summary.pivotValueColumns.map((pivotValueColumn) => (
+                            <td key={pivotValueColumn.key}>
+                              {formatPivotValueColumnValue(pivotValueColumn, row)}
                             </td>
                           ))}
                           {hasPrimaryMetric ? <td>{formatNumber(row.share)}%</td> : null}
@@ -619,12 +1272,12 @@ export function SheetAnalyticsView({
           ) : (
             <section className="analytics-chart-panel" aria-label="Grafik Pivot">
               <div className="analytics-panel-header">
-                <span>{summary.groupByLabel}</span>
+                <span>{summary.rowLabel}</span>
                 <strong>{metricLabel}</strong>
               </div>
 
               {!hasPrimaryMetric ? (
-                <div className="analytics-empty">Metric belum dipilih.</div>
+                <div className="analytics-empty">Value belum dipilih.</div>
               ) : chartRows.length === 0 ? (
                 <div className="analytics-empty">Belum ada data siap dianalisis.</div>
               ) : analytics.chartType === "donut" ? (

@@ -43,7 +43,7 @@ describe("workspace state", () => {
       activeMode: "analytics",
       analytics: {
         ...sheet.analytics,
-        groupByPaths: ["detail.package_detail.jenis_layanan"],
+        rowPaths: ["detail.package_detail.jenis_layanan"],
       },
     }));
 
@@ -51,10 +51,10 @@ describe("workspace state", () => {
     expect(next.sheetsById[secondSheetId].deleteAllArmed).toBe(true);
     expect(next.sheetsById[firstSheetId].activeMode).toBe("workspace");
     expect(next.sheetsById[secondSheetId].activeMode).toBe("analytics");
-    expect(next.sheetsById[firstSheetId].analytics.groupByPaths).toEqual([
+    expect(next.sheetsById[firstSheetId].analytics.rowPaths).toEqual([
       "status_akhir.status",
     ]);
-    expect(next.sheetsById[secondSheetId].analytics.groupByPaths).toEqual([
+    expect(next.sheetsById[secondSheetId].analytics.rowPaths).toEqual([
       "detail.package_detail.jenis_layanan",
     ]);
   });
@@ -108,11 +108,11 @@ describe("workspace state", () => {
       activeMode: "analytics",
       analytics: {
         sourceScope: "selected_rows",
-        groupByPaths: ["detail.package_detail.jenis_layanan", "status_akhir.status"],
-        metrics: [COD_TOTAL_COLUMN_PATH, "count"],
+        rowPaths: ["detail.package_detail.jenis_layanan", "status_akhir.status"],
+        columnPaths: [],
+        valueMetrics: [COD_TOTAL_COLUMN_PATH],
         metricAggregations: {
           [COD_TOTAL_COLUMN_PATH]: "sum",
-          count: "count",
         },
         chartType: "donut",
       },
@@ -137,19 +137,22 @@ describe("workspace state", () => {
     expect(duplicatedSheet.activeMode).toBe("analytics");
     expect(duplicatedSheet.analytics).toEqual({
       sourceScope: "selected_rows",
-      groupByPaths: ["detail.package_detail.jenis_layanan", "status_akhir.status"],
-      metrics: [COD_TOTAL_COLUMN_PATH, "count"],
+      rowPaths: ["detail.package_detail.jenis_layanan", "status_akhir.status"],
+      columnPaths: [],
+      valueMetrics: [COD_TOTAL_COLUMN_PATH],
       metricAggregations: {
         [COD_TOTAL_COLUMN_PATH]: "sum",
-        count: "count",
       },
       chartType: "donut",
     });
-    expect(duplicatedSheet.analytics.groupByPaths).not.toBe(
-      workspace.sheetsById[sourceSheetId].analytics.groupByPaths
+    expect(duplicatedSheet.analytics.rowPaths).not.toBe(
+      workspace.sheetsById[sourceSheetId].analytics.rowPaths
     );
-    expect(duplicatedSheet.analytics.metrics).not.toBe(
-      workspace.sheetsById[sourceSheetId].analytics.metrics
+    expect(duplicatedSheet.analytics.columnPaths).not.toBe(
+      workspace.sheetsById[sourceSheetId].analytics.columnPaths
+    );
+    expect(duplicatedSheet.analytics.valueMetrics).not.toBe(
+      workspace.sheetsById[sourceSheetId].analytics.valueMetrics
     );
     expect(duplicatedSheet.analytics.metricAggregations).not.toBe(
       workspace.sheetsById[sourceSheetId].analytics.metricAggregations

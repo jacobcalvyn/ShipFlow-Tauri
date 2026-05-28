@@ -164,42 +164,46 @@ function normalizePersistedSheetAnalyticsState(candidate: unknown) {
     record.sourceScope === "selected_rows"
       ? record.sourceScope
       : fallback.sourceScope;
+  const chartType =
+    record.chartType === "bar" ||
+    record.chartType === "donut" ||
+    record.chartType === "pivot"
+      ? record.chartType
+      : fallback.chartType;
   const validPathSet = new Set(getSheetAnalyticsGroupByOptions().map((option) => option.path));
+  const normalizePathList = (value: unknown) =>
+    dedupeStrings(normalizeStringArray(value).filter((path) => validPathSet.has(path)));
+  const rawRowPaths = normalizeStringArray(record.rowPaths);
+  const persistedRowPaths = normalizePathList(record.rowPaths);
   const rawGroupByPaths = normalizeStringArray(record.groupByPaths);
-  const persistedGroupByPaths = dedupeStrings(
-    rawGroupByPaths.filter((path) => validPathSet.has(path))
-  );
+  const persistedGroupByPaths = normalizePathList(record.groupByPaths);
   const legacyGroupByPath =
     typeof record.groupByPath === "string" && validPathSet.has(record.groupByPath)
       ? record.groupByPath
       : null;
-  const groupByPaths: string[] =
-    Array.isArray(record.groupByPaths) &&
-    (rawGroupByPaths.length === 0 || persistedGroupByPaths.length > 0)
-      ? persistedGroupByPaths
-      : legacyGroupByPath
-        ? [legacyGroupByPath]
-        : fallback.groupByPaths;
+  const rowPaths: string[] =
+    Array.isArray(record.rowPaths) &&
+    (rawRowPaths.length === 0 || persistedRowPaths.length > 0)
+      ? persistedRowPaths
+      : Array.isArray(record.groupByPaths) &&
+          (rawGroupByPaths.length === 0 || persistedGroupByPaths.length > 0)
+        ? persistedGroupByPaths
+        : legacyGroupByPath
+          ? [legacyGroupByPath]
+          : fallback.rowPaths;
+  const rawColumnPaths = normalizeStringArray(record.columnPaths);
+  const persistedColumnPaths = normalizePathList(record.columnPaths);
   const validMetricSet = new Set(getSheetAnalyticsMetricOptions().map((option) => option.key));
-  const rawMetrics = normalizeStringArray(record.metrics).map((metric) =>
-    metric === "cod_total" ? "detail.billing_detail.cod_info.total_cod" : metric
+  const normalizeMetricKey = (metric: string) =>
+    metric === "cod_total" ? "detail.billing_detail.cod_info.total_cod" : metric;
+  const rawValueMetrics = normalizeStringArray(record.valueMetrics).map(normalizeMetricKey);
+  const persistedValueMetrics = dedupeStrings(rawValueMetrics).filter((metric) =>
+    validMetricSet.has(metric)
   );
+  const rawMetrics = normalizeStringArray(record.metrics).map(normalizeMetricKey);
   const persistedMetrics = dedupeStrings(rawMetrics).filter((metric) =>
     validMetricSet.has(metric)
   );
-  const legacyMetric: SheetAnalyticsMetric | null =
-    record.metric === "cod_total"
-      ? "detail.billing_detail.cod_info.total_cod"
-      : record.metric === "count" ||
-          (typeof record.metric === "string" && validMetricSet.has(record.metric))
-        ? record.metric
-        : null;
-  const metrics: SheetAnalyticsMetric[] =
-    Array.isArray(record.metrics) && (rawMetrics.length === 0 || persistedMetrics.length > 0)
-      ? persistedMetrics
-      : legacyMetric
-        ? [legacyMetric]
-        : fallback.metrics;
   const rawMetricAggregations =
     record.metricAggregations && typeof record.metricAggregations === "object"
       ? (record.metricAggregations as Record<string, unknown>)
@@ -207,10 +211,57 @@ function normalizePersistedSheetAnalyticsState(candidate: unknown) {
   const metricOptionMap = new Map(
     getSheetAnalyticsMetricOptions().map((option) => [option.key, option])
   );
+  const legacyPivotColumnPaths =
+    chartType === "pivot" && !Array.isArray(record.valueMetrics)
+      ? persistedMetrics.filter((metric) => {
+          const metricOption = metricOptionMap.get(metric);
+          const selectedAggregation =
+            rawMetricAggregations[metric] ??
+            (metric === "detail.billing_detail.cod_info.total_cod"
+              ? rawMetricAggregations.cod_total
+              : undefined);
+          const aggregation =
+            metricOption &&
+            isValidSheetAnalyticsMetricAggregation(metricOption, selectedAggregation)
+              ? selectedAggregation
+              : metricOption
+                ? getDefaultSheetAnalyticsMetricAggregation(metricOption)
+                : null;
+          return (
+            !!metricOption?.path &&
+            metricOption.format === "text" &&
+            aggregation === "unique_list"
+          );
+        })
+      : [];
+  const columnPaths: string[] =
+    Array.isArray(record.columnPaths) &&
+    (rawColumnPaths.length === 0 || persistedColumnPaths.length > 0)
+      ? persistedColumnPaths
+      : legacyPivotColumnPaths.filter((path) => validPathSet.has(path));
+  const legacyMetric: SheetAnalyticsMetric | null =
+    record.metric === "cod_total"
+      ? "detail.billing_detail.cod_info.total_cod"
+      : typeof record.metric === "string" && validMetricSet.has(record.metric)
+        ? record.metric
+        : null;
+  const legacyValueMetrics = persistedMetrics.filter(
+    (metric) => !legacyPivotColumnPaths.includes(metric)
+  );
+  const valueMetrics: SheetAnalyticsMetric[] =
+    Array.isArray(record.valueMetrics) &&
+    (rawValueMetrics.length === 0 || persistedValueMetrics.length > 0)
+      ? persistedValueMetrics
+      : Array.isArray(record.metrics) &&
+          (rawMetrics.length === 0 || legacyValueMetrics.length > 0)
+        ? legacyValueMetrics
+        : legacyMetric
+          ? [legacyMetric]
+          : fallback.valueMetrics;
   const metricAggregations: Partial<
     Record<SheetAnalyticsMetric, SheetAnalyticsMetricAggregation>
   > = {};
-  for (const metric of metrics) {
+  for (const metric of valueMetrics) {
     const metricOption = metricOptionMap.get(metric);
     if (!metricOption) {
       continue;
@@ -228,17 +279,12 @@ function normalizePersistedSheetAnalyticsState(candidate: unknown) {
       ? selectedAggregation
       : getDefaultSheetAnalyticsMetricAggregation(metricOption);
   }
-  const chartType =
-    record.chartType === "bar" ||
-    record.chartType === "donut" ||
-    record.chartType === "pivot"
-      ? record.chartType
-      : fallback.chartType;
 
   return {
     sourceScope,
-    groupByPaths,
-    metrics,
+    rowPaths,
+    columnPaths,
+    valueMetrics,
     metricAggregations,
     chartType,
   };

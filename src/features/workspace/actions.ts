@@ -23,8 +23,9 @@ function cloneSheetState(sourceSheet: SheetState): SheetState {
     ...sourceSheet,
     analytics: {
       ...sourceSheet.analytics,
-      groupByPaths: [...sourceSheet.analytics.groupByPaths],
-      metrics: [...sourceSheet.analytics.metrics],
+      rowPaths: [...sourceSheet.analytics.rowPaths],
+      columnPaths: [...sourceSheet.analytics.columnPaths],
+      valueMetrics: [...sourceSheet.analytics.valueMetrics],
       metricAggregations: sourceSheet.analytics.metricAggregations
         ? { ...sourceSheet.analytics.metricAggregations }
         : undefined,
