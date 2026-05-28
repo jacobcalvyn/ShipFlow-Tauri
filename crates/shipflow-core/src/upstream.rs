@@ -16,8 +16,7 @@ use crate::model::{
 };
 use crate::parser::parse_tracking_html;
 
-pub const POS_TRACKING_ENDPOINT: &str =
-    "https://lacak-mitra.posindonesia.co.id/lacak_barcode.php";
+pub const POS_TRACKING_ENDPOINT: &str = "https://lacak-mitra.posindonesia.co.id/lacak_barcode.php";
 pub const POS_TRACKING_BASE_URL: &str = "https://lacak-mitra.posindonesia.co.id/";
 pub const POS_BAG_ENDPOINT: &str =
     "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak_bag.php";
