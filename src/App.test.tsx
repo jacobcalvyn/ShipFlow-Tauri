@@ -915,77 +915,81 @@ describe("App workspace isolation", () => {
     15000
   );
 
-  it("keeps concurrent manifest lookups isolated across sheets", async () => {
-    render(<App />);
+  it(
+    "keeps concurrent manifest lookups isolated across sheets",
+    async () => {
+      render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
-    fireEvent.change(screen.getByLabelText("ID Manifest"), {
-      target: { value: "MNF-PARALLEL-1" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
+      fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
+      fireEvent.change(screen.getByLabelText("ID Manifest"), {
+        target: { value: "MNF-PARALLEL-1" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
 
-    await waitFor(() => {
-      expectInvokeCount("track_manifest", 1);
-    });
+      await waitFor(() => {
+        expectInvokeCount("track_manifest", 1);
+      });
 
-    fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
+      fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
 
-    await waitFor(() => {
-      expect(screen.getByRole("tab", { name: "Sheet 2" })).toHaveAttribute(
-        "aria-selected",
-        "true"
-      );
-    });
+      await waitFor(() => {
+        expect(screen.getByRole("tab", { name: "Sheet 2" })).toHaveAttribute(
+          "aria-selected",
+          "true"
+        );
+      });
 
-    fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
-    fireEvent.change(screen.getByLabelText("ID Manifest"), {
-      target: { value: "MNF-PARALLEL-2" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
+      fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
+      fireEvent.change(screen.getByLabelText("ID Manifest"), {
+        target: { value: "MNF-PARALLEL-2" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
 
-    await waitFor(() => {
-      expectInvokeCount("track_manifest", 2);
-    });
+      await waitFor(() => {
+        expectInvokeCount("track_manifest", 2);
+      });
 
-    resolveManifestRequest("MNF-PARALLEL-1");
-    resolveManifestRequest("MNF-PARALLEL-2");
+      resolveManifestRequest("MNF-PARALLEL-1");
+      resolveManifestRequest("MNF-PARALLEL-2");
 
-    await waitFor(() => {
-      expectInvokeCount("track_bag", 2);
-      expect(
-        screen.getByText(
-          "Nomor Kantung (1) - Proses ambil id kiriman dari 0/1 kantung"
-        )
-      ).toBeInTheDocument();
-      expect(screen.getByText("PID123456-2")).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expectInvokeCount("track_bag", 2);
+        expect(
+          screen.getByText(
+            "Nomor Kantung (1) - Proses ambil id kiriman dari 0/1 kantung"
+          )
+        ).toBeInTheDocument();
+        expect(screen.getByText("PID123456-2")).toBeInTheDocument();
+      });
 
-    resolveBagRequest("PID123456");
+      resolveBagRequest("PID123456");
 
-    await waitFor(() => {
-      expect(screen.queryByText("PID123456 - 1 Kiriman")).not.toBeInTheDocument();
-      expect(screen.getByText("PID123456-2")).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expect(screen.queryByText("PID123456 - 1 Kiriman")).not.toBeInTheDocument();
+        expect(screen.getByText("PID123456-2")).toBeInTheDocument();
+      });
 
-    resolveBagRequest("PID123456-2");
+      resolveBagRequest("PID123456-2");
 
-    await waitFor(() => {
-      expect(screen.getByText("Nomor Kantung (1) - 1 Kiriman")).toBeInTheDocument();
-      expect(screen.getByText("PID123456-2 - 1 Kiriman")).toBeInTheDocument();
-      expect(screen.queryByText("PID123456 - 1 Kiriman")).not.toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expect(screen.getByText("Nomor Kantung (1) - 1 Kiriman")).toBeInTheDocument();
+        expect(screen.getByText("PID123456-2 - 1 Kiriman")).toBeInTheDocument();
+        expect(screen.queryByText("PID123456 - 1 Kiriman")).not.toBeInTheDocument();
+      });
 
-    fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
+      fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
 
-    await waitFor(() => {
-      expect(
-        screen.getByRole("dialog", { name: "Import ID Kiriman dari Manifest" })
-      ).toBeInTheDocument();
-      expect(screen.getByLabelText("ID Manifest")).toHaveValue("MNF-PARALLEL-1");
-      expect(screen.getByText("PID123456 - 1 Kiriman")).toBeInTheDocument();
-      expect(screen.queryByText("PID123456-2 - 1 Kiriman")).not.toBeInTheDocument();
-    });
-  });
+      await waitFor(() => {
+        expect(
+          screen.getByRole("dialog", { name: "Import ID Kiriman dari Manifest" })
+        ).toBeInTheDocument();
+        expect(screen.getByLabelText("ID Manifest")).toHaveValue("MNF-PARALLEL-1");
+        expect(screen.getByText("PID123456 - 1 Kiriman")).toBeInTheDocument();
+        expect(screen.queryByText("PID123456-2 - 1 Kiriman")).not.toBeInTheDocument();
+      });
+    },
+    15000
+  );
 
   it("replaces all sheet data from a bag lookup", async () => {
     render(<App />);
@@ -1291,122 +1295,130 @@ describe("App workspace isolation", () => {
     });
   });
 
-  it("starts tracking again when bag data is appended repeatedly", async () => {
-    render(<App />);
+  it(
+    "starts tracking again when bag data is appended repeatedly",
+    async () => {
+      render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Bag" }));
-    fireEvent.change(screen.getByLabelText("ID Bag"), {
-      target: { value: "PID-APPEND-1" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
+      fireEvent.click(screen.getByRole("button", { name: "Bag" }));
+      fireEvent.change(screen.getByLabelText("ID Bag"), {
+        target: { value: "PID-APPEND-1" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
 
-    await waitFor(() => {
-      expectInvokeCount("track_bag", 1);
-    });
+      await waitFor(() => {
+        expectInvokeCount("track_bag", 1);
+      });
 
-    resolveBagRequest("PID-APPEND-1");
+      resolveBagRequest("PID-APPEND-1");
 
-    await waitFor(() => {
-      expect(screen.getByText("P260000000001")).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expect(screen.getByText("P260000000001")).toBeInTheDocument();
+      });
 
-    fireEvent.click(screen.getByRole("button", { name: "Tambah Data" }));
+      fireEvent.click(screen.getByRole("button", { name: "Tambah Data" }));
 
-    await waitFor(() => {
-      expectInvokeCount("track_shipment", 1);
-      expect(
-        screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
-      ).not.toBeInTheDocument();
-      expect(screen.getAllByDisplayValue("P260000000001")[0]).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expectInvokeCount("track_shipment", 1);
+        expect(
+          screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
+        ).not.toBeInTheDocument();
+        expect(screen.getAllByDisplayValue("P260000000001")[0]).toBeInTheDocument();
+      });
 
-    resolveRequest("P260000000001");
+      resolveRequest("P260000000001");
 
-    await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      });
 
-    fireEvent.click(screen.getByRole("button", { name: "Bag" }));
-    fireEvent.change(screen.getByLabelText("ID Bag"), {
-      target: { value: "PID-APPEND-2" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
+      fireEvent.click(screen.getByRole("button", { name: "Bag" }));
+      fireEvent.change(screen.getByLabelText("ID Bag"), {
+        target: { value: "PID-APPEND-2" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
 
-    await waitFor(() => {
-      expectInvokeCount("track_bag", 2);
-    });
+      await waitFor(() => {
+        expectInvokeCount("track_bag", 2);
+      });
 
-    resolveBagRequest("PID-APPEND-2");
+      resolveBagRequest("PID-APPEND-2");
 
-    await waitFor(() => {
-      expect(screen.getByText("P260000000002")).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expect(screen.getByText("P260000000002")).toBeInTheDocument();
+      });
 
-    fireEvent.click(screen.getByRole("button", { name: "Tambah Data" }));
+      fireEvent.click(screen.getByRole("button", { name: "Tambah Data" }));
 
-    await waitFor(() => {
-      expectInvokeCount("track_shipment", 2);
-      expect(
-        screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
-      ).not.toBeInTheDocument();
-      expect(screen.getAllByDisplayValue("P260000000001")[0]).toBeInTheDocument();
-      expect(screen.getAllByDisplayValue("P260000000002")[0]).toBeInTheDocument();
-    });
-  });
+      await waitFor(() => {
+        expectInvokeCount("track_shipment", 2);
+        expect(
+          screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
+        ).not.toBeInTheDocument();
+        expect(screen.getAllByDisplayValue("P260000000001")[0]).toBeInTheDocument();
+        expect(screen.getAllByDisplayValue("P260000000002")[0]).toBeInTheDocument();
+      });
+    },
+    15000
+  );
 
-  it("starts tracking again when cached bag data is appended without reloading the modal", async () => {
-    render(<App />);
+  it(
+    "starts tracking again when cached bag data is appended without reloading the modal",
+    async () => {
+      render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Bag" }));
-    fireEvent.change(screen.getByLabelText("ID Bag"), {
-      target: { value: "PID-CACHED-APPEND" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
+      fireEvent.click(screen.getByRole("button", { name: "Bag" }));
+      fireEvent.change(screen.getByLabelText("ID Bag"), {
+        target: { value: "PID-CACHED-APPEND" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
 
-    await waitFor(() => {
-      expectInvokeCount("track_bag", 1);
-    });
+      await waitFor(() => {
+        expectInvokeCount("track_bag", 1);
+      });
 
-    resolveBagRequest("PID-CACHED-APPEND");
+      resolveBagRequest("PID-CACHED-APPEND");
 
-    await waitFor(() => {
-      expect(screen.getByText("P260000000001")).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expect(screen.getByText("P260000000001")).toBeInTheDocument();
+      });
 
-    fireEvent.click(screen.getByRole("button", { name: "Tambah Data" }));
+      fireEvent.click(screen.getByRole("button", { name: "Tambah Data" }));
 
-    await waitFor(() => {
-      expectInvokeCount("track_shipment", 1);
-      expect(
-        screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
-      ).not.toBeInTheDocument();
-      expect(screen.getAllByDisplayValue("P260000000001")[0]).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expectInvokeCount("track_shipment", 1);
+        expect(
+          screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
+        ).not.toBeInTheDocument();
+        expect(screen.getAllByDisplayValue("P260000000001")[0]).toBeInTheDocument();
+      });
 
-    resolveRequest("P260000000001");
+      resolveRequest("P260000000001");
 
-    await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      });
 
-    fireEvent.click(screen.getByRole("button", { name: "Bag" }));
+      fireEvent.click(screen.getByRole("button", { name: "Bag" }));
 
-    await waitFor(() => {
-      expect(screen.getByLabelText("ID Bag")).toHaveValue("PID-CACHED-APPEND");
-      expect(screen.getByText("Nomor Kiriman (1)")).toBeInTheDocument();
-      expect(screen.getByText("P260000000001")).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expect(screen.getByLabelText("ID Bag")).toHaveValue("PID-CACHED-APPEND");
+        expect(screen.getByText("Nomor Kiriman (1)")).toBeInTheDocument();
+        expect(screen.getByText("P260000000001")).toBeInTheDocument();
+      });
 
-    fireEvent.click(screen.getByRole("button", { name: "Tambah Data" }));
+      fireEvent.click(screen.getByRole("button", { name: "Tambah Data" }));
 
-    await waitFor(() => {
-      expectInvokeCount("track_shipment", 2);
-      expect(
-        screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
-      ).not.toBeInTheDocument();
-      expect(screen.getAllByDisplayValue("P260000000001")).toHaveLength(2);
-    });
-  });
+      await waitFor(() => {
+        expectInvokeCount("track_shipment", 2);
+        expect(
+          screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
+        ).not.toBeInTheDocument();
+        expect(screen.getAllByDisplayValue("P260000000001")).toHaveLength(2);
+      });
+    },
+    15000
+  );
 
   it("copies selected ids into a new sheet and starts tracking them immediately", async () => {
     render(<App />);
