@@ -1,15 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the standalone ShipFlow Service settings app.",
+  "description": "Minimal capability for the standalone ShipFlow Service settings window. Native access stays behind explicit Tauri commands.",
   "windows": ["service-settings"],
   "permissions": [
-    "core:app:default",
-    "core:event:default",
-    "core:image:default",
-    "core:menu:default",
-    "core:tray:default",
-    "core:webview:default",
-    "core:window:default"
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
   ]
 }

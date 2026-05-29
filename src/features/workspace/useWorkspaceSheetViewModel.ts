@@ -2,8 +2,8 @@ import { useMemo } from "react";
 import {
   getSheetAnalyticsGroupByOptions,
   getSheetAnalyticsMetricOptions,
-  getSheetAnalyticsSummary,
 } from "../sheet/analytics";
+import { createSheetAnalyticsSummaryWithEngine } from "../sheet/analytics-engine";
 import {
   getActiveFilterCount,
   getAllTrackingIds,
@@ -183,7 +183,7 @@ export function useWorkspaceSheetViewModel(activeSheet: SheetState) {
 
   const analyticsSummary = useMemo(
     () =>
-      getSheetAnalyticsSummary({
+      createSheetAnalyticsSummaryWithEngine({
         sheetState: activeSheet,
         nonEmptyRows,
         displayedRows,

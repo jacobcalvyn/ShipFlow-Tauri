@@ -21,7 +21,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Setup Rust toolchain
@@ -50,11 +50,20 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Check security baseline
+        run: npm run security:baseline
+
       - name: Run frontend tests
         run: npm test
 
       - name: Build frontend
         run: npm run build
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright smoke tests
+        run: npm run test:e2e
 
       - name: Check Rust format
         run: cargo fmt --all -- --check

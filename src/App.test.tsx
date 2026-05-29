@@ -267,6 +267,7 @@ describe("App workspace isolation", () => {
   }
 
   beforeEach(() => {
+    mockedInvoke.mockReset();
     pendingRequests.clear();
     pendingBagRequests.clear();
     pendingManifestRequests.clear();
@@ -534,7 +535,7 @@ describe("App workspace isolation", () => {
     shipmentId: string
   ) {
     const matchedCall = spy.mock.calls.find(
-      ([label, payload]) =>
+      ([label, payload]: [unknown, unknown]) =>
         label === "[ShipFlowTelemetry]" &&
         payload &&
         typeof payload === "object" &&

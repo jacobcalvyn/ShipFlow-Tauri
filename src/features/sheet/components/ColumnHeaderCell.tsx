@@ -262,6 +262,7 @@ export const ColumnHeaderCell = memo(function ColumnHeaderCell({
                           <label className="column-menu-checkbox" htmlFor={optionId}>
                             <input
                               id={optionId}
+                              aria-label={`${option.value} (${option.count})`}
                               type="checkbox"
                               checked={selectedValueFilters.includes(option.value)}
                               onChange={() => onToggleValueFilter(column.path, option.value)}

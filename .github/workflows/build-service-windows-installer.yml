@@ -23,7 +23,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Cache Rust build
@@ -33,6 +33,9 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Check security baseline
+        run: npm run security:baseline
 
       - name: Build service frontend assets
         run: npm run build
@@ -47,7 +50,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Build Windows service app binary
-        run: cargo build --manifest-path apps/service/Cargo.toml --release --features custom-protocol
+        working-directory: apps/service
+        run: npm exec tauri -- build --features custom-protocol --no-bundle --ci
 
       - name: Install NSIS
         run: choco install nsis -y --no-progress

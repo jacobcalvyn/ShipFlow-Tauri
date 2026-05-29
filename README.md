@@ -4,6 +4,8 @@ Desktop shipment tracking workspace built with Tauri, Rust, React, and Vite.
 
 The app is optimized for spreadsheet-style operational analysis. Each row represents one shipment. The first data column accepts a shipment ID, then the app asks `ShipFlow Service` for tracking data and fills the rest of the row. A sheet is treated as one independent workspace with its own `Workspace` mode and `Pivot/Grafik` mode.
 
+The current frontend tooling baseline is Node.js `24`, Vite `7`, Vitest `4`, and Playwright smoke coverage for the pivot workspace.
+
 The runtime foundation now supports POS bag and manifest lookups through the shared Rust core and the local service API. The desktop workspace still stays shipment-first, but each sheet can now import shipment IDs from bag and manifest lookups through sheet-local modal flows.
 
 Architecture references:
@@ -307,7 +309,7 @@ Value behavior:
 - selected values can be reordered and removed from the active value list
 - selected value order is preserved by summaries, chart primary value selection, and pivot display
 - numeric, currency, and weight values support `Jumlah`, `Rata-rata`, `Nilai Maksimum`, `Nilai Minimum`, `Jumlah Data`, and `Banyaknya Nilai Berbeda`
-- text, date, and boolean values support `Teks`, `Paling Sering`, `Pertama`, and `Terakhir`
+- text, date, and boolean values support `Teks`, `Jumlah Data`, `Banyaknya Nilai Berbeda`, `Paling Sering`, `Pertama`, and `Terakhir`
 - the value formula menu is type-aware, so text fields do not offer numeric formulas such as `Jumlah`, `Rata-rata`, `Nilai Maksimum`, or `Nilai Minimum`
 - the `Value` list only contains allowed sheet columns, without built-in virtual values
 - missing numeric, currency, or weight row/column values render as `0`
@@ -332,6 +334,13 @@ Chart behavior:
 - `Column` fields are preserved in the sheet config but only affect `Pivot` mode
 - chart rows are sorted by value descending before label tie-breaks
 - `Share` in chart calculations follows the selected value, while `Pivot` share follows row count share
+
+Analytics engine notes:
+
+- the active production analytics engine is still the deterministic TypeScript array engine
+- [src/features/sheet/analytics-engine.ts](./src/features/sheet/analytics-engine.ts) defines the engine boundary used by the workspace view model
+- [src/features/sheet/duckdb-analytics-prototype.ts](./src/features/sheet/duckdb-analytics-prototype.ts) contains the DuckDB-WASM prototype path: row projection, value-presence flags, and long-form pivot SQL generation
+- DuckDB is not the default runtime path yet; it is staged behind tests so it can be benchmarked against larger sheet data before activation
 
 ## Current Data Shown In The Table
 
@@ -507,13 +516,14 @@ Latest CLI/runtime smoke baseline, verified on 2026-04-25:
 
 The CLI smoke test does not replace a visual Desktop smoke pass. Still verify the Tauri window flow for standalone service settings, POD hover previews, and native workspace save dialogs before a user-facing release.
 
-Latest frontend workspace and pivot/grafik audit baseline, verified on 2026-05-27:
+Latest frontend workspace and pivot/grafik audit baseline, verified on 2026-05-29:
 
-- `npm test` passes `174` tests across `22` frontend/backend test files.
+- `npm run security:baseline` passes the Tauri capability, CSP, and updater artifact config checks.
+- `npm test` passes `179` tests across `24` frontend/backend test files.
 - `npm run build` passes the TypeScript and Vite production build.
 - `git diff --check` passes for whitespace validation.
 - Playwright opens the local Vite app, switches into `Pivot/Grafik`, renders the pivot action panel and pivot table without a blank screen, and reports no app runtime console errors.
-- The only console entry in the final browser check is the React DevTools informational development message.
+- Desktop and Service both pass `tauri build --no-bundle --ci`, validating the narrowed Tauri capability files and production Tauri config.
 - The audit specifically covers per-sheet workspace isolation, pivot/grafik mode isolation, value order preservation, empty field display by column type, Row/Column/Value pivot behavior, stable row keys for colliding pivot labels, visible fallback sorting when values are empty, persisted workspace repair, and guarded Tauri event listeners in browser/dev mode.
 
 ### Reference Only
@@ -521,6 +531,8 @@ Latest frontend workspace and pivot/grafik audit baseline, verified on 2026-05-2
 `EX-SCRAP/` is kept only as a reference. It is not part of the active app flow and must not be modified for app changes.
 
 ## Run Locally
+
+Use Node.js `24` or newer. The repository includes `.node-version` for local version managers.
 
 Install dependencies:
 
@@ -532,6 +544,12 @@ Run the frontend only:
 
 ```bash
 npm run dev
+```
+
+Run the Playwright pivot smoke test:
+
+```bash
+npm run test:e2e
 ```
 
 Run the desktop app:
@@ -617,6 +635,13 @@ Build the macOS app bundle only:
 npm run build:bundle:macos
 ```
 
+Build signed updater artifacts when `TAURI_SIGNING_PRIVATE_KEY` is configured:
+
+```bash
+npm run build:updater:desktop
+npm run build:updater:service
+```
+
 ## GitHub Actions Quality Gate
 
 The repository includes a quality workflow at:
@@ -630,10 +655,12 @@ The workflow name shown in GitHub Actions is:
 What it does:
 
 - runs on `ubuntu-latest`
-- installs Node.js and Rust
+- installs Node.js `24` and Rust
 - installs Linux Tauri system dependencies
+- checks the local security baseline for Tauri capability scope, CSP, and updater artifact config
 - runs frontend tests
 - runs the production frontend build
+- installs Chromium and runs the Playwright pivot smoke test
 - runs `cargo fmt --all -- --check`
 - runs `cargo test --workspace --all-targets`
 - runs `cargo clippy --workspace --all-targets -- -D warnings`
@@ -658,6 +685,7 @@ What it does:
 
 - runs on `windows-latest`
 - installs Node.js and Rust
+- checks the local security baseline for Tauri capability scope, CSP, and updater artifact config
 - runs frontend tests
 - runs `cargo fmt --all -- --check`
 - runs `cargo test --workspace --all-targets`
@@ -691,6 +719,7 @@ What it does:
 
 - runs on `macos-latest`
 - installs Node.js and Rust
+- checks the local security baseline for Tauri capability scope, CSP, and updater artifact config
 - runs frontend tests
 - runs `cargo fmt --all -- --check`
 - runs `cargo test --workspace --all-targets`
@@ -731,11 +760,12 @@ What it does:
 
 - runs on `windows-latest`
 - installs Node.js, Rust, and frontend dependencies
+- checks the local security baseline for Tauri capability scope, CSP, and updater artifact config
 - builds the frontend assets embedded by the Service settings window
 - runs `cargo fmt --all -- --check`
 - runs `cargo test --workspace --all-targets`
 - runs `cargo clippy --workspace --all-targets -- -D warnings`
-- builds `apps/service` in release mode with Tauri `custom-protocol` enabled
+- builds `apps/service` through Tauri in no-bundle release mode with `custom-protocol` enabled
 - builds an admin Windows installer with NSIS
 - installs Service to `C:\ShipFlow\Service` and prepares writable runtime data folders under `C:\ShipFlow\Data`
 - builds the Windows Service app without a console window, applies the Service icon to the app executable and installer, and closes running `shipflow-service.exe` processes before reinstall or uninstall replacement
@@ -765,6 +795,7 @@ What it does:
 
 - runs on `macos-latest`
 - installs Node.js, Rust, and frontend dependencies
+- checks the local security baseline for Tauri capability scope, CSP, and updater artifact config
 - builds the frontend assets embedded by the Service settings window
 - runs `cargo fmt --all -- --check`
 - runs `cargo test --workspace --all-targets`
@@ -888,8 +919,10 @@ cargo test -p shipflow-core
 Quality-gate commands for local release checks:
 
 ```bash
+npm run security:baseline
 npm test
 npm run build
+npm run test:e2e
 cargo fmt --all -- --check
 cargo test --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
