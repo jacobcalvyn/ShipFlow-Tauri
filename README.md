@@ -43,10 +43,10 @@ Architecture references:
 4. The service runtime resolves the active tracking source:
    - internal POS scraper
    - external ShipFlow API
-5. For the internal scraper, the Rust tracking layer sends the shipment ID directly to the lacak-mitra endpoint:
+5. For the internal scraper, the Rust tracking layer sends the shipment ID to the POS PID detail endpoint with a base64-encoded `id` query:
 
 ```text
-https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=...
+https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=...
 ```
 
 6. The response is normalized into the app's JSON shape
@@ -55,13 +55,13 @@ https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=...
 Example shipment ID:
 
 ```text
-P2603310114291
+P2604100065109
 ```
 
 Example generated upstream URL:
 
 ```text
-https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=BAC19052633D04464929
+https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=UDI2MDQxMDAwNjUxMDk%3D
 ```
 
 ## Lookup Kinds
@@ -93,6 +93,7 @@ Current versioned service API routes:
 - `GET /v1/status`
 - `GET /v1/capabilities`
 - `GET /v1/track/:shipment_id`
+- `GET /v1/track/:shipment_id/html`
 - `GET /v1/bag/:bag_id`
 - `GET /v1/manifest/:manifest_id`
 - `POST /v1/jobs/track-batch`
@@ -125,6 +126,7 @@ The API supports:
 - authenticated status and product identity checks
 - capability discovery
 - shipment, bag, and manifest lookups
+- raw upstream shipment HTML lookup through `GET /v1/track/:shipment_id/html`
 - force-refresh lookups with `x-shipflow-force-refresh: true`
 - background batch tracking jobs with start/status/result/cancel endpoints
 
@@ -859,7 +861,7 @@ Rust tests are now split by domain and cover:
 - Service API v1 response envelope timestamp formatting
 - Service API batch-job status/result bookkeeping
 - persistent lookup-store overwrite durability
-- raw lacak-mitra shipment detail URL generation
+- PID shipment detail URL generation with base64-encoded lookup IDs
 - embedded API bearer-auth validation
 - authenticated service readiness probing and ShipFlow service identity checks
 - service settings activation, single-instance detection, and tray companion lifecycle checks

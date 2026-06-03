@@ -11,13 +11,14 @@ use serde::{de::DeserializeOwned, Deserialize};
 use crate::bag::parse_bag_html;
 use crate::manifest::parse_manifest_html;
 use crate::model::{
-    BagResponse, LookupKind, ManifestResponse, TrackResponse, TrackingError, TrackingSource,
-    TrackingSourceConfig,
+    BagResponse, LookupKind, ManifestResponse, TrackResponse, TrackingError, TrackingHtmlResponse,
+    TrackingSource, TrackingSourceConfig,
 };
 use crate::parser::parse_tracking_html;
 
-pub const POS_TRACKING_ENDPOINT: &str = "https://lacak-mitra.posindonesia.co.id/lacak_barcode.php";
-pub const POS_TRACKING_BASE_URL: &str = "https://lacak-mitra.posindonesia.co.id/";
+pub const POS_TRACKING_ENDPOINT: &str =
+    "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php";
+pub const POS_TRACKING_BASE_URL: &str = "https://pid.posindonesia.co.id/lacak/admin/";
 pub const POS_BAG_ENDPOINT: &str =
     "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak_bag.php";
 pub const POS_MANIFEST_ENDPOINT: &str =
@@ -116,6 +117,32 @@ pub async fn scrape_pos_tracking(
     parse_tracking_html(&request_url, &html)
 }
 
+pub async fn scrape_pos_tracking_html(
+    client: &Client,
+    shipment_id: &str,
+) -> Result<TrackingHtmlResponse, TrackingError> {
+    let normalized_shipment_id = normalize_and_validate_shipment_id(shipment_id)?;
+
+    let request_url = build_tracking_url(POS_TRACKING_ENDPOINT, &normalized_shipment_id);
+    let response = fetch_lookup_response(client, &request_url).await?;
+
+    if !response.status().is_success() {
+        return Err(TrackingError::Upstream(format!(
+            "Tracking endpoint returned HTTP {}.",
+            response.status()
+        )));
+    }
+
+    let html = response.text().await.map_err(|error| {
+        TrackingError::Upstream(format!("Tracking HTML response could not be read: {error}"))
+    })?;
+
+    Ok(TrackingHtmlResponse {
+        url: request_url,
+        html,
+    })
+}
+
 pub async fn scrape_pos_bag(client: &Client, bag_id: &str) -> Result<BagResponse, TrackingError> {
     let normalized_bag_id = normalize_and_validate_bag_id(bag_id)?;
     let request_url = build_encoded_pos_lookup_url(POS_BAG_ENDPOINT, &normalized_bag_id);
@@ -195,6 +222,19 @@ pub async fn resolve_tracking_request(
             )
             .await
         }
+    }
+}
+
+pub async fn resolve_tracking_html_request(
+    client: &Client,
+    source_config: &TrackingSourceConfig,
+    shipment_id: &str,
+) -> Result<TrackingHtmlResponse, TrackingError> {
+    match source_config.tracking_source {
+        TrackingSource::Default => scrape_pos_tracking_html(client, shipment_id).await,
+        TrackingSource::ExternalApi => Err(TrackingError::BadRequest(
+            "Raw tracking HTML is only available for the default POS scraper source.".into(),
+        )),
     }
 }
 
@@ -708,7 +748,7 @@ pub fn is_retryable_status(status: StatusCode) -> bool {
 }
 
 pub fn build_tracking_url(base_url: &str, shipment_id: &str) -> String {
-    format!("{base_url}?id={shipment_id}")
+    build_encoded_pos_lookup_url(base_url, shipment_id)
 }
 
 fn build_encoded_pos_lookup_url(base_url: &str, lookup_id: &str) -> String {
@@ -726,7 +766,7 @@ pub fn resolve_pos_href(href: &str) -> String {
     if href.starts_with("https://") || href.starts_with("http://") {
         href.to_string()
     } else if href.starts_with('/') {
-        format!("https://lacak-mitra.posindonesia.co.id{href}")
+        format!("https://pid.posindonesia.co.id{href}")
     } else {
         format!("{POS_TRACKING_BASE_URL}{href}")
     }
@@ -954,17 +994,18 @@ mod tests {
         normalize_and_validate_manifest_id, normalize_and_validate_shipment_id,
         parse_external_api_bag_response, parse_external_api_base_url,
         parse_external_api_manifest_response, parse_external_api_status_response,
-        parse_external_api_track_response, validate_tracking_source_config, POS_TRACKING_ENDPOINT,
+        parse_external_api_track_response, resolve_tracking_html_request,
+        validate_tracking_source_config, POS_TRACKING_ENDPOINT,
     };
     use crate::model::{LookupKind, TrackingError, TrackingSource, TrackingSourceConfig};
 
     #[test]
-    fn build_tracking_url_uses_raw_lacak_mitra_id() {
-        let url = build_tracking_url(POS_TRACKING_ENDPOINT, "BAC19052633D04464929");
+    fn build_tracking_url_uses_encoded_pid_id() {
+        let url = build_tracking_url(POS_TRACKING_ENDPOINT, "P2604100065109");
 
         assert_eq!(
             url,
-            "https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=BAC19052633D04464929"
+            "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=UDI2MDQxMDAwNjUxMDk%3D"
         );
     }
 
@@ -1028,6 +1069,27 @@ mod tests {
             allow_insecure_external_api_http: true,
         })
         .expect("http external API should be allowed only with explicit opt-in");
+    }
+
+    #[tokio::test]
+    async fn rejects_raw_tracking_html_for_external_api_source() {
+        let client = reqwest::Client::new();
+        let error = resolve_tracking_html_request(
+            &client,
+            &TrackingSourceConfig {
+                tracking_source: TrackingSource::ExternalApi,
+                external_api_base_url: "https://scrappid3.example.test".into(),
+                external_api_auth_token: "sf_token".into(),
+                allow_insecure_external_api_http: false,
+            },
+            "P2603310114291",
+        )
+        .await
+        .expect_err("external API source should not expose raw POS HTML");
+
+        assert!(
+            matches!(error, TrackingError::BadRequest(message) if message.contains("default POS scraper"))
+        );
     }
 
     #[test]

@@ -231,6 +231,12 @@ pub struct TrackResponse {
     pub history_summary: HistorySummary,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TrackingHtmlResponse {
+    pub url: String,
+    pub html: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct BagItem {
     pub no: Option<String>,

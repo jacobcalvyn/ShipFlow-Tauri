@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use shipflow_core::{
     model::{
-        BagResponse, ManifestResponse, TrackResponse, TrackingError, TrackingSource,
-        TrackingSourceConfig,
+        BagResponse, ManifestResponse, TrackResponse, TrackingError, TrackingHtmlResponse,
+        TrackingSource, TrackingSourceConfig,
     },
-    upstream::parse_external_api_base_url,
+    upstream::{parse_external_api_base_url, resolve_tracking_html_request},
 };
 use std::{
     collections::VecDeque,
@@ -42,6 +42,7 @@ use crate::FORCE_REFRESH_HEADER_NAME;
 const STATUS_SCHEMA_VERSION: &str = "shipflow.service.status.v1";
 const CAPABILITIES_SCHEMA_VERSION: &str = "shipflow.service.capabilities.v1";
 const TRACK_SCHEMA_VERSION: &str = "shipflow.tracking.detail.v1";
+const TRACK_HTML_SCHEMA_VERSION: &str = "shipflow.tracking.html.v1";
 const BAG_SCHEMA_VERSION: &str = "shipflow.tracking.bag.v1";
 const MANIFEST_SCHEMA_VERSION: &str = "shipflow.tracking.manifest.v1";
 const JOB_SCHEMA_VERSION: &str = "shipflow.service.job.v1";
@@ -146,6 +147,7 @@ fn build_router(app_state: HttpApiState) -> Router {
         .route("/v1/status", get(v1_status_handler))
         .route("/v1/openapi.json", get(v1_openapi_handler))
         .route("/v1/capabilities", get(v1_capabilities_handler))
+        .route("/v1/track/:shipment_id/html", get(v1_tracking_html_handler))
         .route("/v1/track/:shipment_id", get(v1_track_handler))
         .route("/v1/bag/:bag_id", get(v1_bag_handler))
         .route("/v1/manifest/:manifest_id", get(v1_manifest_handler))
@@ -233,6 +235,7 @@ async fn v1_capabilities_handler(
                 "GET /v1/status",
                 "GET /v1/capabilities",
                 "GET /v1/track/:shipment_id",
+                "GET /v1/track/:shipment_id/html",
                 "GET /v1/bag/:bag_id",
                 "GET /v1/manifest/:manifest_id",
                 "POST /v1/jobs/track-batch",
@@ -336,6 +339,43 @@ async fn v1_track_handler(
     result
         .map(|payload| envelope(TRACK_SCHEMA_VERSION, response_request_id, payload))
         .map_err(|error| map_tracking_error_v1(error, TRACK_SCHEMA_VERSION, request_id))
+}
+
+async fn v1_tracking_html_handler(
+    State(state): State<HttpApiState>,
+    headers: HeaderMap,
+    Path(shipment_id): Path<String>,
+) -> Result<
+    Json<crate::api_contract::ApiEnvelope<TrackingHtmlResponse>>,
+    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
+> {
+    let started_at = Instant::now();
+    let request_id = authorize_request_id(&headers);
+    authorize_request_message(&headers, &state.auth_token).map_err(|message| {
+        error_response_v1(
+            StatusCode::UNAUTHORIZED,
+            TRACK_HTML_SCHEMA_VERSION,
+            request_id.clone(),
+            &message,
+        )
+    })?;
+    let response_request_id = request_id.clone();
+    let normalized_id = shipment_id.trim().to_string();
+
+    let result =
+        resolve_tracking_html_request(&state.client, &state.tracking_source, &normalized_id).await;
+    log_service_tracking_timing(
+        "v1_html",
+        &normalized_id,
+        started_at,
+        &state.tracking_source,
+        false,
+        result.is_ok(),
+    );
+
+    result
+        .map(|payload| envelope(TRACK_HTML_SCHEMA_VERSION, response_request_id, payload))
+        .map_err(|error| map_tracking_error_v1(error, TRACK_HTML_SCHEMA_VERSION, request_id))
 }
 
 async fn bag_handler(
@@ -1053,7 +1093,7 @@ mod tests {
         body::{to_bytes, Body},
         http::{header::AUTHORIZATION, HeaderMap, Request, StatusCode},
     };
-    use shipflow_core::model::TrackingSourceConfig;
+    use shipflow_core::model::{TrackingSource, TrackingSourceConfig};
     use tower::ServiceExt;
 
     use super::{authorize_request, build_router, read_lookup_request_options, HttpApiState};
@@ -1137,6 +1177,61 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[tokio::test]
+    async fn capabilities_include_tracking_html_route() {
+        let router = build_router(test_state());
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/capabilities")
+                    .header(AUTHORIZATION, "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let routes = payload["data"]["routes"]
+            .as_array()
+            .expect("capability routes should be an array");
+
+        assert!(routes
+            .iter()
+            .any(|route| route == "GET /v1/track/:shipment_id/html"));
+    }
+
+    #[tokio::test]
+    async fn tracking_html_route_rejects_external_api_source() {
+        let router = build_router(external_api_test_state());
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/track/P2603310114291/html")
+                    .header(AUTHORIZATION, "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(
+            payload["meta"]["schemaVersion"],
+            "shipflow.tracking.html.v1"
+        );
+        assert!(payload["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("default POS scraper")));
+    }
+
     fn test_state() -> HttpApiState {
         HttpApiState {
             client: reqwest::Client::new(),
@@ -1147,6 +1242,18 @@ mod tests {
             tracking_source: TrackingSourceConfig::default(),
             lookup_cache: LookupCacheState::default(),
             job_registry: BatchJobRegistry::default(),
+        }
+    }
+
+    fn external_api_test_state() -> HttpApiState {
+        HttpApiState {
+            tracking_source: TrackingSourceConfig {
+                tracking_source: TrackingSource::ExternalApi,
+                external_api_base_url: "https://scrappid3.example.test".into(),
+                external_api_auth_token: "sf_token".into(),
+                allow_insecure_external_api_http: false,
+            },
+            ..test_state()
         }
     }
 }

@@ -33,7 +33,7 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
         }));
     }
 
-    json!({
+    let mut document = json!({
         "openapi": "3.1.0",
         "info": {
             "title": "ShipFlow Service API",
@@ -697,6 +697,69 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                 }
             }
         }
+    });
+
+    document["paths"]["/v1/track/{shipmentId}/html"] = tracking_html_path_document();
+    document["components"]["schemas"]["TrackingHtmlResponse"] = tracking_html_response_schema();
+
+    document
+}
+
+fn tracking_html_path_document() -> Value {
+    json!({
+        "get": {
+            "summary": "Read raw upstream tracking HTML for one shipment ID",
+            "description": "Returns the raw upstream tracking page HTML for diagnostics and parser experiments. Clients can use this payload to show a source-like preview, but should treat the HTML as untrusted content and render it only in a sandboxed iframe or another isolated viewer. Do not inject this HTML directly into the application DOM. Relative assets may need to be resolved against the returned data.url value.",
+            "operationId": "getTrackingHtml",
+            "tags": ["Lookup"],
+            "parameters": [
+                { "$ref": "#/components/parameters/ShipmentId" },
+                { "$ref": "#/components/parameters/RequestId" }
+            ],
+            "responses": {
+                "200": {
+                    "description": "Raw upstream tracking HTML wrapped in the v1 response envelope. The HTML is not sanitized by ShipFlow Service.",
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "allOf": [
+                                    { "$ref": "#/components/schemas/EnvelopeBase" },
+                                    {
+                                        "type": "object",
+                                        "required": ["data"],
+                                        "properties": {
+                                            "data": { "$ref": "#/components/schemas/TrackingHtmlResponse" }
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+                "400": { "$ref": "#/components/responses/BadRequest" },
+                "401": { "$ref": "#/components/responses/Unauthorized" },
+                "404": { "$ref": "#/components/responses/NotFound" },
+                "502": { "$ref": "#/components/responses/BadGateway" }
+            }
+        }
+    })
+}
+
+fn tracking_html_response_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "Raw upstream tracking page response for source-like diagnostics. Treat the html value as untrusted content.",
+        "required": ["url", "html"],
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "The upstream tracking URL used to fetch the HTML. Clients may use this as the base when resolving relative links, images, or styles."
+            },
+            "html": {
+                "type": "string",
+                "description": "Raw HTML returned by the upstream tracking page. This may be rendered in a sandboxed iframe through srcdoc for a source-like preview, but should not be injected directly into the main application DOM."
+            }
+        }
     })
 }
 
@@ -726,5 +789,27 @@ mod tests {
             "bearer"
         );
         assert!(document["paths"]["/v1/openapi.json"]["get"].is_object());
+    }
+
+    #[test]
+    fn documents_tracking_html_route() {
+        let document = service_openapi_document(18422, false);
+
+        assert_eq!(
+            document["paths"]["/v1/track/{shipmentId}/html"]["get"]["operationId"],
+            "getTrackingHtml"
+        );
+        assert!(document["components"]["schemas"]["TrackingHtmlResponse"].is_object());
+        assert!(
+            document["paths"]["/v1/track/{shipmentId}/html"]["get"]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("sandboxed iframe"))
+        );
+        assert!(
+            document["components"]["schemas"]["TrackingHtmlResponse"]["properties"]["html"]
+                ["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("srcdoc"))
+        );
     }
 }

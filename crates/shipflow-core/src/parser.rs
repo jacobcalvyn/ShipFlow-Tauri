@@ -1298,7 +1298,7 @@ mod tests {
     #[test]
     fn parse_tracking_html_matches_track_response_shape() {
         let response = parse_tracking_html(
-            "https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=P2603310114291",
+            "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=UDI2MDMzMTAxMTQyOTE%3D",
             SAMPLE_HTML,
         )
         .expect("sample should parse");
@@ -1319,7 +1319,7 @@ mod tests {
         assert_eq!(
             response.pod.coordinate_map_url.as_deref(),
             Some(
-                "https://lacak-mitra.posindonesia.co.id/mapnya.php?id=LTIuNTQyNTU2NiwxNDAuNzA3MDQwNQ%3D%3D"
+                "https://pid.posindonesia.co.id/lacak/admin/mapnya.php?id=LTIuNTQyNTU2NiwxNDAuNzA3MDQwNQ%3D%3D"
             )
         );
         assert_eq!(response.history.len(), 2);

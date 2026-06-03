@@ -203,6 +203,7 @@ Example response:
       "GET /v1/status",
       "GET /v1/capabilities",
       "GET /v1/track/:shipment_id",
+      "GET /v1/track/:shipment_id/html",
       "GET /v1/bag/:bag_id",
       "GET /v1/manifest/:manifest_id",
       "POST /v1/jobs/track-batch",
@@ -219,6 +220,7 @@ Example response:
 
 ```http
 GET /v1/track/:shipment_id
+GET /v1/track/:shipment_id/html
 GET /v1/bag/:bag_id
 GET /v1/manifest/:manifest_id
 ```
@@ -231,7 +233,27 @@ Lookup schema versions:
 
 The `data` object is the normalized response shape used by Desktop. Shipment tracking can use the active Service source, either internal POS scraping or the configured external ShipFlow API. Bag and manifest lookup paths currently use the internal POS scraper.
 
-Use the optional force-refresh header to bypass the service cache when the user explicitly requests a fresh lookup:
+`GET /v1/track/:shipment_id/html` returns the raw upstream tracking page HTML in an envelope:
+
+```json
+{
+  "meta": {
+    "apiVersion": "v1",
+    "schemaVersion": "shipflow.tracking.html.v1",
+    "requestId": "sf_req_...",
+    "generatedAt": "2026-05-04T00:00:00.123Z"
+  },
+  "data": {
+    "url": "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=UDI2MDQxMDAwNjUxMDk%3D",
+    "html": "<html>...</html>"
+  },
+  "warnings": []
+}
+```
+
+The HTML endpoint is intended for diagnostics and parser experiments. It is available only when the Service uses the default POS scraper source, and it is fetched directly instead of using the Service lookup cache.
+
+For normalized lookup endpoints, use the optional force-refresh header to bypass the service cache when the user explicitly requests a fresh lookup:
 
 ```http
 x-shipflow-force-refresh: true
