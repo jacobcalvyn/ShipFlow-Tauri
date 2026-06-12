@@ -1,10 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ApiServiceStatus,
-  BagResponse,
-  ManifestResponse,
   ServiceConfig,
-  TrackResponse,
 } from "../types";
 import type { WorkspaceDocumentFile } from "../features/workspace/document";
 
@@ -56,33 +53,6 @@ function invokeCommand<T>(command: string, args?: Record<string, unknown>) {
   }
 
   return invoke<T>(command, args);
-}
-
-export function trackShipment(args: {
-  shipmentId: string;
-  forceRefresh: boolean;
-  sheetId: string;
-  rowKey: string;
-}) {
-  return invokeCommand<TrackResponse>("track_shipment", args);
-}
-
-export function trackBag(args: {
-  bagId: string;
-  forceRefresh: boolean;
-  sheetId: string;
-  rowKey: string;
-}) {
-  return invokeCommand<BagResponse>("track_bag", args);
-}
-
-export function trackManifest(args: {
-  manifestId: string;
-  forceRefresh: boolean;
-  sheetId: string;
-  rowKey: string;
-}) {
-  return invokeCommand<ManifestResponse>("track_manifest", args);
 }
 
 export function resolvePodImage(imageSource: string) {

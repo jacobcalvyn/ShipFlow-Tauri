@@ -51,9 +51,11 @@ describe("useWorkspaceRuntimeCommandsController", () => {
       highlightedColumnTimeoutRef: { current: null },
       highlightedColumnSheetIdRef: { current: null },
       allTrackingIds: ["ID-1"],
-      exportableRows: [],
+      exportableTableRows: [],
+      rustExportRowsQuery: null,
       retrackableRows: [],
       retryFailedEntries: [],
+      selectedEngineRowIds: ["engine-row-1"],
       selectedTrackingIds: ["ID-1"],
       selectedVisibleRowKeys: ["row-1"],
       visibleColumns: [],
@@ -69,7 +71,7 @@ describe("useWorkspaceRuntimeCommandsController", () => {
       handleTrackingInputChange: vi.fn(),
       handleTrackingInputPaste: vi.fn(),
       invalidateSheetTrackingWork: vi.fn(),
-      runBulkPasteFetches: vi.fn(),
+      refreshTrackingRows: vi.fn(),
     };
     const selectionTransfer = {
       appendTargetSheets: [{ id: "sheet-2", name: "Sheet 2" }],
@@ -117,6 +119,7 @@ describe("useWorkspaceRuntimeCommandsController", () => {
       activeSheetId: options.activeSheetId,
       workspaceTabs: options.workspaceTabs,
       selectedTrackingIds: options.selectedTrackingIds,
+      selectedEngineRowIds: options.selectedEngineRowIds,
       selectedVisibleRowKeys: options.selectedVisibleRowKeys,
       workspaceRef: options.workspaceRef,
       setWorkspaceState: options.setWorkspaceState,
@@ -124,7 +127,6 @@ describe("useWorkspaceRuntimeCommandsController", () => {
       disarmDeleteAll: options.disarmDeleteAll,
       disarmDeleteSelected: options.disarmDeleteSelected,
       abortRowTrackingWork: trackingRuntime.abortRowTrackingWork,
-      runBulkPasteFetches: trackingRuntime.runBulkPasteFetches,
       showNotice: options.showNotice,
     });
     expect(mocks.useWorkspaceCommandsControllerMock).toHaveBeenCalledWith(
@@ -132,13 +134,15 @@ describe("useWorkspaceRuntimeCommandsController", () => {
         activeSheetId: options.activeSheetId,
         activeSheetDeleteAllArmed: activeSheet.deleteAllArmed,
         allTrackingIds: options.allTrackingIds,
+        exportableTableRows: options.exportableTableRows,
+        selectedEngineRowIds: options.selectedEngineRowIds,
         copyText: expect.any(Function),
         showNotice: options.showNotice,
         focusFirstTrackingInput: expect.any(Function),
         abortRowTrackingWork: trackingRuntime.abortRowTrackingWork,
         invalidateSheetTrackingWork: trackingRuntime.invalidateSheetTrackingWork,
         forgetSheetTrackingRuntime: trackingRuntime.forgetSheetTrackingRuntime,
-        runBulkPasteFetches: trackingRuntime.runBulkPasteFetches,
+        refreshTrackingRows: trackingRuntime.refreshTrackingRows,
       })
     );
     expect(result.current).toEqual({
@@ -148,7 +152,7 @@ describe("useWorkspaceRuntimeCommandsController", () => {
       handleTrackingInputChange: trackingRuntime.handleTrackingInputChange,
       handleTrackingInputPaste: trackingRuntime.handleTrackingInputPaste,
       invalidateSheetTrackingWork: trackingRuntime.invalidateSheetTrackingWork,
-      runBulkPasteFetches: trackingRuntime.runBulkPasteFetches,
+      refreshTrackingRows: trackingRuntime.refreshTrackingRows,
       ...selectionTransfer,
       ...workspaceCommands,
     });

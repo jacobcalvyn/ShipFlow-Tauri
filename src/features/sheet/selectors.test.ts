@@ -11,9 +11,7 @@ import {
   getColumnShortcuts,
   getDisplayedRows,
   getEffectiveColumnWidths,
-  getLoadedCount,
   getNonEmptyRows,
-  getTrackingColumnAutoWidth,
   getVisibleColumns,
   getVisibleColumnPathSet,
 } from "./selectors";
@@ -99,22 +97,8 @@ describe("sheet selectors", () => {
 
     let next = setTrackingInputInSheet(initial, rowA, "P2");
     next = setTrackingInputInSheet(next, rowB, "P1");
-    next = {
-      ...next,
-      rows: next.rows.map((row, index) =>
-        index === 0
-          ? {
-              ...row,
-              shipment: createShipment("P2", "INVEHICLE"),
-            }
-          : index === 1
-            ? {
-                ...row,
-                shipment: createShipment("P1", "DELIVERED"),
-              }
-            : row
-      ),
-    };
+    next = setRowSuccessInSheet(next, rowA, "P2", createShipment("P2", "INVEHICLE"));
+    next = setRowSuccessInSheet(next, rowB, "P1", createShipment("P1", "DELIVERED"));
 
     next = setTextFilterInSheet(next, "status_akhir.status", "delivered");
     next = setSortInSheet(next, "detail.shipment_header.nomor_kiriman", "asc");
@@ -128,8 +112,9 @@ describe("sheet selectors", () => {
       getActiveFilterCount(next, visiblePathSet)
     );
 
-    expect(getLoadedCount(displayedRows)).toBe(1);
-    expect(displayedRows[0].shipment?.detail.shipment_header.nomor_kiriman).toBe("P1");
+    const loadedRows = displayedRows.filter((row) => row.shipment !== null);
+    expect(loadedRows).toHaveLength(1);
+    expect(loadedRows[0].shipment?.detail.shipment_header.nomor_kiriman).toBe("P1");
   });
 
   it("keeps queued rows visible without counting stale shipment data as loaded", () => {
@@ -154,10 +139,46 @@ describe("sheet selectors", () => {
     );
 
     expect(displayedRows.some((row) => row.key === rowKey && row.queued)).toBe(true);
-    expect(getLoadedCount(displayedRows)).toBe(0);
   });
 
-  it("sizes the tracking column from the longest valid tracking value only", () => {
+  it("does not force settled Rust-owned local rows visible through filters", () => {
+    const initial = createDefaultSheetState();
+    const rowKey = initial.rows[0].key;
+    const withTracking = setTrackingInputInSheet(initial, rowKey, "P1");
+    const settled = {
+      ...withTracking,
+      rows: withTracking.rows.map((row) =>
+        row.key === rowKey
+          ? {
+              ...row,
+              loading: false,
+              queued: false,
+              stale: false,
+              dirty: false,
+              shipment: null,
+            }
+          : row
+      ),
+    };
+    const filtered = setTextFilterInSheet(
+      settled,
+      "detail.shipment_header.nomor_kiriman",
+      "P2"
+    );
+
+    const visibleColumns = getVisibleColumns(filtered);
+    const visiblePathSet = getVisibleColumnPathSet(visibleColumns);
+    const displayedRows = getDisplayedRows(
+      filtered,
+      getNonEmptyRows(filtered.rows),
+      visibleColumns,
+      getActiveFilterCount(filtered, visiblePathSet)
+    );
+
+    expect(displayedRows.some((row) => row.key === rowKey)).toBe(false);
+  });
+
+  it("applies caller-provided tracking auto width to the tracking column", () => {
     let next = createDefaultSheetState();
     next = setTrackingInputInSheet(
       next,
@@ -171,15 +192,13 @@ describe("sheet selectors", () => {
     );
 
     const visibleColumns = getVisibleColumns(next);
-    const trackingColumnAutoWidth = getTrackingColumnAutoWidth(next.rows);
     const widths = getEffectiveColumnWidths(
       visibleColumns,
       next.columnWidths,
-      trackingColumnAutoWidth
+      320
     );
 
-    expect(widths["detail.shipment_header.nomor_kiriman"]).toBeGreaterThan(200);
-    expect(widths["detail.shipment_header.nomor_kiriman"]).toBeLessThan(800);
+    expect(widths["detail.shipment_header.nomor_kiriman"]).toBe(320);
   });
 
   it("places the PID/Kantong shortcut before Status Akhir", () => {

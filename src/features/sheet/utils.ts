@@ -14,7 +14,7 @@ import {
 import { ColumnDefinition, SheetRow, SheetState } from "./types";
 
 const ZERO_WIDTH_CHARACTERS_REGEX = /[\u200B-\u200D\uFEFF]/g;
-const NON_TRACKING_CHARACTERS_REGEX = /[^A-Z0-9-]/g;
+const NON_TRACKING_CHARACTERS_REGEX = /[^A-Z0-9.-]/g;
 export const MAX_TRACKING_INPUT_LENGTH = 64;
 const BAG_PRINT_SUFFIX = "5f9fae9b5fbe9d6e401ad0c5";
 const BAG_PRINT_OID = "NWY5ZmFlOWI1ZmJlOWQ2ZTQwMWFkMGM1";
@@ -992,10 +992,6 @@ export function assertValidSheetState(sheetState: SheetState) {
 
     if (row.stale && row.shipment === null) {
       throw new Error(`Row ${row.key} cannot be stale without a last-known-good shipment.`);
-    }
-
-    if (row.dirty && row.shipment === null) {
-      throw new Error(`Row ${row.key} cannot be dirty without a last-known-good shipment.`);
     }
 
     if (row.trackingInput.trim() === "") {

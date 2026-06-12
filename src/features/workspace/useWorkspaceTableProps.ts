@@ -4,7 +4,8 @@ import { SheetTable } from "../sheet/components/SheetTable";
 type UseWorkspaceTablePropsOptions = {
   activeSheetId: string;
   effectiveDisplayScale: ComponentProps<typeof SheetTable>["displayScale"];
-  displayedRows: ComponentProps<typeof SheetTable>["displayedRows"];
+  displayedTableRows: ComponentProps<typeof SheetTable>["displayedTableRows"];
+  displayedRowWindow: ComponentProps<typeof SheetTable>["rowWindow"];
   visibleColumns: ComponentProps<typeof SheetTable>["visibleColumns"];
   hiddenColumns: ComponentProps<typeof SheetTable>["hiddenColumns"];
   effectiveColumnWidths: ComponentProps<typeof SheetTable>["columnWidths"];
@@ -20,6 +21,9 @@ type UseWorkspaceTablePropsOptions = {
   highlightedColumnPath: ComponentProps<typeof SheetTable>["highlightedColumnPath"];
   sheetScrollRef: ComponentProps<typeof SheetTable>["scrollContainerRef"];
   handleSheetScroll: ComponentProps<typeof SheetTable>["onScrollContainer"];
+  requestVisibleRowWindow: ComponentProps<
+    typeof SheetTable
+  >["onVisibleRowWindowChange"];
   getColumnSortDirection: ComponentProps<typeof SheetTable>["sortDirectionForPath"];
   setHoveredColumn: (index: number | null) => void;
   toggleVisibleSelection: ComponentProps<typeof SheetTable>["onToggleVisibleSelection"];
@@ -47,7 +51,8 @@ type UseWorkspaceTablePropsOptions = {
 export function useWorkspaceTableProps({
   activeSheetId,
   effectiveDisplayScale,
-  displayedRows,
+  displayedTableRows,
+  displayedRowWindow,
   visibleColumns,
   hiddenColumns,
   effectiveColumnWidths,
@@ -63,6 +68,7 @@ export function useWorkspaceTableProps({
   highlightedColumnPath,
   sheetScrollRef,
   handleSheetScroll,
+  requestVisibleRowWindow,
   getColumnSortDirection,
   setHoveredColumn,
   toggleVisibleSelection,
@@ -89,7 +95,8 @@ export function useWorkspaceTableProps({
   return {
     sheetId: activeSheetId,
     displayScale: effectiveDisplayScale,
-    displayedRows,
+    displayedTableRows,
+    rowWindow: displayedRowWindow,
     visibleColumns,
     hiddenColumns,
     columnWidths: effectiveColumnWidths,
@@ -105,6 +112,7 @@ export function useWorkspaceTableProps({
     highlightedColumnPath,
     scrollContainerRef: sheetScrollRef,
     onScrollContainer: handleSheetScroll,
+    onVisibleRowWindowChange: requestVisibleRowWindow,
     sortDirectionForPath: getColumnSortDirection,
     onMouseLeaveTable: () => setHoveredColumn(null),
     onHoverColumn: setHoveredColumn,

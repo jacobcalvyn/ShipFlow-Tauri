@@ -289,7 +289,6 @@ export function setTrackingInputInSheet(
                 nextTrackingInputTrimmed !== row.trackingInput.trim(),
               dirty:
                 nextTrackingInputTrimmed !== "" &&
-                row.shipment !== null &&
                 nextTrackingInputTrimmed !== row.trackingInput.trim(),
               error: "",
             }
@@ -379,6 +378,57 @@ export function setRowSuccessInSheet(
               ...row,
               trackingInput,
               shipment,
+              loading: false,
+              queued: false,
+              stale: false,
+              dirty: false,
+              error: "",
+            }
+          : row
+      )
+    ),
+  };
+}
+
+export function settleRowRuntimeStateInSheet(
+  sheetState: SheetState,
+  rowKey: string
+) {
+  return {
+    ...sheetState,
+    rows: ensureTrailingEmptyRows(
+      sheetState.rows.map((row) =>
+        row.key === rowKey
+          ? {
+              ...row,
+              loading: false,
+              queued: false,
+              stale: false,
+              dirty: false,
+              error: "",
+            }
+          : row
+      )
+    ),
+  };
+}
+
+export function settleRowsRuntimeStateInSheet(
+  sheetState: SheetState,
+  rowKeys: string[]
+) {
+  const rowKeySet = new Set(rowKeys);
+  if (rowKeySet.size === 0) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    rows: ensureTrailingEmptyRows(
+      sheetState.rows.map((row) =>
+        rowKeySet.has(row.key)
+          ? {
+              ...row,
               loading: false,
               queued: false,
               stale: false,
@@ -498,87 +548,6 @@ export function applyBulkPasteToSheet(
       ...sheetState,
       rows: ensureTrailingEmptyRows(expandedRows),
       selectedRowKeys: Array.from(new Set([...sheetState.selectedRowKeys, ...targetKeys])),
-    },
-    targetKeys,
-  };
-}
-
-export function seedTrackingIdsInSheet(sheetState: SheetState, values: string[]) {
-  const requiredLength = values.length;
-  const expandedRows = ensureRowCapacity([...sheetState.rows], requiredLength);
-  const targetKeys: string[] = [];
-
-  for (let index = 0; index < values.length; index += 1) {
-    const row = expandedRows[index];
-    targetKeys.push(row.key);
-    expandedRows[index] = {
-      ...row,
-      trackingInput: values[index],
-      shipment: null,
-      loading: false,
-      queued: false,
-      stale: false,
-      dirty: false,
-      error: "",
-    };
-  }
-
-  return {
-    sheetState: {
-      ...sheetState,
-      rows: ensureTrailingEmptyRows(expandedRows),
-      selectedRowKeys: [],
-      selectionFollowsVisibleRows: false,
-    },
-    targetKeys,
-  };
-}
-
-export function appendTrackingIdsToSheet(sheetState: SheetState, values: string[]) {
-  if (values.length === 0) {
-    return {
-      sheetState,
-      targetKeys: [] as string[],
-    };
-  }
-
-  let appendStartIndex = 0;
-  for (let index = 0; index < sheetState.rows.length; index += 1) {
-    const row = sheetState.rows[index];
-    if (row.trackingInput.trim() !== "" || row.shipment !== null) {
-      appendStartIndex = index + 1;
-    }
-  }
-
-  const expandedRows = ensureRowCapacity(
-    [...sheetState.rows],
-    appendStartIndex + values.length
-  );
-  const targetKeys: string[] = [];
-
-  for (let offset = 0; offset < values.length; offset += 1) {
-    const rowIndex = appendStartIndex + offset;
-    const row = expandedRows[rowIndex];
-    targetKeys.push(row.key);
-    expandedRows[rowIndex] = {
-      ...row,
-      trackingInput: values[offset],
-      shipment: null,
-      loading: false,
-      queued: false,
-      stale: false,
-      dirty: false,
-      error: "",
-    };
-  }
-
-  return {
-    sheetState: {
-      ...sheetState,
-      rows: ensureTrailingEmptyRows(expandedRows),
-      selectedRowKeys: sheetState.selectedRowKeys.filter(
-        (key) => !targetKeys.includes(key)
-      ),
     },
     targetKeys,
   };
@@ -809,7 +778,9 @@ export function setImportSourceDraftInSheet(
         rawResponse: "",
         error: "",
         trackingIds: [],
+        jobId: null,
         requestKey: null,
+        sourceItemStates: [],
         manifestBagStates: [],
       },
     },
@@ -819,7 +790,8 @@ export function setImportSourceDraftInSheet(
 export function startImportSourceLookupInSheet(
   sheetState: SheetState,
   kind: ImportSourceModalKind,
-  requestKey: string
+  requestKey: string,
+  sourceItemIds: string[] = []
 ) {
   return {
     ...sheetState,
@@ -830,8 +802,86 @@ export function startImportSourceLookupInSheet(
         rawResponse: "",
         error: "",
         trackingIds: [],
+        jobId: null,
         requestKey,
+        sourceItemStates: sourceItemIds.map((itemId) => ({
+          itemId,
+          loading: true,
+          error: "",
+          trackingIds: [],
+        })),
         manifestBagStates: [],
+      },
+    },
+  };
+}
+
+export function startImportSourceRetryInSheet(
+  sheetState: SheetState,
+  kind: ImportSourceModalKind,
+  requestKey: string,
+  sourceItemIds: string[] = [],
+  manifestBagIds: string[] = []
+) {
+  const currentLookupState = sheetState.importSourceLookupStates[kind];
+  const sourceItemIdSet = new Set(sourceItemIds);
+  const manifestBagIdSet = new Set(manifestBagIds);
+
+  return {
+    ...sheetState,
+    importSourceLookupStates: {
+      ...sheetState.importSourceLookupStates,
+      [kind]: {
+        ...currentLookupState,
+        error: "",
+        requestKey,
+        sourceItemStates: (currentLookupState.sourceItemStates ?? []).map((state) =>
+          sourceItemIdSet.has(state.itemId)
+            ? {
+                ...state,
+                loading: true,
+                error: "",
+                trackingIds: [],
+              }
+            : state
+        ),
+        manifestBagStates: (currentLookupState.manifestBagStates ?? []).map((state) =>
+          manifestBagIdSet.has(state.bagId)
+            ? {
+                ...state,
+                loading: true,
+                error: "",
+                trackingIds: [],
+              }
+            : state
+        ),
+      },
+    },
+  };
+}
+
+export function setImportSourceJobInSheet(
+  sheetState: SheetState,
+  kind: ImportSourceModalKind,
+  requestKey: string,
+  jobId: string
+) {
+  const currentLookupState = sheetState.importSourceLookupStates[kind];
+  if (currentLookupState.requestKey !== requestKey) {
+    return sheetState;
+  }
+
+  if (currentLookupState.jobId === jobId) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    importSourceLookupStates: {
+      ...sheetState.importSourceLookupStates,
+      [kind]: {
+        ...currentLookupState,
+        jobId,
       },
     },
   };
@@ -845,6 +895,9 @@ export function setImportSourceLookupSuccessInSheet(
   requestKey: string,
   manifestBagStates: NonNullable<
     SheetState["importSourceLookupStates"]["manifest"]["manifestBagStates"]
+  > = [],
+  sourceItemStates: NonNullable<
+    SheetState["importSourceLookupStates"]["manifest"]["sourceItemStates"]
   > = []
 ) {
   if (sheetState.importSourceLookupStates[kind].requestKey !== requestKey) {
@@ -860,7 +913,9 @@ export function setImportSourceLookupSuccessInSheet(
         rawResponse,
         error: "",
         trackingIds,
+        jobId: sheetState.importSourceLookupStates[kind].jobId ?? null,
         requestKey,
+        sourceItemStates,
         manifestBagStates,
       },
     },
@@ -871,7 +926,10 @@ export function setImportSourceLookupErrorInSheet(
   sheetState: SheetState,
   kind: ImportSourceModalKind,
   error: string,
-  requestKey: string
+  requestKey: string,
+  sourceItemStates: NonNullable<
+    SheetState["importSourceLookupStates"]["manifest"]["sourceItemStates"]
+  > = []
 ) {
   if (sheetState.importSourceLookupStates[kind].requestKey !== requestKey) {
     return sheetState;
@@ -886,7 +944,9 @@ export function setImportSourceLookupErrorInSheet(
         rawResponse: "",
         error,
         trackingIds: [],
+        jobId: sheetState.importSourceLookupStates[kind].jobId ?? null,
         requestKey,
+        sourceItemStates,
         manifestBagStates: [],
       },
     },
@@ -1032,6 +1092,7 @@ export function clearAllDataInSheet(sheetState: SheetState) {
         error: "",
         trackingIds: [],
         requestKey: null,
+        sourceItemStates: [],
         manifestBagStates: [],
       },
       manifest: {
@@ -1040,6 +1101,7 @@ export function clearAllDataInSheet(sheetState: SheetState) {
         error: "",
         trackingIds: [],
         requestKey: null,
+        sourceItemStates: [],
         manifestBagStates: [],
       },
     },
@@ -1084,6 +1146,7 @@ export function armDeleteAllInSheet(sheetState: SheetState) {
         error: "",
         trackingIds: [],
         requestKey: null,
+        sourceItemStates: [],
         manifestBagStates: [],
       },
       manifest: {
@@ -1092,6 +1155,7 @@ export function armDeleteAllInSheet(sheetState: SheetState) {
         error: "",
         trackingIds: [],
         requestKey: null,
+        sourceItemStates: [],
         manifestBagStates: [],
       },
     },

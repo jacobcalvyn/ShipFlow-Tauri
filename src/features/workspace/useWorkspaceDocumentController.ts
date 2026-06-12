@@ -42,6 +42,11 @@ import {
   pushRecentWorkspaceDocument,
   serializeWorkspaceStateForDocument,
 } from "./persistence";
+import {
+  syncWorkspaceStateToEngine,
+  type WorkspaceEngineSyncMode,
+} from "./engine-sync";
+import { createWorkspaceDocumentStateFromEngine } from "./engine-document-snapshot";
 import { WorkspaceState } from "./types";
 
 type WorkspaceDocumentDialogMode = "open" | "saveAs";
@@ -108,12 +113,15 @@ export function useWorkspaceDocumentController({
   const [documentDialogMode, setDocumentDialogMode] =
     useState<WorkspaceDocumentDialogMode | null>(null);
   const [documentPathDraft, setDocumentPathDraft] = useState("");
+  const [workspaceEngineSyncGeneration, setWorkspaceEngineSyncGeneration] =
+    useState(0);
   const workspaceRef = useRef(workspaceState);
   const documentMetaRef = useRef(documentMeta);
   const documentBaselineRef = useRef<string>("__unset__");
   const documentSaveInFlightRef = useRef(false);
   const documentAutosaveTimeoutRef = useRef<number | null>(null);
   const documentHydrationKeyRef = useRef<string | null>(null);
+  const startupEngineSyncKeyRef = useRef<string | null>(null);
   const canUseAutosave = documentMeta.path !== null;
   const isAutosaveActive = canUseAutosave && autosaveEnabled;
   const recentDocumentItems = useMemo(
@@ -123,6 +131,16 @@ export function useWorkspaceDocumentController({
         name: getWorkspaceDocumentName(path),
       })),
     [recentWorkspaceDocuments]
+  );
+  const syncWorkspaceToEngine = useCallback(
+    async (
+      nextWorkspace: WorkspaceState,
+      options?: { mode?: WorkspaceEngineSyncMode }
+    ) => {
+      await syncWorkspaceStateToEngine(nextWorkspace, options);
+      setWorkspaceEngineSyncGeneration((current) => current + 1);
+    },
+    []
   );
 
   if (documentBaselineRef.current === "__unset__") {
@@ -148,12 +166,48 @@ export function useWorkspaceDocumentController({
           documentBaselineRef.current = serializeWorkspaceStateForDocument(scopedWorkspace);
           setWorkspaceState(scopedWorkspace);
           setDocumentMeta(scopedDocumentMeta);
+
+          if (!scopedDocumentMeta.path) {
+            const syncKey = `${label}:local-startup`;
+            startupEngineSyncKeyRef.current = syncKey;
+            void syncWorkspaceToEngine(scopedWorkspace, { mode: "seed" }).catch((error) => {
+              showNotice({
+                tone: "error",
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : "Gagal menyinkronkan workspace ke engine.",
+              });
+            });
+          }
         }
       })
       .catch(() => {
         setWindowStorageScope("main");
       });
-  }, [setWorkspaceState]);
+  }, [setWorkspaceState, showNotice, syncWorkspaceToEngine]);
+
+  useEffect(() => {
+    if (windowStorageScope === null || documentMeta.path) {
+      return;
+    }
+
+    const syncKey = `${windowStorageScope}:local-startup`;
+    if (startupEngineSyncKeyRef.current === syncKey) {
+      return;
+    }
+    startupEngineSyncKeyRef.current = syncKey;
+
+    void syncWorkspaceToEngine(workspaceState, { mode: "seed" }).catch((error) => {
+      showNotice({
+        tone: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menyinkronkan workspace ke engine.",
+      });
+    });
+  }, [documentMeta.path, showNotice, syncWorkspaceToEngine, windowStorageScope, workspaceState]);
 
   useEffect(() => {
     const serializedWorkspace = serializeWorkspaceStateForDocument(workspaceState);
@@ -252,13 +306,6 @@ export function useWorkspaceDocumentController({
         return false;
       }
 
-      const savedAt = new Date().toISOString();
-      const serializedWorkspace = serializeWorkspaceStateForDocument(workspaceRef.current);
-      const document = createWorkspaceDocumentFile(
-        JSON.parse(serializedWorkspace) as WorkspaceState,
-        savedAt
-      );
-
       documentSaveInFlightRef.current = true;
       setDocumentMeta((current) => ({
         ...current,
@@ -267,11 +314,24 @@ export function useWorkspaceDocumentController({
       }));
 
       try {
+        const workspaceForDocument = await createWorkspaceDocumentStateFromEngine(
+          workspaceRef.current
+        );
+
+        const savedAt = new Date().toISOString();
+        const serializedWorkspace =
+          serializeWorkspaceStateForDocument(workspaceForDocument);
+        const document = createWorkspaceDocumentFile(
+          JSON.parse(serializedWorkspace) as WorkspaceState,
+          savedAt
+        );
         const result = await Promise.resolve(
           writeWorkspaceDocument(trimmedPath, document)
         );
 
+        workspaceRef.current = workspaceForDocument;
         documentBaselineRef.current = serializedWorkspace;
+        setWorkspaceState(workspaceForDocument);
         setDocumentMeta({
           path: result.path,
           name: getWorkspaceDocumentName(result.path),
@@ -318,12 +378,15 @@ export function useWorkspaceDocumentController({
         documentSaveInFlightRef.current = false;
       }
     },
-    [claimCurrentWorkspaceDocumentPath, showNotice]
+    [claimCurrentWorkspaceDocumentPath, setWorkspaceState, showNotice]
   );
 
   const applyWorkspaceDocument = useCallback(
-    (path: string, document: WorkspaceDocumentFile) => {
-      const normalizedWorkspace = normalizePersistedWorkspaceState(document.workspace);
+    async (path: string, document: WorkspaceDocumentFile) => {
+      const normalizedWorkspace = normalizePersistedWorkspaceState(document.workspace, {
+        migratePrimarySheetToDefault: false,
+      });
+      await syncWorkspaceToEngine(normalizedWorkspace);
       const serializedWorkspace = serializeWorkspaceStateForDocument(normalizedWorkspace);
       documentBaselineRef.current = serializedWorkspace;
       setWorkspaceState(normalizedWorkspace);
@@ -336,7 +399,7 @@ export function useWorkspaceDocumentController({
         errorMessage: null,
       });
     },
-    [setWorkspaceState]
+    [setWorkspaceState, syncWorkspaceToEngine]
   );
 
   useEffect(() => {
@@ -358,12 +421,12 @@ export function useWorkspaceDocumentController({
     let isDisposed = false;
 
     void Promise.resolve(readWorkspaceDocument(startupPath))
-      .then((result) => {
+      .then(async (result) => {
         if (isDisposed || documentMetaRef.current.path !== startupPath) {
           return;
         }
 
-        applyWorkspaceDocument(result.path, result.document);
+        await applyWorkspaceDocument(result.path, result.document);
       })
       .catch((error) => {
         if (isDisposed || documentMetaRef.current.path !== startupPath) {
@@ -415,7 +478,7 @@ export function useWorkspaceDocumentController({
           readWorkspaceDocument(trimmedPath)
         );
 
-        applyWorkspaceDocument(result.path, result.document);
+        await applyWorkspaceDocument(result.path, result.document);
         setRecentWorkspaceDocuments((current) =>
           pushRecentWorkspaceDocument(current, result.path)
         );
@@ -465,11 +528,20 @@ export function useWorkspaceDocumentController({
     setWorkspaceState(nextWorkspace);
     setDocumentMeta(createDefaultWorkspaceDocumentMeta());
     void claimCurrentWorkspaceDocumentPath(null);
+    void syncWorkspaceToEngine(nextWorkspace).catch((error) => {
+      showNotice({
+        tone: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menyinkronkan workspace ke engine.",
+      });
+    });
     showNotice({
       tone: "info",
       message: "Dokumen baru dibuat.",
     });
-  }, [claimCurrentWorkspaceDocumentPath, setWorkspaceState, showNotice]);
+  }, [claimCurrentWorkspaceDocumentPath, setWorkspaceState, showNotice, syncWorkspaceToEngine]);
 
   const saveCurrentWorkspaceDocument = useCallback(async () => {
     if (documentMeta.path) {
@@ -623,12 +695,21 @@ export function useWorkspaceDocumentController({
           documentBaselineRef.current = serializeWorkspaceStateForDocument(nextWorkspace);
           setWorkspaceState(nextWorkspace);
           setDocumentMeta(createDefaultWorkspaceDocumentMeta());
+          void syncWorkspaceToEngine(nextWorkspace).catch((error) => {
+            showNotice({
+              tone: "error",
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "Gagal menyinkronkan workspace ke engine.",
+            });
+          });
         }
       })
       .catch(() => {
         // Ignore launch request failures for the primary window.
       });
-  }, [openWorkspaceDocumentFromPath, setWorkspaceState]);
+  }, [openWorkspaceDocumentFromPath, setWorkspaceState, showNotice, syncWorkspaceToEngine]);
 
   useEffect(() => {
     if (!documentMeta.path) {
@@ -738,5 +819,6 @@ export function useWorkspaceDocumentController({
     setDocumentPathDraft,
     submitDocumentDialog,
     toggleAutosave,
+    workspaceEngineSyncGeneration,
   };
 }

@@ -53,12 +53,26 @@ export type ManifestBagLookupState = {
   trackingIds: string[];
 };
 
+export type ImportSourceItemLookupState = {
+  itemId: string;
+  loading: boolean;
+  error: string;
+  trackingIds: string[];
+};
+
+export type ImportSourceRetryTargets = {
+  sourceItemIds?: string[];
+  manifestBagIds?: string[];
+};
+
 export type ImportSourceLookupState = {
   loading: boolean;
   rawResponse: string;
   error: string;
   trackingIds: string[];
+  jobId?: string | null;
   requestKey?: string | null;
+  sourceItemStates?: ImportSourceItemLookupState[];
   manifestBagStates?: ManifestBagLookupState[];
 };
 

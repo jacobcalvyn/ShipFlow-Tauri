@@ -10,6 +10,11 @@ const mocks = vi.hoisted(() => ({
   useWorkspaceInteractionRefsMock: vi.fn(),
   useWorkspaceInteractionRuntimeControllerMock: vi.fn(),
   useWorkspaceShellViewControllerMock: vi.fn(),
+  listEngineSheetsMock: vi.fn(),
+}));
+
+vi.mock("../workspace-engine/client", () => ({
+  listEngineSheets: mocks.listEngineSheetsMock,
 }));
 
 vi.mock("./useWorkspaceStateController", () => ({
@@ -45,12 +50,22 @@ vi.mock("./useWorkspaceShellViewController", () => ({
 describe("useWorkspaceAppController", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.listEngineSheetsMock.mockResolvedValue({
+      type: "sheets",
+      payload: [],
+    });
   });
 
   it("orchestrates workspace composition and returns shell view props", () => {
     const state = {
       workspaceState: { activeSheetId: "sheet-1" },
-      setWorkspaceState: vi.fn(),
+      setWorkspaceState: vi.fn((updater) => {
+        if (typeof updater === "function") {
+          return updater(state.workspaceState);
+        }
+
+        return updater;
+      }),
       activeSheet: { id: "sheet-1" },
       activeSheetId: "sheet-1",
       workspaceTabs: [{ id: "sheet-1", name: "Sheet 1" }],
@@ -58,7 +73,11 @@ describe("useWorkspaceAppController", () => {
       updateActiveSheet: vi.fn(),
       updateSheet: vi.fn(),
     };
-    const surface = { showActionNotice: vi.fn(), actionNotices: [] };
+    const surface = {
+      showActionNotice: vi.fn(),
+      actionNotices: [],
+      workspaceEngineSyncGeneration: 7,
+    };
     const deleteArm = {
       deleteAllTimeoutRef: { current: null },
       deleteAllArmedSheetIdRef: { current: null },
@@ -73,9 +92,11 @@ describe("useWorkspaceAppController", () => {
     };
     const sheetViewModel = {
       allTrackingIds: ["ID-1"],
-      exportableRows: [],
+      exportableTableRows: [],
+      rustExportRowsQuery: null,
       retrackableRows: [],
       retryFailedEntries: [],
+      selectedEngineRowIds: ["engine-row-1"],
       selectedTrackingIds: ["ID-1"],
       selectedVisibleRowKeys: ["row-1"],
       visibleColumns: [],
@@ -126,7 +147,10 @@ describe("useWorkspaceAppController", () => {
       updateSheet: state.updateSheet,
     });
     expect(mocks.useWorkspaceSheetViewModelMock).toHaveBeenCalledWith(
-      state.activeSheet
+      state.activeSheet,
+      state.activeSheetId,
+      surface.workspaceEngineSyncGeneration,
+      0
     );
     expect(
       mocks.useWorkspaceInteractionRuntimeControllerMock
@@ -156,9 +180,11 @@ describe("useWorkspaceAppController", () => {
       highlightedColumnTimeoutRef: interactionRefs.highlightedColumnTimeoutRef,
       highlightedColumnSheetIdRef: interactionRefs.highlightedColumnSheetIdRef,
       allTrackingIds: sheetViewModel.allTrackingIds,
-      exportableRows: sheetViewModel.exportableRows,
+      exportableTableRows: sheetViewModel.exportableTableRows,
+      rustExportRowsQuery: sheetViewModel.rustExportRowsQuery,
       retrackableRows: sheetViewModel.retrackableRows,
       retryFailedEntries: sheetViewModel.retryFailedEntries,
+      selectedEngineRowIds: sheetViewModel.selectedEngineRowIds,
       selectedTrackingIds: sheetViewModel.selectedTrackingIds,
       selectedVisibleRowKeys: sheetViewModel.selectedVisibleRowKeys,
       visibleColumns: sheetViewModel.visibleColumns,
@@ -168,6 +194,7 @@ describe("useWorkspaceAppController", () => {
       pinnedColumnSet: sheetViewModel.pinnedColumnSet,
       allVisibleSelected: sheetViewModel.allVisibleSelected,
       showNotice: surface.showActionNotice,
+      onWorkspaceEngineMutation: expect.any(Function),
     });
     expect(mocks.useWorkspaceShellViewControllerMock).toHaveBeenCalledWith({
       activeSheet: state.activeSheet,

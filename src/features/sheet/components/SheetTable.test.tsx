@@ -1,5 +1,5 @@
 import { createRef } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const { mockedInvoke } = vi.hoisted(() => ({
   mockedInvoke: vi.fn().mockResolvedValue("data:image/jpeg;base64,pod"),
@@ -28,6 +28,7 @@ import {
   LATEST_MANIFEST_COLUMN_PATH,
 } from "../columns";
 import { SheetRow } from "../types";
+import { createSheetTableRowsFromSheetRows } from "../table-row-view";
 
 const visibleColumns = COLUMNS.slice(0, 2);
 const columnWidths = Object.fromEntries(
@@ -73,7 +74,7 @@ describe("SheetTable", () => {
       <SheetTable
         sheetId="sheet-1"
         displayScale="small"
-        displayedRows={[createRow()]}
+        displayedTableRows={createSheetTableRowsFromSheetRows([createRow()])}
         visibleColumns={visibleColumns}
         hiddenColumns={[]}
         columnWidths={columnWidths}
@@ -130,7 +131,23 @@ describe("SheetTable", () => {
     fireEvent.change(screen.getByPlaceholderText("Masukkan ID"), {
       target: { value: "P999" },
     });
-    expect(onTrackingInputChange).toHaveBeenCalledWith("sheet-1", "row-1", "P999");
+    expect(onTrackingInputChange).toHaveBeenCalledWith("sheet-1", "row-1", "P999", {
+      position: 0,
+    });
+
+    const pasteEvent = createEvent.paste(screen.getByPlaceholderText("Masukkan ID"));
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      value: {
+        getData: () => "P999\nP998",
+      },
+    });
+    fireEvent(screen.getByPlaceholderText("Masukkan ID"), pasteEvent);
+    expect(onTrackingInputPaste).toHaveBeenCalledWith(
+      expect.any(Object),
+      "sheet-1",
+      "row-1",
+      { position: 0 }
+    );
 
     fireEvent.change(screen.getAllByPlaceholderText("Filter")[0], {
       target: { value: "P2603" },
@@ -156,6 +173,86 @@ describe("SheetTable", () => {
     fireEvent.click(screen.getByText("Sort Asc"));
     expect(onSetColumnSort).toHaveBeenCalledWith(visibleColumns[0].path, "asc");
     expect(onCloseColumnMenu).toHaveBeenCalled();
+  });
+
+  it("reports the visible grid range when scrolling a Rust row window", async () => {
+    const onVisibleRowWindowChange = vi.fn();
+    const scrollRef = createRef<HTMLDivElement>();
+
+    render(
+      <SheetTable
+        sheetId="sheet-1"
+        displayScale="small"
+        displayedTableRows={createSheetTableRowsFromSheetRows([createRow()])}
+        rowWindow={{
+          offset: 0,
+          limit: 500,
+          totalCount: 1200,
+          hasMore: true,
+          nextOffset: 500,
+        }}
+        visibleColumns={visibleColumns}
+        hiddenColumns={[]}
+        columnWidths={columnWidths}
+        pinnedColumnSet={new Set([visibleColumns[0].path])}
+        pinnedLeftMap={{ [visibleColumns[0].path]: 52 }}
+        hoveredColumn={null}
+        allVisibleSelected={false}
+        selectedRowKeySet={new Set()}
+        filters={{}}
+        valueFilters={{}}
+        valueOptionsByPath={{}}
+        openColumnMenuPath={null}
+        highlightedColumnPath={null}
+        scrollContainerRef={scrollRef}
+        onScrollContainer={vi.fn()}
+        onVisibleRowWindowChange={onVisibleRowWindowChange}
+        sortDirectionForPath={() => null}
+        onMouseLeaveTable={vi.fn()}
+        onHoverColumn={vi.fn()}
+        onToggleVisibleSelection={vi.fn()}
+        onToggleRowSelection={vi.fn()}
+        onOpenSourceLink={vi.fn()}
+        onCopyTrackingId={vi.fn()}
+        onClearTrackingCell={vi.fn()}
+        onTrackingInputChange={vi.fn()}
+        onTrackingInputBlur={vi.fn()}
+        onTrackingInputKeyDown={vi.fn()}
+        onTrackingInputPaste={vi.fn()}
+        onFilterChange={vi.fn()}
+        onResizeStart={vi.fn()}
+        onToggleColumnMenu={vi.fn()}
+        onSetColumnSort={vi.fn()}
+        onTogglePinnedColumn={vi.fn()}
+        onToggleColumnVisibility={vi.fn()}
+        onToggleValueFilter={vi.fn()}
+        onSetValueFilterSelection={vi.fn()}
+        onClearValueFilter={vi.fn()}
+        onCloseColumnMenu={vi.fn()}
+        onColumnMenuRef={vi.fn()}
+      />
+    );
+
+    const scrollContainer = scrollRef.current;
+    expect(scrollContainer).not.toBeNull();
+    Object.defineProperty(scrollContainer, "clientHeight", {
+      configurable: true,
+      value: 420,
+    });
+    if (scrollContainer) {
+      scrollContainer.scrollTop = 40_000;
+      fireEvent.scroll(scrollContainer);
+    }
+
+    await waitFor(() => {
+      expect(onVisibleRowWindowChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          startIndex: expect.any(Number),
+          endIndex: expect.any(Number),
+        })
+      );
+    });
+    expect(onVisibleRowWindowChange.mock.calls[0]?.[0].startIndex).toBeGreaterThan(0);
   });
 
   it("clamps preview layout to the viewport on small screens", () => {
@@ -185,7 +282,7 @@ describe("SheetTable", () => {
       <SheetTable
         sheetId="sheet-1"
         displayScale="small"
-        displayedRows={[createRow()]}
+        displayedTableRows={createSheetTableRowsFromSheetRows([createRow()])}
         visibleColumns={visibleColumns}
         hiddenColumns={[]}
         columnWidths={columnWidths}
@@ -255,7 +352,7 @@ describe("SheetTable", () => {
       <SheetTable
         sheetId="sheet-1"
         displayScale="small"
-        displayedRows={[createRow()]}
+        displayedTableRows={createSheetTableRowsFromSheetRows([createRow()])}
         visibleColumns={deliveryColumns}
         hiddenColumns={[]}
         columnWidths={deliveryColumnWidths}
@@ -351,7 +448,7 @@ describe("SheetTable", () => {
       <SheetTable
         sheetId="sheet-1"
         displayScale="small"
-        displayedRows={[podRow]}
+        displayedTableRows={createSheetTableRowsFromSheetRows([podRow])}
         visibleColumns={podColumns}
         hiddenColumns={[]}
         columnWidths={podColumnWidths}
@@ -470,7 +567,7 @@ describe("SheetTable", () => {
       <SheetTable
         sheetId="sheet-1"
         displayScale="small"
-        displayedRows={[bagRow]}
+        displayedTableRows={createSheetTableRowsFromSheetRows([bagRow])}
         visibleColumns={bagColumns}
         hiddenColumns={[]}
         columnWidths={bagColumnWidths}
@@ -579,7 +676,7 @@ describe("SheetTable", () => {
       <SheetTable
         sheetId="sheet-1"
         displayScale="small"
-        displayedRows={[manifestRow]}
+        displayedTableRows={createSheetTableRowsFromSheetRows([manifestRow])}
         visibleColumns={manifestColumns}
         hiddenColumns={[]}
         columnWidths={manifestColumnWidths}
@@ -656,7 +753,7 @@ describe("SheetTable", () => {
       <SheetTable
         sheetId="sheet-1"
         displayScale="small"
-        displayedRows={manyRows}
+        displayedTableRows={createSheetTableRowsFromSheetRows(manyRows)}
         visibleColumns={visibleColumns}
         hiddenColumns={[]}
         columnWidths={columnWidths}

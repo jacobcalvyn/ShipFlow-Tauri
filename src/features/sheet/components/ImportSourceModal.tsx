@@ -1,5 +1,10 @@
 import { ChangeEvent } from "react";
-import { ImportSourceLookupStates, ImportSourceModalKind } from "../types";
+import {
+  ImportSourceItemLookupState,
+  ImportSourceLookupStates,
+  ImportSourceModalKind,
+  ImportSourceRetryTargets,
+} from "../types";
 
 function parseManifestBagIds(rawResponse: string) {
   if (!rawResponse) {
@@ -7,25 +12,28 @@ function parseManifestBagIds(rawResponse: string) {
   }
 
   try {
-    const parsed = JSON.parse(rawResponse) as {
-      items?: Array<{ nomor_kantung?: string }>;
-    };
-
-    if (!Array.isArray(parsed.items)) {
-      return [] as string[];
-    }
+    const parsed = JSON.parse(rawResponse) as
+      | { items?: Array<{ nomor_kantung?: string }> }
+      | Array<{ items?: Array<{ nomor_kantung?: string }> }>;
+    const responses = Array.isArray(parsed) ? parsed : [parsed];
 
     const seen = new Set<string>();
     const bagIds: string[] = [];
 
-    parsed.items.forEach((item) => {
-      const bagId = item.nomor_kantung?.trim() ?? "";
-      if (!bagId || seen.has(bagId)) {
+    responses.forEach((response) => {
+      if (!Array.isArray(response.items)) {
         return;
       }
 
-      seen.add(bagId);
-      bagIds.push(bagId);
+      response.items.forEach((item) => {
+        const bagId = item.nomor_kantung?.trim() ?? "";
+        if (!bagId || seen.has(bagId)) {
+          return;
+        }
+
+        seen.add(bagId);
+        bagIds.push(bagId);
+      });
     });
 
     return bagIds;
@@ -44,6 +52,47 @@ function getManifestBagStatusClass(loading: boolean, error: string) {
   }
 
   return "status-ready";
+}
+
+function getSourceItemResultLabel(
+  kind: ImportSourceModalKind,
+  sourceItemStates: ImportSourceItemLookupState[],
+  trackingIdCount: number
+) {
+  const sourceLabel = kind === "bag" ? "ID Bag" : "ID Manifest";
+  const completedCount = sourceItemStates.filter((state) => !state.loading).length;
+
+  if (sourceItemStates.some((state) => state.loading)) {
+    return `${sourceLabel} (${sourceItemStates.length}) - Proses ambil data ${completedCount}/${sourceItemStates.length}`;
+  }
+
+  if (kind === "bag") {
+    return `${sourceLabel} (${sourceItemStates.length}) - ${trackingIdCount} Kiriman`;
+  }
+
+  const successCount = sourceItemStates.filter(
+    (state) => state.error.trim() === ""
+  ).length;
+  return `${sourceLabel} (${sourceItemStates.length}) - ${successCount} Berhasil`;
+}
+
+function getSourceItemLabel(
+  kind: ImportSourceModalKind,
+  state: ImportSourceItemLookupState
+) {
+  if (state.loading) {
+    return state.itemId;
+  }
+
+  if (state.error.trim() !== "") {
+    return `${state.itemId} - Gagal ambil data`;
+  }
+
+  if (kind === "bag") {
+    return `${state.itemId} - ${state.trackingIds.length} Kiriman`;
+  }
+
+  return `${state.itemId} - Berhasil`;
 }
 
 function getManifestCompletedBagCount(
@@ -120,6 +169,7 @@ type ImportSourceModalProps = {
   onImportBagTrackingIds: (mode: "replace" | "append") => void;
   onImportManifestTrackingIds: (mode: "replace" | "append") => void;
   onSubmit: () => void;
+  onRetryFailed: (targets: ImportSourceRetryTargets) => void;
   onClose: () => void;
 };
 
@@ -131,6 +181,7 @@ export function ImportSourceModal({
   onImportBagTrackingIds,
   onImportManifestTrackingIds,
   onSubmit,
+  onRetryFailed,
   onClose,
 }: ImportSourceModalProps) {
   const title =
@@ -139,9 +190,19 @@ export function ImportSourceModal({
       : "Import ID Kiriman dari Manifest";
   const inputLabel = kind === "bag" ? "ID Bag" : "ID Manifest";
   const inputPlaceholder =
-    kind === "bag" ? "Masukkan ID Bag" : "Masukkan ID Manifest";
+    kind === "bag"
+      ? "Masukkan satu atau banyak ID Bag"
+      : "Masukkan satu atau banyak ID Manifest";
   const inputId = `import-source-input-${kind}`;
   const isBagModal = kind === "bag";
+  const sourceItemStates = lookupState.sourceItemStates ?? [];
+  const failedSourceItemIds = sourceItemStates
+    .filter((state) => state.error.trim() !== "")
+    .map((state) => state.itemId);
+  const hasPendingSourceLookups = sourceItemStates.some((state) => state.loading);
+  const shouldShowSourceItemStates = sourceItemStates.some(
+    (state) => state.loading || state.error.trim() !== ""
+  );
   const manifestBagStates = !isBagModal
     ? lookupState.manifestBagStates?.length
       ? lookupState.manifestBagStates
@@ -156,6 +217,17 @@ export function ImportSourceModal({
     ? getManifestTrackingIds(manifestBagStates)
     : [];
   const manifestHasPendingBagLookups = manifestBagStates.some((state) => state.loading);
+  const failedManifestBagIds = manifestBagStates
+    .filter((state) => state.error.trim() !== "")
+    .map((state) => state.bagId);
+  const isBusy =
+    lookupState.loading || hasPendingSourceLookups || manifestHasPendingBagLookups;
+  const hasFailedItems =
+    failedSourceItemIds.length > 0 || failedManifestBagIds.length > 0;
+  const retryAllFailedTargets = {
+    sourceItemIds: failedSourceItemIds,
+    manifestBagIds: isBagModal ? [] : failedManifestBagIds,
+  };
 
   return (
     <div className="import-source-modal-backdrop">
@@ -175,18 +247,22 @@ export function ImportSourceModal({
             <label htmlFor={inputId} className="import-source-modal-label">
               {inputLabel}
             </label>
-            <input
+            <textarea
               id={inputId}
-              type="text"
               className="import-source-modal-input"
               value={value}
               placeholder={inputPlaceholder}
               autoFocus
-              onChange={(event: ChangeEvent<HTMLInputElement>) => {
+              rows={4}
+              onChange={(event: ChangeEvent<HTMLTextAreaElement>) => {
                 onValueChange(event.target.value);
               }}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && !lookupState.loading) {
+                if (
+                  event.key === "Enter" &&
+                  (event.metaKey || event.ctrlKey) &&
+                  !lookupState.loading
+                ) {
                   event.preventDefault();
                   onSubmit();
                 }
@@ -197,6 +273,58 @@ export function ImportSourceModal({
             <p className="import-source-modal-error" role="alert">
               {lookupState.error}
             </p>
+          ) : null}
+          {shouldShowSourceItemStates ? (
+            <div className="import-source-modal-result">
+              <span className="import-source-modal-result-label">
+                {getSourceItemResultLabel(
+                  kind,
+                  sourceItemStates,
+                  lookupState.trackingIds.length
+                )}
+              </span>
+              <div className="import-source-modal-id-list">
+                {sourceItemStates.map((state) => (
+                  <div
+                    key={state.itemId}
+                    className="import-source-modal-id-item import-source-modal-id-item-with-status"
+                    title={
+                      state.error
+                        ? `${state.itemId}: ${state.error}`
+                        : state.loading
+                          ? `${state.itemId}: sedang diambil`
+                          : `${state.itemId}: berhasil`
+                    }
+                  >
+                    <span
+                      className={`row-status-dot ${getManifestBagStatusClass(
+                        state.loading,
+                        state.error
+                      )}`}
+                      aria-hidden="true"
+                    />
+                    <span className="import-source-modal-id-text">
+                      {getSourceItemLabel(kind, state)}
+                    </span>
+                    {state.error.trim() !== "" ? (
+                      <button
+                        type="button"
+                        className="import-source-modal-inline-action"
+                        disabled={isBusy}
+                        onClick={() =>
+                          onRetryFailed({
+                            sourceItemIds: [state.itemId],
+                            manifestBagIds: [],
+                          })
+                        }
+                      >
+                        Ambil ulang
+                      </button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
           ) : null}
           {isBagModal && lookupState.trackingIds.length > 0 ? (
             <div className="import-source-modal-result">
@@ -242,7 +370,24 @@ export function ImportSourceModal({
                       )}`}
                       aria-hidden="true"
                     />
-                    <span>{getManifestBagItemLabel(state)}</span>
+                    <span className="import-source-modal-id-text">
+                      {getManifestBagItemLabel(state)}
+                    </span>
+                    {state.error.trim() !== "" ? (
+                      <button
+                        type="button"
+                        className="import-source-modal-inline-action"
+                        disabled={isBusy}
+                        onClick={() =>
+                          onRetryFailed({
+                            sourceItemIds: [],
+                            manifestBagIds: [state.bagId],
+                          })
+                        }
+                      >
+                        Ambil ulang
+                      </button>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -261,7 +406,7 @@ export function ImportSourceModal({
                 type="button"
                 className="action-button"
                 onClick={() => onImportBagTrackingIds("replace")}
-                disabled={lookupState.loading || lookupState.trackingIds.length === 0}
+                disabled={isBusy || lookupState.trackingIds.length === 0}
               >
                 Ganti Semua
               </button>
@@ -269,7 +414,7 @@ export function ImportSourceModal({
                 type="button"
                 className="action-button"
                 onClick={() => onImportBagTrackingIds("append")}
-                disabled={lookupState.loading || lookupState.trackingIds.length === 0}
+                disabled={isBusy || lookupState.trackingIds.length === 0}
               >
                 Tambah Data
               </button>
@@ -280,11 +425,7 @@ export function ImportSourceModal({
                 type="button"
                 className="action-button"
                 onClick={() => onImportManifestTrackingIds("replace")}
-                disabled={
-                  lookupState.loading ||
-                  manifestHasPendingBagLookups ||
-                  manifestTrackingIds.length === 0
-                }
+                disabled={isBusy || manifestTrackingIds.length === 0}
               >
                 Ganti Semua
               </button>
@@ -292,23 +433,29 @@ export function ImportSourceModal({
                 type="button"
                 className="action-button"
                 onClick={() => onImportManifestTrackingIds("append")}
-                disabled={
-                  lookupState.loading ||
-                  manifestHasPendingBagLookups ||
-                  manifestTrackingIds.length === 0
-                }
+                disabled={isBusy || manifestTrackingIds.length === 0}
               >
                 Tambah Data
               </button>
             </>
           )}
+          {hasFailedItems ? (
+            <button
+              type="button"
+              className="action-button action-button-accent-alt"
+              onClick={() => onRetryFailed(retryAllFailedTargets)}
+              disabled={isBusy}
+            >
+              Ambil Ulang Gagal
+            </button>
+          ) : null}
           <button
             type="button"
             className="action-button action-button-accent"
             onClick={onSubmit}
-            disabled={lookupState.loading || value.trim() === ""}
+            disabled={isBusy || value.trim() === ""}
           >
-            {lookupState.loading ? "Memuat..." : "Ambil Data"}
+            {isBusy ? "Memuat..." : "Ambil Data"}
           </button>
           <button type="button" className="action-button" onClick={onClose}>
             Tutup

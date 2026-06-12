@@ -17,18 +17,13 @@ import {
   LATEST_MANIFEST_COLUMN_PATH,
   TRACKING_COLUMN_PATH,
 } from "../columns";
-import { ColumnDefinition, SheetRow } from "../types";
+import type { SheetTableRow } from "../table-row-view";
+import { ColumnDefinition } from "../types";
 import { MAX_TRACKING_INPUT_LENGTH } from "../utils";
 import {
   formatHistorySummaryPreview,
-  formatColumnValue,
-  getLatestBagId,
-  getLatestManifestId,
-  getLatestBagPrintUrl,
   getColumnToneClass,
   getColumnTypeClass,
-  getRawColumnValue,
-  getRowStatus,
   getStatusToneClass,
   isHistorySummaryPath,
 } from "../utils";
@@ -484,7 +479,7 @@ function HistorySummaryPreview({
 
 type SheetBodyRowProps = {
   sheetId: string;
-  row: SheetRow;
+  row: SheetTableRow;
   visibleColumns: ColumnDefinition[];
   columnWidths: Record<string, number>;
   pinnedColumnSet: Set<string>;
@@ -494,21 +489,29 @@ type SheetBodyRowProps = {
   onOpenSourceLink: (url: string) => void;
   onCopyTrackingId: (value: string) => void;
   onClearTrackingCell: (sheetId: string, rowKey: string) => void;
-  onTrackingInputChange: (sheetId: string, rowKey: string, value: string) => void;
+  onTrackingInputChange: (
+    sheetId: string,
+    rowKey: string,
+    value: string,
+    options?: { position?: number; engineRowId?: string }
+  ) => void;
   onTrackingInputBlur: (
     event: FocusEvent<HTMLInputElement>,
     sheetId: string,
-    rowKey: string
+    rowKey: string,
+    options?: { position?: number; engineRowId?: string }
   ) => void;
   onTrackingInputKeyDown: (
     event: KeyboardEvent<HTMLInputElement>,
     sheetId: string,
-    rowKey: string
+    rowKey: string,
+    options?: { position?: number; engineRowId?: string }
   ) => void;
   onTrackingInputPaste: (
     event: ClipboardEvent<HTMLInputElement>,
     sheetId: string,
-    rowKey: string
+    rowKey: string,
+    options?: { position?: number; engineRowId?: string }
   ) => void;
 };
 
@@ -529,7 +532,7 @@ export const SheetBodyRow = memo(function SheetBodyRow({
   onTrackingInputKeyDown,
   onTrackingInputPaste,
 }: SheetBodyRowProps) {
-  const status = getRowStatus(row);
+  const status = row.status;
 
   return (
     <tr className={status === "Error" ? "row-error" : ""}>
@@ -542,8 +545,8 @@ export const SheetBodyRow = memo(function SheetBodyRow({
         />
       </td>
       {visibleColumns.map((column) => {
-        const formattedValue = formatColumnValue(row, column);
-        const rawValue = getRawColumnValue(row, column);
+        const formattedValue = row.getFormattedValue(column);
+        const rawValue = row.getRawValue(column);
         const width = columnWidths[column.path];
         const isPinned = pinnedColumnSet.has(column.path);
         const isHistorySummary = isHistorySummaryPath(column.path);
@@ -577,11 +580,29 @@ export const SheetBodyRow = memo(function SheetBodyRow({
                   maxLength={MAX_TRACKING_INPUT_LENGTH}
                   value={row.trackingInput}
                   onChange={(event) =>
-                    onTrackingInputChange(sheetId, row.key, event.target.value)
+                    onTrackingInputChange(sheetId, row.key, event.target.value, {
+                      position: row.position,
+                      engineRowId: row.engineRowId,
+                    })
                   }
-                  onBlur={(event) => onTrackingInputBlur(event, sheetId, row.key)}
-                  onKeyDown={(event) => onTrackingInputKeyDown(event, sheetId, row.key)}
-                  onPaste={(event) => onTrackingInputPaste(event, sheetId, row.key)}
+                  onBlur={(event) =>
+                    onTrackingInputBlur(event, sheetId, row.key, {
+                      position: row.position,
+                      engineRowId: row.engineRowId,
+                    })
+                  }
+                  onKeyDown={(event) =>
+                    onTrackingInputKeyDown(event, sheetId, row.key, {
+                      position: row.position,
+                      engineRowId: row.engineRowId,
+                    })
+                  }
+                  onPaste={(event) =>
+                    onTrackingInputPaste(event, sheetId, row.key, {
+                      position: row.position,
+                      engineRowId: row.engineRowId,
+                    })
+                  }
                   placeholder="Masukkan ID"
                 />
                 {row.trackingInput.trim() ? (
@@ -664,10 +685,8 @@ export const SheetBodyRow = memo(function SheetBodyRow({
         }
 
         if (column.path === LATEST_BAG_STATUS_COLUMN_PATH) {
-          const bagId = row.shipment ? getLatestBagId(row.shipment.history_summary) : null;
-          const printUrl = row.shipment
-            ? getLatestBagPrintUrl(row.shipment.history_summary)
-            : null;
+          const bagId = row.getLatestBagId();
+          const printUrl = row.getLatestBagPrintUrl();
 
           return (
             <td
@@ -751,9 +770,7 @@ export const SheetBodyRow = memo(function SheetBodyRow({
         }
 
         if (column.path === LATEST_MANIFEST_COLUMN_PATH) {
-          const manifestId = row.shipment
-            ? getLatestManifestId(row.shipment.history_summary)
-            : null;
+          const manifestId = row.getLatestManifestId();
 
           return (
             <td

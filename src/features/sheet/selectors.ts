@@ -6,7 +6,6 @@ import {
 } from "./columns";
 import { SheetRow, SheetState } from "./types";
 import {
-  MAX_TRACKING_INPUT_LENGTH,
   compareRows,
   formatColumnValue,
   getColumnToneClass,
@@ -60,26 +59,6 @@ export function getVisibleColumnPathSet(
 
 export function getPinnedColumnSet(sheetState: SheetState) {
   return new Set(sheetState.pinnedColumnPaths);
-}
-
-export function getTrackingColumnAutoWidth(rows: SheetRow[]) {
-  const longestTrackingValue = rows.reduce((longest, row) => {
-    const candidate =
-      row.trackingInput.trim() ||
-      row.shipment?.detail?.shipment_header?.nomor_kiriman ||
-      "";
-    const boundedCandidate = candidate.slice(0, MAX_TRACKING_INPUT_LENGTH);
-
-    return boundedCandidate.length > longest.length ? boundedCandidate : longest;
-  }, "");
-
-  if (!longestTrackingValue) {
-    return 0;
-  }
-
-  const estimatedTextWidth = longestTrackingValue.length * 8.7;
-  const trackingCellChromeWidth = 118;
-  return Math.ceil(estimatedTextWidth + trackingCellChromeWidth);
 }
 
 export function getEffectiveColumnWidths(
@@ -220,7 +199,7 @@ export function getDisplayedRows(
   const alwaysVisibleRows = sheetState.rows.filter(
     (row) =>
       row.trackingInput.trim() !== "" &&
-      (row.loading || row.queued || row.dirty || row.shipment === null)
+      (row.loading || row.queued || row.dirty || row.stale)
   );
 
   const workingRowKeySet = new Set(workingRows.map((row) => row.key));
@@ -237,68 +216,12 @@ export function getDisplayedRows(
   return [...workingRows, ...draftRows];
 }
 
-export function getVisibleSelectableKeys(displayedRows: SheetRow[]) {
-  return displayedRows
-    .filter((row) => row.trackingInput.trim() !== "" || row.shipment !== null)
-    .map((row) => row.key);
-}
-
 export function getSelectedVisibleRowKeys(
   selectedRowKeys: string[],
   visibleSelectableKeys: string[]
 ) {
   const visibleSelectableKeySet = new Set(visibleSelectableKeys);
   return selectedRowKeys.filter((key) => visibleSelectableKeySet.has(key));
-}
-
-export function getSelectedTrackingIds(
-  rows: SheetRow[],
-  selectedVisibleRowKeys: string[]
-) {
-  return rows
-    .filter((row) => selectedVisibleRowKeys.includes(row.key))
-    .map((row) => row.trackingInput.trim())
-    .filter(Boolean);
-}
-
-export function getAllTrackingIds(rows: SheetRow[]) {
-  return rows
-    .map((row) => row.trackingInput.trim())
-    .filter((value) => value !== "");
-}
-
-export function getExportableRows(
-  rows: SheetRow[],
-  displayedRows: SheetRow[],
-  selectedVisibleRowKeys: string[]
-) {
-  if (selectedVisibleRowKeys.length > 0) {
-    return rows.filter(
-      (row) =>
-        selectedVisibleRowKeys.includes(row.key) &&
-        (row.trackingInput.trim() !== "" || row.shipment !== null)
-    );
-  }
-
-  return displayedRows.filter(
-    (row) => row.trackingInput.trim() !== "" || row.shipment !== null
-  );
-}
-
-export function getLoadedCount(displayedRows: SheetRow[]) {
-  return displayedRows.filter(
-    (row) =>
-      row.shipment !== null &&
-      !row.loading &&
-      !row.queued &&
-      !row.error &&
-      !row.stale &&
-      !row.dirty
-  ).length;
-}
-
-export function getTotalShipmentCount(nonEmptyRows: SheetRow[]) {
-  return nonEmptyRows.filter((row) => row.trackingInput.trim() !== "").length;
 }
 
 export function getHiddenColumns(sheetState: SheetState) {

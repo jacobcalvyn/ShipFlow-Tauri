@@ -1,32 +1,55 @@
-import { Dispatch, MutableRefObject, SetStateAction, useCallback } from "react";
-import { flushSync } from "react-dom";
-import { trackBag, trackManifest } from "../../backend/commands";
 import {
-  appendTrackingIdsToSheet,
+  Dispatch,
+  MutableRefObject,
+  SetStateAction,
+  useCallback,
+} from "react";
+import { flushSync } from "react-dom";
+import {
   clearSheetDataPreservingImportStateInSheet,
   closeImportSourceModalInSheet,
   openImportSourceModalInSheet,
-  setManifestBagLookupErrorInSheet,
-  setManifestBagLookupSuccessInSheet,
-  seedTrackingIdsInSheet,
+  setImportSourceJobInSheet,
   setImportSourceLookupErrorInSheet,
   setImportSourceLookupSuccessInSheet,
   setImportSourceDraftInSheet,
   startImportSourceLookupInSheet,
+  startImportSourceRetryInSheet,
 } from "../sheet/actions";
-import { ImportSourceModalKind, SheetState } from "../sheet/types";
+import {
+  ImportSourceItemLookupState,
+  ImportSourceModalKind,
+  ImportSourceRetryTargets,
+  ManifestBagLookupState,
+  SheetState,
+} from "../sheet/types";
 import { COLUMNS } from "../sheet/columns";
+import type {
+  SheetTableRow,
+  SheetTableRowTrackingEntry,
+} from "../sheet/table-row-view";
 import { useWorkspaceRuntimeCommandsController } from "./useWorkspaceRuntimeCommandsController";
 import { useWorkspaceTableControllers } from "./useWorkspaceTableControllers";
 import { WorkspaceState } from "./types";
-import { BagResponse, ManifestResponse } from "../../types";
+import {
+  createImportJob,
+  getImportJob,
+  type ImportJobDetail,
+  type ImportJobItem,
+  ImportSourcePreviewItem,
+  ImportSourcePreviewResult,
+  previewImportSource,
+  type SheetRowsQuery,
+  refreshSheetRowsTracking,
+  retryImportJobFailedWithProgress,
+  runImportJobWithProgress,
+  WorkspaceEngineEvent,
+} from "../workspace-engine/client";
 
 type Notice = {
   tone: "success" | "error" | "info";
   message: string;
 };
-
-const MAX_CONCURRENT_MANIFEST_BAG_LOOKUPS = 4;
 
 function getRuntimeErrorMessage(error: unknown) {
   if (error instanceof Error && error.message.trim() !== "") {
@@ -50,48 +73,70 @@ function getRuntimeErrorMessage(error: unknown) {
   return "Lookup failed.";
 }
 
-function extractBagTrackingIds(response: BagResponse) {
+function parseImportSourceLookupIds(value: string) {
   const seen = new Set<string>();
-  const trackingIds: string[] = [];
+  const lookupIds: string[] = [];
 
-  response.items.forEach((item) => {
-    const trackingId = item.no_resi?.trim() ?? "";
-    if (!trackingId || seen.has(trackingId)) {
-      return;
-    }
+  value
+    .split(/[\s,;]+/)
+    .map((item) => item.trim())
+    .filter((item) => item !== "")
+    .forEach((lookupId) => {
+      if (seen.has(lookupId)) {
+        return;
+      }
 
-    seen.add(trackingId);
-    trackingIds.push(trackingId);
-  });
+      seen.add(lookupId);
+      lookupIds.push(lookupId);
+    });
 
-  return trackingIds;
+  return lookupIds;
 }
 
-function extractManifestBagIds(response: ManifestResponse) {
-  const seen = new Set<string>();
-  const bagIds: string[] = [];
-
-  response.items.forEach((item) => {
-    const bagId = item.nomor_kantung?.trim() ?? "";
-    if (!bagId || seen.has(bagId)) {
-      return;
-    }
-
-    seen.add(bagId);
-    bagIds.push(bagId);
-  });
-
-  return bagIds;
-}
-
-function extractManifestTrackingIds(
-  manifestBagStates: SheetState["importSourceLookupStates"]["manifest"]["manifestBagStates"]
+function mergeSourceItemStates(
+  currentStates: ImportSourceItemLookupState[] | undefined,
+  nextStates: ImportSourceItemLookupState[]
 ) {
+  const nextById = new Map(nextStates.map((state) => [state.itemId, state]));
+  const merged = (currentStates ?? []).map((state) =>
+    nextById.get(state.itemId) ?? state
+  );
+  const currentIds = new Set((currentStates ?? []).map((state) => state.itemId));
+
+  nextStates.forEach((state) => {
+    if (!currentIds.has(state.itemId)) {
+      merged.push(state);
+    }
+  });
+
+  return merged;
+}
+
+function mergeManifestBagStates(
+  currentStates: ManifestBagLookupState[] | undefined,
+  nextStates: ManifestBagLookupState[]
+) {
+  const nextById = new Map(nextStates.map((state) => [state.bagId, state]));
+  const merged = (currentStates ?? []).map((state) =>
+    nextById.get(state.bagId) ?? state
+  );
+  const currentIds = new Set((currentStates ?? []).map((state) => state.bagId));
+
+  nextStates.forEach((state) => {
+    if (!currentIds.has(state.bagId)) {
+      merged.push(state);
+    }
+  });
+
+  return merged;
+}
+
+function mergeTrackingIds(...trackingIdGroups: Array<string[] | undefined>) {
   const seen = new Set<string>();
   const trackingIds: string[] = [];
 
-  (manifestBagStates ?? []).forEach((state) => {
-    state.trackingIds.forEach((trackingId) => {
+  trackingIdGroups.forEach((group) => {
+    (group ?? []).forEach((trackingId) => {
       const normalizedTrackingId = trackingId.trim();
       if (!normalizedTrackingId || seen.has(normalizedTrackingId)) {
         return;
@@ -105,6 +150,92 @@ function extractManifestTrackingIds(
   return trackingIds;
 }
 
+function getImportJobTrackingIds(detail: ImportJobDetail) {
+  return mergeTrackingIds(
+    ...detail.items
+      .filter((item) => item.status === "succeeded")
+      .map((item) => item.trackingIds)
+  );
+}
+
+export function getImportJobSheetRowIds(detail: ImportJobDetail) {
+  return mergeTrackingIds(
+    ...detail.items
+      .filter((item) => item.status === "succeeded")
+      .map((item) => item.sheetRowIds)
+  );
+}
+
+function parseImportSourceResponseList(rawResponse: string) {
+  if (!rawResponse.trim()) {
+    return [] as unknown[];
+  }
+
+  try {
+    const parsed = JSON.parse(rawResponse) as unknown | unknown[];
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return [] as unknown[];
+  }
+}
+
+function mergeImportSourceRawResponses(currentRawResponse: string, nextRawResponse: string) {
+  if (!currentRawResponse.trim()) {
+    return nextRawResponse;
+  }
+
+  if (!nextRawResponse.trim()) {
+    return currentRawResponse;
+  }
+
+  const responses = [
+    ...parseImportSourceResponseList(currentRawResponse),
+    ...parseImportSourceResponseList(nextRawResponse),
+  ];
+
+  return JSON.stringify(responses.length === 1 ? responses[0] : responses, null, 2);
+}
+
+function getImportPreviewItemError(item: ImportSourcePreviewItem) {
+  return item.errorMessage?.trim() ?? "";
+}
+
+function previewItemToSourceState(
+  item: ImportSourcePreviewItem
+): ImportSourceItemLookupState {
+  const error = getImportPreviewItemError(item);
+
+  return {
+    itemId: item.sourceItemId,
+    loading: item.status === "pending" || item.status === "running",
+    error,
+    trackingIds: item.trackingIds,
+  };
+}
+
+function previewItemToManifestBagState(
+  item: ImportSourcePreviewItem
+): ManifestBagLookupState {
+  const error = getImportPreviewItemError(item);
+
+  return {
+    bagId: item.sourceItemId,
+    loading: item.status === "pending" || item.status === "running",
+    error,
+    trackingIds: item.trackingIds,
+  };
+}
+
+function formatImportPreviewFailures(items: ImportSourcePreviewItem[]) {
+  return items
+    .filter((item) => getImportPreviewItemError(item) !== "")
+    .map((item) => `${item.sourceItemId}: ${getImportPreviewItemError(item)}`);
+}
+
+function getManifestPreviewBagFailures(preview: ImportSourcePreviewResult) {
+  return formatImportPreviewFailures(preview.manifestBags);
+}
+
 function isImportSourceLookupCurrent(
   workspaceRef: MutableRefObject<WorkspaceState>,
   sheetId: string,
@@ -115,6 +246,207 @@ function isImportSourceLookupCurrent(
     workspaceRef.current.sheetsById[sheetId]?.importSourceLookupStates[kind].requestKey ===
     requestKey
   );
+}
+
+function isImportJobRunningStatus(status: WorkspaceEngineEvent["payload"]["status"]) {
+  return status === "pending" || status === "running";
+}
+
+function isImportJobItemRunningStatus(status: ImportJobItem["status"]) {
+  return status === "pending" || status === "running";
+}
+
+export function applyWorkspaceEngineImportJobDetail(
+  sheetState: SheetState,
+  kind: ImportSourceModalKind,
+  requestKey: string,
+  detail: ImportJobDetail
+) {
+  if (sheetState.importSourceLookupStates[kind].requestKey !== requestKey) {
+    return sheetState;
+  }
+
+  const currentLookupState = sheetState.importSourceLookupStates[kind];
+  const sourceItemStates: ImportSourceItemLookupState[] = [];
+  const manifestBagStates: ManifestBagLookupState[] = [];
+  const trackingIds: string[] = [];
+
+  const appendTrackingIds = (ids: string[]) => {
+    ids.forEach((trackingId) => {
+      const normalizedTrackingId = trackingId.trim();
+      if (normalizedTrackingId && !trackingIds.includes(normalizedTrackingId)) {
+        trackingIds.push(normalizedTrackingId);
+      }
+    });
+  };
+
+  detail.items.forEach((item) => {
+    const loading = isImportJobItemRunningStatus(item.status);
+    const error = item.errorMessage ?? "";
+
+    if (item.sourceItemKind === "bag" && kind === "bag") {
+      sourceItemStates.push({
+        itemId: item.sourceItemId,
+        loading,
+        error,
+        trackingIds: item.trackingIds,
+      });
+      appendTrackingIds(item.trackingIds);
+      return;
+    }
+
+    if (item.sourceItemKind === "manifest" && kind === "manifest") {
+      sourceItemStates.push({
+        itemId: item.sourceItemId,
+        loading,
+        error,
+        trackingIds: item.trackingIds,
+      });
+      return;
+    }
+
+    if (item.sourceItemKind === "manifest_bag" && kind === "manifest") {
+      manifestBagStates.push({
+        bagId: item.sourceItemId,
+        loading,
+        error,
+        trackingIds: item.trackingIds,
+      });
+      appendTrackingIds(item.trackingIds);
+    }
+  });
+
+  return {
+    ...sheetState,
+    importSourceLookupStates: {
+      ...sheetState.importSourceLookupStates,
+      [kind]: {
+        ...currentLookupState,
+        loading: isImportJobRunningStatus(detail.summary.status),
+        error: "",
+        trackingIds,
+        jobId: detail.summary.jobId,
+        sourceItemStates,
+        manifestBagStates,
+      },
+    },
+  };
+}
+
+function applyWorkspaceEngineImportProgress(
+  sheetState: SheetState,
+  kind: ImportSourceModalKind,
+  requestKey: string,
+  event: WorkspaceEngineEvent
+) {
+  if (
+    event.type !== "import_job_progress" ||
+    sheetState.importSourceLookupStates[kind].requestKey !== requestKey
+  ) {
+    return sheetState;
+  }
+
+  const currentLookupState = sheetState.importSourceLookupStates[kind];
+  const sourceItemStates = [...(currentLookupState.sourceItemStates ?? [])];
+  const manifestBagStates = [...(currentLookupState.manifestBagStates ?? [])];
+  const trackingIds = [...currentLookupState.trackingIds];
+  const sourceItemIndexById = new Map(
+    sourceItemStates.map((state, index) => [state.itemId, index])
+  );
+  const manifestBagIndexById = new Map(
+    manifestBagStates.map((state, index) => [state.bagId, index])
+  );
+
+  const upsertSourceState = (
+    itemId: string,
+    state: Omit<ImportSourceItemLookupState, "itemId">
+  ) => {
+    const existingIndex = sourceItemIndexById.get(itemId);
+    const nextState = { itemId, ...state };
+
+    if (existingIndex === undefined) {
+      sourceItemIndexById.set(itemId, sourceItemStates.length);
+      sourceItemStates.push(nextState);
+      return;
+    }
+
+    sourceItemStates[existingIndex] = nextState;
+  };
+
+  const upsertManifestBagState = (
+    bagId: string,
+    state: Omit<ManifestBagLookupState, "bagId">
+  ) => {
+    const existingIndex = manifestBagIndexById.get(bagId);
+    const nextState = { bagId, ...state };
+
+    if (existingIndex === undefined) {
+      manifestBagIndexById.set(bagId, manifestBagStates.length);
+      manifestBagStates.push(nextState);
+      return;
+    }
+
+    manifestBagStates[existingIndex] = nextState;
+  };
+
+  event.payload.itemDeltas.forEach((delta) => {
+    const loading = delta.status === "pending" || delta.status === "running";
+    const error = delta.errorMessage ?? "";
+
+    if (delta.sourceItemKind === "bag" && kind === "bag") {
+      upsertSourceState(delta.sourceItemId, {
+        loading,
+        error,
+        trackingIds: delta.trackingIds,
+      });
+      delta.trackingIds.forEach((trackingId) => {
+        if (!trackingIds.includes(trackingId)) {
+          trackingIds.push(trackingId);
+        }
+      });
+      return;
+    }
+
+    if (delta.sourceItemKind === "manifest" && kind === "manifest") {
+      upsertSourceState(delta.sourceItemId, {
+        loading,
+        error,
+        trackingIds: [],
+      });
+      delta.trackingIds.forEach((bagId) => {
+        upsertManifestBagState(bagId, {
+          loading: true,
+          error: "",
+          trackingIds: [],
+        });
+      });
+      return;
+    }
+
+    if (delta.sourceItemKind === "manifest_bag" && kind === "manifest") {
+      upsertManifestBagState(delta.sourceItemId, {
+        loading,
+        error,
+        trackingIds: delta.trackingIds,
+      });
+    }
+  });
+
+  return {
+    ...sheetState,
+    importSourceLookupStates: {
+      ...sheetState.importSourceLookupStates,
+      [kind]: {
+        ...currentLookupState,
+        loading: isImportJobRunningStatus(event.payload.status),
+        error: "",
+        trackingIds,
+        jobId: event.payload.jobId,
+        sourceItemStates,
+        manifestBagStates,
+      },
+    },
+  };
 }
 
 type ResizeState = {
@@ -150,9 +482,11 @@ type UseWorkspaceInteractionRuntimeControllerOptions = {
   highlightedColumnSheetIdRef: MutableRefObject<string | null>;
   activeFilterCount: number;
   allTrackingIds: string[];
-  exportableRows: SheetState["rows"];
+  exportableTableRows: SheetTableRow[];
+  rustExportRowsQuery: SheetRowsQuery | null;
   retrackableRows: Array<{ key: string; value: string }>;
-  retryFailedEntries: Array<{ key: string; value: string }>;
+  retryFailedEntries: SheetTableRowTrackingEntry[];
+  selectedEngineRowIds: string[];
   selectedTrackingIds: string[];
   selectedVisibleRowKeys: string[];
   visibleColumns: ReadonlyArray<(typeof COLUMNS)[number]>;
@@ -162,6 +496,7 @@ type UseWorkspaceInteractionRuntimeControllerOptions = {
   pinnedColumnSet: Set<string>;
   allVisibleSelected: boolean;
   showNotice: (notice: Notice) => void;
+  onWorkspaceEngineMutation?: (sheetIds?: string | string[]) => void;
 };
 
 export function useWorkspaceInteractionRuntimeController({
@@ -191,9 +526,11 @@ export function useWorkspaceInteractionRuntimeController({
   highlightedColumnSheetIdRef,
   activeFilterCount,
   allTrackingIds,
-  exportableRows,
+  exportableTableRows,
+  rustExportRowsQuery,
   retrackableRows,
   retryFailedEntries,
+  selectedEngineRowIds,
   selectedTrackingIds,
   selectedVisibleRowKeys,
   visibleColumns,
@@ -203,6 +540,7 @@ export function useWorkspaceInteractionRuntimeController({
   pinnedColumnSet,
   allVisibleSelected,
   showNotice,
+  onWorkspaceEngineMutation,
 }: UseWorkspaceInteractionRuntimeControllerOptions) {
   const runtimeCommands = useWorkspaceRuntimeCommandsController({
     activeSheet,
@@ -228,14 +566,17 @@ export function useWorkspaceInteractionRuntimeController({
     highlightedColumnTimeoutRef,
     highlightedColumnSheetIdRef,
     allTrackingIds,
-    exportableRows,
+    exportableTableRows,
+    rustExportRowsQuery,
     retrackableRows,
     retryFailedEntries,
+    selectedEngineRowIds,
     selectedTrackingIds,
     selectedVisibleRowKeys,
     visibleColumns,
     visibleColumnPathSet,
     showNotice,
+    onWorkspaceEngineMutation,
   });
 
   const tableControllers = useWorkspaceTableControllers({
@@ -264,9 +605,55 @@ export function useWorkspaceInteractionRuntimeController({
 
   const openImportSourceModal = useCallback(
     (kind: ImportSourceModalKind) => {
+      const lookupState = activeSheet.importSourceLookupStates[kind];
+      const jobId = lookupState.jobId ?? null;
+      const requestKey = lookupState.requestKey ?? null;
       updateActiveSheet((current) => openImportSourceModalInSheet(current, kind));
+
+      if (!jobId || !requestKey) {
+        return;
+      }
+
+      getImportJob(jobId)
+        .then((response) => {
+          updateSheet(activeSheetId, (current) => {
+            const currentLookupState = current.importSourceLookupStates[kind];
+            if (
+              currentLookupState.jobId !== jobId ||
+              currentLookupState.requestKey !== requestKey
+            ) {
+              return current;
+            }
+
+            return applyWorkspaceEngineImportJobDetail(
+              current,
+              kind,
+              requestKey,
+              response.payload
+            );
+          });
+        })
+        .catch((error) => {
+          updateSheet(activeSheetId, (current) => {
+            const currentLookupState = current.importSourceLookupStates[kind];
+            if (
+              currentLookupState.jobId !== jobId ||
+              currentLookupState.requestKey !== requestKey
+            ) {
+              return current;
+            }
+
+            return setImportSourceLookupErrorInSheet(
+              current,
+              kind,
+              getRuntimeErrorMessage(error),
+              requestKey,
+              currentLookupState.sourceItemStates
+            );
+          });
+        });
     },
-    [updateActiveSheet]
+    [activeSheet.importSourceLookupStates, activeSheetId, updateActiveSheet, updateSheet]
   );
 
   const closeImportSourceModal = useCallback(() => {
@@ -281,15 +668,287 @@ export function useWorkspaceInteractionRuntimeController({
   );
 
   const runImportSourceLookup = useCallback(
-    async (kind: ImportSourceModalKind) => {
+    async (
+      kind: ImportSourceModalKind,
+      retryTargets: ImportSourceRetryTargets = {}
+    ) => {
       const targetSheetId = activeSheetId;
       const lookupValue = activeSheet.importSourceDrafts[kind].trim();
+      const lookupIds = parseImportSourceLookupIds(lookupValue);
       const label = kind === "bag" ? "ID Bag" : "ID Manifest";
+      const sourceLabel = kind === "bag" ? "Bag" : "Manifest";
+      const retrySourceItemIds = retryTargets.sourceItemIds ?? [];
+      const retryManifestBagIds =
+        kind === "manifest" ? (retryTargets.manifestBagIds ?? []) : [];
+      const isRetry =
+        retrySourceItemIds.length > 0 || retryManifestBagIds.length > 0;
       const requestKey = `${kind}:${Date.now()}:${Math.random()
         .toString(36)
         .slice(2)}`;
 
-      if (lookupValue === "") {
+      if (isRetry) {
+        flushSync(() => {
+          updateSheet(targetSheetId, (current) =>
+            startImportSourceRetryInSheet(
+              current,
+              kind,
+              requestKey,
+              retrySourceItemIds,
+              retryManifestBagIds
+            )
+          )
+        });
+
+        const retryJobId =
+          workspaceRef.current.sheetsById[targetSheetId]?.importSourceLookupStates[
+            kind
+          ].jobId?.trim() ?? "";
+        if (retryJobId) {
+          const refreshedRowIds: string[] = [];
+          const appendRefreshedRowIds = (rowIds: string[]) => {
+            rowIds.forEach((rowId) => {
+              const normalizedRowId = rowId.trim();
+              if (normalizedRowId && !refreshedRowIds.includes(normalizedRowId)) {
+                refreshedRowIds.push(normalizedRowId);
+              }
+            });
+          };
+
+          try {
+            const completed = await retryImportJobFailedWithProgress(
+              retryJobId,
+              (event) => {
+                if (event.type === "import_job_progress") {
+                  event.payload.itemDeltas
+                    .filter((delta) => delta.status === "succeeded")
+                    .forEach((delta) => appendRefreshedRowIds(delta.sheetRowIds));
+                }
+
+                updateSheet(targetSheetId, (current) =>
+                  applyWorkspaceEngineImportProgress(
+                    current,
+                    kind,
+                    requestKey,
+                    event
+                  )
+                );
+              }
+            );
+            onWorkspaceEngineMutation?.(targetSheetId);
+            updateSheet(targetSheetId, (current) =>
+              applyWorkspaceEngineImportJobDetail(
+                current,
+                kind,
+                requestKey,
+                completed.payload
+              )
+            );
+
+            const refreshRowIds =
+              refreshedRowIds.length > 0
+                ? refreshedRowIds
+                : getImportJobSheetRowIds(completed.payload);
+            if (refreshRowIds.length > 0) {
+              await refreshSheetRowsTracking({
+                sheetId: targetSheetId,
+                rowIds: refreshRowIds,
+                forceRefresh: true,
+              });
+              onWorkspaceEngineMutation?.(targetSheetId);
+            }
+
+            showNotice({
+              tone:
+                completed.payload.summary.failedCount > 0 ? "error" : "success",
+              message:
+                completed.payload.summary.failedCount > 0
+                  ? "Sebagian data masih gagal diambil."
+                  : "Ambil ulang gagal berhasil.",
+            });
+          } catch (error) {
+            const message = getRuntimeErrorMessage(error);
+            updateSheet(targetSheetId, (current) =>
+              setImportSourceLookupErrorInSheet(
+                current,
+                kind,
+                message,
+                requestKey,
+                current.importSourceLookupStates[kind].sourceItemStates
+              )
+            );
+          }
+          return;
+        }
+
+        try {
+          if (kind === "bag") {
+            const preview = (
+              await previewImportSource({
+                kind: "bag",
+                ids: retrySourceItemIds,
+              })
+            ).payload;
+
+            if (
+              !isImportSourceLookupCurrent(
+                workspaceRef,
+                targetSheetId,
+                kind,
+                requestKey
+              )
+            ) {
+              return;
+            }
+
+            const currentState =
+              workspaceRef.current.sheetsById[targetSheetId]
+                ?.importSourceLookupStates.bag;
+            if (!currentState) {
+              return;
+            }
+
+            const sourceItemStates = mergeSourceItemStates(
+              currentState.sourceItemStates,
+              preview.sourceItems.map(previewItemToSourceState)
+            );
+            const trackingIds = mergeTrackingIds(
+              currentState.trackingIds,
+              preview.trackingIds
+            );
+            const rawResponse = mergeImportSourceRawResponses(
+              currentState.rawResponse,
+              preview.rawResponse
+            );
+            const failures = formatImportPreviewFailures(preview.sourceItems);
+
+            updateSheet(targetSheetId, (current) =>
+              setImportSourceLookupSuccessInSheet(
+                current,
+                kind,
+                rawResponse,
+                trackingIds,
+                requestKey,
+                [],
+                sourceItemStates
+              )
+            );
+            if (failures.length > 0) {
+              showNotice({
+                tone: "error",
+                message: `${failures.length} ${label} masih gagal diproses: ${failures.join(
+                  "; "
+                )}`,
+              });
+            }
+            return;
+          }
+
+          const currentState =
+            workspaceRef.current.sheetsById[targetSheetId]
+              ?.importSourceLookupStates.manifest;
+          if (!currentState) {
+            return;
+          }
+
+          let rawResponse = currentState.rawResponse;
+          let trackingIds = currentState.trackingIds;
+          let sourceItemStates = currentState.sourceItemStates ?? [];
+          let manifestBagStates = currentState.manifestBagStates ?? [];
+          const failures: string[] = [];
+
+          if (retrySourceItemIds.length > 0) {
+            const preview = (
+              await previewImportSource({
+                kind: "manifest",
+                ids: retrySourceItemIds,
+              })
+            ).payload;
+
+            if (
+              !isImportSourceLookupCurrent(
+                workspaceRef,
+                targetSheetId,
+                kind,
+                requestKey
+              )
+            ) {
+              return;
+            }
+
+            sourceItemStates = mergeSourceItemStates(
+              sourceItemStates,
+              preview.sourceItems.map(previewItemToSourceState)
+            );
+            manifestBagStates = mergeManifestBagStates(
+              manifestBagStates,
+              preview.manifestBags.map(previewItemToManifestBagState)
+            );
+            trackingIds = mergeTrackingIds(trackingIds, preview.trackingIds);
+            rawResponse = mergeImportSourceRawResponses(
+              rawResponse,
+              preview.rawResponse
+            );
+            failures.push(...formatImportPreviewFailures(preview.sourceItems));
+            failures.push(...getManifestPreviewBagFailures(preview));
+          }
+
+          if (retryManifestBagIds.length > 0) {
+            const preview = (
+              await previewImportSource({
+                kind: "bag",
+                ids: retryManifestBagIds,
+              })
+            ).payload;
+
+            if (
+              !isImportSourceLookupCurrent(
+                workspaceRef,
+                targetSheetId,
+                kind,
+                requestKey
+              )
+            ) {
+              return;
+            }
+
+            manifestBagStates = mergeManifestBagStates(
+              manifestBagStates,
+              preview.sourceItems.map(previewItemToManifestBagState)
+            );
+            trackingIds = mergeTrackingIds(trackingIds, preview.trackingIds);
+            failures.push(...formatImportPreviewFailures(preview.sourceItems));
+          }
+
+          updateSheet(targetSheetId, (current) =>
+            setImportSourceLookupSuccessInSheet(
+              current,
+              kind,
+              rawResponse,
+              trackingIds,
+              requestKey,
+              manifestBagStates,
+              sourceItemStates
+            )
+          );
+
+          if (failures.length > 0) {
+            showNotice({
+              tone: "error",
+              message: `${failures.length} ${label} masih gagal diproses: ${failures.join(
+                "; "
+              )}`,
+            });
+          }
+        } catch (error) {
+          const message = getRuntimeErrorMessage(error);
+          updateSheet(targetSheetId, (current) =>
+            setImportSourceLookupErrorInSheet(current, kind, message, requestKey)
+          );
+        }
+        return;
+      }
+
+      if (lookupIds.length === 0) {
         updateSheet(targetSheetId, (current) =>
           setImportSourceLookupErrorInSheet(
             startImportSourceLookupInSheet(current, kind, requestKey),
@@ -302,109 +961,128 @@ export function useWorkspaceInteractionRuntimeController({
       }
 
       updateSheet(targetSheetId, (current) =>
-        startImportSourceLookupInSheet(current, kind, requestKey)
+        startImportSourceLookupInSheet(current, kind, requestKey, lookupIds)
       );
 
       try {
-        const response =
-          kind === "bag"
-            ? await trackBag({
-                bagId: lookupValue,
-                forceRefresh: true,
-                sheetId: targetSheetId,
-                rowKey: "__import_source_bag__",
-              })
-            : await trackManifest({
-                manifestId: lookupValue,
-                forceRefresh: true,
-                sheetId: targetSheetId,
-                rowKey: "__import_source_manifest__",
-              });
-
         if (kind === "bag") {
+          const preview = (
+            await previewImportSource({
+              kind: "bag",
+              ids: lookupIds,
+            })
+          ).payload;
+
+          if (
+            !isImportSourceLookupCurrent(
+              workspaceRef,
+              targetSheetId,
+              kind,
+              requestKey
+            )
+          ) {
+            return;
+          }
+
+          const failures = formatImportPreviewFailures(preview.sourceItems);
+          const sourceItemStates = preview.sourceItems.map(
+            previewItemToSourceState
+          );
+
+          if (preview.trackingIds.length === 0 && failures.length > 0) {
+            updateSheet(targetSheetId, (current) =>
+              setImportSourceLookupErrorInSheet(
+                current,
+                kind,
+                `${failures.length} ${label} gagal diproses: ${failures.join("; ")}`,
+                requestKey,
+                sourceItemStates
+              )
+            );
+            return;
+          }
+
           updateSheet(targetSheetId, (current) =>
             setImportSourceLookupSuccessInSheet(
               current,
               kind,
-              JSON.stringify(response, null, 2),
-              extractBagTrackingIds(response),
-              requestKey
+              preview.rawResponse,
+              preview.trackingIds,
+              requestKey,
+              [],
+              sourceItemStates
+            )
+          );
+          if (failures.length > 0) {
+            showNotice({
+              tone: "error",
+              message: `${failures.length} ${label} gagal diproses; hasil ${sourceLabel} lain tetap dipakai.`,
+            });
+          }
+          return;
+        }
+
+        const preview = (
+          await previewImportSource({
+            kind: "manifest",
+            ids: lookupIds,
+          })
+        ).payload;
+
+        if (
+          !isImportSourceLookupCurrent(
+            workspaceRef,
+            targetSheetId,
+            kind,
+            requestKey
+          )
+        ) {
+          return;
+        }
+
+        const manifestFailures = formatImportPreviewFailures(preview.sourceItems);
+        const manifestBagFailures = getManifestPreviewBagFailures(preview);
+        const sourceItemStates = preview.sourceItems.map(previewItemToSourceState);
+        const manifestBagStates = preview.manifestBags.map(
+          previewItemToManifestBagState
+        );
+
+        if (
+          !preview.sourceItems.some((item) => getImportPreviewItemError(item) === "") &&
+          manifestFailures.length > 0
+        ) {
+          updateSheet(targetSheetId, (current) =>
+            setImportSourceLookupErrorInSheet(
+              current,
+              kind,
+              `${manifestFailures.length} ${label} gagal diproses: ${manifestFailures.join(
+                "; "
+              )}`,
+              requestKey,
+              sourceItemStates
             )
           );
           return;
         }
 
-        const manifestBagIds = extractManifestBagIds(response);
-
         updateSheet(targetSheetId, (current) =>
           setImportSourceLookupSuccessInSheet(
             current,
             kind,
-            JSON.stringify(response, null, 2),
-            [],
+            preview.rawResponse,
+            preview.trackingIds,
             requestKey,
-            manifestBagIds.map((bagId) => ({
-              bagId,
-              loading: true,
-              error: "",
-              trackingIds: [],
-            }))
+            manifestBagStates,
+            sourceItemStates
           )
         );
-
-        const queue = [...manifestBagIds];
-        const workerCount = Math.min(
-          MAX_CONCURRENT_MANIFEST_BAG_LOOKUPS,
-          queue.length
-        );
-
-        await Promise.allSettled(
-          Array.from({ length: workerCount }, async () => {
-            while (queue.length > 0) {
-              if (
-                !isImportSourceLookupCurrent(
-                  workspaceRef,
-                  targetSheetId,
-                  "manifest",
-                  requestKey
-                )
-              ) {
-                return;
-              }
-
-              const bagId = queue.shift();
-              if (!bagId) {
-                return;
-              }
-
-              try {
-                const bagResponse = await trackBag({
-                  bagId,
-                  forceRefresh: true,
-                  sheetId: targetSheetId,
-                  rowKey: `__manifest_bag_lookup__:${lookupValue}:${bagId}`,
-                });
-                updateSheet(targetSheetId, (current) =>
-                  setManifestBagLookupSuccessInSheet(
-                    current,
-                    bagId,
-                    extractBagTrackingIds(bagResponse),
-                    requestKey
-                  )
-                );
-              } catch (bagError) {
-                updateSheet(targetSheetId, (current) =>
-                  setManifestBagLookupErrorInSheet(
-                    current,
-                    bagId,
-                    getRuntimeErrorMessage(bagError),
-                    requestKey
-                  )
-                );
-              }
-            }
-          })
-        );
+        if (manifestFailures.length > 0 || manifestBagFailures.length > 0) {
+          const failures = [...manifestFailures, ...manifestBagFailures];
+          showNotice({
+            tone: "error",
+            message: `${failures.length} ${label} gagal diproses; hasil ${sourceLabel} lain tetap dipakai.`,
+          });
+        }
       } catch (error) {
         const message = getRuntimeErrorMessage(error);
         updateSheet(targetSheetId, (current) =>
@@ -412,81 +1090,140 @@ export function useWorkspaceInteractionRuntimeController({
         );
       }
     },
-    [activeSheet.importSourceDrafts, activeSheetId, updateSheet, workspaceRef]
+    [
+      activeSheet.importSourceDrafts,
+      activeSheetId,
+      showNotice,
+      updateSheet,
+      workspaceRef,
+    ]
   );
 
   const importSourceTrackingIds = useCallback(
-    (kind: ImportSourceModalKind, mode: "replace" | "append") => {
-      const trackingIds =
-        kind === "bag"
-          ? activeSheet.importSourceLookupStates.bag.trackingIds
-          : extractManifestTrackingIds(
-              activeSheet.importSourceLookupStates.manifest.manifestBagStates
-            );
+    async (kind: ImportSourceModalKind, mode: "replace" | "append") => {
+      const sourceIds = parseImportSourceLookupIds(
+        activeSheet.importSourceDrafts[kind]
+      );
       const sourceLabel = kind === "bag" ? "Bag" : "Manifest";
+      const requestKey = `${kind}:commit:${Date.now()}:${Math.random()
+        .toString(36)
+        .slice(2)}`;
 
-      if (trackingIds.length === 0) {
+      if (sourceIds.length === 0) {
         showNotice({
           tone: "error",
-          message: `Belum ada nomor kiriman dari ${sourceLabel} untuk diimpor.`,
+          message: `${kind === "bag" ? "ID Bag" : "ID Manifest"} wajib diisi.`,
         });
         return;
       }
 
-      const nextImportState =
-        mode === "replace"
-          ? seedTrackingIdsInSheet(
-              closeImportSourceModalInSheet(
-                clearSheetDataPreservingImportStateInSheet(activeSheet)
-              ),
-              trackingIds
-            )
-          : appendTrackingIdsToSheet(
-              closeImportSourceModalInSheet(activeSheet),
-              trackingIds
-            );
-      const targetKeys = nextImportState.targetKeys;
-
-      disarmDeleteAll();
-      disarmDeleteSelected();
-
-      if (targetKeys.length === 0) {
-        return;
-      }
-
-      if (mode === "replace") {
-        runtimeCommands.invalidateSheetTrackingWork(activeSheetId);
-      }
-
-      flushSync(() => {
-        updateActiveSheet(() => nextImportState.sheetState);
-      });
-
-      showNotice({
-        tone: "success",
-        message:
-          mode === "replace"
-            ? `${trackingIds.length} nomor kiriman dari ${sourceLabel} menggantikan data sheet.`
-            : `${trackingIds.length} nomor kiriman dari ${sourceLabel} ditambahkan ke sheet.`,
-      });
-
-      void runtimeCommands.runBulkPasteFetches(
-        activeSheetId,
-        targetKeys.map((key, index) => ({
-          key,
-          value: trackingIds[index],
-        }))
+      updateSheet(activeSheetId, (current) =>
+        startImportSourceLookupInSheet(current, kind, requestKey, sourceIds)
       );
+
+      try {
+        const created = await createImportJob({
+          sheetId: activeSheetId,
+          kind,
+          ids: sourceIds,
+          mode,
+        });
+
+        const jobId = created.payload.summary.jobId;
+        updateSheet(activeSheetId, (current) =>
+          applyWorkspaceEngineImportJobDetail(
+            setImportSourceJobInSheet(current, kind, requestKey, jobId),
+            kind,
+            requestKey,
+            created.payload
+          )
+        );
+
+        const completed = await runImportJobWithProgress(jobId, (event) => {
+          updateSheet(activeSheetId, (current) =>
+            applyWorkspaceEngineImportProgress(current, kind, requestKey, event)
+          );
+        });
+        updateSheet(activeSheetId, (current) =>
+          applyWorkspaceEngineImportJobDetail(
+            current,
+            kind,
+            requestKey,
+            completed.payload
+          )
+        );
+
+        const importedTrackingIds = getImportJobTrackingIds(completed.payload);
+        const refreshRowIds = getImportJobSheetRowIds(completed.payload);
+
+        if (refreshRowIds.length > 0) {
+          await refreshSheetRowsTracking({
+            sheetId: activeSheetId,
+            rowIds: refreshRowIds,
+            forceRefresh: true,
+          });
+        }
+
+        const importedCount = importedTrackingIds.length;
+        if (importedCount === 0) {
+          updateSheet(activeSheetId, (current) =>
+            setImportSourceLookupErrorInSheet(
+              current,
+              kind,
+              `Tidak ada nomor kiriman dari ${sourceLabel} untuk diimpor.`,
+              requestKey,
+              current.importSourceLookupStates[kind].sourceItemStates
+            )
+          );
+          return;
+        }
+
+        disarmDeleteAll();
+        disarmDeleteSelected();
+
+        if (mode === "replace") {
+          runtimeCommands.invalidateSheetTrackingWork(activeSheetId);
+        }
+
+        flushSync(() => {
+          updateSheet(activeSheetId, (current) =>
+            closeImportSourceModalInSheet(
+              mode === "replace"
+                ? clearSheetDataPreservingImportStateInSheet(current)
+                : current
+            )
+          );
+        });
+        onWorkspaceEngineMutation?.(activeSheetId);
+
+        showNotice({
+          tone: "success",
+          message:
+            mode === "replace"
+              ? `${importedCount} nomor kiriman dari ${sourceLabel} menggantikan data sheet.`
+              : `${importedCount} nomor kiriman dari ${sourceLabel} ditambahkan ke sheet.`,
+        });
+      } catch (error) {
+        updateSheet(activeSheetId, (current) =>
+          setImportSourceLookupErrorInSheet(
+            current,
+            kind,
+            getRuntimeErrorMessage(error),
+            requestKey,
+            current.importSourceLookupStates[kind].sourceItemStates
+          )
+        );
+      }
     },
     [
-      activeSheet.importSourceLookupStates,
       activeSheet,
       activeSheetId,
       disarmDeleteAll,
       disarmDeleteSelected,
       runtimeCommands,
       showNotice,
-      updateActiveSheet,
+      onWorkspaceEngineMutation,
+      updateSheet,
     ]
   );
 

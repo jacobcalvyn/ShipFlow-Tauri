@@ -11,6 +11,7 @@ The runtime foundation now supports POS bag and manifest lookups through the sha
 Architecture references:
 
 - [docs/runtime-architecture.md](./docs/runtime-architecture.md)
+- [docs/rust-core-engine-big-bang.md](./docs/rust-core-engine-big-bang.md)
 - [docs/desktop-service-split.md](./docs/desktop-service-split.md)
 - [docs/service-api-v1.md](./docs/service-api-v1.md)
 - [docs/refactor-audit.md](./docs/refactor-audit.md)
@@ -38,19 +39,21 @@ Architecture references:
 ## Tracking Flow
 
 1. Enter a shipment ID in the `Nomor Kiriman` column
-2. The frontend calls the Tauri `track_shipment` command
-3. `ShipFlow Desktop` forwards the request to `ShipFlow Service`
-4. The service runtime resolves the active tracking source:
+2. The frontend upserts the visible row into the Rust workspace engine
+3. The frontend calls `refresh_sheet_row_tracking` for that Rust row
+4. `ShipFlow Desktop` forwards the engine refresh to `ShipFlow Service`
+5. The service runtime resolves the active tracking source:
    - internal POS scraper
    - external ShipFlow API
-5. For the internal scraper, the Rust tracking layer sends the shipment ID to the POS PID detail endpoint with a base64-encoded `id` query:
+6. For the internal scraper, the Rust tracking layer sends the shipment ID to the POS PID detail endpoint with a base64-encoded `id` query:
 
 ```text
 https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=...
 ```
 
-6. The response is normalized into the app's JSON shape
-7. The matching row is updated with shipment details
+7. The response is normalized into the app's JSON shape
+8. The Rust workspace engine persists the tracking record and returns a row projection
+9. The matching row is updated with shipment details
 
 Example shipment ID:
 
@@ -210,8 +213,8 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
   - delete selected rows
 - The action bar keeps a dedicated second row for selection actions and disables those buttons when nothing is selected, so the layout stays stable
 - The action bar now includes a dedicated `Import From` panel with `Bag` and `Manifest` entry points
-- `Bag` import opens a sheet-local modal that can fetch a bag, show the shipment ID list, and either `Ganti Semua` or `Tambah Data` into the current sheet
-- `Manifest` import opens a sheet-local modal that fetches manifest bag IDs first, then resolves each bag to shipment IDs in parallel before allowing `Ganti Semua` or `Tambah Data`
+- `Bag` import opens a sheet-local modal that can fetch one or more bag IDs, show the shipment ID list, and either `Ganti Semua` or `Tambah Data` into the current sheet
+- `Manifest` import opens a sheet-local modal that fetches one or more manifest IDs, resolves manifest bag IDs first, then resolves each bag to shipment IDs in parallel before allowing `Ganti Semua` or `Tambah Data`
 - Bag and manifest import results are cached per sheet, so reopening the modal restores the latest lookup draft and result for that sheet only
 - CSV export follows the visible table schema but intentionally skips heavy/non-tabular fields such as POD image URLs and raw `history_summary` arrays
 - Column shortcut buttons that horizontally scroll to key columns
@@ -332,17 +335,19 @@ Pivot table behavior:
 
 Chart behavior:
 
-- `Bar` and `Donut` use the selected `Row` fields for grouping and the primary selected `Value` as the chart value
+- `Bar` and `Donut` use Rust `query_chart`, selected `Row` fields for grouping, and the primary selected `Value` as the chart value
+- `Column` fields are only sent to Rust for `Pivot` mode; chart modes do not use column fields to split the chart series
 - `Column` fields are preserved in the sheet config but only affect `Pivot` mode
 - chart rows are sorted by value descending before label tie-breaks
 - `Share` in chart calculations follows the selected value, while `Pivot` share follows row count share
 
 Analytics engine notes:
 
-- the active production analytics engine is still the deterministic TypeScript array engine
-- [src/features/sheet/analytics-engine.ts](./src/features/sheet/analytics-engine.ts) defines the engine boundary used by the workspace view model
-- [src/features/sheet/duckdb-analytics-prototype.ts](./src/features/sheet/duckdb-analytics-prototype.ts) contains the DuckDB-WASM prototype path: row projection, value-presence flags, and long-form pivot SQL generation
-- DuckDB is not the default runtime path yet; it is staged behind tests so it can be benchmarked against larger sheet data before activation
+- the active production analytics query path is Rust-first for representable scopes, using `query_pivot` for `Pivot` mode and `query_chart` for `Bar` / `Donut` as the authoritative result
+- supported filtered-row text filters and value filters are sent to the Rust analytics query; when a query is not representable or fails, the UI shows an empty analytics summary instead of recomputing from the React row mirror
+- [src/features/sheet/rust-analytics-adapter.ts](./src/features/sheet/rust-analytics-adapter.ts) owns the frontend boundary for Rust pivot/chart queries and result view models
+- [crates/shipflow-workspace-engine](./crates/shipflow-workspace-engine) now includes the Rust cutover path for embedded DuckDB pivot/chart commands, Bag/Manifest preview lookups, Rust-owned import jobs, manual/paste row upserts, row delete/clear commands, row detail refresh, batch row detail refresh, paged sheet-row windows, and distinct field-value queries for value-filter menus. The desktop Bag/Manifest modal uses the Rust preview command for `Ambil Data` and preview-only failed retry flows, uses Rust import jobs for `Ganti Semua` / `Tambah Data`, retries failed committed source items through the Rust failed-only import job channel, reads committed row ids from Rust import job items before refreshing tracking detail, closes completed imports without copying Rust row windows back into React `sheet.rows`, and the workspace grid receives Rust row-window metadata while requesting the next visible row window through the view model. Valid manual `Nomor Kiriman` drafts and multi-line paste seed `sheet_rows` through Rust, projection-backed row edits pass `engineRowId` back to Rust while keeping UI keys local, single-row manual lookup uses `refresh_sheet_row_tracking`, multi-line paste plus selected-ID transfer use `refresh_sheet_rows_tracking`, completed tracking refreshes settle local loading/queued flags without copying returned tracking detail projections into React `sheet.rows`, empty manual drafts delete stale Rust rows, row delete/move/clear flows remove stale Rust rows before the next row-window query, selected-ID transfer and sheet duplication no longer materialize returned Rust row windows into target React `sheet.rows`, sheet duplication no longer clones local row data, `.shipflow` document saves require Rust row-window snapshots instead of falling back to the UI mirror, settled grid value filters now derive Rust payloads from column metadata instead of scanning the React row mirror, open value-filter menus query distinct option counts from Rust when the current grid query is representable, table body plus visible totals, tracking auto-width, and lightweight selection/copy/retry/count/export selectors use `SheetTableRow` projection view models instead of letting `SheetTable` rebuild rows from canonical React `SheetRow[]`, unselected CSV export pages through Rust row queries instead of exporting only the active UI window, failed representable Rust row-window queries no longer resurrect filled React mirror rows, `Retry Gagal` uses projection `engineRowId` values directly for Rust batch refresh instead of remapping display ids through React, `Lacak Ulang` uses Rust batch refresh for unfiltered sheets and collects Rust row ids for filtered scopes, queued, loading, and dirty mirror rows no longer block supported Rust row-window queries, including filtered and sorted scopes, analytics summaries trust Rust `sourceRowCount` plus supported filtered-row text/value filters for representable scopes instead of requiring React row-count parity, and React row state is limited to transient draft/edit/runtime UI bridging rather than production data ownership.
+- Representable Rust row-window responses are authoritative once resolved or failed. While the current Rust query is still pending, the grid may keep the filtered React mirror visible as a transient UI bridge so action-bar selection and table controls do not flicker or disable before the Rust window arrives.
 
 ## Current Data Shown In The Table
 
@@ -476,6 +481,7 @@ The main table currently focuses on:
 - [crates/shipflow-tauri-runtime/src/window_runtime.rs](./crates/shipflow-tauri-runtime/src/window_runtime.rs): window/document registry runtime
 - [crates/shipflow-tauri-runtime/src/workspace_document.rs](./crates/shipflow-tauri-runtime/src/workspace_document.rs): workspace document read/write helpers
 - [crates/shipflow-core](./crates/shipflow-core): shared lookup core for shipment, bag, and manifest parser/upstream logic and models
+- [crates/shipflow-workspace-engine](./crates/shipflow-workspace-engine): Rust-owned workspace engine for the big-bang cutover target, including durable sheet data, import jobs, paged sheet-row window queries, Bag/Manifest preview lookups, failed-only retry contracts, dotted-ID tracking refresh, content-addressed raw response blobs, and embedded DuckDB analytics query contracts
 - [crates/shipflow-service-runtime](./crates/shipflow-service-runtime): shared ShipFlow Service HTTP API and lookup cache runtime
 - [crates/shipflow-service-runtime/src/api_contract.rs](./crates/shipflow-service-runtime/src/api_contract.rs): versioned API envelope and error contract
 - [crates/shipflow-service-runtime/src/jobs.rs](./crates/shipflow-service-runtime/src/jobs.rs): background batch job registry for Service API jobs
@@ -489,6 +495,7 @@ The main table currently focuses on:
 - `ShipFlow Service`: runtime lookup API, source selection, service token, cache, and external API access
 - `shipflow-tauri-runtime`: neutral shared runtime used by both Desktop and Service
 - `shipflow-core`: shared lookup engine used by desktop/service Rust code
+- `shipflow-workspace-engine`: Rust-owned workspace data engine for the big-bang cutover target; it is wired through Tauri commands, Bag/Manifest preview lookup commands, import progress channels, manual/paste `upsert_sheet_rows`, single-row `refresh_sheet_row_tracking`, bulk/import/selection `refresh_sheet_rows_tracking`, content-addressed raw response blobs for successful import/tracking responses, empty-draft/delete/clear row commands, paged row-window queries, distinct field-value option queries for filter menus, guarded production `query_sheet_rows` usage for settled workspace grids with supported filter/sort/value-filter semantics, metadata-driven value-filter payloads that no longer require a React row mirror for non-tracking fields, projection-backed table row view models passed directly into `SheetTable`, projection-backed visible totals and tracking auto-width, lightweight visible-window/export selectors, Rust-paged unselected CSV export, Rust-authoritative `.shipflow` document snapshots, import job item `sheetRowIds` before post-import tracking refresh without copying imported row windows into React `sheet.rows`, tracking refresh completion without copying Rust tracking detail projections into React `sheet.rows`, Rust failed-only import retry, projection `engineRowId` driven failed-row retry, Rust batch retrack for representable row-query scopes, storage-level `analytics_cache` invalidation for sheet/tracking mutations, and production `query_pivot` / `query_chart` usage for representable analytics scopes including supported filtered-row value filters through the Rust analytics-result adapter
 - `shipflow-service-runtime`: shared service HTTP API and lookup-cache engine used by the standalone service binary
 - Desktop and service are separate runtime artifacts. Desktop does not bundle, spawn, or stop ShipFlow Service.
 - The repo keeps Desktop and Service in one monorepo while producing separate release artifacts.
@@ -936,5 +943,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 - If the upstream HTML changes, the Rust parser may need updates
 - Hidden columns are stored in browser/webview local storage
 - Pinned columns are stored in browser/webview local storage
-- Workspace and sheet state are persisted in browser/webview local storage with a storage-safe fallback snapshot
+- Browser/webview workspace snapshots are persisted as inputs-only data so local storage keeps sheet layout and tracking inputs without duplicating full tracking detail payloads
+- Local startup seed sync writes legacy tracking inputs into Rust only when the Rust sheet is empty; existing engine rows stay authoritative over stale browser/webview mirrors
+- `.shipflow` document saves prefer Rust row-window data and fall back to the current UI state if the engine snapshot cannot be queried
 - Desktop stores only the standalone ShipFlow Service port/token it uses for lookups

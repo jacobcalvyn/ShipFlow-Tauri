@@ -538,6 +538,9 @@ describe("sheet utils", () => {
 
   it("sanitizes tracking input and bulk paste values aggressively", () => {
     expect(sanitizeTrackingInput(" p2603 3101-14291 \u200B")).toBe("P26033101-14291");
+    expect(sanitizeTrackingInput(" p2606020189412.30 \u200B")).toBe(
+      "P2606020189412.30"
+    );
     expect(sanitizeTrackingPasteValues(" p2601 \nP 2602\n@@@\n")).toEqual([
       "P2601",
       "P2602",

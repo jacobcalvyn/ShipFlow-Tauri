@@ -238,7 +238,7 @@ GET /track/:shipment_id
 Authorization: Bearer <token>
 ```
 
-Response should reuse the existing `TrackResponse` shape already returned by `track_shipment`.
+Response should reuse the existing `TrackResponse` shape used by workspace-engine tracking refreshes and the Service API v1 tracking route.
 
 ### Optional POST Variant
 

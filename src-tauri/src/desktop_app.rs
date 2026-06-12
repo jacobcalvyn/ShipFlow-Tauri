@@ -36,15 +36,12 @@ pub fn run() {
         .manage(WorkspaceDocumentRegistryState::default())
         .manage(WindowDocumentState::default())
         .manage(WindowCloseGuardState::default())
+        .manage(commands::workspace_engine::WorkspaceEngineState::default())
         .setup(desktop_setup)
         .on_menu_event(|app, event| handle_desktop_menu_event(app, event.id().as_ref()))
         .on_window_event(handle_desktop_window_event)
         .plugin(build_main_webview_navigation_guard_plugin())
         .invoke_handler(tauri::generate_handler![
-            commands::tracking::track_shipment,
-            commands::tracking::track_shipments_batch,
-            commands::tracking::track_bag,
-            commands::tracking::track_manifest,
             commands::tracking::resolve_pod_image,
             commands::system::open_external_url,
             commands::system::copy_to_clipboard,
@@ -63,6 +60,9 @@ pub fn run() {
             commands::workspace::create_workspace_window,
             commands::workspace::open_shipflow_service_app,
             commands::workspace::take_pending_workspace_window_request,
+            commands::workspace_engine::workspace_engine_command,
+            commands::workspace_engine::workspace_engine_run_import_job_with_progress,
+            commands::workspace_engine::workspace_engine_retry_import_job_failed_with_progress,
             commands::system::log_frontend_runtime_event,
             commands::service::configure_api_service,
             commands::service::load_saved_api_service_config,

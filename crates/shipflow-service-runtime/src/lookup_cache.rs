@@ -825,6 +825,7 @@ mod tests {
     use shipflow_core::model::{
         BagResponse, LookupKind, TrackingError, TrackingSource, TrackingSourceConfig,
     };
+    use tokio::sync::Barrier;
 
     fn create_test_policy() -> LookupCachePolicy {
         LookupCachePolicy {
@@ -1181,10 +1182,12 @@ mod tests {
             });
             let stale_fetch_count = Arc::new(AtomicUsize::new(0));
             let fresh_fetch_count = Arc::new(AtomicUsize::new(0));
+            let stale_fetch_started = Arc::new(Barrier::new(2));
 
             let stale_task = tokio::spawn({
                 let cache = cache.clone();
                 let stale_fetch_count = Arc::clone(&stale_fetch_count);
+                let stale_fetch_started = Arc::clone(&stale_fetch_started);
                 async move {
                     cache
                         .resolve_cached_lookup(
@@ -1194,6 +1197,7 @@ mod tests {
                             LookupRequestOptions::default(),
                             move || async move {
                                 stale_fetch_count.fetch_add(1, Ordering::SeqCst);
+                                stale_fetch_started.wait().await;
                                 tokio::time::sleep(Duration::from_millis(25)).await;
                                 Ok(BagResponse {
                                     nomor_kantung: Some("PID-GEN-STALE".into()),
@@ -1205,7 +1209,7 @@ mod tests {
                 }
             });
 
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            stale_fetch_started.wait().await;
             cache.invalidate_all("test_generation_change");
 
             let fresh_result = cache

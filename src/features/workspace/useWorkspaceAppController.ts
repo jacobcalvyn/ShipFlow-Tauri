@@ -1,4 +1,6 @@
-import { ComponentProps } from "react";
+import { ComponentProps, useCallback, useEffect, useState } from "react";
+import { listEngineSheets } from "../workspace-engine/client";
+import { reconcileWorkspaceSheetsFromEngine } from "./actions";
 import { WorkspaceShellView } from "./components/WorkspaceShellView";
 import { useWorkspaceDeleteArmController } from "./useWorkspaceDeleteArmController";
 import { useWorkspaceInteractionRefs } from "./useWorkspaceInteractionRefs";
@@ -8,10 +10,73 @@ import { useWorkspaceShellSurfaceController } from "./useWorkspaceShellSurfaceCo
 import { useWorkspaceShellViewController } from "./useWorkspaceShellViewController";
 import { useWorkspaceStateController } from "./useWorkspaceStateController";
 
+type WorkspaceEngineMutationScope = string | string[] | undefined;
+
 export function useWorkspaceAppController(): ComponentProps<
   typeof WorkspaceShellView
 > {
   const workspaceState = useWorkspaceStateController();
+  const [
+    workspaceEngineGlobalMutationRevision,
+    setWorkspaceEngineGlobalMutationRevision,
+  ] =
+    useState(0);
+  const [
+    workspaceEngineSheetMutationRevisionById,
+    setWorkspaceEngineSheetMutationRevisionById,
+  ] = useState<Record<string, number>>({});
+  const markWorkspaceEngineMutation = useCallback((scope?: WorkspaceEngineMutationScope) => {
+    const sheetIds = typeof scope === "string" ? [scope] : scope;
+    const normalizedSheetIds = Array.from(
+      new Set((sheetIds ?? []).map((sheetId) => sheetId.trim()).filter(Boolean))
+    );
+
+    if (normalizedSheetIds.length === 0) {
+      setWorkspaceEngineGlobalMutationRevision((current) => current + 1);
+      return;
+    }
+
+    setWorkspaceEngineSheetMutationRevisionById((current) => {
+      const next = {
+        ...current,
+      };
+      normalizedSheetIds.forEach((sheetId) => {
+        next[sheetId] = (next[sheetId] ?? 0) + 1;
+      });
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void listEngineSheets()
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+
+        const engineSheets =
+          response?.type === "sheets" && Array.isArray(response.payload)
+            ? response.payload
+            : null;
+        if (!engineSheets) {
+          return;
+        }
+
+        workspaceState.setWorkspaceState((current) => {
+          const next = reconcileWorkspaceSheetsFromEngine(current, engineSheets);
+          workspaceState.workspaceRef.current = next;
+          return next;
+        });
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceState.setWorkspaceState, workspaceState.workspaceRef]);
+
   const surface = useWorkspaceShellSurfaceController({
     workspaceState: workspaceState.workspaceState,
     setWorkspaceState: workspaceState.setWorkspaceState,
@@ -20,7 +85,16 @@ export function useWorkspaceAppController(): ComponentProps<
     activeSheetId: workspaceState.activeSheetId,
     updateSheet: workspaceState.updateSheet,
   });
-  const sheetViewModel = useWorkspaceSheetViewModel(workspaceState.activeSheet);
+  const workspaceEngineActiveSheetMutationRevision =
+    workspaceEngineGlobalMutationRevision +
+    (workspaceEngineSheetMutationRevisionById[workspaceState.activeSheetId] ?? 0);
+  const sheetViewModel = useWorkspaceSheetViewModel(
+    workspaceState.activeSheet,
+    workspaceState.activeSheetId,
+    surface.workspaceEngineSyncGeneration +
+      workspaceEngineActiveSheetMutationRevision,
+    workspaceEngineActiveSheetMutationRevision
+  );
   const interactionRefs = useWorkspaceInteractionRefs();
   const interactionRuntime = useWorkspaceInteractionRuntimeController({
     activeSheet: workspaceState.activeSheet,
@@ -49,9 +123,11 @@ export function useWorkspaceAppController(): ComponentProps<
     highlightedColumnSheetIdRef: interactionRefs.highlightedColumnSheetIdRef,
     activeFilterCount: sheetViewModel.activeFilterCount,
     allTrackingIds: sheetViewModel.allTrackingIds,
-    exportableRows: sheetViewModel.exportableRows,
+    exportableTableRows: sheetViewModel.exportableTableRows,
+    rustExportRowsQuery: sheetViewModel.rustExportRowsQuery,
     retrackableRows: sheetViewModel.retrackableRows,
     retryFailedEntries: sheetViewModel.retryFailedEntries,
+    selectedEngineRowIds: sheetViewModel.selectedEngineRowIds,
     selectedTrackingIds: sheetViewModel.selectedTrackingIds,
     selectedVisibleRowKeys: sheetViewModel.selectedVisibleRowKeys,
     visibleColumns: sheetViewModel.visibleColumns,
@@ -61,6 +137,7 @@ export function useWorkspaceAppController(): ComponentProps<
     pinnedColumnSet: sheetViewModel.pinnedColumnSet,
     allVisibleSelected: sheetViewModel.allVisibleSelected,
     showNotice: surface.showActionNotice,
+    onWorkspaceEngineMutation: markWorkspaceEngineMutation,
   });
 
   return useWorkspaceShellViewController({

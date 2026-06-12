@@ -10,6 +10,7 @@ import {
   ImportSourceDrafts,
   ImportSourceLookupStates,
   ImportSourceModalKind,
+  ImportSourceRetryTargets,
 } from "../types";
 import { ImportSourceModal } from "./ImportSourceModal";
 
@@ -58,7 +59,10 @@ type SheetActionBarProps = {
   onSetImportSourceDraft: (kind: ImportSourceModalKind, value: string) => void;
   onImportBagTrackingIds: (mode: "replace" | "append") => void;
   onImportManifestTrackingIds: (mode: "replace" | "append") => void;
-  onRunImportSourceLookup: (kind: ImportSourceModalKind) => void;
+  onRunImportSourceLookup: (
+    kind: ImportSourceModalKind,
+    retryTargets?: ImportSourceRetryTargets
+  ) => void;
   onStartSelectedIdsDrag?: (event: ReactDragEvent<HTMLButtonElement>) => void;
   onEndSelectedIdsDrag?: () => void;
 };
@@ -743,6 +747,9 @@ export function SheetActionBar({
           onImportBagTrackingIds={onImportBagTrackingIds}
           onImportManifestTrackingIds={onImportManifestTrackingIds}
           onSubmit={() => onRunImportSourceLookup(importSourceModalKind)}
+          onRetryFailed={(targets) =>
+            onRunImportSourceLookup(importSourceModalKind, targets)
+          }
           onClose={onCloseImportSourceModal}
         />
       ) : null}

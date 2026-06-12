@@ -15,7 +15,10 @@ import type {
 } from "../sheet/types";
 import { assertValidSheetState, createEmptyRow, ensureTrailingEmptyRows, isBrowserReady } from "../sheet/utils";
 import { TrackResponse } from "../../types";
-import { createDefaultWorkspaceState } from "./default-state";
+import {
+  DEFAULT_WORKSPACE_SHEET_ID,
+  createDefaultWorkspaceState,
+} from "./default-state";
 import {
   createDefaultWorkspaceDocumentMeta,
   normalizePersistedWorkspaceDocumentMeta,
@@ -83,7 +86,9 @@ export function createStorageSafeWorkspaceState(
               rawResponse: "",
               error: "",
               trackingIds: [],
+              jobId: null,
               requestKey: null,
+              sourceItemStates: [],
               manifestBagStates: [],
             },
             manifest: {
@@ -91,7 +96,9 @@ export function createStorageSafeWorkspaceState(
               rawResponse: "",
               error: "",
               trackingIds: [],
+              jobId: null,
               requestKey: null,
+              sourceItemStates: [],
               manifestBagStates: [],
             },
           },
@@ -291,7 +298,10 @@ function normalizePersistedSheetAnalyticsState(candidate: unknown) {
 }
 
 export function normalizePersistedWorkspaceState(
-  workspace: Partial<WorkspaceState> | null | undefined
+  workspace: Partial<WorkspaceState> | null | undefined,
+  options?: {
+    migratePrimarySheetToDefault?: boolean;
+  }
 ): WorkspaceState {
   const fallback = createDefaultWorkspaceState();
   if (!workspace || typeof workspace !== "object") {
@@ -315,13 +325,27 @@ export function normalizePersistedWorkspaceState(
   if (normalizedSheetOrder.length === 0) {
     return fallback;
   }
+  const shouldMigratePrimarySheetToDefault =
+    options?.migratePrimarySheetToDefault ?? true;
+  const hasDefaultSheetId = normalizedSheetOrder.includes(DEFAULT_WORKSPACE_SHEET_ID);
+  const sheetIdMappings = normalizedSheetOrder.map((sourceSheetId, index) => ({
+    sourceSheetId,
+    sheetId:
+      shouldMigratePrimarySheetToDefault && index === 0 && !hasDefaultSheetId
+        ? DEFAULT_WORKSPACE_SHEET_ID
+        : sourceSheetId,
+  }));
+  const canonicalSheetOrder = sheetIdMappings.map(({ sheetId }) => sheetId);
+  const canonicalSheetIdBySourceSheetId = new Map(
+    sheetIdMappings.map(({ sourceSheetId, sheetId }) => [sourceSheetId, sheetId])
+  );
 
   const sheetsById = Object.fromEntries(
-    normalizedSheetOrder.map((sheetId) => {
+    sheetIdMappings.map(({ sourceSheetId, sheetId }) => {
       const baseSheet = createDefaultSheetState();
       const candidate =
-        parsedSheets[sheetId] && typeof parsedSheets[sheetId] === "object"
-          ? parsedSheets[sheetId]
+        parsedSheets[sourceSheetId] && typeof parsedSheets[sourceSheetId] === "object"
+          ? parsedSheets[sourceSheetId]
           : null;
       const parsedRows = Array.isArray((candidate as { rows?: unknown[] } | null)?.rows)
         ? ((candidate as { rows: unknown[] }).rows as unknown[])
@@ -481,7 +505,9 @@ export function normalizePersistedWorkspaceState(
             rawResponse: "",
             error: "",
             trackingIds: [],
+            jobId: null,
             requestKey: null,
+            sourceItemStates: [],
             manifestBagStates: [],
           },
           manifest: {
@@ -489,7 +515,9 @@ export function normalizePersistedWorkspaceState(
             rawResponse: "",
             error: "",
             trackingIds: [],
+            jobId: null,
             requestKey: null,
+            sourceItemStates: [],
             manifestBagStates: [],
           },
         },
@@ -503,41 +531,42 @@ export function normalizePersistedWorkspaceState(
   ) as WorkspaceState["sheetsById"];
 
   const sheetMetaById = Object.fromEntries(
-    normalizedSheetOrder.map((sheetId) => [
+    sheetIdMappings.map(({ sourceSheetId, sheetId }, index) => [
       sheetId,
       {
         name:
-          parsedMeta[sheetId] &&
-          typeof parsedMeta[sheetId] === "object" &&
-          typeof (parsedMeta[sheetId] as { name?: unknown }).name === "string" &&
-          (parsedMeta[sheetId] as { name: string }).name.trim()
-            ? (parsedMeta[sheetId] as { name: string }).name
-            : `Sheet ${normalizedSheetOrder.indexOf(sheetId) + 1}`,
+          parsedMeta[sourceSheetId] &&
+          typeof parsedMeta[sourceSheetId] === "object" &&
+          typeof (parsedMeta[sourceSheetId] as { name?: unknown }).name === "string" &&
+          (parsedMeta[sourceSheetId] as { name: string }).name.trim()
+            ? (parsedMeta[sourceSheetId] as { name: string }).name
+            : `Sheet ${index + 1}`,
         color:
-          parsedMeta[sheetId] &&
-          typeof parsedMeta[sheetId] === "object" &&
-          isWorkspaceSheetColor((parsedMeta[sheetId] as { color?: unknown }).color)
-            ? (parsedMeta[sheetId] as { color: WorkspaceSheetColor }).color
+          parsedMeta[sourceSheetId] &&
+          typeof parsedMeta[sourceSheetId] === "object" &&
+          isWorkspaceSheetColor((parsedMeta[sourceSheetId] as { color?: unknown }).color)
+            ? (parsedMeta[sourceSheetId] as { color: WorkspaceSheetColor }).color
             : "slate",
         icon:
-          parsedMeta[sheetId] &&
-          typeof parsedMeta[sheetId] === "object" &&
-          isWorkspaceSheetIcon((parsedMeta[sheetId] as { icon?: unknown }).icon)
-            ? (parsedMeta[sheetId] as { icon: WorkspaceSheetIcon }).icon
+          parsedMeta[sourceSheetId] &&
+          typeof parsedMeta[sourceSheetId] === "object" &&
+          isWorkspaceSheetIcon((parsedMeta[sourceSheetId] as { icon?: unknown }).icon)
+            ? (parsedMeta[sourceSheetId] as { icon: WorkspaceSheetIcon }).icon
             : "sheet",
       },
     ])
   ) as WorkspaceState["sheetMetaById"];
 
   const activeSheetId =
-    typeof workspace.activeSheetId === "string" && workspace.activeSheetId in sheetsById
-      ? workspace.activeSheetId
-      : normalizedSheetOrder[0];
+    typeof workspace.activeSheetId === "string" &&
+    canonicalSheetIdBySourceSheetId.has(workspace.activeSheetId)
+      ? canonicalSheetIdBySourceSheetId.get(workspace.activeSheetId)!
+      : canonicalSheetOrder[0];
 
   return {
     version: 1,
     activeSheetId,
-    sheetOrder: normalizedSheetOrder,
+    sheetOrder: canonicalSheetOrder,
     sheetMetaById,
     sheetsById,
   };
@@ -680,24 +709,13 @@ export function persistWorkspaceStateSnapshot(params: {
     return;
   }
 
-  const persistWorkspace = (mode: "full" | "inputs_only") => {
-    const serialized = JSON.stringify(createStorageSafeWorkspaceState(workspaceState, mode));
-    window.localStorage.setItem(scopedWorkspaceKey, serialized);
-  };
-
   try {
-    persistWorkspace("full");
-  } catch (error) {
-    console.warn(
-      "[ShipFlowWorkspace] failed to persist full workspace snapshot, falling back to inputs-only snapshot.",
-      error
+    const serialized = JSON.stringify(
+      createStorageSafeWorkspaceState(workspaceState, "inputs_only")
     );
-
-    try {
-      persistWorkspace("inputs_only");
-    } catch (fallbackError) {
-      console.error("[ShipFlowWorkspace] failed to persist workspace snapshot.", fallbackError);
-    }
+    window.localStorage.setItem(scopedWorkspaceKey, serialized);
+  } catch (error) {
+    console.error("[ShipFlowWorkspace] failed to persist workspace snapshot.", error);
   }
 }
 

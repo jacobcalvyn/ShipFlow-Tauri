@@ -1702,12 +1702,15 @@ button {
 
 .import-source-modal-input {
   width: 100%;
+  min-height: 104px;
   border: 1px solid #cbd5e1;
   border-radius: 10px;
   background: #ffffff;
   color: #0f172a;
   padding: 11px 12px;
   font-size: 0.94rem;
+  line-height: 1.45;
+  resize: vertical;
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
@@ -1771,6 +1774,34 @@ button {
 
 .import-source-modal-id-item-with-status .row-status-dot {
   margin-top: 0;
+}
+
+.import-source-modal-id-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.import-source-modal-inline-action {
+  flex: 0 0 auto;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fff7f7;
+  color: #b91c1c;
+  padding: 5px 8px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.import-source-modal-inline-action:hover:not(:disabled) {
+  border-color: #fca5a5;
+  background: #fee2e2;
+}
+
+.import-source-modal-inline-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .import-source-modal-result-label {

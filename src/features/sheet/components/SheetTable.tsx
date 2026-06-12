@@ -11,7 +11,8 @@ import {
 } from "react";
 import { ColumnHeaderCell } from "./ColumnHeaderCell";
 import { SheetBodyRow } from "./SheetBodyRow";
-import { ColumnDefinition, SheetRow, ValueFilterOption } from "../types";
+import type { SheetTableRow } from "../table-row-view";
+import { ColumnDefinition, ValueFilterOption } from "../types";
 import { getColumnToneClass } from "../utils";
 
 const TABLE_SCALE_METRICS = {
@@ -66,7 +67,14 @@ function isShortcutHighlighted(
 type SheetTableProps = {
   sheetId: string;
   displayScale: "small" | "medium" | "large";
-  displayedRows: SheetRow[];
+  displayedTableRows: SheetTableRow[];
+  rowWindow?: {
+    offset: number;
+    limit: number;
+    totalCount: number;
+    hasMore: boolean;
+    nextOffset: number | null;
+  } | null;
   visibleColumns: ColumnDefinition[];
   hiddenColumns: ColumnDefinition[];
   columnWidths: Record<string, number>;
@@ -82,6 +90,10 @@ type SheetTableProps = {
   highlightedColumnPath: string | null;
   scrollContainerRef: RefObject<HTMLDivElement>;
   onScrollContainer: (event: UIEvent<HTMLDivElement>) => void;
+  onVisibleRowWindowChange?: (range: {
+    startIndex: number;
+    endIndex: number;
+  }) => void;
   sortDirectionForPath: (path: string) => "asc" | "desc" | null;
   onMouseLeaveTable: () => void;
   onHoverColumn: (columnIndex: number | null) => void;
@@ -90,21 +102,29 @@ type SheetTableProps = {
   onOpenSourceLink: (url: string) => void;
   onCopyTrackingId: (value: string) => void;
   onClearTrackingCell: (sheetId: string, rowKey: string) => void;
-  onTrackingInputChange: (sheetId: string, rowKey: string, value: string) => void;
+  onTrackingInputChange: (
+    sheetId: string,
+    rowKey: string,
+    value: string,
+    options?: { position?: number; engineRowId?: string }
+  ) => void;
   onTrackingInputBlur: (
     event: FocusEvent<HTMLInputElement>,
     sheetId: string,
-    rowKey: string
+    rowKey: string,
+    options?: { position?: number; engineRowId?: string }
   ) => void;
   onTrackingInputKeyDown: (
     event: KeyboardEvent<HTMLInputElement>,
     sheetId: string,
-    rowKey: string
+    rowKey: string,
+    options?: { position?: number; engineRowId?: string }
   ) => void;
   onTrackingInputPaste: (
     event: ClipboardEvent<HTMLInputElement>,
     sheetId: string,
-    rowKey: string
+    rowKey: string,
+    options?: { position?: number; engineRowId?: string }
   ) => void;
   onFilterChange: (path: string, value: string) => void;
   onResizeStart: (
@@ -125,7 +145,8 @@ type SheetTableProps = {
 export function SheetTable({
   sheetId,
   displayScale,
-  displayedRows,
+  displayedTableRows,
+  rowWindow = null,
   visibleColumns,
   hiddenColumns,
   columnWidths,
@@ -141,6 +162,7 @@ export function SheetTable({
   highlightedColumnPath,
   scrollContainerRef,
   onScrollContainer,
+  onVisibleRowWindowChange,
   sortDirectionForPath,
   onMouseLeaveTable,
   onHoverColumn,
@@ -168,6 +190,7 @@ export function SheetTable({
   const [virtualScrollTop, setVirtualScrollTop] = useState(0);
   const [scrollViewportHeight, setScrollViewportHeight] = useState(0);
   const scaleMetrics = TABLE_SCALE_METRICS[displayScale];
+  const tableRows = displayedTableRows;
 
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current;
@@ -194,14 +217,18 @@ export function SheetTable({
       resizeObserver?.disconnect();
       window.removeEventListener("resize", syncMetrics);
     };
-  }, [displayScale, scrollContainerRef, sheetId, displayedRows.length]);
+  }, [displayScale, scrollContainerRef, sheetId, tableRows.length]);
 
   const bodyViewportHeight = Math.max(
     scrollViewportHeight - scaleMetrics.headerHeight - scaleMetrics.filterHeight,
     0
   );
+  const rowWindowOffset = rowWindow?.offset ?? 0;
+  const rowTotalCount = rowWindow
+    ? Math.max(rowWindow.totalCount, tableRows.length)
+    : tableRows.length;
   const shouldVirtualize =
-    bodyViewportHeight > 0 && displayedRows.length > VIRTUALIZATION_THRESHOLD;
+    bodyViewportHeight > 0 && rowTotalCount > VIRTUALIZATION_THRESHOLD;
   const bodyScrollTop = Math.max(
     0,
     virtualScrollTop - scaleMetrics.headerHeight - scaleMetrics.filterHeight
@@ -214,22 +241,66 @@ export function SheetTable({
     : 0;
   const visibleRowCount = shouldVirtualize
     ? Math.ceil(bodyViewportHeight / scaleMetrics.rowHeight) + VIRTUALIZATION_OVERSCAN * 2
-    : displayedRows.length;
+    : rowTotalCount;
   const endIndex = shouldVirtualize
-    ? Math.min(displayedRows.length, startIndex + visibleRowCount)
-    : displayedRows.length;
+    ? Math.min(rowTotalCount, startIndex + visibleRowCount)
+    : rowTotalCount;
+  const localStartIndex = rowWindow
+    ? Math.max(0, startIndex - rowWindowOffset)
+    : startIndex;
+  const localEndIndex = rowWindow
+    ? Math.max(
+        localStartIndex,
+        Math.min(tableRows.length, endIndex - rowWindowOffset)
+      )
+    : endIndex;
   const renderedRows = useMemo(
-    () => displayedRows.slice(startIndex, endIndex),
-    [displayedRows, endIndex, startIndex]
+    () => tableRows.slice(localStartIndex, localEndIndex),
+    [localEndIndex, localStartIndex, tableRows]
   );
   const topSpacerHeight = shouldVirtualize ? startIndex * scaleMetrics.rowHeight : 0;
   const bottomSpacerHeight = shouldVirtualize
-    ? Math.max(0, (displayedRows.length - endIndex) * scaleMetrics.rowHeight)
+    ? Math.max(0, (rowTotalCount - endIndex) * scaleMetrics.rowHeight)
     : 0;
 
   const handleScroll = (event: UIEvent<HTMLDivElement>) => {
     setVirtualScrollTop(event.currentTarget.scrollTop);
     onScrollContainer(event);
+    if (rowWindow && onVisibleRowWindowChange) {
+      const nextBodyViewportHeight = Math.max(
+        event.currentTarget.clientHeight -
+          scaleMetrics.headerHeight -
+          scaleMetrics.filterHeight,
+        0
+      );
+      const nextShouldVirtualize =
+        nextBodyViewportHeight > 0 && rowTotalCount > VIRTUALIZATION_THRESHOLD;
+      const nextBodyScrollTop = Math.max(
+        0,
+        event.currentTarget.scrollTop -
+          scaleMetrics.headerHeight -
+          scaleMetrics.filterHeight
+      );
+      const nextStartIndex = nextShouldVirtualize
+        ? Math.max(
+            0,
+            Math.floor(nextBodyScrollTop / scaleMetrics.rowHeight) -
+              VIRTUALIZATION_OVERSCAN
+          )
+        : 0;
+      const nextVisibleRowCount = nextShouldVirtualize
+        ? Math.ceil(nextBodyViewportHeight / scaleMetrics.rowHeight) +
+          VIRTUALIZATION_OVERSCAN * 2
+        : rowTotalCount;
+      const nextEndIndex = nextShouldVirtualize
+        ? Math.min(rowTotalCount, nextStartIndex + nextVisibleRowCount)
+        : rowTotalCount;
+
+      onVisibleRowWindowChange({
+        startIndex: nextStartIndex,
+        endIndex: nextEndIndex,
+      });
+    }
   };
 
   return (

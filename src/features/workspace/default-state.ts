@@ -7,6 +7,9 @@ import {
 
 let workspaceSheetCounter = 0;
 
+export const DEFAULT_WORKSPACE_SHEET_ID = "default-sheet";
+export const DEFAULT_WORKSPACE_SHEET_NAME = "Sheet 1";
+
 export function createWorkspaceSheetId() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
@@ -26,7 +29,7 @@ export function createDefaultSheetIcon(): WorkspaceSheetIcon {
 }
 
 export function createDefaultWorkspaceState(): WorkspaceState {
-  const sheetId = createWorkspaceSheetId();
+  const sheetId = DEFAULT_WORKSPACE_SHEET_ID;
 
   return {
     version: 1,
@@ -34,7 +37,7 @@ export function createDefaultWorkspaceState(): WorkspaceState {
     sheetOrder: [sheetId],
     sheetMetaById: {
       [sheetId]: {
-        name: createDefaultSheetName(1),
+        name: DEFAULT_WORKSPACE_SHEET_NAME,
         color: createDefaultSheetColor(),
         icon: createDefaultSheetIcon(),
       },
