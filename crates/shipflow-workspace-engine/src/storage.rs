@@ -556,6 +556,16 @@ impl SqliteWorkspaceStore {
         let now = now_utc_text();
         self.connection.execute(
             r#"
+            DELETE FROM sheet_rows
+            WHERE sheet_id = ?1
+              AND position = ?2
+              AND id <> ?3
+            "#,
+            params![input.sheet_id, input.position, input.row_id],
+        )?;
+
+        self.connection.execute(
+            r#"
             INSERT INTO sheet_rows (
               id,
               sheet_id,
@@ -2714,6 +2724,54 @@ mod tests {
         assert_eq!(window.rows[0].display_tracking_id, "P2606020189412.30");
         assert_eq!(window.rows[0].lookup_tracking_id, "P2606020189412");
         assert_eq!(window.rows[0].row_status, SheetRowStatus::Loaded);
+    }
+
+    #[test]
+    fn sheet_row_upsert_replaces_existing_row_at_same_position() {
+        let mut store = prepared_store();
+
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "stale-local-row".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 0,
+                display_tracking_id: "POLD".to_string(),
+                lookup_tracking_id: "POLD".to_string(),
+                row_status: SheetRowStatus::Loaded,
+                error_message: None,
+            })
+            .expect("initial row is stored");
+
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "new-local-row".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 0,
+                display_tracking_id: "PNEW".to_string(),
+                lookup_tracking_id: "PNEW".to_string(),
+                row_status: SheetRowStatus::Empty,
+                error_message: None,
+            })
+            .expect("new row replaces the existing position");
+
+        let window = store
+            .query_sheet_rows(
+                &SheetRowsQuery {
+                    sheet_id: "sheet-1".to_string(),
+                    offset: 0,
+                    limit: 10,
+                    filters: vec![],
+                    value_filters: vec![],
+                    sort: vec![],
+                },
+                250,
+            )
+            .expect("rows are queried");
+
+        assert_eq!(window.total_count, 1);
+        assert_eq!(window.rows[0].row_id, "new-local-row");
+        assert_eq!(window.rows[0].display_tracking_id, "PNEW");
+        assert_eq!(window.rows[0].position, 0);
     }
 
     #[test]

@@ -635,10 +635,14 @@ fn terminate_process(pid: u32) -> Result<(), String> {
     {
         let status = Command::new("kill")
             .arg(pid.to_string())
+            .stderr(Stdio::null())
             .status()
             .map_err(|error| format!("Unable to terminate API service companion: {error}"))?;
 
         if !status.success() {
+            if !is_process_alive(pid) {
+                return Ok(());
+            }
             return Err("Unable to terminate API service companion.".into());
         }
 
@@ -652,10 +656,14 @@ fn terminate_process(pid: u32) -> Result<(), String> {
 
         let force_status = Command::new("kill")
             .args(["-9", &pid.to_string()])
+            .stderr(Stdio::null())
             .status()
             .map_err(|error| format!("Unable to force-stop API service companion: {error}"))?;
 
         if !force_status.success() {
+            if !is_process_alive(pid) {
+                return Ok(());
+            }
             return Err("Unable to force-stop API service companion.".into());
         }
     }
@@ -682,6 +690,7 @@ pub fn is_process_alive(pid: u32) -> bool {
     {
         Command::new("kill")
             .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
             .status()
             .map(|status| status.success())
             .unwrap_or(false)
