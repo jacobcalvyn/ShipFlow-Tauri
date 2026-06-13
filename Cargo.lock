@@ -4161,6 +4161,7 @@ dependencies = [
 name = "shipflow3-tauri"
 version = "0.1.0"
 dependencies = [
+ "reqwest 0.12.28",
  "serde",
  "shipflow-tauri-runtime",
  "shipflow-workspace-engine",

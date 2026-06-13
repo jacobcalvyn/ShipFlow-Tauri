@@ -1,6 +1,11 @@
+use std::future::Future;
 use std::path::PathBuf;
 
-use shipflow_tauri_runtime::tracking::model::TrackingClientState;
+use shipflow_tauri_runtime::service::{load_desktop_service_connection_config, ApiServiceConfig};
+use shipflow_tauri_runtime::service_client::{
+    track_bag_via_service, track_manifest_via_service, track_shipment_via_service,
+};
+use shipflow_tauri_runtime::tracking::model::{BagResponse, ManifestResponse, TrackResponse};
 use shipflow_workspace_engine::commands::{
     JobIdRequest, WorkspaceEngineCommand, WorkspaceEngineResponse,
 };
@@ -8,12 +13,13 @@ use shipflow_workspace_engine::engine::{
     WorkspaceEngineBootstrapConfig, WorkspaceEngineConfig, WorkspaceEngineRuntime,
 };
 use shipflow_workspace_engine::events::WorkspaceEngineEvent;
-use shipflow_workspace_engine::import_engine::ShipflowCoreImportLookupSource;
+use shipflow_workspace_engine::import_engine::{ImportLookupFailure, ImportLookupSource};
+use shipflow_workspace_engine::tracking::{TrackingLookupFailure, TrackingLookupSource};
 use tauri::ipc::Channel;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
-type DesktopWorkspaceEngineRuntime = WorkspaceEngineRuntime<ShipflowCoreImportLookupSource>;
+type DesktopWorkspaceEngineRuntime = WorkspaceEngineRuntime<DesktopServiceLookupSource>;
 
 const DEFAULT_WORKSPACE_ID: &str = "default-workspace";
 const DEFAULT_WORKSPACE_NAME: &str = "Default Workspace";
@@ -30,12 +36,11 @@ pub async fn workspace_engine_command(
     app: tauri::AppHandle,
     command: WorkspaceEngineCommand,
     state: tauri::State<'_, WorkspaceEngineState>,
-    client_state: tauri::State<'_, TrackingClientState>,
 ) -> Result<WorkspaceEngineResponse, String> {
     let mut runtime = state.runtime.lock().await;
 
     if runtime.is_none() {
-        *runtime = Some(build_workspace_engine_runtime(&app, &client_state)?);
+        *runtime = Some(build_workspace_engine_runtime(&app)?);
     }
 
     runtime
@@ -52,12 +57,11 @@ pub async fn workspace_engine_run_import_job_with_progress(
     request: JobIdRequest,
     on_event: Channel<WorkspaceEngineEvent>,
     state: tauri::State<'_, WorkspaceEngineState>,
-    client_state: tauri::State<'_, TrackingClientState>,
 ) -> Result<WorkspaceEngineResponse, String> {
     let mut runtime = state.runtime.lock().await;
 
     if runtime.is_none() {
-        *runtime = Some(build_workspace_engine_runtime(&app, &client_state)?);
+        *runtime = Some(build_workspace_engine_runtime(&app)?);
     }
 
     runtime
@@ -77,12 +81,11 @@ pub async fn workspace_engine_retry_import_job_failed_with_progress(
     request: JobIdRequest,
     on_event: Channel<WorkspaceEngineEvent>,
     state: tauri::State<'_, WorkspaceEngineState>,
-    client_state: tauri::State<'_, TrackingClientState>,
 ) -> Result<WorkspaceEngineResponse, String> {
     let mut runtime = state.runtime.lock().await;
 
     if runtime.is_none() {
-        *runtime = Some(build_workspace_engine_runtime(&app, &client_state)?);
+        *runtime = Some(build_workspace_engine_runtime(&app)?);
     }
 
     runtime
@@ -107,12 +110,8 @@ pub fn workspace_engine_db_path(app: &tauri::AppHandle) -> Result<PathBuf, Strin
 
 fn build_workspace_engine_runtime(
     app: &tauri::AppHandle,
-    client_state: &TrackingClientState,
 ) -> Result<DesktopWorkspaceEngineRuntime, String> {
-    let source = ShipflowCoreImportLookupSource::with_client(
-        client_state.client.clone(),
-        client_state.current_source_config(),
-    );
+    let source = DesktopServiceLookupSource::new();
     let bootstrap = WorkspaceEngineRuntime::open_persistent(
         WorkspaceEngineConfig::default(),
         WorkspaceEngineBootstrapConfig::new(
@@ -127,6 +126,65 @@ fn build_workspace_engine_runtime(
     .map_err(|error| error.to_string())?;
 
     Ok(bootstrap.runtime)
+}
+
+#[derive(Clone)]
+struct DesktopServiceLookupSource {
+    client: reqwest::Client,
+}
+
+impl DesktopServiceLookupSource {
+    fn new() -> Self {
+        Self {
+            client: reqwest::Client::new(),
+        }
+    }
+
+    fn load_config() -> Result<ApiServiceConfig, String> {
+        load_desktop_service_connection_config()?.ok_or_else(|| {
+            "ShipFlow Desktop requires a configured ShipFlow Service connection.".to_string()
+        })
+    }
+}
+
+impl ImportLookupSource for DesktopServiceLookupSource {
+    fn fetch_bag<'a>(
+        &'a mut self,
+        bag_id: &'a str,
+    ) -> impl Future<Output = Result<BagResponse, ImportLookupFailure>> + 'a {
+        async move {
+            let config = Self::load_config().map_err(ImportLookupFailure::new)?;
+            track_bag_via_service(&self.client, &config, bag_id, false)
+                .await
+                .map_err(ImportLookupFailure::from)
+        }
+    }
+
+    fn fetch_manifest<'a>(
+        &'a mut self,
+        manifest_id: &'a str,
+    ) -> impl Future<Output = Result<ManifestResponse, ImportLookupFailure>> + 'a {
+        async move {
+            let config = Self::load_config().map_err(ImportLookupFailure::new)?;
+            track_manifest_via_service(&self.client, &config, manifest_id, false)
+                .await
+                .map_err(ImportLookupFailure::from)
+        }
+    }
+}
+
+impl TrackingLookupSource for DesktopServiceLookupSource {
+    fn fetch_tracking<'a>(
+        &'a mut self,
+        lookup_tracking_id: &'a str,
+    ) -> impl Future<Output = Result<TrackResponse, TrackingLookupFailure>> + 'a {
+        async move {
+            let config = Self::load_config().map_err(TrackingLookupFailure::new)?;
+            track_shipment_via_service(&self.client, &config, lookup_tracking_id, false)
+                .await
+                .map_err(TrackingLookupFailure::from)
+        }
+    }
 }
 
 #[cfg(test)]
