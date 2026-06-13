@@ -4147,7 +4147,6 @@ version = "0.1.0"
 dependencies = [
  "duckdb",
  "hex",
- "reqwest 0.12.28",
  "rusqlite",
  "serde",
  "serde_json",

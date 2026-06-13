@@ -179,8 +179,10 @@ export function createSheetTableRowsFromRustWindow(
       shipment,
       legacyRow
     );
+    const shouldUseLocalRuntimeState = projection.rowStatus !== "loaded";
     const hasLocalRuntimeState = Boolean(
-      legacyRow &&
+      shouldUseLocalRuntimeState &&
+        legacyRow &&
         (legacyRow.loading ||
           legacyRow.queued ||
           legacyRow.error ||

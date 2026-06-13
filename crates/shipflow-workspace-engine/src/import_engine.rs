@@ -5,12 +5,7 @@ use std::future::Future;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use shipflow_core::model::{
-    BagResponse, ManifestResponse, TrackResponse, TrackingError, TrackingSourceConfig,
-};
-use shipflow_core::upstream::{
-    resolve_bag_request, resolve_manifest_request, resolve_tracking_request,
-};
+use shipflow_core::model::{BagResponse, ManifestResponse, TrackingError};
 
 use crate::blob_store::{write_blob, BlobStoreError};
 use crate::events::{ImportJobItemDelta, ImportJobProgressEvent};
@@ -24,7 +19,7 @@ use crate::storage::{
     SqliteWorkspaceStore, StartImportAttemptInput, UpsertRawBlobInput, UpsertSheetRowInput,
     WorkspaceStoreError,
 };
-use crate::tracking::{resolve_tracking_id, TrackingLookupFailure, TrackingLookupSource};
+use crate::tracking::resolve_tracking_id;
 
 pub trait ImportLookupSource {
     fn fetch_bag<'a>(
@@ -64,69 +59,6 @@ impl From<TrackingError> for ImportLookupFailure {
     fn from(error: TrackingError) -> Self {
         Self {
             message: tracking_error_message(error),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct ShipflowCoreImportLookupSource {
-    client: reqwest::Client,
-    source_config: TrackingSourceConfig,
-}
-
-impl ShipflowCoreImportLookupSource {
-    pub fn new(source_config: TrackingSourceConfig) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            source_config,
-        }
-    }
-
-    pub fn with_client(client: reqwest::Client, source_config: TrackingSourceConfig) -> Self {
-        Self {
-            client,
-            source_config,
-        }
-    }
-
-    pub fn source_config(&self) -> &TrackingSourceConfig {
-        &self.source_config
-    }
-}
-
-impl ImportLookupSource for ShipflowCoreImportLookupSource {
-    fn fetch_bag<'a>(
-        &'a mut self,
-        bag_id: &'a str,
-    ) -> impl Future<Output = Result<BagResponse, ImportLookupFailure>> + 'a {
-        async move {
-            resolve_bag_request(&self.client, &self.source_config, bag_id)
-                .await
-                .map_err(ImportLookupFailure::from)
-        }
-    }
-
-    fn fetch_manifest<'a>(
-        &'a mut self,
-        manifest_id: &'a str,
-    ) -> impl Future<Output = Result<ManifestResponse, ImportLookupFailure>> + 'a {
-        async move {
-            resolve_manifest_request(&self.client, &self.source_config, manifest_id)
-                .await
-                .map_err(ImportLookupFailure::from)
-        }
-    }
-}
-
-impl TrackingLookupSource for ShipflowCoreImportLookupSource {
-    fn fetch_tracking<'a>(
-        &'a mut self,
-        lookup_tracking_id: &'a str,
-    ) -> impl Future<Output = Result<TrackResponse, TrackingLookupFailure>> + 'a {
-        async move {
-            resolve_tracking_request(&self.client, &self.source_config, lookup_tracking_id)
-                .await
-                .map_err(TrackingLookupFailure::from)
         }
     }
 }

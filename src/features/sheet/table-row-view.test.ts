@@ -125,7 +125,7 @@ describe("sheet table row view", () => {
     expect(rows[0].error).toBe("");
   });
 
-  it("keeps local loading state while a Rust projection is stale", () => {
+  it("uses the loaded Rust projection over stale local loading state", () => {
     const legacyRows = createEmptyRows(1);
     legacyRows[0] = {
       ...legacyRows[0],
@@ -161,8 +161,9 @@ describe("sheet table row view", () => {
       key: "legacy-visible-key",
       engineRowId: "rust-row-1",
       trackingInput: "P103",
-      status: "Loading",
-      loading: true,
+      status: "Ready",
+      loading: false,
+      error: "",
     });
   });
 
