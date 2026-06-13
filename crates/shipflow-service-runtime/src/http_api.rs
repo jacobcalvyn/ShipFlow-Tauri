@@ -4,7 +4,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use reqwest::{Client, StatusCode as ReqwestStatusCode, Url};
+use reqwest::{Client, RequestBuilder, StatusCode as ReqwestStatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use shipflow_core::{
@@ -765,7 +765,7 @@ async fn run_external_api_batch_job(
 ) -> Result<ExternalBatchOutcome, String> {
     let source_config = &state.tracking_source;
     let Some(auth_token) = external_api_auth_token(source_config) else {
-        return Err("External API bearer token is required.".into());
+        return Err("External API token is required.".into());
     };
     let base_url = parse_external_api_base_url(
         &source_config.external_api_base_url,
@@ -776,10 +776,7 @@ async fn run_external_api_batch_job(
     let start_endpoint = base_url
         .join("v1/jobs/track-batch")
         .map_err(|error| format!("External API batch endpoint is invalid: {error}"))?;
-    let start_response = state
-        .client
-        .post(start_endpoint)
-        .bearer_auth(auth_token)
+    let start_response = external_api_request(state.client.post(start_endpoint), auth_token)
         .header("content-type", "application/json")
         .body(
             serde_json::to_string(&BatchTrackRequest {
@@ -819,21 +816,16 @@ async fn run_external_api_batch_job(
         if state.job_registry.is_cancel_requested(job_id) {
             let cancel_url =
                 external_api_relative_url(&base_url, &format!("/v1/jobs/{}/cancel", start.job_id))?;
-            let _ = state
-                .client
-                .post(cancel_url)
-                .bearer_auth(auth_token)
+            let _ = external_api_request(state.client.post(cancel_url), auth_token)
                 .send()
                 .await;
         }
 
-        let status_response = state
-            .client
-            .get(status_url.clone())
-            .bearer_auth(auth_token)
-            .send()
-            .await
-            .map_err(|error| format!("External API batch status request failed: {error}"))?;
+        let status_response =
+            external_api_request(state.client.get(status_url.clone()), auth_token)
+                .send()
+                .await
+                .map_err(|error| format!("External API batch status request failed: {error}"))?;
 
         if !status_response.status().is_success() {
             return Err(format!(
@@ -855,10 +847,7 @@ async fn run_external_api_batch_job(
             status.status,
             BatchJobStatus::Completed | BatchJobStatus::Cancelled | BatchJobStatus::Failed
         ) {
-            let result_response = state
-                .client
-                .get(result_url)
-                .bearer_auth(auth_token)
+            let result_response = external_api_request(state.client.get(result_url), auth_token)
                 .send()
                 .await
                 .map_err(|error| format!("External API batch result request failed: {error}"))?;
@@ -952,6 +941,12 @@ fn external_api_auth_token(source_config: &TrackingSourceConfig) -> Option<&str>
     } else {
         Some(token)
     }
+}
+
+fn external_api_request(request: RequestBuilder, api_token: &str) -> RequestBuilder {
+    request
+        .bearer_auth(api_token)
+        .header("x-api-token", api_token)
 }
 
 fn external_api_relative_url(base_url: &Url, endpoint: &str) -> Result<Url, String> {
@@ -1096,11 +1091,39 @@ mod tests {
     use shipflow_core::model::{TrackingSource, TrackingSourceConfig};
     use tower::ServiceExt;
 
-    use super::{authorize_request, build_router, read_lookup_request_options, HttpApiState};
+    use super::{
+        authorize_request, build_router, external_api_request, read_lookup_request_options,
+        HttpApiState,
+    };
     use crate::{
         jobs::BatchJobRegistry, lookup_cache::LookupCacheState, model::ServiceRuntimeMode,
         FORCE_REFRESH_HEADER_NAME,
     };
+
+    #[test]
+    fn external_api_batch_requests_include_bearer_and_x_api_token_headers() {
+        let request = external_api_request(
+            reqwest::Client::new().get("https://shipflow.example.test/v1/status"),
+            "sf_external_token",
+        )
+        .build()
+        .expect("request should build");
+
+        assert_eq!(
+            request
+                .headers()
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer sf_external_token")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("x-api-token")
+                .and_then(|value| value.to_str().ok()),
+            Some("sf_external_token")
+        );
+    }
 
     #[test]
     fn rejects_missing_authorization_header() {

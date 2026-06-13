@@ -705,7 +705,7 @@ describe("App workspace isolation", () => {
           !config.externalApiAuthToken.trim()
         ) {
           return Promise.reject(
-            new Error("External API bearer token is required.")
+            new Error("External API token is required.")
           );
         }
 
@@ -4466,7 +4466,7 @@ describe("App workspace isolation", () => {
     expect(screen.getByRole("radio", { name: "API ShipFlow Eksternal" })).toBeInTheDocument();
   });
 
-  it("restores external tracking source selection and base URL in the service window even when the bearer token is session-only", async () => {
+  it("restores external tracking source selection and base URL in the service window even when the API token is session-only", async () => {
     persistedServiceConfig = {
       version: 1,
       desktopConnectionMode: "managedLocal",
@@ -4496,7 +4496,7 @@ describe("App workspace isolation", () => {
       expect(screen.getByLabelText("External API Base URL")).toHaveValue(
         "https://scrappid3.jacobcalvyn.io"
       );
-      expect(screen.getByLabelText("External API Bearer Token")).toHaveValue("");
+      expect(screen.getByLabelText("External API Token")).toHaveValue("");
     });
   });
 
@@ -4509,7 +4509,7 @@ describe("App workspace isolation", () => {
     fireEvent.change(screen.getByLabelText("External API Base URL"), {
       target: { value: "https://scrappid3.jacobcalvyn.io" },
     });
-    fireEvent.change(screen.getByLabelText("External API Bearer Token"), {
+    fireEvent.change(screen.getByLabelText("External API Token"), {
       target: {
         value: "sf_32c18e59ecca4f91e23070d33c74a230a0ccc73161b6ae79",
       },
@@ -4598,7 +4598,7 @@ describe("App workspace isolation", () => {
     fireEvent.change(screen.getByLabelText("External API Base URL"), {
       target: { value: "https://scrappid3.jacobcalvyn.io" },
     });
-    fireEvent.change(screen.getByLabelText("External API Bearer Token"), {
+    fireEvent.change(screen.getByLabelText("External API Token"), {
       target: {
         value: "sf_32c18e59ecca4f91e23070d33c74a230a0ccc73161b6ae79",
       },

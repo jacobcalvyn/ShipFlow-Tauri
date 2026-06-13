@@ -36,7 +36,7 @@ fn print_help() {
     println!(
         "ShipFlow Service\n\n\
 Usage:\n  shipflow-service --auth-token <token> [--port <port>] [--lan]\n\n\
-Options:\n  --auth-token <token>               Bearer token required by Desktop and API clients.\n  --port <port>                      HTTP port. Defaults to 18422.\n  --lan                              Bind to 0.0.0.0 instead of 127.0.0.1.\n  --external-api-base-url <url>      Use an external tracking API instead of POS scraping.\n  --external-api-token <token>       Bearer token for the external tracking API.\n  --allow-insecure-external-api-http Allow HTTP external API URLs.\n  --help                             Show this help.\n\n\
+Options:\n  --auth-token <token>               Bearer token required by Desktop and API clients.\n  --port <port>                      HTTP port. Defaults to 18422.\n  --lan                              Bind to 0.0.0.0 instead of 127.0.0.1.\n  --external-api-base-url <url>      Use an external tracking API instead of POS scraping.\n  --external-api-token <token>       API token for the external tracking API.\n  --allow-insecure-external-api-http Allow HTTP external API URLs.\n  --help                             Show this help.\n\n\
 Environment:\n  SHIPFLOW_SERVICE_TOKEN\n  SHIPFLOW_EXTERNAL_API_BASE_URL\n  SHIPFLOW_EXTERNAL_API_TOKEN\n  SHIPFLOW_ALLOW_INSECURE_HTTP=true"
     );
 }

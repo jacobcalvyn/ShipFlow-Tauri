@@ -445,9 +445,9 @@ export function ServiceSettingsWindow({
                       <span className="settings-input-label">Token</span>
                       <input
                         type={isExternalApiTokenVisible ? "text" : "password"}
-                        aria-label="External API Bearer Token"
+                        aria-label="External API Token"
                         value={serviceConfig.externalApiAuthToken}
-                        placeholder="Bearer token dari instance ShipFlow lain"
+                        placeholder="Token API dari instance ShipFlow lain"
                         onChange={(event) => onPreviewExternalApiAuthToken(event.target.value)}
                       />
                     </label>

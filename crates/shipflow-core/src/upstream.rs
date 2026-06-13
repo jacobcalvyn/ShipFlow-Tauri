@@ -5,7 +5,7 @@ use std::{
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use reqwest::{header::ACCEPT, Client, Response, StatusCode, Url};
+use reqwest::{header::ACCEPT, Client, RequestBuilder, Response, StatusCode, Url};
 use serde::{de::DeserializeOwned, Deserialize};
 
 use crate::bag::parse_bag_html;
@@ -26,6 +26,7 @@ pub const POS_MANIFEST_ENDPOINT: &str =
 const TRACKING_MAX_ATTEMPTS: u32 = 3;
 const TRACKING_RETRY_BASE_DELAY_MS: u64 = 250;
 const EXTERNAL_API_HEDGE_DELAY_MS: u64 = 2_500;
+const EXTERNAL_API_TOKEN_HEADER: &str = "x-api-token";
 pub const MAX_LOOKUP_ID_LENGTH: usize = 64;
 
 #[derive(Debug, Deserialize)]
@@ -198,7 +199,7 @@ pub fn validate_tracking_source_config(
 
     if source_config.external_api_auth_token.trim().is_empty() {
         return Err(TrackingError::BadRequest(
-            "External API bearer token is required.".into(),
+            "External API token is required.".into(),
         ));
     }
 
@@ -301,7 +302,7 @@ pub async fn fetch_external_api_tracking(
 
     if trimmed_auth_token.is_empty() {
         return Err(TrackingError::BadRequest(
-            "External API bearer token is required.".into(),
+            "External API token is required.".into(),
         ));
     }
 
@@ -409,7 +410,7 @@ async fn fetch_external_api_lookup<T>(
 
     if trimmed_auth_token.is_empty() {
         return Err(TrackingError::BadRequest(
-            "External API bearer token is required.".into(),
+            "External API token is required.".into(),
         ));
     }
 
@@ -630,14 +631,18 @@ async fn fetch_external_api_response(
 async fn send_external_api_request(
     client: &Client,
     request_url: Url,
-    bearer_token: String,
+    api_token: String,
 ) -> Result<Response, reqwest::Error> {
-    client
-        .get(request_url)
-        .bearer_auth(bearer_token)
+    apply_external_api_auth_headers(client.get(request_url), &api_token)
         .header(ACCEPT, "application/json")
         .send()
         .await
+}
+
+fn apply_external_api_auth_headers(request: RequestBuilder, api_token: &str) -> RequestBuilder {
+    request
+        .bearer_auth(api_token)
+        .header(EXTERNAL_API_TOKEN_HEADER, api_token)
 }
 
 async fn send_external_api_request_with_hedge(
@@ -989,15 +994,16 @@ async fn read_external_api_error_message(response: Response) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_external_api_lookup_url, build_tracking_url,
+        apply_external_api_auth_headers, build_external_api_lookup_url, build_tracking_url,
         external_api_base_url_prefers_v1_contract, normalize_and_validate_bag_id,
         normalize_and_validate_manifest_id, normalize_and_validate_shipment_id,
         parse_external_api_bag_response, parse_external_api_base_url,
         parse_external_api_manifest_response, parse_external_api_status_response,
         parse_external_api_track_response, resolve_tracking_html_request,
-        validate_tracking_source_config, POS_TRACKING_ENDPOINT,
+        validate_tracking_source_config, EXTERNAL_API_TOKEN_HEADER, POS_TRACKING_ENDPOINT,
     };
     use crate::model::{LookupKind, TrackingError, TrackingSource, TrackingSourceConfig};
+    use reqwest::{header::AUTHORIZATION, Client};
 
     #[test]
     fn build_tracking_url_uses_encoded_pid_id() {
@@ -1006,6 +1012,31 @@ mod tests {
         assert_eq!(
             url,
             "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=UDI2MDQxMDAwNjUxMDk%3D"
+        );
+    }
+
+    #[test]
+    fn external_api_requests_include_bearer_and_x_api_token_headers() {
+        let request = apply_external_api_auth_headers(
+            Client::new().get("https://shipflow.example.test/v1/status"),
+            "sf_external_token",
+        )
+        .build()
+        .expect("request should build");
+
+        assert_eq!(
+            request
+                .headers()
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer sf_external_token")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get(EXTERNAL_API_TOKEN_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some("sf_external_token")
         );
     }
 
