@@ -3,6 +3,7 @@ import {
   LATEST_BAG_STATUS_COLUMN_PATH,
   SELECTOR_COLUMN_WIDTH,
   TRACKING_COLUMN_PATH,
+  canUseColumnValueFilter,
 } from "./columns";
 import { SheetRow, SheetState } from "./types";
 import {
@@ -125,7 +126,7 @@ export function getValueOptionsByPath(
   return Object.fromEntries(
     visibleColumns.map((column) => [
       column.path,
-      getColumnValueOptions(nonEmptyRows, column),
+      canUseColumnValueFilter(column) ? getColumnValueOptions(nonEmptyRows, column) : [],
     ])
   );
 }
@@ -140,7 +141,7 @@ export function getValueOptionsForOpenColumn(
   }
 
   const openColumn = visibleColumns.find((column) => column.path === openColumnMenuPath);
-  if (!openColumn) {
+  if (!openColumn || !canUseColumnValueFilter(openColumn)) {
     return {};
   }
 

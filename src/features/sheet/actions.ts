@@ -10,6 +10,7 @@ import {
   isValidSheetAnalyticsMetricAggregation,
 } from "./analytics";
 import { createDefaultSheetAnalyticsState } from "./default-state";
+import type { SheetTableRowTrackingEntry } from "./table-row-view";
 import {
   ImportSourceModalKind,
   SheetAnalyticsChartType,
@@ -488,7 +489,7 @@ export function setRowErrorInSheet(
 
 export function setRowsQueuedInSheet(
   sheetState: SheetState,
-  entries: Array<{ key: string; value: string }>
+  entries: SheetTableRowTrackingEntry[]
 ) {
   if (entries.length === 0) {
     return sheetState;

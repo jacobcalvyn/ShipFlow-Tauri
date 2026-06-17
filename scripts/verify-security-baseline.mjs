@@ -74,6 +74,21 @@ for (const capabilityRoot of capabilityRoots) {
 for (const filePath of tauriConfigPaths) {
   const config = readJson(filePath);
   const csp = config.app?.security?.csp;
+  const beforeDevCommand = config.build?.beforeDevCommand;
+
+  if (typeof beforeDevCommand === "string") {
+    if (beforeDevCommand.includes("--host 0.0.0.0")) {
+      errors.push(
+        `${relativePath(filePath)} beforeDevCommand must not expose Vite on 0.0.0.0.`
+      );
+    }
+
+    if (!beforeDevCommand.includes("--strictPort")) {
+      errors.push(
+        `${relativePath(filePath)} beforeDevCommand must pin Vite with --strictPort.`
+      );
+    }
+  }
 
   if (typeof csp !== "string") {
     errors.push(`${relativePath(filePath)} must define an explicit CSP.`);

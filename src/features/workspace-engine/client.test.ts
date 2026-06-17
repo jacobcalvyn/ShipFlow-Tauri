@@ -213,61 +213,6 @@ describe("workspace engine client", () => {
     expect(response.payload.displayTrackingId).toBe("P2606020189412.30");
   });
 
-  it("serializes batch sheet row tracking refresh with the Rust command contract", async () => {
-    invokeMock.mockResolvedValueOnce({
-      type: "sheet_rows_tracking_refresh",
-      payload: {
-        sheetId: "sheet-1",
-        successCount: 1,
-        failedCount: 1,
-        rows: [
-          {
-            rowId: "row-1",
-            position: 0,
-            displayTrackingId: "P2606020189412.30",
-            lookupTrackingId: "P2606020189412",
-            rowStatus: "loaded",
-            errorMessage: null,
-            statusJson: { status: "DELIVERED" },
-            detailJson: {},
-            historyJson: {},
-          },
-          {
-            rowId: "row-2",
-            position: 1,
-            displayTrackingId: "P2606020189413.31",
-            lookupTrackingId: "P2606020189413",
-            rowStatus: "failed",
-            errorMessage: "tracking unavailable",
-            statusJson: null,
-            detailJson: null,
-            historyJson: null,
-          },
-        ],
-      },
-    });
-    const { refreshSheetRowsTracking } = await import("./client");
-
-    const response = await refreshSheetRowsTracking({
-      sheetId: "sheet-1",
-      rowIds: ["row-1", "row-2"],
-      forceRefresh: true,
-    });
-
-    expect(invokeMock).toHaveBeenCalledWith("workspace_engine_command", {
-      command: {
-        command: "refresh_sheet_rows_tracking",
-        payload: {
-          sheetId: "sheet-1",
-          rowIds: ["row-1", "row-2"],
-          forceRefresh: true,
-        },
-      },
-    });
-    expect(response.payload.successCount).toBe(1);
-    expect(response.payload.failedCount).toBe(1);
-  });
-
   it("serializes sheet row window queries for the Rust-owned grid boundary", async () => {
     invokeMock.mockResolvedValueOnce({
       type: "sheet_rows",

@@ -99,10 +99,24 @@ export type ImportJobProgressEvent = {
   itemDeltas: ImportJobItemDelta[];
 };
 
-export type WorkspaceEngineEvent = {
-  type: "import_job_progress";
-  payload: ImportJobProgressEvent;
+export type TrackingRefreshProgressEvent = {
+  sheetId: string;
+  row: SheetRowProjection;
+  totalCount: number;
+  successCount: number;
+  failedCount: number;
+  pendingCount: number;
 };
+
+export type WorkspaceEngineEvent =
+  | {
+      type: "import_job_progress";
+      payload: ImportJobProgressEvent;
+    }
+  | {
+      type: "tracking_refresh_progress";
+      payload: TrackingRefreshProgressEvent;
+    };
 
 export type CreateImportJobRequest = {
   sheetId: string;
@@ -180,7 +194,13 @@ export type UpsertSheetRowsRequest = {
   }>;
 };
 
-export type SheetRowStatus = "empty" | "loading" | "loaded" | "failed" | "stale";
+export type SheetRowStatus =
+  | "empty"
+  | "pending"
+  | "loading"
+  | "loaded"
+  | "failed"
+  | "stale";
 export type SortDirection = "asc" | "desc";
 
 export type SheetFilter = {
@@ -657,11 +677,17 @@ export function refreshSheetRowTracking(payload: RefreshSheetRowTrackingRequest)
   });
 }
 
-export function refreshSheetRowsTracking(payload: RefreshSheetRowsTrackingRequest) {
-  return workspaceEngineCommand<SheetRowsTrackingRefreshResponse>({
-    command: "refresh_sheet_rows_tracking",
-    payload,
-  });
+export function refreshSheetRowsTrackingWithProgress(
+  payload: RefreshSheetRowsTrackingRequest,
+  onEvent: (event: WorkspaceEngineEvent) => void,
+) {
+  return invoke<SheetRowsTrackingRefreshResponse>(
+    "workspace_engine_refresh_sheet_rows_tracking_with_progress",
+    {
+      request: payload,
+      onEvent: new Channel<WorkspaceEngineEvent>(onEvent),
+    },
+  );
 }
 
 export function previewImportSource(payload: ImportSourcePreviewRequest) {

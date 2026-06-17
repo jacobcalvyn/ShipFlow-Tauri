@@ -3,15 +3,24 @@ import type {
   SheetRowsQuery,
   SheetValueFilter,
 } from "../workspace-engine/client";
+import { canUseColumnValueFilter } from "./columns";
 import type { ColumnDefinition, SheetRow, SheetState } from "./types";
 
 const RUST_ROW_QUERY_FIELD_PATHS = new Set([
   "detail.shipment_header.nomor_kiriman",
+  "detail.shipment_header.booking_code",
+  "detail.shipment_header.id_pelanggan_korporat",
+  "computed.days_since_transaction",
+  "computed.days_since_last_unbagging",
+  "history_summary.latest_bagging_status",
+  "history_summary.latest_manifest_r7",
+  "history_summary.latest_delivery_runsheet",
   "status_akhir.status",
   "status_akhir.location",
   "status_akhir.officer_name",
   "status_akhir.officer_id",
-  "status_akhir.datetime",
+  "status_akhir.date",
+  "status_akhir.time",
   "detail.actors.pengirim.nama",
   "detail.actors.pengirim.telepon",
   "detail.actors.pengirim.alamat",
@@ -19,19 +28,35 @@ const RUST_ROW_QUERY_FIELD_PATHS = new Set([
   "detail.actors.penerima.telepon",
   "detail.actors.penerima.alamat",
   "detail.actors.penerima.kode_pos",
-  "detail.shipment_header.id_pelanggan_korporat",
   "detail.origin_detail.nama_kantor",
   "detail.origin_detail.id_kantor",
   "detail.origin_detail.nama_petugas",
   "detail.origin_detail.id_petugas",
   "detail.origin_detail.tanggal_input",
+  "detail.origin_detail.waktu_input",
   "detail.package_detail.jenis_layanan",
+  "detail.package_detail.kriteria_kiriman",
+  "detail.package_detail.isi_kiriman",
+  "detail.package_detail.berat_actual",
+  "detail.package_detail.berat_volumetric",
+  "detail.billing_detail.type_pembayaran",
+  "detail.billing_detail.bea_dasar",
+  "detail.billing_detail.nilai_barang",
+  "detail.billing_detail.htnb",
   "detail.billing_detail.cod_info.is_cod",
+  "detail.billing_detail.cod_info.virtual_account",
   "detail.billing_detail.cod_info.total_cod",
   "detail.billing_detail.cod_info.status",
+  "detail.billing_detail.cod_info.tanggal",
   "detail.performance_detail.sla_target",
   "detail.performance_detail.sla_category",
   "detail.performance_detail.sla_days_diff",
+  "pod.photo1_url",
+  "pod.photo2_url",
+  "history_summary.irregularity",
+  "history_summary.bagging_unbagging",
+  "history_summary.manifest_r7",
+  "history_summary.delivery_runsheet",
   "computed.delivery_runsheet_count",
 ]);
 
@@ -107,8 +132,11 @@ function getVisibleValueFilters(
     }
 
     const column = columnByPath.get(path);
-    if (!column || !canRustQueryField(path) || column.type === "json") {
+    if (!column || !canRustQueryField(path)) {
       return null;
+    }
+    if (!canUseColumnValueFilter(column)) {
+      continue;
     }
 
     const rawValues = new Set<string>();

@@ -4,6 +4,7 @@ pub const SQLITE_PRAGMAS: &[&str] = &[
     "PRAGMA journal_mode = WAL;",
     "PRAGMA foreign_keys = ON;",
     "PRAGMA synchronous = NORMAL;",
+    "PRAGMA busy_timeout = 5000;",
 ];
 
 pub const SCHEMA_SQL: &str = r#"

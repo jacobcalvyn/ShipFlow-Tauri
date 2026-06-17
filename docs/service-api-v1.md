@@ -2,11 +2,11 @@
 
 ShipFlow Service exposes an authenticated local or LAN HTTP API for ShipFlow Desktop and optional internal clients. Desktop is only a client of the service: source selection, external API credentials, bearer-token ownership, lookup cache, persistent lookup store, and batch job execution all belong to ShipFlow Service.
 
-New integrations should use the versioned `/v1` contract. The unversioned routes remain available only for backward compatibility with the current Desktop bridge.
+New integrations should use the versioned `/v1` contract. Unversioned legacy routes are not served.
 
 ## Authentication
 
-All routes require a bearer token, including the legacy compatibility routes:
+All routes require a bearer token:
 
 ```http
 Authorization: Bearer <service-token>
@@ -70,27 +70,21 @@ Troubleshooting:
 - `401 Unauthorized`: the route exists, but the bearer token is missing or invalid.
 - `404 Not Found`: the request is reaching an older service binary or the wrong port.
 
-## Legacy Routes
+## Status Route
 
-Legacy routes return the raw payload shape or a simple `{ "error": "..." }` body. They are kept for compatibility and should not be used by new integrations.
-
-```http
-GET /health
-GET /status
-GET /track/:shipment_id
-GET /bag/:bag_id
-GET /manifest/:manifest_id
-```
-
-`/status` still includes the ShipFlow product identity marker:
+ShipFlow Service exposes only the versioned `/v1` API surface. Use `GET /v1/status` for health and product identity checks.
 
 ```json
 {
-  "service": "running",
-  "product": "shipflow-service",
-  "mode": "local",
-  "bindAddress": "127.0.0.1",
-  "port": 18422
+  "schemaVersion": "shipflow.service.status.v1",
+  "requestId": "sf_req_...",
+  "data": {
+    "service": "running",
+    "product": "shipflow-service",
+    "mode": "local",
+    "bindAddress": "127.0.0.1",
+    "port": 18422
+  }
 }
 ```
 
@@ -232,6 +226,23 @@ Lookup schema versions:
 - `shipflow.tracking.manifest.v1`
 
 The `data` object is the normalized response shape used by Desktop. Shipment tracking can use the active Service source, either internal POS scraping or the configured external ShipFlow API. Bag and manifest lookup paths currently use the internal POS scraper.
+
+For the internal POS scraper, `detail_lacak_banyak.php` remains the primary tracking source for shipment status, SLA, history, POD, bagging, manifest, delivery, names, and addresses. ShipFlow Service may call `https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=<shipment_id>` only as a best-effort contact enrichment source for missing sender/recipient phone numbers. `lacak-mitra` data must not overwrite primary tracking fields.
+
+Tracking responses may include optional contact enrichment metadata:
+
+```json
+{
+  "contact_enrichment": {
+    "source": "lacak_mitra",
+    "status": "cache_hit",
+    "sender_phone_present": true,
+    "recipient_phone_present": true
+  }
+}
+```
+
+Supported enrichment statuses are `cache_hit`, `fetched`, `missing`, `failed`, and `skipped`. A `failed` or `missing` enrichment status does not make the tracking lookup fail if the primary PID tracking lookup succeeded.
 
 `GET /v1/track/:shipment_id/html` returns the raw upstream tracking page HTML in an envelope:
 
@@ -408,6 +419,8 @@ Manual refresh flows should send:
 ```http
 x-shipflow-force-refresh: true
 ```
+
+Contact enrichment uses a separate persistent contact cache keyed by exact shipment ID. Once phone numbers are found, later tracking lookups reuse the cached contact values and do not call `lacak-mitra` again for that shipment ID. Logs must report only presence flags such as `sender_phone_present=true`; they must not print raw phone numbers.
 
 ## External API Source Performance
 

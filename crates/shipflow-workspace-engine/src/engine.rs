@@ -394,7 +394,7 @@ where
     ) -> WorkspaceEngineRuntimeResult<SheetRowWindow> {
         self.ensure_sheet_exists(&request.sheet_id)?;
         self.store.clear_sheet_rows(&request.sheet_id)?;
-        Ok(self.query_first_sheet_row_window(request.sheet_id)?)
+        self.query_first_sheet_row_window(request.sheet_id)
     }
 
     fn create_sheet(
@@ -447,7 +447,7 @@ where
         self.ensure_sheet_exists(&request.sheet_id)?;
         self.store
             .delete_sheet_rows(&request.sheet_id, &request.row_ids)?;
-        Ok(self.query_first_sheet_row_window(request.sheet_id)?)
+        self.query_first_sheet_row_window(request.sheet_id)
     }
 
     fn delete_sheet(
@@ -472,7 +472,7 @@ where
             row_ids: request.row_ids,
             delete_source_rows: request.mode == TransferSheetRowsMode::Move,
         })?;
-        Ok(self.query_first_sheet_row_window(request.target_sheet_id)?)
+        self.query_first_sheet_row_window(request.target_sheet_id)
     }
 
     fn copy_sheet_rows(
@@ -483,7 +483,7 @@ where
         self.ensure_sheet_exists(&request.target_sheet_id)?;
         self.store
             .copy_sheet_rows(&request.source_sheet_id, &request.target_sheet_id)?;
-        Ok(self.query_first_sheet_row_window(request.target_sheet_id)?)
+        self.query_first_sheet_row_window(request.target_sheet_id)
     }
 
     fn upsert_sheet_rows(
@@ -509,7 +509,7 @@ where
             })?;
         }
 
-        Ok(self.query_first_sheet_row_window(request.sheet_id)?)
+        self.query_first_sheet_row_window(request.sheet_id)
     }
 
     fn query_first_sheet_row_window(
@@ -660,6 +660,28 @@ where
             .await?)
     }
 
+    pub async fn refresh_sheet_rows_tracking_with_progress<F>(
+        &mut self,
+        sheet_id: &str,
+        row_ids: &[String],
+        force_refresh: bool,
+        mut on_event: F,
+    ) -> WorkspaceEngineRuntimeResult<SheetRowsTrackingRefreshResult>
+    where
+        F: FnMut(WorkspaceEngineEvent) + Send,
+    {
+        let mut tracking_engine = TrackingEngine::with_blob_root_path(
+            &mut self.store,
+            &mut self.import_source,
+            self.blob_root_path.clone(),
+        );
+        Ok(tracking_engine
+            .refresh_sheet_rows_with_progress(sheet_id, row_ids, force_refresh, |event| {
+                on_event(WorkspaceEngineEvent::TrackingRefreshProgress(event));
+            })
+            .await?)
+    }
+
     fn next_import_job_id(&mut self) -> String {
         self.next_import_job_sequence = self.next_import_job_sequence.saturating_add(1);
         format!(
@@ -675,8 +697,7 @@ mod tests {
     use super::*;
     use std::collections::{HashMap, VecDeque};
     use std::fs;
-    use std::future::Future;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use shipflow_core::model::{
         BagItem, BagResponse, ManifestItem, ManifestResponse, TrackDetail, TrackResponse,
@@ -1196,7 +1217,9 @@ mod tests {
             events[0],
             WorkspaceEngineEvent::ImportJobProgress(_)
         ));
-        let WorkspaceEngineEvent::ImportJobProgress(progress) = &events[1];
+        let WorkspaceEngineEvent::ImportJobProgress(progress) = &events[1] else {
+            panic!("expected import progress event");
+        };
         assert_eq!(progress.success_count, 1);
         assert_eq!(progress.pending_count, 0);
         assert_eq!(
@@ -1827,34 +1850,28 @@ mod tests {
     }
 
     impl ImportLookupSource for FakeImportSource {
-        fn fetch_bag<'a>(
+        async fn fetch_bag<'a>(
             &'a mut self,
             bag_id: &'a str,
-        ) -> impl Future<Output = Result<BagResponse, ImportLookupFailure>> + 'a {
-            async move {
-                self.bags
-                    .get_mut(bag_id)
-                    .and_then(VecDeque::pop_front)
-                    .unwrap_or_else(|| {
-                        Err(ImportLookupFailure::new(format!("missing bag {bag_id}")))
-                    })
-            }
+        ) -> Result<BagResponse, ImportLookupFailure> {
+            self.bags
+                .get_mut(bag_id)
+                .and_then(VecDeque::pop_front)
+                .unwrap_or_else(|| Err(ImportLookupFailure::new(format!("missing bag {bag_id}"))))
         }
 
-        fn fetch_manifest<'a>(
+        async fn fetch_manifest<'a>(
             &'a mut self,
             manifest_id: &'a str,
-        ) -> impl Future<Output = Result<ManifestResponse, ImportLookupFailure>> + 'a {
-            async move {
-                self.manifests
-                    .get_mut(manifest_id)
-                    .and_then(VecDeque::pop_front)
-                    .unwrap_or_else(|| {
-                        Err(ImportLookupFailure::new(format!(
-                            "missing manifest {manifest_id}"
-                        )))
-                    })
-            }
+        ) -> Result<ManifestResponse, ImportLookupFailure> {
+            self.manifests
+                .get_mut(manifest_id)
+                .and_then(VecDeque::pop_front)
+                .unwrap_or_else(|| {
+                    Err(ImportLookupFailure::new(format!(
+                        "missing manifest {manifest_id}"
+                    )))
+                })
         }
     }
 
@@ -1862,8 +1879,9 @@ mod tests {
         fn fetch_tracking<'a>(
             &'a mut self,
             lookup_tracking_id: &'a str,
-        ) -> impl Future<Output = Result<TrackResponse, TrackingLookupFailure>> + 'a {
-            async move {
+            _force_refresh: bool,
+        ) -> crate::tracking::TrackingLookupFuture<'a> {
+            Box::pin(async move {
                 self.tracks
                     .get_mut(lookup_tracking_id)
                     .and_then(VecDeque::pop_front)
@@ -1872,7 +1890,7 @@ mod tests {
                             "missing track {lookup_tracking_id}"
                         )))
                     })
-            }
+            })
         }
     }
 
@@ -1974,12 +1992,13 @@ mod tests {
             pod: Default::default(),
             history: vec![],
             history_summary: Default::default(),
+            contact_enrichment: None,
         }
     }
 
-    fn bootstrap_config(path: &PathBuf) -> WorkspaceEngineBootstrapConfig {
+    fn bootstrap_config(path: &Path) -> WorkspaceEngineBootstrapConfig {
         WorkspaceEngineBootstrapConfig::new(
-            path.clone(),
+            path.to_path_buf(),
             "workspace-1",
             "Main workspace",
             "sheet-1",
@@ -1998,14 +2017,14 @@ mod tests {
         path
     }
 
-    fn cleanup_temp_db(path: &PathBuf) {
+    fn cleanup_temp_db(path: &Path) {
         if let Some(parent) = path.parent() {
             let _ = fs::remove_dir_all(parent);
         }
     }
 
     fn assert_blob_file_exists(
-        database_path: &PathBuf,
+        database_path: &Path,
         store: &SqliteWorkspaceStore,
         raw_blob_id: &str,
     ) {

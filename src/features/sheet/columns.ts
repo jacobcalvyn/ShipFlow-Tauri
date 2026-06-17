@@ -15,6 +15,14 @@ export const DELIVERY_RUNSHEET_COUNT_COLUMN_PATH =
   "computed.delivery_runsheet_count";
 export const HIDDEN_COLUMNS_STORAGE_KEY = "shipflow-hidden-columns";
 export const PINNED_COLUMNS_STORAGE_KEY = "shipflow-pinned-columns";
+const NON_VALUE_FILTER_COLUMN_PATHS = new Set(["pod.photo1_url", "pod.photo2_url"]);
+
+export function canUseColumnValueFilter(
+  column: Pick<ColumnDefinition, "path" | "type">
+) {
+  return column.type !== "json" && !NON_VALUE_FILTER_COLUMN_PATHS.has(column.path);
+}
+
 export const ANALYTICS_FIELD_COLUMN_PATHS = [
   TRACKING_COLUMN_PATH,
   DAYS_SINCE_TRANSACTION_COLUMN_PATH,
@@ -25,7 +33,8 @@ export const ANALYTICS_FIELD_COLUMN_PATHS = [
   "status_akhir.location",
   "status_akhir.officer_name",
   "status_akhir.officer_id",
-  "status_akhir.datetime",
+  "status_akhir.date",
+  "status_akhir.time",
   "detail.actors.pengirim.nama",
   "detail.actors.pengirim.telepon",
   "detail.actors.pengirim.alamat",
@@ -127,11 +136,18 @@ export const COLUMNS: ColumnDefinition[] = [
     minWidth: 130,
   },
   {
-    path: "status_akhir.datetime",
+    path: "status_akhir.date",
+    label: "Tanggal Status Akhir",
+    type: "text",
+    defaultWidth: 170,
+    minWidth: 150,
+  },
+  {
+    path: "status_akhir.time",
     label: "Waktu Status Akhir",
     type: "text",
-    defaultWidth: 190,
-    minWidth: 160,
+    defaultWidth: 160,
+    minWidth: 140,
   },
   {
     path: "detail.actors.pengirim.nama",

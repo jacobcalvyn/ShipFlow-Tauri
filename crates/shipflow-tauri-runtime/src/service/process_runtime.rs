@@ -719,7 +719,7 @@ fn read_authenticated_service_status(
     let _ = stream.set_write_timeout(Some(timeout));
 
     let request = format!(
-        "GET /status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {trimmed_token}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+        "GET /v1/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {trimmed_token}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())
@@ -746,8 +746,10 @@ fn authenticated_service_status_is_valid(response: &str) -> bool {
         return false;
     };
 
-    payload.get("service").and_then(|value| value.as_str()) == Some("running")
-        && payload.get("product").and_then(|value| value.as_str()) == Some(SERVICE_STATUS_PRODUCT)
+    let data = payload.get("data").unwrap_or(&payload);
+
+    data.get("service").and_then(|value| value.as_str()) == Some("running")
+        && data.get("product").and_then(|value| value.as_str()) == Some(SERVICE_STATUS_PRODUCT)
 }
 
 pub fn is_service_runtime_ready(config: &ApiServiceConfig, timeout: Duration) -> bool {

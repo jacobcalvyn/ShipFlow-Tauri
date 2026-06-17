@@ -19,7 +19,7 @@ function createSheetRowFromProjection(row: SheetRowProjection): SheetRow {
     trackingInput: row.displayTrackingId,
     shipment: createTrackResponseFromProjection(row),
     loading: row.rowStatus === "loading",
-    queued: false,
+    queued: row.rowStatus === "pending",
     stale: row.rowStatus === "stale",
     dirty: false,
     error: row.errorMessage ?? "",

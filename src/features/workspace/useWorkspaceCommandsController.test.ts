@@ -46,6 +46,8 @@ vi.mock("../workspace-engine/client", async () => {
     querySheetRows: workspaceEngineMocks.querySheetRows,
     renameEngineSheet: workspaceEngineMocks.renameEngineSheet,
     refreshSheetRowsTracking: workspaceEngineMocks.refreshSheetRowsTracking,
+    refreshSheetRowsTrackingWithProgress:
+      workspaceEngineMocks.refreshSheetRowsTracking,
   };
 });
 
@@ -185,7 +187,7 @@ function buildOptions() {
     allTrackingIds: ["P2603310114291"],
     exportableTableRows: createSheetTableRowsFromSheetRows([row]),
     rustExportRowsQuery: null as SheetRowsQuery | null,
-    retrackableRows: [] as Array<{ key: string; value: string }>,
+    retrackableRows: [] as SheetTableRowTrackingEntry[],
     retryFailedEntries: [] as SheetTableRowTrackingEntry[],
     selectedEngineRowIds: [] as string[],
     selectedTrackingIds: [],
@@ -290,6 +292,59 @@ describe("useWorkspaceCommandsController", () => {
     expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
   });
 
+  it("removes selected local rows immediately before the engine delete settles", async () => {
+    const options = buildOptions();
+    options.deleteSelectedArmedSheetId = "sheet-1";
+    options.selectedVisibleRowKeys = ["row-1"];
+    options.selectedEngineRowIds = ["rust-row-1"];
+    let resolveDeleteRows: (() => void) | null = null;
+    workspaceEngineMocks.deleteSheetRows.mockReturnValue(
+      new Promise((resolve) => {
+        resolveDeleteRows = () =>
+          resolve({
+            type: "sheet_delete_rows",
+            payload: {
+              sheetId: "sheet-1",
+              deleted: 1,
+            },
+          });
+      })
+    );
+
+    const { result } = renderHook(() =>
+      useWorkspaceCommandsController(options as never)
+    );
+
+    void act(() => {
+      void result.current.deleteSelectedRows();
+    });
+
+    const updater = vi.mocked(options.updateActiveSheet).mock.calls[0]?.[0];
+    expect(updater).toBeTypeOf("function");
+
+    const nextSheet = updater({
+      ...createDefaultSheetState(),
+      rows: [
+        {
+          ...createRow(),
+          trackingInput: "P2606020189412.30",
+        },
+      ],
+      selectedRowKeys: ["row-1"],
+    });
+
+    expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
+    expect(nextSheet.rows[0]?.trackingInput).toBe("");
+    expect(nextSheet.selectedRowKeys).toEqual([]);
+
+    await act(async () => {
+      resolveDeleteRows?.();
+      await Promise.resolve();
+    });
+
+    expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
+  });
+
   it("clears Rust sheet rows when the React row mirror is empty", async () => {
     const options = buildOptions();
     options.activeSheetDeleteAllArmed = true;
@@ -315,6 +370,59 @@ describe("useWorkspaceCommandsController", () => {
     });
     expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
     expect(options.focusFirstTrackingInput).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears local rows immediately before the engine clear settles", async () => {
+    const options = buildOptions();
+    options.activeSheetDeleteAllArmed = true;
+    let resolveClearRows: (() => void) | null = null;
+    workspaceEngineMocks.clearSheetRows.mockReturnValue(
+      new Promise((resolve) => {
+        resolveClearRows = () =>
+          resolve({
+            type: "sheet_clear_rows",
+            payload: {
+              sheetId: "sheet-1",
+              deleted: 1,
+            },
+          });
+      })
+    );
+
+    const { result } = renderHook(() =>
+      useWorkspaceCommandsController(options as never)
+    );
+
+    void act(() => {
+      void result.current.deleteAllRows();
+    });
+
+    const updater = vi.mocked(options.updateActiveSheet).mock.calls[0]?.[0];
+    expect(updater).toBeTypeOf("function");
+
+    const nextSheet = updater({
+      ...createDefaultSheetState(),
+      rows: [
+        {
+          ...createRow(),
+          trackingInput: "P2606020189412.30",
+        },
+      ],
+      selectedRowKeys: ["row-1"],
+      deleteAllArmed: true,
+    });
+
+    expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
+    expect(nextSheet.rows[0]?.trackingInput).toBe("");
+    expect(nextSheet.selectedRowKeys).toEqual([]);
+    expect(nextSheet.deleteAllArmed).toBe(false);
+
+    await act(async () => {
+      resolveClearRows?.();
+      await Promise.resolve();
+    });
+
+    expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
   });
 
   it("creates a local sheet tab and syncs its metadata to the workspace engine", async () => {
@@ -790,7 +898,7 @@ describe("useWorkspaceCommandsController", () => {
       sheetId: "sheet-1",
       rowIds: ["rust-failed-row"],
       forceRefresh: true,
-    });
+    }, expect.any(Function));
     expect(options.refreshTrackingRows).not.toHaveBeenCalled();
     expect(workspaceEngineMocks.querySheetRows).not.toHaveBeenCalled();
     expect(options.updateActiveSheet).not.toHaveBeenCalled();
@@ -799,6 +907,162 @@ describe("useWorkspaceCommandsController", () => {
       tone: "success",
       message: "Lacak ulang berhasil.",
     });
+  });
+
+  it("projects retrack progress as loading then ready without marking all rows active", async () => {
+    const options = buildOptions();
+    options.retryFailedEntries = [
+      {
+        key: "row-1",
+        value: "P2603310114291",
+        engineRowId: "row-1",
+      },
+    ];
+    options.rustExportRowsQuery = {
+      sheetId: "sheet-1",
+      offset: 0,
+      limit: 1_000,
+      filters: [],
+      sort: [],
+    };
+    workspaceEngineMocks.refreshSheetRowsTracking.mockImplementationOnce(
+      async (_payload, onEvent) => {
+        onEvent({
+          type: "tracking_refresh_progress",
+          payload: {
+            sheetId: "sheet-1",
+            totalCount: 1,
+            successCount: 0,
+            failedCount: 0,
+            pendingCount: 1,
+            row: {
+              rowId: "row-1",
+              position: 0,
+              displayTrackingId: "P2603310114291",
+              lookupTrackingId: "P2603310114291",
+              rowStatus: "loading",
+              errorMessage: null,
+              statusJson: null,
+              detailJson: null,
+              historyJson: null,
+            },
+          },
+        });
+        onEvent({
+          type: "tracking_refresh_progress",
+          payload: {
+            sheetId: "sheet-1",
+            totalCount: 1,
+            successCount: 0,
+            failedCount: 0,
+            pendingCount: 1,
+            row: {
+              rowId: "row-1",
+              position: 0,
+              displayTrackingId: "P2603310114291",
+              lookupTrackingId: "P2603310114291",
+              rowStatus: "pending",
+              errorMessage: null,
+              statusJson: null,
+              detailJson: null,
+              historyJson: null,
+            },
+          },
+        });
+        onEvent({
+          type: "tracking_refresh_progress",
+          payload: {
+            sheetId: "sheet-1",
+            totalCount: 1,
+            successCount: 1,
+            failedCount: 0,
+            pendingCount: 0,
+            row: {
+              rowId: "row-1",
+              position: 0,
+              displayTrackingId: "P2603310114291",
+              lookupTrackingId: "P2603310114291",
+              rowStatus: "loaded",
+              errorMessage: null,
+              statusJson: { status: "DELIVERED" },
+              detailJson: {
+                shipment_header: {
+                  nomor_kiriman: "P2603310114291",
+                },
+              },
+              historyJson: null,
+            },
+          },
+        });
+
+        return {
+          type: "sheet_rows_tracking_refresh",
+          payload: {
+            sheetId: "sheet-1",
+            successCount: 1,
+            failedCount: 0,
+            rows: [],
+          },
+        };
+      }
+    );
+
+    const { result } = renderHook(() =>
+      useWorkspaceCommandsController(options as never)
+    );
+
+    await act(async () => {
+      result.current.retryFailedRows();
+    });
+
+    await waitFor(() => {
+      expect(options.setWorkspaceState).toHaveBeenCalledTimes(3);
+    });
+
+    const workspaceUpdaters = vi
+      .mocked(options.setWorkspaceState)
+      .mock.calls.map(([updater]) => updater);
+    const baseWorkspace: WorkspaceState = {
+      ...options.workspaceRef.current,
+      sheetsById: {
+        ...options.workspaceRef.current.sheetsById,
+        "sheet-1": {
+          ...createDefaultSheetState(),
+          rows: [createRow()],
+        },
+      },
+    };
+    const loadingWorkspace =
+      typeof workspaceUpdaters[0] === "function"
+        ? workspaceUpdaters[0](baseWorkspace)
+        : workspaceUpdaters[0];
+    const latePendingWorkspace =
+      typeof workspaceUpdaters[1] === "function"
+        ? workspaceUpdaters[1](loadingWorkspace)
+        : workspaceUpdaters[1];
+    const loadedWorkspace =
+      typeof workspaceUpdaters[2] === "function"
+        ? workspaceUpdaters[2](latePendingWorkspace)
+        : workspaceUpdaters[2];
+    const loadingSheet = loadingWorkspace.sheetsById["sheet-1"];
+    const latePendingSheet = latePendingWorkspace.sheetsById["sheet-1"];
+    const loadedSheet = loadedWorkspace.sheetsById["sheet-1"];
+
+    expect(loadingSheet.rows[0]).toMatchObject({
+      loading: true,
+      queued: false,
+    });
+    expect(latePendingSheet.rows[0]).toMatchObject({
+      loading: true,
+      queued: false,
+    });
+    expect(loadedSheet.rows[0]).toMatchObject({
+      loading: false,
+      queued: false,
+      error: "",
+    });
+    expect(loadedSheet.rows[0]?.shipment?.status_akhir.status).toBe("DELIVERED");
+    expect(options.onWorkspaceEngineMutation).toHaveBeenCalledTimes(1);
   });
 
   it("does not fall back to frontend failed-row retry for Rust rows without engine row ids", async () => {
@@ -886,7 +1150,7 @@ describe("useWorkspaceCommandsController", () => {
       sheetId: "sheet-1",
       rowIds: [],
       forceRefresh: true,
-    });
+    }, expect.any(Function));
     expect(workspaceEngineMocks.querySheetRows).not.toHaveBeenCalled();
     expect(options.refreshTrackingRows).not.toHaveBeenCalled();
     expect(options.updateActiveSheet).not.toHaveBeenCalled();
@@ -963,7 +1227,7 @@ describe("useWorkspaceCommandsController", () => {
       sheetId: "sheet-1",
       rowIds: ["rust-filtered-row"],
       forceRefresh: true,
-    });
+    }, expect.any(Function));
     expect(workspaceEngineMocks.querySheetRows).toHaveBeenCalledTimes(1);
     expect(workspaceEngineMocks.querySheetRows).toHaveBeenCalledWith({
       ...options.rustExportRowsQuery,

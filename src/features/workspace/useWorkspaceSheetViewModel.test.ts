@@ -386,7 +386,25 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
     ).toBe(false);
   });
 
-  it("returns an empty analytics summary when filtered-row value filters cannot be represented in Rust pivot yet", async () => {
+  it("ignores POD value filters in Rust pivot queries", async () => {
+    mocks.queryPivot.mockResolvedValueOnce({
+      type: "pivot",
+      payload: {
+        sheetId: "sheet-1",
+        sourceRowCount: 1,
+        rows: [
+          {
+            rowValues: ["PKH"],
+            columnValues: ["DELIVERED"],
+            count: 1,
+            metrics: {
+              "detail.shipment_header.nomor_kiriman__count_unique": 1,
+            },
+            share: 100,
+          },
+        ],
+      },
+    });
     const sheet = createAnalyticsSheet();
     const filteredSheet = {
       ...sheet,
@@ -403,9 +421,12 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
       useWorkspaceSheetViewModel(filteredSheet, "sheet-1")
     );
 
-    expect(mocks.queryPivot).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(mocks.queryPivot).toHaveBeenCalled();
+    });
+    expect(mocks.queryPivot.mock.calls[0]?.[0]).not.toHaveProperty("valueFilters");
     expect(mocks.queryChart).not.toHaveBeenCalled();
-    expect(result.current.analyticsSummary.rows).toEqual([]);
+    expect(result.current.analyticsSummary.sourceRowCount).toBe(1);
   });
 
   it("does not fall back to React row data when Rust analytics cannot be queried", () => {
@@ -463,7 +484,7 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
     expect(result.current.displayedRowWindow?.totalCount).toBe(0);
   });
 
-  it("keeps filled React mirror rows available while a representable Rust row query is pending", async () => {
+  it("does not fall back to filled React mirror rows while a representable Rust row query is pending", async () => {
     mocks.querySheetRows.mockReturnValueOnce(new Promise(() => undefined));
     let sheet = createDefaultSheetState();
     sheet = setRowSuccessInSheet(
@@ -485,8 +506,8 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
 
     expect(
       result.current.displayedTableRows.some((row) => row.trackingInput === "PLEGACY")
-    ).toBe(true);
-    expect(result.current.displayedRowWindow).toBeNull();
+    ).toBe(false);
+    expect(result.current.displayedRowWindow?.totalCount).toBe(0);
   });
 
   it("does not resurrect filled React mirror rows when the Rust row query fails", async () => {
@@ -593,6 +614,123 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
     expect(result.current.displayedTableRows[0]?.trackingInput).toBe("P1");
   });
 
+  it("keeps the previous Rust row window visible while a refreshed window is loading", async () => {
+    let resolveSecondQuery!: (value: unknown) => void;
+    mocks.querySheetRows
+      .mockResolvedValueOnce({
+        type: "sheet_rows",
+        payload: {
+          sheetId: "sheet-1",
+          offset: 0,
+          limit: 500,
+          totalCount: 2,
+          hasMore: false,
+          nextOffset: null,
+          rows: [
+            {
+              rowId: "sheet-1:row:0",
+              position: 0,
+              displayTrackingId: "P1",
+              lookupTrackingId: "P1",
+              rowStatus: "pending",
+              errorMessage: null,
+              statusJson: null,
+              detailJson: null,
+              historyJson: null,
+            },
+            {
+              rowId: "sheet-1:row:1",
+              position: 1,
+              displayTrackingId: "P2",
+              lookupTrackingId: "P2",
+              rowStatus: "pending",
+              errorMessage: null,
+              statusJson: null,
+              detailJson: null,
+              historyJson: null,
+            },
+          ],
+        },
+      })
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSecondQuery = resolve;
+        })
+      );
+
+    const sheet = createDefaultSheetState();
+    const { result, rerender } = renderHook(
+      ({ generation }) => useWorkspaceSheetViewModel(sheet, "sheet-1", generation),
+      {
+        initialProps: {
+          generation: 0,
+        },
+      }
+    );
+
+    await waitFor(() => {
+      expect(result.current.displayedRowWindow?.totalCount).toBe(2);
+    });
+    const previousRows = result.current.displayedTableRows;
+
+    rerender({ generation: 1 });
+
+    await waitFor(() => {
+      expect(mocks.querySheetRows).toHaveBeenCalledTimes(2);
+    });
+    expect(result.current.displayedTableRows[0]).toBe(previousRows[0]);
+    expect(result.current.displayedTableRows[1]).toBe(previousRows[1]);
+    expect(result.current.displayedTableRows[0]?.status).toBe("Pending");
+
+    await act(async () => {
+      resolveSecondQuery({
+        type: "sheet_rows",
+        payload: {
+          sheetId: "sheet-1",
+          offset: 0,
+          limit: 500,
+          totalCount: 2,
+          hasMore: false,
+          nextOffset: null,
+          rows: [
+            {
+              rowId: "sheet-1:row:0",
+              position: 0,
+              displayTrackingId: "P1",
+              lookupTrackingId: "P1",
+              rowStatus: "loaded",
+              errorMessage: null,
+              statusJson: { status: "DELIVERED" },
+              detailJson: {
+                shipment_header: {
+                  nomor_kiriman: "P1",
+                },
+              },
+              historyJson: null,
+            },
+            {
+              rowId: "sheet-1:row:1",
+              position: 1,
+              displayTrackingId: "P2",
+              lookupTrackingId: "P2",
+              rowStatus: "pending",
+              errorMessage: null,
+              statusJson: null,
+              detailJson: null,
+              historyJson: null,
+            },
+          ],
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.displayedTableRows[0]?.status).toBe("Ready");
+    });
+    expect(result.current.displayedTableRows[0]).not.toBe(previousRows[0]);
+    expect(result.current.displayedTableRows[1]).toBe(previousRows[1]);
+  });
+
   it("passes value filters into Rust row windows without a React row mirror", async () => {
     mocks.querySheetRows.mockResolvedValueOnce({
       type: "sheet_rows",
@@ -685,6 +823,34 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
       field: "detail.shipment_header.nomor_kiriman",
       filters: [],
       limit: 1000,
+    });
+  });
+
+  it("keeps other value filters but excludes the open column when querying value options", async () => {
+    const sheet = {
+      ...createDefaultSheetState(),
+      openColumnMenuPath: "status_akhir.status",
+      valueFilters: {
+        "status_akhir.status": ["DELIVERED"],
+        "detail.package_detail.jenis_layanan": ["PKH"],
+      },
+    };
+
+    renderHook(() => useWorkspaceSheetViewModel(sheet, "sheet-1"));
+
+    await waitFor(() => {
+      expect(mocks.querySheetFieldValues).toHaveBeenCalledWith({
+        sheetId: "sheet-1",
+        field: "status_akhir.status",
+        filters: [],
+        valueFilters: [
+          {
+            field: "detail.package_detail.jenis_layanan",
+            values: ["PKH"],
+          },
+        ],
+        limit: 1000,
+      });
     });
   });
 
@@ -1114,6 +1280,7 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
     expect(result.current.allTrackingIds).toEqual(["RUST"]);
     expect(result.current.retrackableRows).toEqual([
       {
+        engineRowId: "rust-row-1",
         key: "rust-row-1",
         value: "RUST",
       },
@@ -1460,5 +1627,84 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
     expect(result.current.displayedTableRows[0]?.trackingInput).toBe(
       "P260000000001"
     );
+  });
+
+  it("does not downgrade a loading Rust row window back to pending in the same cache generation", async () => {
+    const sheet = createDefaultSheetState();
+    const loadingWindow = {
+      type: "sheet_rows",
+      payload: {
+        sheetId: "sheet-1",
+        offset: 0,
+        limit: 500,
+        totalCount: 1,
+        hasMore: false,
+        nextOffset: null,
+        rows: [
+          {
+            rowId: "sheet-1:row:0",
+            position: 0,
+            displayTrackingId: "P260000000001",
+            lookupTrackingId: "P260000000001",
+            rowStatus: "loading",
+            errorMessage: null,
+            statusJson: null,
+            detailJson: null,
+            historyJson: null,
+          },
+        ],
+      },
+    };
+    const stalePendingWindow = {
+      type: "sheet_rows",
+      payload: {
+        ...loadingWindow.payload,
+        rows: [
+          {
+            ...loadingWindow.payload.rows[0],
+            rowStatus: "pending",
+          },
+        ],
+      },
+    };
+    mocks.querySheetRows
+      .mockResolvedValueOnce(loadingWindow)
+      .mockResolvedValueOnce(stalePendingWindow);
+
+    const { result, rerender } = renderHook(
+      ({
+        syncGeneration,
+        cacheGeneration,
+      }: {
+        syncGeneration: number;
+        cacheGeneration: number;
+      }) =>
+        useWorkspaceSheetViewModel(
+          sheet,
+          "sheet-1",
+          syncGeneration,
+          cacheGeneration
+        ),
+      {
+        initialProps: {
+          syncGeneration: 0,
+          cacheGeneration: 0,
+        },
+      }
+    );
+
+    await waitFor(() => {
+      expect(result.current.displayedTableRows[0]?.status).toBe("Loading");
+    });
+
+    rerender({
+      syncGeneration: 1,
+      cacheGeneration: 0,
+    });
+
+    await waitFor(() => {
+      expect(mocks.querySheetRows).toHaveBeenCalledTimes(2);
+    });
+    expect(result.current.displayedTableRows[0]?.status).toBe("Loading");
   });
 });

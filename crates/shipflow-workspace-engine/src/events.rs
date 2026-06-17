@@ -4,6 +4,7 @@ use crate::imports::{
     ImportJobDetail, ImportJobItem, ImportJobItemStatus, ImportJobStatus, ImportKind, ImportMode,
     ImportSourceItemKind,
 };
+use crate::storage::SheetRowProjection;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,9 +65,21 @@ impl From<&ImportJobItem> for ImportJobItemDelta {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackingRefreshProgressEvent {
+    pub sheet_id: String,
+    pub row: SheetRowProjection,
+    pub total_count: u32,
+    pub success_count: u32,
+    pub failed_count: u32,
+    pub pending_count: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum WorkspaceEngineEvent {
     ImportJobProgress(ImportJobProgressEvent),
+    TrackingRefreshProgress(TrackingRefreshProgressEvent),
 }
 
 #[cfg(test)]

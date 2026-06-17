@@ -7,7 +7,6 @@ import {
   setRowsQueuedInSheet,
   setTrackingInputInSheet,
   settleRowRuntimeStateInSheet,
-  settleRowsRuntimeStateInSheet,
 } from "../sheet/actions";
 import { SheetState } from "../sheet/types";
 import {
@@ -21,10 +20,14 @@ import { WorkspaceState } from "../workspace/types";
 import {
   deleteSheetRows,
   refreshSheetRowTracking,
-  refreshSheetRowsTracking,
+  refreshSheetRowsTrackingWithProgress,
   type SheetRowProjection,
   upsertSheetRows,
 } from "../workspace-engine/client";
+import {
+  applyTrackingRefreshProgressToSheet,
+  applyTrackingRefreshRowsToSheet,
+} from "../workspace/tracking-refresh-state";
 
 type TrackingTelemetryEvent = "start" | "success" | "fail" | "abort";
 type TrackingErrorClass =
@@ -67,6 +70,24 @@ type BulkQueueEntry = {
   options?: FetchRuntimeOptions;
 };
 
+function getBulkQueueEntryKey(entry: BulkQueueEntry) {
+  return entry.engineRowId?.trim() || entry.key;
+}
+
+function mergeBulkQueueEntries(
+  existingEntries: BulkQueueEntry[],
+  nextEntries: BulkQueueEntry[]
+) {
+  const merged = new Map<string, BulkQueueEntry>();
+  existingEntries.forEach((entry) => {
+    merged.set(getBulkQueueEntryKey(entry), entry);
+  });
+  nextEntries.forEach((entry) => {
+    merged.set(getBulkQueueEntryKey(entry), entry);
+  });
+  return Array.from(merged.values());
+}
+
 type TrackingRowContext = {
   position?: number;
   engineRowId?: string;
@@ -97,6 +118,10 @@ function getProjectionResolvedShipmentId(row: SheetRowProjection) {
   return typeof resolvedShipmentId === "string" && resolvedShipmentId.trim() !== ""
     ? resolvedShipmentId
     : row.lookupTrackingId;
+}
+
+function getTrackingFailureMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Tracking request failed.";
 }
 
 function createEngineRowsFromEntries(
@@ -248,6 +273,7 @@ function emitTrackingTelemetry(
 ) {
   const payload = {
     event,
+    requestId: meta.requestId,
     sheetId: meta.sheetId,
     rowKey: meta.rowKey,
     shipmentId: meta.shipmentId,
@@ -260,6 +286,13 @@ function emitTrackingTelemetry(
   }
 
   console.info("[ShipFlowTelemetry]", payload);
+}
+
+function emitTrackingRunLog(event: string, payload: Record<string, unknown>) {
+  console.info("[ShipFlowTrackingRun]", {
+    event,
+    ...payload,
+  });
 }
 
 function createRequestId() {
@@ -315,6 +348,9 @@ export function useTrackingRuntimeController({
   const requestMetaRef = useRef(new Map<string, TrackingRequestMeta>());
   const requestEpochBySheetRef = useRef(new Map<string, number>());
   const bulkRunEpochBySheetRef = useRef(new Map<string, number>());
+  const bulkRunTokenRef = useRef(0);
+  const activeBulkRunTokenBySheetRef = useRef(new Map<string, number>());
+  const pendingBulkEntriesBySheetRef = useRef(new Map<string, BulkQueueEntry[]>());
 
   useEffect(() => {
     return () => {
@@ -347,6 +383,8 @@ export function useTrackingRuntimeController({
   const forgetSheetTrackingRuntime = useCallback((sheetId: string) => {
     requestEpochBySheetRef.current.delete(sheetId);
     bulkRunEpochBySheetRef.current.delete(sheetId);
+    activeBulkRunTokenBySheetRef.current.delete(sheetId);
+    pendingBulkEntriesBySheetRef.current.delete(sheetId);
   }, []);
 
   const upsertTrackingRowsIntoEngine = useCallback(
@@ -392,6 +430,29 @@ export function useTrackingRuntimeController({
     [onWorkspaceEngineMutation]
   );
 
+  const markTrackingEntriesFailed = useCallback(
+    (sheetId: string, entries: BulkQueueEntry[], error: unknown) => {
+      const message = getTrackingFailureMessage(error);
+      updateSheet(sheetId, (current) => {
+        const liveEntries = entries.filter((entry) =>
+          current.rows.some(
+            (row) =>
+              row.key === entry.key &&
+              sanitizeTrackingInput(row.trackingInput) === entry.value
+          )
+        );
+
+        return liveEntries.reduce(
+          (sheetState, entry) => setRowErrorInSheet(sheetState, entry.key, message),
+          current
+        );
+      });
+
+      return message;
+    },
+    [updateSheet]
+  );
+
   const syncTrackingInputDraftToEngine = useCallback(
     (
       sheetId: string,
@@ -432,6 +493,8 @@ export function useTrackingRuntimeController({
     (sheetId: string) => {
       bumpSheetEpoch(requestEpochBySheetRef, sheetId);
       bumpSheetEpoch(bulkRunEpochBySheetRef, sheetId);
+      activeBulkRunTokenBySheetRef.current.delete(sheetId);
+      pendingBulkEntriesBySheetRef.current.delete(sheetId);
 
       requestControllersRef.current.forEach((controller, requestKey) => {
         if (requestKey.startsWith(`${sheetId}:`)) {
@@ -783,84 +846,253 @@ export function useTrackingRuntimeController({
         .filter(
           (entry) =>
             entry.value !== "" && !getTrackingInputValidationError(entry.value)
-        );
+      );
 
       if (validEntries.length === 0) {
-        return;
-      }
-
-      const currentBulkEpoch = getSheetEpoch(bulkRunEpochBySheetRef, sheetId);
-      const queuedEntryByKey = new Map<string, BulkQueueEntry>();
-      const requestMetaByKey = new Map<string, TrackingRequestMeta>();
-      const requestMetaByEngineRowId = new Map<string, TrackingRequestMeta>();
-      const queueUpdates: BulkQueueEntry[] = [];
-      validEntries.forEach((entry) => {
-        const requestKey = getSheetRequestKey(sheetId, entry.key);
-        const controller = requestControllersRef.current.get(requestKey);
-        const meta = requestMetaRef.current.get(requestKey);
-
-        if (
-          meta &&
-          meta.shipmentId === entry.value &&
-          options?.forceRefresh !== true
-        ) {
-          return;
-        }
-
-        if (meta) {
-          emitTrackingTelemetry("abort", meta, {
-            reason: "bulk_tracking_restart",
-          });
-        }
-
-        controller?.abort();
-        requestControllersRef.current.delete(requestKey);
-        requestMetaRef.current.delete(requestKey);
-
-        const requestMeta = {
-          requestId: createRequestId(),
+        emitTrackingRunLog("skip_empty_or_invalid_entries", {
           sheetId,
-          rowKey: entry.key,
-          shipmentId: entry.value,
-          startedAt: performance.now(),
-        };
-        queuedEntryByKey.set(entry.key, entry);
-        requestMetaByKey.set(entry.key, requestMeta);
-        requestMetaByEngineRowId.set(
-          entry.engineRowId?.trim() || entry.key,
-          requestMeta
-        );
-      });
-      queueUpdates.push(...queuedEntryByKey.values());
-
-      if (queueUpdates.length === 0) {
-        return;
-      }
-
-      queueUpdates.forEach((entry) => {
-        const requestMeta = requestMetaByKey.get(entry.key);
-        if (requestMeta) {
-          emitTrackingTelemetry("start", requestMeta);
-        }
-      });
-      updateSheet(sheetId, (current) => setRowsQueuedInSheet(current, queueUpdates));
-      await upsertTrackingRowsIntoEngine(sheetId, queueUpdates, options?.sheetState);
-
-      try {
-        const response = await refreshSheetRowsTracking({
-          sheetId,
-          rowIds: queueUpdates.map((entry) => entry.engineRowId?.trim() || entry.key),
-          forceRefresh: options?.forceRefresh === true,
+          inputCount: entries.length,
         });
-        onWorkspaceEngineMutation?.(sheetId);
+        return;
+      }
 
-        if (getSheetEpoch(bulkRunEpochBySheetRef, sheetId) !== currentBulkEpoch) {
+      if (activeBulkRunTokenBySheetRef.current.has(sheetId)) {
+        const activeRunToken = activeBulkRunTokenBySheetRef.current.get(sheetId);
+        pendingBulkEntriesBySheetRef.current.set(
+          sheetId,
+          mergeBulkQueueEntries(
+            pendingBulkEntriesBySheetRef.current.get(sheetId) ?? [],
+            validEntries
+          )
+        );
+        emitTrackingRunLog("queue_while_active", {
+          sheetId,
+          activeRunToken,
+          queuedCount: validEntries.length,
+          pendingQueueCount:
+            pendingBulkEntriesBySheetRef.current.get(sheetId)?.length ?? 0,
+        });
+        updateSheet(sheetId, (current) => setRowsQueuedInSheet(current, validEntries));
+        try {
+          await upsertTrackingRowsIntoEngine(sheetId, validEntries, options?.sheetState);
+          emitTrackingRunLog("queued_entries_upserted", {
+            sheetId,
+            activeRunToken,
+            queuedCount: validEntries.length,
+          });
+        } catch (error) {
+          const message = markTrackingEntriesFailed(sheetId, validEntries, error);
+          emitTrackingRunLog("queued_entries_upsert_failed", {
+            sheetId,
+            activeRunToken,
+            queuedCount: validEntries.length,
+            error: message,
+          });
+          const pendingEntries = pendingBulkEntriesBySheetRef.current.get(sheetId) ?? [];
+          const failedEntryKeys = new Set(validEntries.map(getBulkQueueEntryKey));
+          const nextPendingEntries = pendingEntries.filter(
+            (entry) => !failedEntryKeys.has(getBulkQueueEntryKey(entry))
+          );
+          if (nextPendingEntries.length > 0) {
+            pendingBulkEntriesBySheetRef.current.set(sheetId, nextPendingEntries);
+          } else {
+            pendingBulkEntriesBySheetRef.current.delete(sheetId);
+          }
+        }
+        return;
+      }
+
+      const bulkRunToken = bulkRunTokenRef.current + 1;
+      bulkRunTokenRef.current = bulkRunToken;
+      activeBulkRunTokenBySheetRef.current.set(sheetId, bulkRunToken);
+      emitTrackingRunLog("run_start", {
+        sheetId,
+        runToken: bulkRunToken,
+        inputCount: entries.length,
+        validCount: validEntries.length,
+        forceRefresh: options?.forceRefresh === true,
+      });
+      try {
+        const currentBulkEpoch = getSheetEpoch(bulkRunEpochBySheetRef, sheetId);
+        const queuedEntryByKey = new Map<string, BulkQueueEntry>();
+        const queuedEntryByEngineRowId = new Map<string, BulkQueueEntry>();
+        const requestMetaByKey = new Map<string, TrackingRequestMeta>();
+        const requestMetaByEngineRowId = new Map<string, TrackingRequestMeta>();
+        const queueUpdates: BulkQueueEntry[] = [];
+        validEntries.forEach((entry) => {
+          const requestKey = getSheetRequestKey(sheetId, entry.key);
+          const controller = requestControllersRef.current.get(requestKey);
+          const meta = requestMetaRef.current.get(requestKey);
+
+          if (
+            meta &&
+            meta.shipmentId === entry.value &&
+            options?.forceRefresh !== true
+          ) {
+            return;
+          }
+
+          if (meta) {
+            emitTrackingTelemetry("abort", meta, {
+              reason: "bulk_tracking_restart",
+            });
+          }
+
+          controller?.abort();
+          requestControllersRef.current.delete(requestKey);
+          requestMetaRef.current.delete(requestKey);
+
+          const requestMeta = {
+            requestId: createRequestId(),
+            sheetId,
+            rowKey: entry.key,
+            shipmentId: entry.value,
+            startedAt: performance.now(),
+          };
+          queuedEntryByKey.set(entry.key, entry);
+          requestMetaByKey.set(entry.key, requestMeta);
+          requestMetaByEngineRowId.set(
+            entry.engineRowId?.trim() || entry.key,
+            requestMeta
+          );
+          queuedEntryByEngineRowId.set(entry.engineRowId?.trim() || entry.key, entry);
+        });
+        queueUpdates.push(...queuedEntryByKey.values());
+
+        if (queueUpdates.length === 0) {
+          emitTrackingRunLog("run_noop_existing_requests", {
+            sheetId,
+            runToken: bulkRunToken,
+            validCount: validEntries.length,
+          });
           return;
         }
 
-        if (response.payload.rows.length > 0) {
-          const settledRowKeys = response.payload.rows
-            .map((projection) => {
+        queueUpdates.forEach((entry) => {
+          const requestMeta = requestMetaByKey.get(entry.key);
+          if (requestMeta) {
+            emitTrackingTelemetry("start", requestMeta);
+          }
+        });
+        updateSheet(sheetId, (current) => setRowsQueuedInSheet(current, queueUpdates));
+        emitTrackingRunLog("run_queued", {
+          sheetId,
+          runToken: bulkRunToken,
+          queuedCount: queueUpdates.length,
+        });
+        try {
+          await upsertTrackingRowsIntoEngine(sheetId, queueUpdates, options?.sheetState);
+          emitTrackingRunLog("run_upserted", {
+            sheetId,
+            runToken: bulkRunToken,
+            queuedCount: queueUpdates.length,
+          });
+        } catch (error) {
+          const message = markTrackingEntriesFailed(sheetId, queueUpdates, error);
+          emitTrackingRunLog("run_upsert_failed", {
+            sheetId,
+            runToken: bulkRunToken,
+            queuedCount: queueUpdates.length,
+            error: message,
+          });
+          queueUpdates.forEach((entry) => {
+            const requestMeta = requestMetaByKey.get(entry.key);
+            if (!requestMeta) {
+              return;
+            }
+            emitTrackingTelemetry("fail", requestMeta, {
+              classification: classifyTrackingError(error),
+              error: message,
+              durationMs: Math.round(performance.now() - requestMeta.startedAt),
+            });
+          });
+          return;
+        }
+
+        try {
+          const response = await refreshSheetRowsTrackingWithProgress(
+            {
+              sheetId,
+              rowIds: queueUpdates.map(
+                (entry) => entry.engineRowId?.trim() || entry.key
+              ),
+              forceRefresh: options?.forceRefresh === true,
+            },
+            (event) => {
+              if (
+                event.type !== "tracking_refresh_progress" ||
+                event.payload.sheetId !== sheetId ||
+                getSheetEpoch(bulkRunEpochBySheetRef, sheetId) !== currentBulkEpoch
+              ) {
+                return;
+              }
+
+              const row = event.payload.row;
+              emitTrackingRunLog("progress_event", {
+                sheetId,
+                runToken: bulkRunToken,
+                rowId: row.rowId,
+                rowStatus: row.rowStatus,
+                displayTrackingId: row.displayTrackingId,
+                lookupTrackingId: row.lookupTrackingId,
+                totalCount: event.payload.totalCount,
+                successCount: event.payload.successCount,
+                failedCount: event.payload.failedCount,
+                pendingCount: event.payload.pendingCount,
+              });
+              const entry =
+                queuedEntryByEngineRowId.get(row.rowId) ??
+                queueUpdates.find(
+                  (candidate) =>
+                    sanitizeTrackingInput(candidate.value) === row.displayTrackingId
+                );
+              if (entry) {
+                const currentRow = workspaceRef.current.sheetsById[
+                  sheetId
+                ]?.rows.find((candidate) => candidate.key === entry.key);
+                if (
+                  currentRow &&
+                  sanitizeTrackingInput(currentRow.trackingInput) !== entry.value
+                ) {
+                  emitTrackingRunLog("progress_ignored_stale_input", {
+                    sheetId,
+                    runToken: bulkRunToken,
+                    rowId: row.rowId,
+                    expected: entry.value,
+                    current: sanitizeTrackingInput(currentRow.trackingInput),
+                  });
+                  return;
+                }
+
+                updateSheet(sheetId, (current) =>
+                  applyTrackingRefreshProgressToSheet(current, event.payload, {
+                    rowKey: entry.key,
+                    createMissingRow: true,
+                  })
+                );
+              } else {
+                emitTrackingRunLog("progress_ignored_missing_entry", {
+                  sheetId,
+                  runToken: bulkRunToken,
+                  rowId: row.rowId,
+                  displayTrackingId: row.displayTrackingId,
+                });
+              }
+            }
+          );
+          onWorkspaceEngineMutation?.(sheetId);
+
+          if (getSheetEpoch(bulkRunEpochBySheetRef, sheetId) !== currentBulkEpoch) {
+            emitTrackingRunLog("run_result_ignored_epoch_changed", {
+              sheetId,
+              runToken: bulkRunToken,
+              responseRows: response.payload.rows.length,
+            });
+            return;
+          }
+
+          if (response.payload.rows.length > 0) {
+            const getRowKey = (projection: SheetRowProjection) => {
               const entry = queuedEntryByKey.get(projection.rowId);
               if (entry) {
                 return entry.key;
@@ -873,68 +1105,96 @@ export function useTrackingRuntimeController({
                   sanitizeTrackingInput(candidate.value) ===
                     projection.displayTrackingId
               )?.key;
-            })
-            .filter((key): key is string => Boolean(key));
-          updateSheet(sheetId, (current) =>
-            settleRowsRuntimeStateInSheet(current, settledRowKeys)
-          );
-        }
-
-        response.payload.rows.forEach((row) => {
-          const requestMeta =
-            requestMetaByEngineRowId.get(row.rowId) ?? requestMetaByKey.get(row.rowId);
-          if (!requestMeta) {
-            return;
+            };
+            updateSheet(sheetId, (current) =>
+              applyTrackingRefreshRowsToSheet(current, response.payload.rows, {
+                getRowKey,
+                createMissingRows: true,
+              })
+            );
           }
 
-          if (row.rowStatus === "failed") {
-            const errorMessage = row.errorMessage ?? "Tracking request failed.";
-            emitTrackingTelemetry("fail", requestMeta, {
-              classification: classifyTrackingError(errorMessage),
-              error: errorMessage,
+          emitTrackingRunLog("run_complete", {
+            sheetId,
+            runToken: bulkRunToken,
+            successCount: response.payload.successCount,
+            failedCount: response.payload.failedCount,
+            responseRows: response.payload.rows.length,
+          });
+          response.payload.rows.forEach((row) => {
+            const requestMeta =
+              requestMetaByEngineRowId.get(row.rowId) ??
+              requestMetaByKey.get(row.rowId);
+            if (!requestMeta) {
+              return;
+            }
+
+            if (row.rowStatus === "failed") {
+              const errorMessage = row.errorMessage ?? "Tracking request failed.";
+              emitTrackingTelemetry("fail", requestMeta, {
+                classification: classifyTrackingError(errorMessage),
+                error: errorMessage,
+                durationMs: Math.round(performance.now() - requestMeta.startedAt),
+              });
+              return;
+            }
+
+            emitTrackingTelemetry("success", requestMeta, {
+              lookupShipmentId: row.lookupTrackingId,
+              resolvedShipmentId: getProjectionResolvedShipmentId(row),
               durationMs: Math.round(performance.now() - requestMeta.startedAt),
             });
-            return;
-          }
-
-          emitTrackingTelemetry("success", requestMeta, {
-            lookupShipmentId: row.lookupTrackingId,
-            resolvedShipmentId: getProjectionResolvedShipmentId(row),
-            durationMs: Math.round(performance.now() - requestMeta.startedAt),
           });
-        });
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Tracking request failed.";
-        updateSheet(sheetId, (current) => {
-          const nextEntries = queueUpdates.filter((entry) =>
-            current.rows.some(
-              (row) =>
-                row.key === entry.key &&
-                sanitizeTrackingInput(row.trackingInput) === entry.value
-            )
-          );
-
-          return nextEntries.reduce(
-            (sheetState, entry) => setRowErrorInSheet(sheetState, entry.key, message),
-            current
-          );
-        });
-        queueUpdates.forEach((entry) => {
-          const requestMeta = requestMetaByKey.get(entry.key);
-          if (!requestMeta) {
-            return;
-          }
-          emitTrackingTelemetry("fail", requestMeta, {
-            classification: classifyTrackingError(error),
+        } catch (error) {
+          const message = markTrackingEntriesFailed(sheetId, queueUpdates, error);
+          emitTrackingRunLog("run_failed", {
+            sheetId,
+            runToken: bulkRunToken,
+            queuedCount: queueUpdates.length,
             error: message,
-            durationMs: Math.round(performance.now() - requestMeta.startedAt),
           });
+          queueUpdates.forEach((entry) => {
+            const requestMeta = requestMetaByKey.get(entry.key);
+            if (!requestMeta) {
+              return;
+            }
+            emitTrackingTelemetry("fail", requestMeta, {
+              classification: classifyTrackingError(error),
+              error: message,
+              durationMs: Math.round(performance.now() - requestMeta.startedAt),
+            });
+          });
+        }
+      } finally {
+        if (activeBulkRunTokenBySheetRef.current.get(sheetId) !== bulkRunToken) {
+          emitTrackingRunLog("run_finally_skipped_token_replaced", {
+            sheetId,
+            runToken: bulkRunToken,
+            activeRunToken: activeBulkRunTokenBySheetRef.current.get(sheetId),
+          });
+          return;
+        }
+
+        activeBulkRunTokenBySheetRef.current.delete(sheetId);
+        const pendingEntries = pendingBulkEntriesBySheetRef.current.get(sheetId) ?? [];
+        pendingBulkEntriesBySheetRef.current.delete(sheetId);
+        emitTrackingRunLog("run_finalized", {
+          sheetId,
+          runToken: bulkRunToken,
+          pendingQueueCount: pendingEntries.length,
         });
+        if (pendingEntries.length > 0) {
+          void refreshTrackingRows(
+            sheetId,
+            pendingEntries,
+            pendingEntries[0]?.options
+          );
+        }
       }
     },
     [
       getSheetEpoch,
+      markTrackingEntriesFailed,
       updateSheet,
       upsertTrackingRowsIntoEngine,
       onWorkspaceEngineMutation,

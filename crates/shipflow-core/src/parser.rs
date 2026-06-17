@@ -4,10 +4,10 @@ use scraper::{Html as ScraperHtml, Selector};
 
 use crate::model::{
     Actors, BaggingUnbaggingEvent, BaggingUnbaggingSummary, BillingDetail, ContactDetail,
-    DeliveryRunsheetSummary, DeliveryRunsheetUpdate, HistorySummary, IrregularitySummary,
-    ManifestR7Summary, OriginDetail, PackageDetail, PerformanceDetail, ShipmentHeader,
-    StatusAkhirParts, TrackCodDetail, TrackDetail, TrackHistoryEntry, TrackPod, TrackResponse,
-    TrackStatusAkhir, TrackingError,
+    ContactEnrichment, DeliveryRunsheetSummary, DeliveryRunsheetUpdate, HistorySummary,
+    IrregularitySummary, ManifestR7Summary, OriginDetail, PackageDetail, PerformanceDetail,
+    ShipmentHeader, StatusAkhirParts, TrackCodDetail, TrackDetail, TrackHistoryEntry, TrackPod,
+    TrackResponse, TrackStatusAkhir, TrackingError,
 };
 use crate::upstream::resolve_pos_href;
 
@@ -79,13 +79,15 @@ pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackRespons
             "PENGIRIM" => actors.pengirim = parse_pengirim(&value),
             "PENERIMA" => actors.penerima = parse_penerima(&value),
             "STATUS AKHIR" => {
-                let (status, location, officer_name, officer_id, datetime) =
+                let (status, location, officer_name, officer_id, datetime, date, time) =
                     parse_status_akhir(&value);
                 status_akhir.status = status;
                 status_akhir.location = location;
                 status_akhir.officer_name = officer_name;
                 status_akhir.officer_id = officer_id;
                 status_akhir.datetime = datetime;
+                status_akhir.date = date;
+                status_akhir.time = time;
             }
             _ => {}
         }
@@ -286,7 +288,42 @@ pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackRespons
         pod,
         history,
         history_summary,
+        contact_enrichment: None,
     })
+}
+
+pub fn parse_lacak_mitra_contact_html(html: &str) -> ContactEnrichment {
+    let document = ScraperHtml::parse_document(html);
+    let tr_selector = Selector::parse("tr").expect("valid selector");
+    let cell_selector = Selector::parse("td, th").expect("valid selector");
+    let mut enrichment = ContactEnrichment::default();
+
+    for tr in document.select(&tr_selector) {
+        let cells: Vec<String> = tr
+            .select(&cell_selector)
+            .map(|cell| normalize_text(&cell.text().collect::<String>()))
+            .filter(|text| !text.is_empty())
+            .collect();
+
+        if cells.len() < 2 {
+            continue;
+        }
+
+        match normalize_label(&cells[0]).as_str() {
+            "PENGIRIM" => enrichment.pengirim = parse_contact(&cells[1]),
+            "PENERIMA" => enrichment.penerima = parse_contact(&cells[1]),
+            _ => {}
+        }
+    }
+
+    enrichment.pengirim.nama = None;
+    enrichment.pengirim.alamat = None;
+    enrichment.pengirim.kode_pos = None;
+    enrichment.penerima.nama = None;
+    enrichment.penerima.alamat = None;
+    enrichment.penerima.kode_pos = None;
+
+    enrichment
 }
 
 fn normalize_text(input: &str) -> String {
@@ -657,7 +694,7 @@ fn parse_status_akhir(raw: &str) -> StatusAkhirParts {
             &text[idx + " di ".len()..],
         )
     } else {
-        return (Some(text.to_string()), None, None, None, None);
+        return (Some(text.to_string()), None, None, None, None, None, None);
     };
 
     let mut location = None;
@@ -685,6 +722,8 @@ fn parse_status_akhir(raw: &str) -> StatusAkhirParts {
     let mut officer_name = None;
     let mut officer_id = None;
     let mut datetime = None;
+    let mut date = None;
+    let mut time = None;
 
     if let Some(start_paren) = after_location.find('(') {
         if let Some(end_paren) = after_location.rfind(')') {
@@ -715,13 +754,34 @@ fn parse_status_akhir(raw: &str) -> StatusAkhirParts {
             end_idx = idx;
         }
 
-        let dt = after_colon[..end_idx].trim();
-        if !dt.is_empty() {
-            datetime = Some(dt.to_string());
+        if let Some((parsed_date, parsed_time)) = extract_datetime_parts(&after_colon[..end_idx]) {
+            datetime = Some(format!("{parsed_date} {parsed_time}"));
+            date = Some(parsed_date);
+            time = Some(parsed_time);
+        } else {
+            let dt = after_colon[..end_idx].trim();
+            if !dt.is_empty() {
+                datetime = Some(dt.to_string());
+            }
+        }
+    }
+    if datetime.is_none() {
+        if let Some((parsed_date, parsed_time)) = extract_datetime_parts(after_location) {
+            datetime = Some(format!("{parsed_date} {parsed_time}"));
+            date = Some(parsed_date);
+            time = Some(parsed_time);
         }
     }
 
-    (status, location, officer_name, officer_id, datetime)
+    (
+        status,
+        location,
+        officer_name,
+        officer_id,
+        datetime,
+        date,
+        time,
+    )
 }
 
 fn split_datetime(raw: &str) -> (Option<String>, Option<String>) {
@@ -736,6 +796,35 @@ fn split_datetime(raw: &str) -> (Option<String>, Option<String>) {
         None
     };
     (date, time)
+}
+
+fn extract_datetime_parts(raw: &str) -> Option<(String, String)> {
+    let trimmed = raw.trim();
+    let bytes = trimmed.as_bytes();
+
+    for start in 0..trimmed.len() {
+        let end = start + 19;
+        if end > trimmed.len() {
+            break;
+        }
+
+        let candidate_bytes = &bytes[start..end];
+        if candidate_bytes[4] == b'-'
+            && candidate_bytes[7] == b'-'
+            && candidate_bytes[10].is_ascii_whitespace()
+            && candidate_bytes[13] == b':'
+            && candidate_bytes[16] == b':'
+            && candidate_bytes
+                .iter()
+                .enumerate()
+                .all(|(index, ch)| matches!(index, 4 | 7 | 10 | 13 | 16) || ch.is_ascii_digit())
+        {
+            let candidate = std::str::from_utf8(candidate_bytes).ok()?;
+            return Some((candidate[..10].to_string(), candidate[11..19].to_string()));
+        }
+    }
+
+    None
 }
 
 fn build_history_summary(
@@ -1332,6 +1421,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_lacak_mitra_contact_html_extracts_only_phone_numbers() {
+        let html = r#"
+            <table>
+              <tr>
+                <td class=brslap align=center>Pengirim</td>
+                <td>&nbsp;<font size="2">YAYASAN LEMBAGA ALKITAB INDONESIA; 08111925400; JL SALEMBA RAYA NO 12 JAKARTA PUSAT; </font></td>
+              </tr>
+              <tr>
+                <td class=brslap align=center>Penerima</td>
+                <td>&nbsp;<font size="2">KA PERWAKILAN JAYAPURA; 0967535620; JL FRANS KAISEPO KOMPLEK RUKO PASIFIF PERMAI BLOK D1 JAYAPURA PAPUA; 99112</font></td>
+              </tr>
+            </table>
+        "#;
+
+        let contact = super::parse_lacak_mitra_contact_html(html);
+
+        assert_eq!(contact.pengirim.telepon.as_deref(), Some("08111925400"));
+        assert_eq!(contact.penerima.telepon.as_deref(), Some("0967535620"));
+        assert!(contact.pengirim.nama.is_none());
+        assert!(contact.penerima.alamat.is_none());
+    }
+
+    #[test]
     fn parse_tracking_html_returns_not_found_when_shipment_header_missing() {
         let html = r#"
             <html>
@@ -1472,6 +1584,26 @@ mod tests {
         assert_eq!(runsheet.updates.len(), 1);
         assert_eq!(runsheet.updates[0].status.as_deref(), Some("DELIVERED"));
         assert_eq!(runsheet.updates[0].keterangan_status, None);
+    }
+
+    #[test]
+    fn parse_tracking_html_cleans_status_akhir_timestamp_suffix() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2606150000001</td></tr>
+              <tr><td>Status Akhir</td><td>INLOCATION di DC JAYAPURA 9910A oleh SYSTEM tanggal : 2026-06-15 09:03:42 SYSTEM</td></tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("status akhir with system suffix should parse");
+
+        assert_eq!(
+            response.status_akhir.datetime.as_deref(),
+            Some("2026-06-15 09:03:42")
+        );
+        assert_eq!(response.status_akhir.date.as_deref(), Some("2026-06-15"));
+        assert_eq!(response.status_akhir.time.as_deref(), Some("09:03:42"));
     }
 
     #[test]

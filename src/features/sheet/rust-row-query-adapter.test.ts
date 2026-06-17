@@ -305,29 +305,31 @@ describe("Rust row query adapter", () => {
     ]);
   });
 
-  it("rejects unsupported table fields instead of generating unsafe SQL", () => {
+  it("keeps visible non-json sheet columns on the Rust query path", () => {
     const sheet = createDefaultSheetState();
-    const row = {
-      ...sheet.rows[0],
-      trackingInput: "P1",
-      shipment: createShipment("P1"),
-    };
     const context = createVisibleColumnContext();
 
-    const query = createRustSheetRowsQuery({
-      sheetId: "sheet-1",
-      sheetState: {
-        ...sheet,
-        rows: [row],
-        filters: {
-          "pod.photo1_url": "https://example.test/photo.jpg",
+    for (const column of COLUMNS.filter((item) => item.type !== "json")) {
+      const query = createRustSheetRowsQuery({
+        sheetId: "sheet-1",
+        sheetState: {
+          ...sheet,
+          filters: {
+            [column.path]: "sample",
+          },
         },
-      },
-      nonEmptyRows: [row],
-      ...context,
-    });
+        nonEmptyRows: [],
+        ...context,
+      });
 
-    expect(query).toBeNull();
+      expect(query, column.path).not.toBeNull();
+      expect(query?.filters).toEqual([
+        {
+          field: column.path,
+          value: "sample",
+        },
+      ]);
+    }
   });
 
   it("keeps filtered or sorted incomplete tracking rows on the legacy path", () => {

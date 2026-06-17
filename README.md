@@ -51,9 +51,16 @@ Architecture references:
 https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=...
 ```
 
-7. The response is normalized into the app's JSON shape
-8. The Rust workspace engine persists the tracking record and returns a row projection
-9. The matching row is updated with shipment details
+7. ShipFlow Service enriches only missing sender/recipient phone numbers from `lacak-mitra`:
+
+```text
+https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=<shipment_id>
+```
+
+8. Contact enrichment is best-effort and cached persistently per exact shipment ID. The `lacak-mitra` response is not used to overwrite status, SLA, history, POD, bagging, manifest, delivery, names, or addresses.
+9. The response is normalized into the app's JSON shape
+10. The Rust workspace engine persists the tracking record and returns a row projection
+11. The matching row is updated with shipment details
 
 Example shipment ID:
 
@@ -82,15 +89,7 @@ Current ownership:
 - Desktop and service runtime paths now share one lookup cache facade for `track`, `bag`, and `manifest`
 - `ShipFlow Desktop` currently renders only shipment rows in the workspace table
 
-Current local service routes:
-
-- `GET /health`
-- `GET /status`
-- `GET /track/:shipment_id`
-- `GET /bag/:bag_id`
-- `GET /manifest/:manifest_id`
-
-Current versioned service API routes:
+Current service API routes:
 
 - `GET /v1/openapi.json`
 - `GET /v1/status`
@@ -130,6 +129,7 @@ The API supports:
 - capability discovery
 - shipment, bag, and manifest lookups
 - raw upstream shipment HTML lookup through `GET /v1/track/:shipment_id/html`
+- best-effort contact enrichment for sender/recipient phone numbers from `lacak-mitra`, with persistent contact cache
 - force-refresh lookups with `x-shipflow-force-refresh: true`
 - background batch tracking jobs with start/status/result/cancel endpoints
 
@@ -285,6 +285,7 @@ The analytics action panel contains:
 | `Lokasi Akhir` | `text` |
 | `Petugas Akhir` | `text` |
 | `ID Petugas Akhir` | `text` |
+| `Tanggal Status Akhir` | `text` |
 | `Waktu Status Akhir` | `text` |
 | `Nama Pengirim` | `text` |
 | `Telepon Pengirim` | `text` |
@@ -377,7 +378,7 @@ The main table currently focuses on:
 - Desktop `Setting` only edits the Desktop-to-Service localhost port/token. It does not edit service-owned tracking source configuration.
 - Desktop always uses the configured standalone service port/token for tracking.
 - Desktop does not spawn a managed tracking runtime and the target service owns its own scraper/internal API config.
-- Custom Desktop-to-Service settings are saved only after an authenticated `/status` response proves the endpoint is ShipFlow Service.
+- Custom Desktop-to-Service settings are saved only after an authenticated `/v1/status` response proves the endpoint is ShipFlow Service.
 - In custom Desktop-to-Service mode, Desktop does not enable or manage the Service API endpoint; the target service owns that endpoint and token.
 - The Service API token is required for Desktop tracking in both internal scraper mode and external API mode.
 - ShipFlow Service does not generate or rotate the API token automatically. The token changes only when the user clicks `Generate` or confirms `Regenerate`.
@@ -414,7 +415,7 @@ The main table currently focuses on:
 - Delivery-runsheet parsing now keeps only the latest effective update for a runsheet summary.
 - Desktop no longer manages service tray/background lifecycle.
 - Desktop startup no longer starts a service companion. Start the standalone service first, then configure Desktop with that service port/token.
-- Desktop/service readiness checks now require an authenticated `GET /status` response from `ShipFlow Service`, including a ShipFlow-specific product marker, before reusing an existing runtime process.
+- Desktop/service readiness checks now require an authenticated `GET /v1/status` response from `ShipFlow Service`, including a ShipFlow-specific product marker, before reusing an existing runtime process.
 - Windows release builds of `ShipFlow Service` use the Windows subsystem, so launching the installed service app does not open a console window.
 - Windows installers use fixed `C:\ShipFlow` locations: `C:\ShipFlow\Desktop` for Desktop, `C:\ShipFlow\Service` for Service, and `C:\ShipFlow\Data` for shared runtime state, lookup cache, token vault, PID files, and logs.
 - Launching `ShipFlow Service` normally starts it in the background and keeps only the system-tray/menu-bar entry visible.
@@ -424,7 +425,7 @@ The main table currently focuses on:
 - Desktop and Service cross-launch helpers look for the separately installed app first and no longer fall back to launching the current app as the other product.
 - Desktop custom connection saves no longer start or stop the Service tray companion.
 - Windows Desktop and Service installers run shutdown hooks before install and uninstall replacement, so running ShipFlow processes are closed before files are overwritten.
-- Custom Desktop-to-Service lookups re-check the authenticated `/status` identity before sending shipment, bag, or manifest IDs to a custom endpoint.
+- Custom Desktop-to-Service lookups re-check the authenticated `/v1/status` identity before sending shipment, bag, or manifest IDs to a custom endpoint.
 - Service configuration is validated before it is persisted, and enabled service configs are written only after the companion process has started and passed the authenticated readiness probe.
 - Service config, runtime config, PID markers, pending activation requests, and runtime logs are stored under the user app-data state directory, with legacy temp-dir reads kept only as a migration fallback.
 - Service state files are written through unique temporary file names and atomic replacement paths to avoid in-process temp-file collisions.
@@ -517,9 +518,8 @@ Latest CLI/runtime smoke baseline, verified on 2026-04-25:
 - `npm run build:service` builds the standalone service binary.
 - `cargo test --workspace --all-targets` passes the runtime hardening tests, including POD guardrails, custom service status identity checks, concurrent state writes, and workspace finalize failure preservation.
 - A standalone `ShipFlow Service` process can start on `127.0.0.1:19431` with a generated runtime config.
-- `GET /status` with the expected bearer token returns `200 OK` and the `product: "shipflow-service"` marker.
-- `GET /status` with the wrong bearer token returns `401 Unauthorized`.
-- `GET /health` returns `200 OK`.
+- `GET /v1/status` with the expected bearer token returns `200 OK` and the `product: "shipflow-service"` marker in the response envelope.
+- `GET /v1/status` with the wrong bearer token returns `401 Unauthorized`.
 - Starting a second service process on the same port fails with `Address already in use`.
 - `npm run build`, `cargo fmt --all -- --check`, and `cargo clippy --workspace --all-targets -- -D warnings` pass after the runtime smoke test.
 

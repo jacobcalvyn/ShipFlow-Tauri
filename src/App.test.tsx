@@ -34,6 +34,9 @@ const { MockChannel, mockedInvoke } = vi.hoisted(() => ({
         };
         request?: {
           jobId?: string;
+          sheetId?: string;
+          rowIds?: string[];
+          forceRefresh?: boolean;
         };
         onEvent?: {
           onmessage?: (event: unknown) => void;
@@ -218,7 +221,7 @@ type WorkspaceEngineSheetRowFixture = {
   position: number;
   displayTrackingId: string;
   lookupTrackingId: string;
-  rowStatus: "empty" | "loading" | "loaded" | "failed" | "stale";
+  rowStatus: "empty" | "pending" | "loading" | "loaded" | "failed" | "stale";
   errorMessage: string | null;
   statusJson: TrackResponse["status_akhir"] | null;
   detailJson: TrackResponse["detail"] | null;
@@ -485,7 +488,11 @@ function expectWorkspaceEngineCommandCount(command: string, count: number) {
 }
 
 function expectWorkspaceEngineRefreshCount(count: number) {
-  expectWorkspaceEngineCommandCount("refresh_sheet_rows_tracking", count);
+  const legacyCount = getWorkspaceEngineCommandCalls("refresh_sheet_rows_tracking").length;
+  const progressCount = getInvokeCalls(
+    "workspace_engine_refresh_sheet_rows_tracking_with_progress"
+  ).length;
+  expect(legacyCount + progressCount).toBe(count);
 }
 
 function createDragDataTransfer(): DataTransfer {
@@ -621,6 +628,75 @@ describe("App workspace isolation", () => {
       WorkspaceEngineSheetRowFixture[]
     >();
     let workspaceEngineJobSequence = 0;
+    const refreshWorkspaceEngineRowsTracking = (
+      payload: {
+        sheetId: string;
+        rowIds: string[];
+        forceRefresh: boolean;
+      },
+      onProgress?: (event: unknown) => void
+    ) => {
+      const allRows = workspaceEngineRowsBySheet.get(payload.sheetId) ?? [];
+      const shouldReturnRows = payload.rowIds.length > 0;
+      const rowIds =
+        payload.rowIds.length > 0
+          ? payload.rowIds
+          : allRows.map((row) => row.rowId);
+      const nextRows = [...allRows];
+      const rows = rowIds
+        .map((rowId) => {
+          const prefix = `${payload.sheetId}:row:`;
+          const position = rowId.startsWith(prefix)
+            ? Number(rowId.slice(prefix.length))
+            : allRows.findIndex((row) => row.rowId === rowId);
+          if (position < 0) {
+            return null;
+          }
+          const row = allRows[position];
+          if (!row) {
+            return null;
+          }
+          trackedShipmentIds.push(row.lookupTrackingId);
+          const refreshedRow = createWorkspaceEngineSheetRow(
+            payload.sheetId,
+            row.displayTrackingId,
+            position,
+            true
+          );
+          nextRows[position] = refreshedRow;
+          onProgress?.({
+            type: "tracking_refresh_progress",
+            payload: {
+              sheetId: payload.sheetId,
+              row: refreshedRow,
+              totalCount: rowIds.length,
+              successCount: nextRows.filter(
+                (candidate) => candidate.rowStatus === "loaded"
+              ).length,
+              failedCount: nextRows.filter(
+                (candidate) => candidate.rowStatus === "failed"
+              ).length,
+              pendingCount: 0,
+            },
+          });
+          return refreshedRow;
+        })
+        .filter(
+          (row): row is ReturnType<typeof createWorkspaceEngineSheetRow> =>
+            row !== null
+        );
+      workspaceEngineRowsBySheet.set(payload.sheetId, nextRows);
+
+      return Promise.resolve({
+        type: "sheet_rows_tracking_refresh",
+        payload: {
+          sheetId: payload.sheetId,
+          successCount: rows.length,
+          failedCount: 0,
+          rows: shouldReturnRows ? rows : [],
+        },
+      });
+    };
     window.localStorage.clear();
     setShipFlowWindowKind("workspace");
     vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -774,6 +850,18 @@ describe("App workspace isolation", () => {
 
       if (command === "open_shipflow_service_app") {
         return Promise.resolve(undefined);
+      }
+
+      if (command === "workspace_engine_refresh_sheet_rows_tracking_with_progress") {
+        const payload = args?.request as {
+          sheetId: string;
+          rowIds: string[];
+          forceRefresh: boolean;
+        };
+        return refreshWorkspaceEngineRowsTracking(
+          payload,
+          args?.onEvent?.onmessage
+        );
       }
 
       if (command === "workspace_engine_command") {
@@ -1316,51 +1404,7 @@ describe("App workspace isolation", () => {
             rowIds: string[];
             forceRefresh: boolean;
           };
-          const allRows = workspaceEngineRowsBySheet.get(payload.sheetId) ?? [];
-          const shouldReturnRows = payload.rowIds.length > 0;
-          const rowIds =
-            payload.rowIds.length > 0
-              ? payload.rowIds
-              : allRows.map((row) => row.rowId);
-          const nextRows = [...allRows];
-          const rows = rowIds
-            .map((rowId) => {
-              const prefix = `${payload.sheetId}:row:`;
-              const position = rowId.startsWith(prefix)
-                ? Number(rowId.slice(prefix.length))
-                : allRows.findIndex((row) => row.rowId === rowId);
-              if (position < 0) {
-                return null;
-              }
-              const row = allRows[position];
-              if (!row) {
-                return null;
-              }
-              trackedShipmentIds.push(row.lookupTrackingId);
-              const refreshedRow = createWorkspaceEngineSheetRow(
-                payload.sheetId,
-                row.displayTrackingId,
-                position,
-                true
-              );
-              nextRows[position] = refreshedRow;
-              return refreshedRow;
-            })
-            .filter(
-              (row): row is ReturnType<typeof createWorkspaceEngineSheetRow> =>
-                row !== null
-            );
-          workspaceEngineRowsBySheet.set(payload.sheetId, nextRows);
-
-          return Promise.resolve({
-            type: "sheet_rows_tracking_refresh",
-            payload: {
-              sheetId: payload.sheetId,
-              successCount: rows.length,
-              failedCount: 0,
-              rows: shouldReturnRows ? rows : [],
-            },
-          });
+          return refreshWorkspaceEngineRowsTracking(payload);
         }
 
         if (workspaceCommand?.command === "query_pivot") {
@@ -2151,9 +2195,11 @@ describe("App workspace isolation", () => {
       );
       expect(screen.queryByDisplayValue("PEXIST1")).not.toBeInTheDocument();
     });
-    const replaceRefreshPayload = getWorkspaceEngineCommandCalls(
+    const replaceRefreshPayload = (getWorkspaceEngineCommandCalls(
       "refresh_sheet_rows_tracking"
-    )[0]?.[1]?.command?.payload as
+    )[0]?.[1]?.command?.payload ??
+      getInvokeCalls("workspace_engine_refresh_sheet_rows_tracking_with_progress")[0]?.[1]
+        ?.request) as
       | { rowIds?: string[]; forceRefresh?: boolean }
       | undefined;
     expect(replaceRefreshPayload).toMatchObject({

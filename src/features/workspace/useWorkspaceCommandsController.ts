@@ -31,10 +31,14 @@ import {
   deleteSheet,
   deleteSheetRows,
   querySheetRows,
-  refreshSheetRowsTracking,
+  refreshSheetRowsTrackingWithProgress,
   renameEngineSheet,
   type SheetRowsQuery,
 } from "../workspace-engine/client";
+import {
+  applyTrackingRefreshProgressToSheet,
+  applyTrackingRefreshRowsToSheet,
+} from "./tracking-refresh-state";
 
 type WorkspaceCommandNotice = {
   tone: "success" | "error" | "info";
@@ -167,7 +171,7 @@ type UseWorkspaceCommandsControllerOptions = {
   allTrackingIds: string[];
   exportableTableRows: SheetTableRow[];
   rustExportRowsQuery: SheetRowsQuery | null;
-  retrackableRows: Array<{ key: string; value: string }>;
+  retrackableRows: SheetTableRowTrackingEntry[];
   retryFailedEntries: SheetTableRowTrackingEntry[];
   selectedEngineRowIds: string[];
   selectedTrackingIds: string[];
@@ -203,7 +207,7 @@ type UseWorkspaceCommandsControllerOptions = {
   forgetSheetTrackingRuntime: (sheetId: string) => void;
   refreshTrackingRows: (
     sheetId: string,
-    entries: Array<{ key: string; value: string }>,
+    entries: SheetTableRowTrackingEntry[],
     options?: { forceRefresh?: boolean }
   ) => Promise<void>;
   onWorkspaceEngineMutation?: (sheetIds?: string | string[]) => void;
@@ -248,6 +252,31 @@ export function useWorkspaceCommandsController({
   refreshTrackingRows,
   onWorkspaceEngineMutation,
 }: UseWorkspaceCommandsControllerOptions) {
+  const updateSheetById = useCallback(
+    (sheetId: string, updater: (sheetState: SheetState) => SheetState) => {
+      setWorkspaceState((current) => {
+        const sheetState = current.sheetsById[sheetId];
+        if (!sheetState) {
+          return current;
+        }
+
+        const nextSheetState = updater(sheetState);
+        if (nextSheetState === sheetState) {
+          return current;
+        }
+
+        return {
+          ...current,
+          sheetsById: {
+            ...current.sheetsById,
+            [sheetId]: nextSheetState,
+          },
+        };
+      });
+    },
+    [setWorkspaceState]
+  );
+
   const copySelectedTrackingIds = useCallback(() => {
     if (selectedTrackingIds.length === 0) {
       return;
@@ -335,12 +364,34 @@ export function useWorkspaceCommandsController({
         message: "Proses lacak ulang dimulai.",
       });
 
-      void refreshSheetRowsTracking({
-        sheetId: targetSheetId,
-        rowIds: Array.from(new Set(retryRowIds)),
-        forceRefresh: true,
-      })
+      void refreshSheetRowsTrackingWithProgress(
+        {
+          sheetId: targetSheetId,
+          rowIds: Array.from(new Set(retryRowIds)),
+          forceRefresh: true,
+        },
+        (event) => {
+          if (event.type === "tracking_refresh_progress") {
+            updateSheetById(targetSheetId, (current) =>
+              applyTrackingRefreshProgressToSheet(current, event.payload, {
+                createMissingRow: true,
+              })
+            );
+          }
+        }
+      )
         .then((refreshResult) => {
+          if (refreshResult.payload.rows.length > 0) {
+            updateSheetById(targetSheetId, (current) =>
+              applyTrackingRefreshRowsToSheet(
+                current,
+                refreshResult.payload.rows,
+                {
+                  createMissingRows: true,
+                }
+              )
+            );
+          }
           onWorkspaceEngineMutation?.(targetSheetId);
 
           showNotice({
@@ -376,7 +427,7 @@ export function useWorkspaceCommandsController({
     refreshTrackingRows,
     rustExportRowsQuery,
     showNotice,
-    updateActiveSheet,
+    updateSheetById,
     onWorkspaceEngineMutation,
   ]);
 
@@ -395,23 +446,29 @@ export function useWorkspaceCommandsController({
       return;
     }
 
-    abortRowTrackingWork(activeSheetId, selectedVisibleRowKeys, "selected_rows_deleted");
+    const targetSheetId = activeSheetId;
+    const selectedRowKeysSnapshot = [...selectedVisibleRowKeys];
+    const selectedEngineRowIdsSnapshot = [...selectedEngineRowIds];
+
+    disarmDeleteSelected();
+    abortRowTrackingWork(targetSheetId, selectedRowKeysSnapshot, "selected_rows_deleted");
+    updateActiveSheet((current) =>
+      clearSelectionInSheet(deleteRowsInSheet(current, selectedRowKeysSnapshot))
+    );
+
     const engineRowIds =
-      selectedEngineRowIds.length > 0 ? selectedEngineRowIds : selectedVisibleRowKeys;
+      selectedEngineRowIdsSnapshot.length > 0
+        ? selectedEngineRowIdsSnapshot
+        : selectedRowKeysSnapshot;
     try {
       await deleteSheetRows({
-        sheetId: activeSheetId,
+        sheetId: targetSheetId,
         rowIds: engineRowIds,
       });
-      onWorkspaceEngineMutation?.(activeSheetId);
+      onWorkspaceEngineMutation?.(targetSheetId);
     } catch (error) {
       console.error("[ShipFlowWorkspace] failed to delete Rust sheet rows", error);
     }
-
-    updateActiveSheet((current) =>
-      clearSelectionInSheet(deleteRowsInSheet(current, selectedVisibleRowKeys))
-    );
-    disarmDeleteSelected();
   }, [
     abortRowTrackingWork,
     activeSheetId,
@@ -434,24 +491,29 @@ export function useWorkspaceCommandsController({
       return;
     }
 
+    const targetSheetId = activeSheetId;
+
     disarmDeleteAll();
-    invalidateSheetTrackingWork(activeSheetId);
+    disarmDeleteSelected();
+    invalidateSheetTrackingWork(targetSheetId);
+    updateActiveSheet(clearAllDataInSheet);
+    focusFirstTrackingInput();
+
     try {
       await clearSheetRows({
-        sheetId: activeSheetId,
+        sheetId: targetSheetId,
       });
-      onWorkspaceEngineMutation?.(activeSheetId);
+      onWorkspaceEngineMutation?.(targetSheetId);
     } catch (error) {
       console.error("[ShipFlowWorkspace] failed to clear Rust sheet rows", error);
     }
-    updateActiveSheet((current) => clearAllDataInSheet(current));
-    focusFirstTrackingInput();
   }, [
     activeSheetDeleteAllArmed,
     activeSheetId,
     allTrackingIds.length,
     armDeleteAll,
     disarmDeleteAll,
+    disarmDeleteSelected,
     focusFirstTrackingInput,
     invalidateSheetTrackingWork,
     onWorkspaceEngineMutation,
@@ -546,15 +608,37 @@ export function useWorkspaceCommandsController({
             return null;
           }
 
-          return refreshSheetRowsTracking({
-            sheetId: targetSheetId,
-            rowIds,
-            forceRefresh: true,
-          });
+          return refreshSheetRowsTrackingWithProgress(
+            {
+              sheetId: targetSheetId,
+              rowIds,
+              forceRefresh: true,
+            },
+            (event) => {
+              if (event.type === "tracking_refresh_progress") {
+                updateSheetById(targetSheetId, (current) =>
+                  applyTrackingRefreshProgressToSheet(current, event.payload, {
+                    createMissingRow: true,
+                  })
+                );
+              }
+            }
+          );
         })
         .then((refreshResult) => {
           if (!refreshResult) {
             return;
+          }
+          if (refreshResult.payload.rows.length > 0) {
+            updateSheetById(targetSheetId, (current) =>
+              applyTrackingRefreshRowsToSheet(
+                current,
+                refreshResult.payload.rows,
+                {
+                  createMissingRows: true,
+                }
+              )
+            );
           }
           onWorkspaceEngineMutation?.(targetSheetId);
 
@@ -597,7 +681,7 @@ export function useWorkspaceCommandsController({
     refreshTrackingRows,
     rustExportRowsQuery,
     showNotice,
-    updateActiveSheet,
+    updateSheetById,
     onWorkspaceEngineMutation,
     workspaceRef,
   ]);

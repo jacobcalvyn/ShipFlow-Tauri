@@ -43,7 +43,7 @@ type UseWorkspaceRuntimeCommandsControllerOptions = {
   allTrackingIds: string[];
   exportableTableRows: SheetTableRow[];
   rustExportRowsQuery: SheetRowsQuery | null;
-  retrackableRows: Array<{ key: string; value: string }>;
+  retrackableRows: SheetTableRowTrackingEntry[];
   retryFailedEntries: SheetTableRowTrackingEntry[];
   selectedEngineRowIds: string[];
   selectedTrackingIds: string[];

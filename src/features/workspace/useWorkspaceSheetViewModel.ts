@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   getSheetAnalyticsGroupByOptions,
   getSheetAnalyticsMetricOptions,
@@ -30,7 +30,9 @@ import {
   getTableRowTrackingColumnAutoWidth,
   getTotalTableRowTrackingCount,
   getVisibleSelectableTableRowKeys,
+  type SheetTableRow,
 } from "../sheet/table-row-view";
+import { canUseColumnValueFilter } from "../sheet/columns";
 import {
   getActiveFilterCount,
   getColumnShortcuts,
@@ -142,6 +144,44 @@ function createEmptyRustRowWindow(
   };
 }
 
+function mergeRustRowWindowRuntimeState(
+  currentWindow: SheetRowWindow | undefined,
+  nextWindow: SheetRowWindow
+): SheetRowWindow {
+  if (!currentWindow || currentWindow.sheetId !== nextWindow.sheetId) {
+    return nextWindow;
+  }
+
+  const currentRowsById = new Map(
+    currentWindow.rows.map((row) => [row.rowId, row])
+  );
+  let changed = false;
+  const rows = nextWindow.rows.map((row) => {
+    const currentRow = currentRowsById.get(row.rowId);
+    if (!currentRow || row.rowStatus !== "pending") {
+      return row;
+    }
+
+    if (
+      currentRow.rowStatus === "loading" ||
+      currentRow.rowStatus === "loaded" ||
+      currentRow.rowStatus === "failed"
+    ) {
+      changed = true;
+      return currentRow;
+    }
+
+    return row;
+  });
+
+  return changed
+    ? {
+        ...nextWindow,
+        rows,
+      }
+    : nextWindow;
+}
+
 function createRustPivotFilters(
   activeSheet: SheetState,
   nonEmptyRows: SheetState["rows"],
@@ -222,6 +262,13 @@ function createValueOptionsFromRustFieldValues(
       numeric: true,
     });
   });
+}
+
+function excludeCurrentFieldValueFilters(
+  valueFilters: SheetValueFilter[] | undefined,
+  field: string
+) {
+  return valueFilters?.filter((filter) => filter.field !== field) ?? [];
 }
 
 export function useWorkspaceSheetViewModel(
@@ -353,9 +400,14 @@ export function useWorkspaceSheetViewModel(
     const column = visibleColumns.find(
       (item) => item.path === activeSheet.openColumnMenuPath
     );
-    if (!column || column.type === "json") {
+    if (!column || !canUseColumnValueFilter(column)) {
       return null;
     }
+
+    const valueFilters = excludeCurrentFieldValueFilters(
+      rustSheetRowsBaseQuery.valueFilters,
+      activeSheet.openColumnMenuPath
+    );
 
     return {
       column,
@@ -363,9 +415,7 @@ export function useWorkspaceSheetViewModel(
         sheetId: rustSheetRowsBaseQuery.sheetId,
         field: activeSheet.openColumnMenuPath,
         filters: rustSheetRowsBaseQuery.filters,
-        ...(rustSheetRowsBaseQuery.valueFilters
-          ? { valueFilters: rustSheetRowsBaseQuery.valueFilters }
-          : {}),
+        ...(valueFilters.length > 0 ? { valueFilters } : {}),
         limit: RUST_VALUE_OPTIONS_LIMIT,
       },
     };
@@ -431,21 +481,37 @@ export function useWorkspaceSheetViewModel(
         if (cancelled) {
           return;
         }
+        if (!response?.payload) {
+          setFailedRustDisplayedRowsQueryKey(rustSheetRowsCacheKey);
+          clearRustDisplayedRowsQuery(rustSheetRowsCacheKey);
+          return;
+        }
 
-        const signature = createRustRowWindowSignature(response.payload);
+        const responseGeneration = workspaceEngineCacheGeneration;
         setFailedRustDisplayedRowsQueryKey((current) =>
           current === rustSheetRowsCacheKey ? null : current
         );
-        setRustDisplayedRowsByQuery((current) =>
-          current[rustSheetRowsCacheKey]?.signature === signature &&
-          current[rustSheetRowsCacheKey]?.generation === workspaceEngineCacheGeneration
+        setRustDisplayedRowsByQuery((current) => {
+          const existing = current[rustSheetRowsCacheKey];
+          if (existing && existing.generation > responseGeneration) {
+            return current;
+          }
+
+          const window =
+            existing?.generation === responseGeneration
+              ? mergeRustRowWindowRuntimeState(existing.window, response.payload)
+              : response.payload;
+          const signature = createRustRowWindowSignature(window);
+
+          return existing?.signature === signature &&
+            existing?.generation === responseGeneration
             ? current
             : setRustDisplayedRowsCacheEntry(current, rustSheetRowsCacheKey, {
-                generation: workspaceEngineCacheGeneration,
+                generation: responseGeneration,
                 signature,
-                window: response.payload,
-              })
-        );
+                window,
+              });
+        });
       })
       .catch(() => {
         if (!cancelled) {
@@ -499,10 +565,7 @@ export function useWorkspaceSheetViewModel(
 
   const activeRustDisplayedRowsState =
     rustSheetRowsCacheKey && failedRustDisplayedRowsQueryKey !== rustSheetRowsCacheKey
-      ? (rustDisplayedRowsByQuery[rustSheetRowsCacheKey]?.generation ===
-        workspaceEngineCacheGeneration
-          ? rustDisplayedRowsByQuery[rustSheetRowsCacheKey]
-          : null)
+      ? (rustDisplayedRowsByQuery[rustSheetRowsCacheKey] ?? null)
       : null;
   const failedRustDisplayedRowsWindow = useMemo(
     () =>
@@ -517,14 +580,12 @@ export function useWorkspaceSheetViewModel(
     () =>
       rustSheetRowsQuery &&
       !activeRustDisplayedRowsState &&
-      !failedRustDisplayedRowsWindow &&
-      legacyNonEmptyRows.length === 0
+      !failedRustDisplayedRowsWindow
         ? createEmptyRustRowWindow(rustSheetRowsQuery)
         : null,
     [
       activeRustDisplayedRowsState,
       failedRustDisplayedRowsWindow,
-      legacyNonEmptyRows.length,
       rustSheetRowsQuery,
     ]
   );
@@ -532,20 +593,38 @@ export function useWorkspaceSheetViewModel(
     activeRustDisplayedRowsState?.window ??
     failedRustDisplayedRowsWindow ??
     pendingRustDisplayedRowsWindow;
+  const previousRustProjectedTableRowsRef = useRef<{
+    windowKey: string;
+    rows: SheetTableRow[];
+  } | null>(null);
   const legacyDisplayedTableRows = useMemo(
     () => createSheetTableRowsFromSheetRows(legacyDisplayedRows),
     [legacyDisplayedRows]
   );
-  const rustProjectedTableRows = useMemo(
-    () =>
-      authoritativeRustDisplayedRowsWindow
-        ? createSheetTableRowsFromRustWindow(
-            authoritativeRustDisplayedRowsWindow,
-            activeSheet.rows
-          )
-        : null,
-    [activeSheet.rows, authoritativeRustDisplayedRowsWindow]
-  );
+  const rustProjectedTableRows = useMemo(() => {
+    if (!authoritativeRustDisplayedRowsWindow) {
+      previousRustProjectedTableRowsRef.current = null;
+      return null;
+    }
+
+    const windowKey = [
+      authoritativeRustDisplayedRowsWindow.sheetId,
+      authoritativeRustDisplayedRowsWindow.offset,
+      authoritativeRustDisplayedRowsWindow.limit,
+    ].join(":");
+    const previousRows =
+      previousRustProjectedTableRowsRef.current?.windowKey === windowKey
+        ? previousRustProjectedTableRowsRef.current.rows
+        : [];
+    const rows = createSheetTableRowsFromRustWindow(
+      authoritativeRustDisplayedRowsWindow,
+      activeSheet.rows,
+      previousRows
+    );
+
+    previousRustProjectedTableRowsRef.current = { windowKey, rows };
+    return rows;
+  }, [activeSheet.rows, authoritativeRustDisplayedRowsWindow]);
   const displayedTableRows = rustProjectedTableRows ?? legacyDisplayedTableRows;
   const displayedRowWindow = authoritativeRustDisplayedRowsWindow;
 

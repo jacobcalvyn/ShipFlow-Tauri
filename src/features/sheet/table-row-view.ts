@@ -49,6 +49,114 @@ export type SheetTableRowTrackingEntry = {
   engineRowId?: string;
 };
 
+const sheetTableRowRenderSignatureByObject = new WeakMap<
+  SheetTableRow,
+  string
+>();
+const shipmentRenderSignatureByObject = new WeakMap<TrackResponse, string>();
+
+function createRenderSignature(parts: unknown[]) {
+  return JSON.stringify(parts);
+}
+
+function getShipmentRenderSignature(shipment: TrackResponse | null) {
+  if (!shipment) {
+    return "";
+  }
+
+  const cachedSignature = shipmentRenderSignatureByObject.get(shipment);
+  if (cachedSignature) {
+    return cachedSignature;
+  }
+
+  const signature = createRenderSignature([
+    shipment.url,
+    shipment.status_akhir,
+    shipment.detail,
+    shipment.pod,
+    shipment.history,
+    shipment.history_summary,
+  ]);
+  shipmentRenderSignatureByObject.set(shipment, signature);
+  return signature;
+}
+
+function getTableRowStableIdentity(row: SheetTableRow) {
+  return row.engineRowId ? `engine:${row.engineRowId}` : `key:${row.key}`;
+}
+
+function createPreviousTableRowLookup(previousRows: SheetTableRow[]) {
+  const lookup = new Map<string, SheetTableRow>();
+  for (const row of previousRows) {
+    lookup.set(getTableRowStableIdentity(row), row);
+  }
+
+  return lookup;
+}
+
+function createSheetRowRenderSignature(
+  row: SheetRow,
+  options: { engineRowId?: string; position?: number } = {}
+) {
+  return createRenderSignature([
+    row.key,
+    options.engineRowId ?? "",
+    options.position ?? "",
+    row.trackingInput,
+    getShipmentRenderSignature(row.shipment),
+    row.error,
+    row.loading,
+    row.queued ?? false,
+    row.stale,
+    row.dirty,
+    getRowStatus(row),
+  ]);
+}
+
+function createProjectionRenderSignature(
+  projection: SheetRowProjection,
+  mergedRow: SheetRow,
+  status: SheetTableRowStatus,
+  shipment: TrackResponse | null
+) {
+  return createRenderSignature([
+    mergedRow.key,
+    projection.rowId,
+    projection.position,
+    mergedRow.trackingInput,
+    projection.lookupTrackingId,
+    projection.rowStatus,
+    projection.errorMessage ?? "",
+    projection.statusJson ?? "",
+    projection.detailJson ?? "",
+    projection.historyJson ?? "",
+    getShipmentRenderSignature(shipment),
+    mergedRow.error,
+    mergedRow.loading,
+    mergedRow.queued ?? false,
+    mergedRow.stale,
+    mergedRow.dirty,
+    status,
+  ]);
+}
+
+function withStableTableRowReference(
+  row: SheetTableRow,
+  previousRowsByIdentity: Map<string, SheetTableRow>,
+  renderSignature: string
+) {
+  const previousRow = previousRowsByIdentity.get(getTableRowStableIdentity(row));
+  if (
+    previousRow &&
+    sheetTableRowRenderSignatureByObject.get(previousRow) === renderSignature
+  ) {
+    return previousRow;
+  }
+
+  sheetTableRowRenderSignatureByObject.set(row, renderSignature);
+  return row;
+}
+
 function createLegacyRowLookup(rows: SheetRow[]) {
   const lookup = new Map<string, SheetRow>();
   for (const row of rows) {
@@ -83,7 +191,7 @@ function createSyntheticSheetRowFromProjection(
     trackingInput: projection.displayTrackingId,
     shipment,
     loading: projection.rowStatus === "loading",
-    queued: false,
+    queued: projection.rowStatus === "pending",
     stale: projection.rowStatus === "stale",
     dirty: false,
     error: projection.errorMessage ?? "",
@@ -100,6 +208,8 @@ function getProjectionTableRowStatus(
   switch (projection.rowStatus) {
     case "loading":
       return "Loading";
+    case "pending":
+      return "Pending";
     case "failed":
       return "Error";
     case "stale":
@@ -111,6 +221,40 @@ function getProjectionTableRowStatus(
     default:
       return "Pending";
   }
+}
+
+function canUseLocalCompletedRowOverRustProjection(projection: SheetRowProjection) {
+  return (
+    projection.rowStatus === "empty" ||
+    projection.rowStatus === "pending" ||
+    projection.rowStatus === "loading" ||
+    projection.rowStatus === "stale"
+  );
+}
+
+function mergeLocalRuntimeState(
+  row: SheetRow,
+  legacyRow: SheetRow | undefined
+): SheetRow {
+  if (!legacyRow) {
+    return row;
+  }
+
+  const localHasTerminalRuntimeState =
+    legacyRow.error !== "" || legacyRow.dirty || legacyRow.stale;
+  const localIsLoading = legacyRow.loading;
+
+  return {
+    ...row,
+    loading: localIsLoading || (!localHasTerminalRuntimeState && row.loading),
+    queued:
+      !localIsLoading &&
+      !localHasTerminalRuntimeState &&
+      (row.queued || legacyRow.queued === true),
+    error: legacyRow.error || row.error,
+    dirty: legacyRow.dirty || row.dirty,
+    stale: legacyRow.stale || row.stale,
+  };
 }
 
 export function createSheetTableRowFromSheetRow(row: SheetRow): SheetTableRow {
@@ -148,8 +292,10 @@ export function createSheetTableRowsFromSheetRows(rows: SheetRow[]) {
 
 export function createSheetTableRowsFromRustWindow(
   window: SheetRowWindow,
-  legacyRows: SheetRow[]
+  legacyRows: SheetRow[],
+  previousRows: SheetTableRow[] = []
 ): SheetTableRow[] {
+  const previousRowsByIdentity = createPreviousTableRowLookup(previousRows);
   const legacyRowByTrackingId = createLegacyRowLookup(legacyRows);
   const legacyRowByKey = createLegacyRowKeyLookup(legacyRows);
   const projectionRowIds = new Set(window.rows.map((row) => row.rowId));
@@ -163,53 +309,76 @@ export function createSheetTableRowsFromRustWindow(
       legacyRowByProjectionKey.trackingInput.trim() !==
         projection.displayTrackingId.trim()
     ) {
-      return {
+      const tableRow = {
         ...createSheetTableRowFromSheetRow(legacyRowByProjectionKey),
         engineRowId: projection.rowId,
         position: projection.position,
       };
+      return withStableTableRowReference(
+        tableRow,
+        previousRowsByIdentity,
+        createSheetRowRenderSignature(legacyRowByProjectionKey, {
+          engineRowId: projection.rowId,
+          position: projection.position,
+        })
+      );
     }
 
     const legacyRow =
       legacyRowByProjectionKey ??
       legacyRowByTrackingId.get(projection.displayTrackingId);
+    if (
+      canUseLocalCompletedRowOverRustProjection(projection) &&
+      legacyRow?.shipment &&
+      !legacyRow.loading &&
+      !legacyRow.queued &&
+      !legacyRow.error &&
+      !legacyRow.dirty &&
+      !legacyRow.stale
+    ) {
+      const tableRow = {
+        ...createSheetTableRowFromSheetRow(legacyRow),
+        engineRowId: projection.rowId,
+        position: projection.position,
+      };
+      return withStableTableRowReference(
+        tableRow,
+        previousRowsByIdentity,
+        createSheetRowRenderSignature(legacyRow, {
+          engineRowId: projection.rowId,
+          position: projection.position,
+        })
+      );
+    }
+
     const shipment = createTrackResponseFromProjection(projection);
     const row = createSyntheticSheetRowFromProjection(
       projection,
       shipment,
       legacyRow
     );
-    const shouldUseLocalRuntimeState = projection.rowStatus !== "loaded";
     const hasLocalRuntimeState = Boolean(
-      shouldUseLocalRuntimeState &&
-        legacyRow &&
+      legacyRow &&
         (legacyRow.loading ||
           legacyRow.queued ||
-          legacyRow.error ||
-          legacyRow.dirty ||
-          legacyRow.stale)
+          (projection.rowStatus !== "loaded" &&
+            (legacyRow.error || legacyRow.dirty || legacyRow.stale)))
     );
     const mergedRow = hasLocalRuntimeState
-      ? {
-          ...row,
-          loading: row.loading || legacyRow?.loading === true,
-          queued: row.queued || legacyRow?.queued === true,
-          error: legacyRow?.error ?? row.error,
-          dirty: legacyRow?.dirty ?? row.dirty,
-          stale: legacyRow?.stale ?? row.stale,
-        }
+      ? mergeLocalRuntimeState(row, legacyRow)
       : row;
 
-    return {
+    const status = hasLocalRuntimeState
+      ? (getRowStatus(mergedRow) as SheetTableRowStatus)
+      : getProjectionTableRowStatus(projection);
+    const tableRow: SheetTableRow = {
       key: mergedRow.key,
       engineRowId: projection.rowId,
       position: projection.position,
       trackingInput: mergedRow.trackingInput,
       shipment,
       error: mergedRow.error,
-      status: hasLocalRuntimeState
-        ? (getRowStatus(mergedRow) as SheetTableRowStatus)
-        : getProjectionTableRowStatus(projection),
+      status,
       loading: mergedRow.loading,
       queued: mergedRow.queued ?? false,
       stale: mergedRow.stale,
@@ -223,6 +392,11 @@ export function createSheetTableRowsFromRustWindow(
       getLatestManifestId: () =>
         shipment ? (getLatestManifestId(shipment.history_summary) ?? null) : null,
     };
+    return withStableTableRowReference(
+      tableRow,
+      previousRowsByIdentity,
+      createProjectionRenderSignature(projection, mergedRow, status, shipment)
+    );
   });
   const localTransientRows = legacyRows
     .filter(
@@ -231,10 +405,18 @@ export function createSheetTableRowsFromRustWindow(
         !projectionTrackingIds.has(row.trackingInput.trim()) &&
         (row.shipment === null || isSheetEngineRowKey(window.sheetId, row.key))
     )
-    .map((row, index) => ({
-      ...createSheetTableRowFromSheetRow(row),
-      position: window.rows.length + index,
-    }));
+    .map((row, index) => {
+      const position = window.rows.length + index;
+      const tableRow = {
+        ...createSheetTableRowFromSheetRow(row),
+        position,
+      };
+      return withStableTableRowReference(
+        tableRow,
+        previousRowsByIdentity,
+        createSheetRowRenderSignature(row, { position })
+      );
+    });
 
   return localTransientRows.length > 0
     ? [...rustRows, ...localTransientRows]
@@ -375,7 +557,9 @@ export function getLoadedTableRowCount(rows: SheetTableRow[]) {
 }
 
 export function getLoadingTableRowCount(rows: SheetTableRow[]) {
-  return rows.filter((row) => row.loading || row.queued).length;
+  return rows.filter(
+    (row) => row.loading || row.queued || row.status === "Pending"
+  ).length;
 }
 
 export function getTotalTableRowTrackingCount(rows: SheetTableRow[]) {
@@ -405,7 +589,11 @@ export function getTableRowTrackingColumnAutoWidth(rows: SheetTableRow[]) {
 export function getRetrackableTableRows(rows: SheetTableRow[]) {
   return rows
     .filter((row) => row.trackingInput.trim() !== "")
-    .map((row) => ({ key: row.key, value: row.trackingInput.trim() }));
+    .map((row) => ({
+      key: row.key,
+      value: row.trackingInput.trim(),
+      engineRowId: row.engineRowId,
+    }));
 }
 
 export function getRetryFailedTableRowEntries(rows: SheetTableRow[]) {

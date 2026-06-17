@@ -63,6 +63,7 @@ pub fn run() {
             commands::workspace_engine::workspace_engine_command,
             commands::workspace_engine::workspace_engine_run_import_job_with_progress,
             commands::workspace_engine::workspace_engine_retry_import_job_failed_with_progress,
+            commands::workspace_engine::workspace_engine_refresh_sheet_rows_tracking_with_progress,
             commands::system::log_frontend_runtime_event,
             commands::service::configure_api_service,
             commands::service::load_saved_api_service_config,

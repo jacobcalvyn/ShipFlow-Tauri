@@ -1062,34 +1062,28 @@ mod tests {
     }
 
     impl ImportLookupSource for FakeImportSource {
-        fn fetch_bag<'a>(
+        async fn fetch_bag<'a>(
             &'a mut self,
             bag_id: &'a str,
-        ) -> impl Future<Output = Result<BagResponse, ImportLookupFailure>> + 'a {
-            async move {
-                self.bags
-                    .get_mut(bag_id)
-                    .and_then(VecDeque::pop_front)
-                    .unwrap_or_else(|| {
-                        Err(ImportLookupFailure::new(format!("missing bag {bag_id}")))
-                    })
-            }
+        ) -> Result<BagResponse, ImportLookupFailure> {
+            self.bags
+                .get_mut(bag_id)
+                .and_then(VecDeque::pop_front)
+                .unwrap_or_else(|| Err(ImportLookupFailure::new(format!("missing bag {bag_id}"))))
         }
 
-        fn fetch_manifest<'a>(
+        async fn fetch_manifest<'a>(
             &'a mut self,
             manifest_id: &'a str,
-        ) -> impl Future<Output = Result<ManifestResponse, ImportLookupFailure>> + 'a {
-            async move {
-                self.manifests
-                    .get_mut(manifest_id)
-                    .and_then(VecDeque::pop_front)
-                    .unwrap_or_else(|| {
-                        Err(ImportLookupFailure::new(format!(
-                            "missing manifest {manifest_id}"
-                        )))
-                    })
-            }
+        ) -> Result<ManifestResponse, ImportLookupFailure> {
+            self.manifests
+                .get_mut(manifest_id)
+                .and_then(VecDeque::pop_front)
+                .unwrap_or_else(|| {
+                    Err(ImportLookupFailure::new(format!(
+                        "missing manifest {manifest_id}"
+                    )))
+                })
         }
     }
 

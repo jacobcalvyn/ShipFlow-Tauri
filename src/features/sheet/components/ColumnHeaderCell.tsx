@@ -6,7 +6,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { LATEST_DELIVERY_COLUMN_PATH, TRACKING_COLUMN_PATH } from "../columns";
+import {
+  LATEST_DELIVERY_COLUMN_PATH,
+  TRACKING_COLUMN_PATH,
+  canUseColumnValueFilter,
+} from "../columns";
 import { ColumnDefinition, ValueFilterOption } from "../types";
 import { getColumnToneClass, getColumnTypeClass } from "../utils";
 
@@ -79,6 +83,7 @@ export const ColumnHeaderCell = memo(function ColumnHeaderCell({
 }: ColumnHeaderCellProps) {
   const isTrackingColumn = column.path === TRACKING_COLUMN_PATH;
   const hasWideFilterMenu = WIDE_FILTER_MENU_PATHS.has(column.path);
+  const canUseValueFilter = canUseColumnValueFilter(column);
   const headerCellRef = useRef<HTMLTableCellElement | null>(null);
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [menuLayout, setMenuLayout] = useState<CSSProperties | null>(null);
@@ -237,6 +242,7 @@ export const ColumnHeaderCell = memo(function ColumnHeaderCell({
               >
                 Hide Column
               </button>
+              {canUseValueFilter ? (
               <div className="column-menu-group">
                 <div className="column-menu-group-header">
                   <span className="column-menu-group-label">Filter by value</span>
@@ -310,6 +316,7 @@ export const ColumnHeaderCell = memo(function ColumnHeaderCell({
                   <span className="column-menu-empty">No values</span>
                 )}
               </div>
+              ) : null}
               {hiddenColumns.length > 0 ? (
                 <div className="column-menu-group">
                   <span className="column-menu-group-label">Unhide Columns</span>

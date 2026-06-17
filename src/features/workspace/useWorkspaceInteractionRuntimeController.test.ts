@@ -29,6 +29,7 @@ vi.mock("../workspace-engine/client", async () => {
     getImportJob: mocks.getImportJobMock,
     previewImportSource: mocks.previewImportSourceMock,
     refreshSheetRowsTracking: mocks.refreshSheetRowsTrackingMock,
+    refreshSheetRowsTrackingWithProgress: mocks.refreshSheetRowsTrackingMock,
     retryImportJobFailedWithProgress:
       mocks.retryImportJobFailedWithProgressMock,
     runImportJobWithProgress: mocks.runImportJobWithProgressMock,
@@ -540,7 +541,7 @@ describe("useWorkspaceInteractionRuntimeController", () => {
       sheetId: "sheet-1",
       rowIds: ["sheet-1:row:1"],
       forceRefresh: true,
-    });
+    }, expect.any(Function));
     expect(onWorkspaceEngineMutation).toHaveBeenCalledTimes(2);
     expect(showNotice).toHaveBeenLastCalledWith({
       tone: "success",
@@ -748,7 +749,7 @@ describe("useWorkspaceInteractionRuntimeController", () => {
       sheetId: "sheet-1",
       rowIds: ["sheet-1:row:0"],
       forceRefresh: true,
-    });
+    }, expect.any(Function));
     expect(onWorkspaceEngineMutation).toHaveBeenCalledTimes(1);
     expect(workspaceRef.current.sheetsById["sheet-1"].importSourceModalKind).toBeNull();
     expect(

@@ -19,6 +19,8 @@ use crate::parser::parse_tracking_html;
 pub const POS_TRACKING_ENDPOINT: &str =
     "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php";
 pub const POS_TRACKING_BASE_URL: &str = "https://pid.posindonesia.co.id/lacak/admin/";
+pub const POS_LACAK_MITRA_ENDPOINT: &str =
+    "https://lacak-mitra.posindonesia.co.id/lacak_barcode.php";
 pub const POS_BAG_ENDPOINT: &str =
     "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak_bag.php";
 pub const POS_MANIFEST_ENDPOINT: &str =
@@ -54,7 +56,7 @@ pub fn sanitize_shipment_id(value: &str) -> String {
         .filter_map(|ch| {
             if ch.is_ascii_alphanumeric() {
                 Some(ch.to_ascii_uppercase())
-            } else if ch == '-' {
+            } else if ch == '-' || ch == '.' {
                 Some(ch)
             } else {
                 None
@@ -756,6 +758,10 @@ pub fn build_tracking_url(base_url: &str, shipment_id: &str) -> String {
     build_encoded_pos_lookup_url(base_url, shipment_id)
 }
 
+pub fn build_lacak_mitra_tracking_url(shipment_id: &str) -> String {
+    format!("{POS_LACAK_MITRA_ENDPOINT}?id={shipment_id}")
+}
+
 fn build_encoded_pos_lookup_url(base_url: &str, lookup_id: &str) -> String {
     let encoded_id = STANDARD
         .encode(lookup_id)
@@ -994,7 +1000,8 @@ async fn read_external_api_error_message(response: Response) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_external_api_auth_headers, build_external_api_lookup_url, build_tracking_url,
+        apply_external_api_auth_headers, build_external_api_lookup_url,
+        build_lacak_mitra_tracking_url, build_tracking_url,
         external_api_base_url_prefers_v1_contract, normalize_and_validate_bag_id,
         normalize_and_validate_manifest_id, normalize_and_validate_shipment_id,
         parse_external_api_bag_response, parse_external_api_base_url,
@@ -1012,6 +1019,22 @@ mod tests {
         assert_eq!(
             url,
             "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=UDI2MDQxMDAwNjUxMDk%3D"
+        );
+    }
+
+    #[test]
+    fn shipment_id_normalization_preserves_dotted_suffixes() {
+        assert_eq!(
+            normalize_and_validate_shipment_id(" P2606020189412.30 ").unwrap(),
+            "P2606020189412.30"
+        );
+    }
+
+    #[test]
+    fn build_lacak_mitra_tracking_url_uses_raw_id_query() {
+        assert_eq!(
+            build_lacak_mitra_tracking_url("P2606020189412.30"),
+            "https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=P2606020189412.30"
         );
     }
 

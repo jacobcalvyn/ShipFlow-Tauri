@@ -32,6 +32,7 @@ describe("sheet analytics options", () => {
       "Lokasi Akhir",
       "Petugas Akhir",
       "ID Petugas Akhir",
+      "Tanggal Status Akhir",
       "Waktu Status Akhir",
       "Nama Pengirim",
       "Telepon Pengirim",

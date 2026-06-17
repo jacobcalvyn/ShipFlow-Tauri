@@ -329,8 +329,7 @@ fn insert_duckdb_rows(
     bindings: &[FieldBinding],
     rows: &[SheetRowProjection],
 ) -> AnalyticsEngineResult<()> {
-    let placeholders = std::iter::repeat("?")
-        .take(1 + bindings.len() * 3)
+    let placeholders = std::iter::repeat_n("?", 1 + bindings.len() * 3)
         .collect::<Vec<_>>()
         .join(", ");
     let insert_columns = std::iter::once("__row_index".to_string())

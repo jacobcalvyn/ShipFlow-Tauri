@@ -13,6 +13,7 @@ use shipflow_service_runtime::jobs::{
     BatchJobResultSnapshot, BatchJobStatus, BatchTrackJobItemResult, BatchTrackJobStart,
 };
 
+pub use shipflow_service_runtime::jobs::BatchJobItemStatus;
 pub use shipflow_service_runtime::FORCE_REFRESH_HEADER_NAME;
 
 const SERVICE_STATUS_VERIFICATION_TTL: Duration = Duration::from_secs(10);
@@ -38,6 +39,16 @@ fn extract_service_error_message(status: reqwest::StatusCode, raw_body: Option<&
         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(body) {
             if let Some(message) = payload
                 .get("error")
+                .and_then(|value| value.get("message"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return message.to_string();
+            }
+
+            if let Some(message) = payload
+                .get("error")
                 .and_then(|value| value.as_str())
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
@@ -53,13 +64,7 @@ fn extract_service_error_message(status: reqwest::StatusCode, raw_body: Option<&
 }
 
 fn build_service_status_endpoint(base_url: &str) -> Result<String, String> {
-    let mut endpoint = reqwest::Url::parse(base_url)
-        .map_err(|error| format!("ShipFlow Service URL is invalid: {error}"))?;
-    endpoint
-        .path_segments_mut()
-        .map_err(|_| "ShipFlow Service URL cannot be used as an HTTP base URL.".to_string())?
-        .push("status");
-    Ok(endpoint.into())
+    build_service_v1_endpoint(base_url, "v1/status")
 }
 
 fn build_service_lookup_endpoint(
@@ -79,6 +84,7 @@ fn build_service_lookup_endpoint(
                 "ShipFlow Service URL cannot be used as an HTTP base URL.".into(),
             )
         })?
+        .push("v1")
         .push(route)
         .push(lookup_id.trim());
     Ok(endpoint.into())
@@ -166,6 +172,26 @@ pub async fn track_shipments_batch_via_service(
     shipment_ids: Vec<String>,
     force_refresh: bool,
 ) -> Result<Vec<BatchTrackJobItemResult>, tracking::model::TrackingError> {
+    track_shipments_batch_via_service_with_progress(
+        client,
+        config,
+        shipment_ids,
+        force_refresh,
+        |_| {},
+    )
+    .await
+}
+
+pub async fn track_shipments_batch_via_service_with_progress<F>(
+    client: &reqwest::Client,
+    config: &ApiServiceConfig,
+    shipment_ids: Vec<String>,
+    force_refresh: bool,
+    mut on_result: F,
+) -> Result<Vec<BatchTrackJobItemResult>, tracking::model::TrackingError>
+where
+    F: FnMut(BatchTrackJobItemResult) + Send,
+{
     let auth_token = config.service_client_auth_token();
     if auth_token.is_empty() {
         return Err(tracking::model::TrackingError::BadRequest(
@@ -230,20 +256,28 @@ pub async fn track_shipments_batch_via_service(
         })?
         .data;
 
-    poll_service_batch_result(client, config, &start).await
+    poll_service_batch_result(client, config, &start, |result| {
+        on_result(result);
+    })
+    .await
 }
 
-async fn poll_service_batch_result(
+async fn poll_service_batch_result<F>(
     client: &reqwest::Client,
     config: &ApiServiceConfig,
     start: &BatchTrackJobStart,
-) -> Result<Vec<BatchTrackJobItemResult>, tracking::model::TrackingError> {
+    mut on_result: F,
+) -> Result<Vec<BatchTrackJobItemResult>, tracking::model::TrackingError>
+where
+    F: FnMut(BatchTrackJobItemResult) + Send,
+{
     let auth_token = config.service_client_auth_token();
     let base_url = config.service_client_base_url();
     let status_endpoint = build_service_relative_endpoint(&base_url, &start.status_endpoint)
         .map_err(tracking::model::TrackingError::Upstream)?;
     let result_endpoint = build_service_relative_endpoint(&base_url, &start.result_endpoint)
         .map_err(tracking::model::TrackingError::Upstream)?;
+    let mut emitted_result_count = 0_usize;
 
     for _ in 0..600 {
         let response = client
@@ -280,42 +314,46 @@ async fn poll_service_batch_result(
         })?
         .data;
 
+        let response = client
+            .get(result_endpoint.clone())
+            .bearer_auth(auth_token)
+            .send()
+            .await
+            .map_err(|error| {
+                tracking::model::TrackingError::Upstream(format!(
+                    "Unable to read ShipFlow Service batch result: {error}"
+                ))
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let raw_body = response.text().await.ok();
+            return Err(tracking::model::TrackingError::Upstream(
+                extract_service_error_message(status, raw_body.as_deref()),
+            ));
+        }
+
+        let raw_body = response.text().await.map_err(|error| {
+            tracking::model::TrackingError::Upstream(format!(
+                "Unable to read ShipFlow Service batch result response: {error}"
+            ))
+        })?;
+        let result = serde_json::from_str::<ServiceApiEnvelope<BatchJobResultSnapshot>>(&raw_body)
+            .map_err(|error| {
+                tracking::model::TrackingError::Upstream(format!(
+                    "ShipFlow Service returned an invalid batch result response: {error}"
+                ))
+            })?
+            .data;
+        for result in result.results.iter().skip(emitted_result_count) {
+            on_result(result.clone());
+        }
+        emitted_result_count = result.results.len();
+
         if matches!(
             status.status,
             BatchJobStatus::Completed | BatchJobStatus::Cancelled | BatchJobStatus::Failed
         ) {
-            let response = client
-                .get(result_endpoint)
-                .bearer_auth(auth_token)
-                .send()
-                .await
-                .map_err(|error| {
-                    tracking::model::TrackingError::Upstream(format!(
-                        "Unable to read ShipFlow Service batch result: {error}"
-                    ))
-                })?;
-
-            if !response.status().is_success() {
-                let status = response.status();
-                let raw_body = response.text().await.ok();
-                return Err(tracking::model::TrackingError::Upstream(
-                    extract_service_error_message(status, raw_body.as_deref()),
-                ));
-            }
-
-            let raw_body = response.text().await.map_err(|error| {
-                tracking::model::TrackingError::Upstream(format!(
-                    "Unable to read ShipFlow Service batch result response: {error}"
-                ))
-            })?;
-            let result =
-                serde_json::from_str::<ServiceApiEnvelope<BatchJobResultSnapshot>>(&raw_body)
-                    .map_err(|error| {
-                        tracking::model::TrackingError::Upstream(format!(
-                            "ShipFlow Service returned an invalid batch result response: {error}"
-                        ))
-                    })?
-                    .data;
             return Ok(result.results);
         }
 
@@ -394,11 +432,13 @@ async fn fetch_lookup_via_service<T: DeserializeOwned>(
         );
 
         let parse_started_at = Instant::now();
-        let parsed = serde_json::from_str::<T>(&raw_body).map_err(|error| {
-            tracking::model::TrackingError::Upstream(format!(
-                "ShipFlow Service returned an invalid {label} response: {error}"
-            ))
-        });
+        let parsed = serde_json::from_str::<ServiceApiEnvelope<T>>(&raw_body)
+            .map(|envelope| envelope.data)
+            .map_err(|error| {
+                tracking::model::TrackingError::Upstream(format!(
+                    "ShipFlow Service returned an invalid {label} response: {error}"
+                ))
+            });
         log_desktop_service_timing(
             route,
             lookup_id,
@@ -533,7 +573,11 @@ fn verify_service_status_payload(raw_body: &str) -> Result<(), String> {
     let payload = serde_json::from_str::<serde_json::Value>(raw_body).map_err(|error| {
         format!("ShipFlow Service returned an invalid status response: {error}")
     })?;
-    let product = payload
+    let data = payload
+        .get("data")
+        .ok_or_else(|| "ShipFlow Service status response is missing data.".to_string())?;
+
+    let product = data
         .get("product")
         .and_then(|value| value.as_str())
         .unwrap_or_default();
@@ -541,7 +585,7 @@ fn verify_service_status_payload(raw_body: &str) -> Result<(), String> {
         return Err("The configured endpoint is not a ShipFlow Service instance.".into());
     }
 
-    let service = payload
+    let service = data
         .get("service")
         .and_then(|value| value.as_str())
         .unwrap_or_default();
@@ -590,7 +634,7 @@ mod tests {
     fn prefers_json_error_payload_message() {
         let message = extract_service_error_message(
             StatusCode::BAD_GATEWAY,
-            Some(r#"{"error":"Bag endpoint returned HTTP 404."}"#),
+            Some(r#"{"error":{"message":"Bag endpoint returned HTTP 404."}}"#),
         );
 
         assert_eq!(message, "Bag endpoint returned HTTP 404.");
@@ -612,7 +656,7 @@ mod tests {
             build_service_lookup_endpoint("http://127.0.0.1:18422", "bag", "PID 123/456")
                 .expect("endpoint should build");
 
-        assert_eq!(endpoint, "http://127.0.0.1:18422/bag/PID%20123%2F456");
+        assert_eq!(endpoint, "http://127.0.0.1:18422/v1/bag/PID%20123%2F456");
     }
 
     #[test]
@@ -620,7 +664,7 @@ mod tests {
         let endpoint = build_service_status_endpoint("http://127.0.0.1:18423/api")
             .expect("status endpoint should build");
 
-        assert_eq!(endpoint, "http://127.0.0.1:18423/api/status");
+        assert_eq!(endpoint, "http://127.0.0.1:18423/api/v1/status");
     }
 
     #[test]
@@ -638,17 +682,19 @@ mod tests {
     #[test]
     fn validates_shipflow_status_identity_payload() {
         verify_service_status_payload(
-            r#"{"service":"running","product":"shipflow-service","mode":"local"}"#,
+            r#"{"data":{"service":"running","product":"shipflow-service","mode":"local"}}"#,
         )
         .expect("valid ShipFlow Service status should pass");
 
-        let error = verify_service_status_payload(r#"{"service":"running","product":"other"}"#)
-            .expect_err("wrong product marker should fail");
+        let error =
+            verify_service_status_payload(r#"{"data":{"service":"running","product":"other"}}"#)
+                .expect_err("wrong product marker should fail");
         assert!(error.contains("not a ShipFlow Service"));
 
-        let error =
-            verify_service_status_payload(r#"{"service":"stopped","product":"shipflow-service"}"#)
-                .expect_err("non-running service should fail");
+        let error = verify_service_status_payload(
+            r#"{"data":{"service":"stopped","product":"shipflow-service"}}"#,
+        )
+        .expect_err("non-running service should fail");
         assert!(error.contains("not reporting a running status"));
     }
 }

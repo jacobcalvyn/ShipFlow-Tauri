@@ -12,6 +12,7 @@ import {
   getDisplayedRows,
   getEffectiveColumnWidths,
   getNonEmptyRows,
+  getValueOptionsForOpenColumn,
   getVisibleColumns,
   getVisibleColumnPathSet,
 } from "./selectors";
@@ -230,5 +231,41 @@ describe("sheet selectors", () => {
     expect(officeShortcutIndex).toBeGreaterThanOrEqual(0);
     expect(serviceShortcutIndex).toBeGreaterThan(officeShortcutIndex);
     expect(shortcuts[officeShortcutIndex]?.label).toBe("Kantor Kirim");
+  });
+
+  it("does not build value filter options for photo and raw JSON columns", () => {
+    const sheet = createDefaultSheetState();
+    const row = {
+      ...sheet.rows[0],
+      trackingInput: "P260000000001",
+      shipment: {
+        ...createShipment("P260000000001", "DELIVERED"),
+        pod: {
+          photo1_url: "https://example.test/pod-1.jpg",
+        },
+        history_summary: {
+          irregularity: [],
+          bagging_unbagging: [
+            {
+              nomor_kantung: "PID123",
+            },
+          ],
+          manifest_r7: [],
+          delivery_runsheet: [],
+        },
+      },
+    };
+    const visibleColumns = getVisibleColumns(sheet);
+
+    expect(
+      getValueOptionsForOpenColumn([row], visibleColumns, "pod.photo1_url")
+    ).toEqual({});
+    expect(
+      getValueOptionsForOpenColumn(
+        [row],
+        visibleColumns,
+        "history_summary.bagging_unbagging"
+      )
+    ).toEqual({});
   });
 });

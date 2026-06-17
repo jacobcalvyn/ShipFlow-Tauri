@@ -36,15 +36,20 @@ import {
   getImportJob,
   type ImportJobDetail,
   type ImportJobItem,
+  type ImportJobProgressEvent,
   ImportSourcePreviewItem,
   ImportSourcePreviewResult,
   previewImportSource,
   type SheetRowsQuery,
-  refreshSheetRowsTracking,
+  refreshSheetRowsTrackingWithProgress,
   retryImportJobFailedWithProgress,
   runImportJobWithProgress,
   WorkspaceEngineEvent,
 } from "../workspace-engine/client";
+import {
+  applyTrackingRefreshProgressToSheet,
+  applyTrackingRefreshRowsToSheet,
+} from "./tracking-refresh-state";
 
 type Notice = {
   tone: "success" | "error" | "info";
@@ -248,7 +253,7 @@ function isImportSourceLookupCurrent(
   );
 }
 
-function isImportJobRunningStatus(status: WorkspaceEngineEvent["payload"]["status"]) {
+function isImportJobRunningStatus(status: ImportJobProgressEvent["status"]) {
   return status === "pending" || status === "running";
 }
 
@@ -484,7 +489,7 @@ type UseWorkspaceInteractionRuntimeControllerOptions = {
   allTrackingIds: string[];
   exportableTableRows: SheetTableRow[];
   rustExportRowsQuery: SheetRowsQuery | null;
-  retrackableRows: Array<{ key: string; value: string }>;
+  retrackableRows: SheetTableRowTrackingEntry[];
   retryFailedEntries: SheetTableRowTrackingEntry[];
   selectedEngineRowIds: string[];
   selectedTrackingIds: string[];
@@ -749,11 +754,25 @@ export function useWorkspaceInteractionRuntimeController({
                 ? refreshedRowIds
                 : getImportJobSheetRowIds(completed.payload);
             if (refreshRowIds.length > 0) {
-              await refreshSheetRowsTracking({
-                sheetId: targetSheetId,
-                rowIds: refreshRowIds,
-                forceRefresh: true,
-              });
+              const refreshResult = await refreshSheetRowsTrackingWithProgress(
+                {
+                  sheetId: targetSheetId,
+                  rowIds: refreshRowIds,
+                  forceRefresh: true,
+                },
+                (event) => {
+                  if (event.type === "tracking_refresh_progress") {
+                    updateSheet(targetSheetId, (current) =>
+                      applyTrackingRefreshProgressToSheet(current, event.payload)
+                    );
+                  }
+                }
+              );
+              if (refreshResult.payload.rows.length > 0) {
+                updateSheet(targetSheetId, (current) =>
+                  applyTrackingRefreshRowsToSheet(current, refreshResult.payload.rows)
+                );
+              }
               onWorkspaceEngineMutation?.(targetSheetId);
             }
 
@@ -1157,11 +1176,25 @@ export function useWorkspaceInteractionRuntimeController({
         const refreshRowIds = getImportJobSheetRowIds(completed.payload);
 
         if (refreshRowIds.length > 0) {
-          await refreshSheetRowsTracking({
-            sheetId: activeSheetId,
-            rowIds: refreshRowIds,
-            forceRefresh: true,
-          });
+          const refreshResult = await refreshSheetRowsTrackingWithProgress(
+            {
+              sheetId: activeSheetId,
+              rowIds: refreshRowIds,
+              forceRefresh: true,
+            },
+            (event) => {
+              if (event.type === "tracking_refresh_progress") {
+                updateSheet(activeSheetId, (current) =>
+                  applyTrackingRefreshProgressToSheet(current, event.payload)
+                );
+              }
+            }
+          );
+          if (refreshResult.payload.rows.length > 0) {
+            updateSheet(activeSheetId, (current) =>
+              applyTrackingRefreshRowsToSheet(current, refreshResult.payload.rows)
+            );
+          }
         }
 
         const importedCount = importedTrackingIds.length;

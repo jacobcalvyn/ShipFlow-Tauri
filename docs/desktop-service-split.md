@@ -26,13 +26,13 @@ The custom connection is validated before it is saved:
 - URL must include a host.
 - URL must not include query strings or fragments.
 - bearer token is required.
-- authenticated `GET /status` must respond with the ShipFlow Service product marker.
+- authenticated `GET /v1/status` must respond with the ShipFlow Service product marker inside the response envelope.
 
 Desktop lookup calls now build service endpoints from the configured client base URL instead of hard-coding `http://127.0.0.1:<port>`.
 
 Desktop does not enable or manage a bundled API endpoint. The target service owns its endpoint, API Service token, source mode, and lifecycle.
 
-Desktop-to-Service HTTP calls now live behind `src-tauri/src/service_client.rs`. The Tauri runtime layer calls that client boundary instead of owning endpoint construction, bearer auth, service error parsing, or `/status` identity checks directly.
+Desktop-to-Service HTTP calls now live behind `src-tauri/src/service_client.rs`. The Tauri runtime layer calls that client boundary instead of owning endpoint construction, bearer auth, service error parsing, or `/v1/status` identity checks directly.
 
 `apps/service` is the standalone ShipFlow Service app package. It reuses the shared runtime/core crates and the existing Tauri service-settings window shell, but it is built and run as a separate Service artifact.
 
@@ -45,7 +45,7 @@ The repository has a standalone service binary workflow at `.github/workflows/bu
 The target service owns its own runtime and tracking configuration:
 
 - bind host and port
-- API Service bearer token accepted by `/status`, `/track`, `/bag`, and `/manifest`
+- API Service bearer token accepted by `/v1/status`, `/v1/track`, `/v1/bag`, and `/v1/manifest`
 - source mode: internal scrap or external API
 - external API base URL/token when the service is configured for external API mode
 - cache and runtime state

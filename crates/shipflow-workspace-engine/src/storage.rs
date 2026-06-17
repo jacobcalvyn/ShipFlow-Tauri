@@ -19,6 +19,7 @@ use crate::schema::{SCHEMA_SQL, SCHEMA_VERSION, SQLITE_PRAGMAS};
 #[serde(rename_all = "snake_case")]
 pub enum SheetRowStatus {
     Empty,
+    Pending,
     Loading,
     Loaded,
     Failed,
@@ -425,11 +426,7 @@ impl SqliteWorkspaceStore {
             r#"
             INSERT INTO sheets (id, workspace_id, name, position, view_mode, created_at, updated_at)
             VALUES (?1, ?2, ?3, ?4, 'workspace', ?5, ?5)
-            ON CONFLICT(id) DO UPDATE SET
-              workspace_id = excluded.workspace_id,
-              name = excluded.name,
-              position = excluded.position,
-              updated_at = excluded.updated_at
+            ON CONFLICT(id) DO NOTHING
             "#,
             params![
                 input.sheet_id,
@@ -440,13 +437,11 @@ impl SqliteWorkspaceStore {
             ],
         )?;
 
-        Ok(SheetRecord {
-            sheet_id: input.sheet_id.clone(),
-            workspace_id: input.workspace_id.clone(),
-            name: input.name.clone(),
-            position: input.position,
-            view_mode: "workspace".to_string(),
-        })
+        self.get_sheet(&input.sheet_id)?
+            .ok_or_else(|| WorkspaceStoreError::InvalidValue {
+                field: "sheet",
+                value: input.sheet_id.clone(),
+            })
     }
 
     pub fn delete_sheet(&mut self, sheet_id: &str) -> WorkspaceStoreResult<()> {
@@ -686,6 +681,39 @@ impl SqliteWorkspaceStore {
         Ok(())
     }
 
+    pub fn attach_tracking_record_to_sheet_row_if_lookup_matches(
+        &mut self,
+        input: &AttachTrackingRecordToSheetRowInput,
+        expected_lookup_tracking_id: &str,
+    ) -> WorkspaceStoreResult<bool> {
+        let now = now_utc_text();
+        let changed = self.connection.execute(
+            r#"
+            UPDATE sheet_rows
+            SET tracking_record_id = ?2,
+                row_status = ?3,
+                error_message = ?4,
+                updated_at = ?5
+            WHERE id = ?1
+              AND lookup_tracking_id = ?6
+            "#,
+            params![
+                input.row_id,
+                input.tracking_record_id,
+                sheet_row_status_to_db(input.row_status),
+                input.error_message,
+                now,
+                expected_lookup_tracking_id
+            ],
+        )?;
+
+        if changed > 0 {
+            self.invalidate_analytics_cache_for_row(&input.row_id)?;
+        }
+
+        Ok(changed > 0)
+    }
+
     pub fn update_sheet_row_status(
         &mut self,
         input: &UpdateSheetRowStatusInput,
@@ -710,6 +738,37 @@ impl SqliteWorkspaceStore {
         self.invalidate_analytics_cache_for_row(&input.row_id)?;
 
         Ok(())
+    }
+
+    pub fn update_sheet_row_status_if_lookup_matches(
+        &mut self,
+        input: &UpdateSheetRowStatusInput,
+        expected_lookup_tracking_id: &str,
+    ) -> WorkspaceStoreResult<bool> {
+        let now = now_utc_text();
+        let changed = self.connection.execute(
+            r#"
+            UPDATE sheet_rows
+            SET row_status = ?2,
+                error_message = ?3,
+                updated_at = ?4
+            WHERE id = ?1
+              AND lookup_tracking_id = ?5
+            "#,
+            params![
+                input.row_id,
+                sheet_row_status_to_db(input.row_status),
+                input.error_message,
+                now,
+                expected_lookup_tracking_id
+            ],
+        )?;
+
+        if changed > 0 {
+            self.invalidate_analytics_cache_for_row(&input.row_id)?;
+        }
+
+        Ok(changed > 0)
     }
 
     pub fn upsert_raw_blob(&mut self, input: &UpsertRawBlobInput) -> WorkspaceStoreResult<()> {
@@ -2059,6 +2118,17 @@ fn build_sheet_sort_sql(sort: &[SheetSort]) -> String {
     }
 }
 
+const DAYS_SINCE_TRANSACTION_FILTER_SQL: &str = "COALESCE(CAST(julianday(date('now', 'localtime')) - julianday(substr(json_extract(tr.detail_json, '$.origin_detail.tanggal_input'), 1, 10)) AS INTEGER), '')";
+const DAYS_SINCE_TRANSACTION_SORT_SQL: &str = "CAST(COALESCE(julianday(date('now', 'localtime')) - julianday(substr(json_extract(tr.detail_json, '$.origin_detail.tanggal_input'), 1, 10)), 0) AS REAL)";
+const DAYS_SINCE_LAST_UNBAGGING_FILTER_SQL: &str = "COALESCE((SELECT CAST(julianday(date('now', 'localtime')) - julianday(substr(json_extract(entry.value, '$.unbagging.tanggal'), 1, 10)) AS INTEGER) FROM json_each(json_extract(tr.history_json, '$.history_summary.bagging_unbagging')) AS entry WHERE json_type(entry.value, '$.unbagging') IS NOT NULL AND json_extract(entry.value, '$.unbagging.tanggal') IS NOT NULL ORDER BY COALESCE(julianday(json_extract(entry.value, '$.unbagging.tanggal') || ' ' || COALESCE(json_extract(entry.value, '$.unbagging.waktu'), '00:00:00')), 0) DESC, CAST(entry.key AS INTEGER) DESC LIMIT 1), '')";
+const DAYS_SINCE_LAST_UNBAGGING_SORT_SQL: &str = "CAST(COALESCE((SELECT julianday(date('now', 'localtime')) - julianday(substr(json_extract(entry.value, '$.unbagging.tanggal'), 1, 10)) FROM json_each(json_extract(tr.history_json, '$.history_summary.bagging_unbagging')) AS entry WHERE json_type(entry.value, '$.unbagging') IS NOT NULL AND json_extract(entry.value, '$.unbagging.tanggal') IS NOT NULL ORDER BY COALESCE(julianday(json_extract(entry.value, '$.unbagging.tanggal') || ' ' || COALESCE(json_extract(entry.value, '$.unbagging.waktu'), '00:00:00')), 0) DESC, CAST(entry.key AS INTEGER) DESC LIMIT 1), 0) AS REAL)";
+const LATEST_BAGGING_STATUS_FILTER_SQL: &str = "COALESCE((SELECT json_extract(entry.value, '$.nomor_kantung') || ' - ' || CASE WHEN json_type(entry.value, '$.unbagging') IS NOT NULL THEN 'Unbagging' ELSE 'Bagging' END FROM json_each(json_extract(tr.history_json, '$.history_summary.bagging_unbagging')) AS entry WHERE json_extract(entry.value, '$.nomor_kantung') IS NOT NULL AND (json_type(entry.value, '$.bagging') IS NOT NULL OR json_type(entry.value, '$.unbagging') IS NOT NULL) ORDER BY CAST(entry.key AS INTEGER) DESC LIMIT 1), '')";
+const LATEST_BAGGING_STATUS_SORT_SQL: &str = "COALESCE((SELECT json_extract(entry.value, '$.nomor_kantung') || ' - ' || CASE WHEN json_type(entry.value, '$.unbagging') IS NOT NULL THEN 'Unbagging' ELSE 'Bagging' END FROM json_each(json_extract(tr.history_json, '$.history_summary.bagging_unbagging')) AS entry WHERE json_extract(entry.value, '$.nomor_kantung') IS NOT NULL AND (json_type(entry.value, '$.bagging') IS NOT NULL OR json_type(entry.value, '$.unbagging') IS NOT NULL) ORDER BY CAST(entry.key AS INTEGER) DESC LIMIT 1), '') COLLATE NOCASE";
+const LATEST_MANIFEST_R7_FILTER_SQL: &str = "COALESCE((SELECT json_extract(entry.value, '$.nomor_r7') FROM json_each(json_extract(tr.history_json, '$.history_summary.manifest_r7')) AS entry WHERE json_extract(entry.value, '$.nomor_r7') IS NOT NULL ORDER BY CAST(entry.key AS INTEGER) DESC LIMIT 1), '')";
+const LATEST_MANIFEST_R7_SORT_SQL: &str = "COALESCE((SELECT json_extract(entry.value, '$.nomor_r7') FROM json_each(json_extract(tr.history_json, '$.history_summary.manifest_r7')) AS entry WHERE json_extract(entry.value, '$.nomor_r7') IS NOT NULL ORDER BY CAST(entry.key AS INTEGER) DESC LIMIT 1), '') COLLATE NOCASE";
+const LATEST_DELIVERY_RUNSHEET_FILTER_SQL: &str = "COALESCE((SELECT COALESCE((SELECT json_extract(update_entry.value, '$.status') FROM json_each(json_extract(entry.value, '$.updates')) AS update_entry ORDER BY CAST(update_entry.key AS INTEGER) DESC LIMIT 1), json_extract(entry.value, '$.status'), 'Delivery Runsheet') || ' | ' || COALESCE(substr(COALESCE((SELECT json_extract(update_entry.value, '$.tanggal') FROM json_each(json_extract(entry.value, '$.updates')) AS update_entry ORDER BY CAST(update_entry.key AS INTEGER) DESC LIMIT 1), json_extract(entry.value, '$.tanggal')), 1, 10), '-') || ' | ' || COALESCE((SELECT json_extract(update_entry.value, '$.petugas') FROM json_each(json_extract(entry.value, '$.updates')) AS update_entry ORDER BY CAST(update_entry.key AS INTEGER) DESC LIMIT 1), json_extract(entry.value, '$.petugas_kurir'), json_extract(entry.value, '$.petugas_mandor'), json_extract(entry.value, '$.lokasi'), '-') FROM json_each(json_extract(tr.history_json, '$.history_summary.delivery_runsheet')) AS entry ORDER BY CAST(entry.key AS INTEGER) DESC LIMIT 1), '')";
+const LATEST_DELIVERY_RUNSHEET_SORT_SQL: &str = "COALESCE((SELECT COALESCE((SELECT json_extract(update_entry.value, '$.status') FROM json_each(json_extract(entry.value, '$.updates')) AS update_entry ORDER BY CAST(update_entry.key AS INTEGER) DESC LIMIT 1), json_extract(entry.value, '$.status'), 'Delivery Runsheet') || ' | ' || COALESCE(substr(COALESCE((SELECT json_extract(update_entry.value, '$.tanggal') FROM json_each(json_extract(entry.value, '$.updates')) AS update_entry ORDER BY CAST(update_entry.key AS INTEGER) DESC LIMIT 1), json_extract(entry.value, '$.tanggal')), 1, 10), '-') || ' | ' || COALESCE((SELECT json_extract(update_entry.value, '$.petugas') FROM json_each(json_extract(entry.value, '$.updates')) AS update_entry ORDER BY CAST(update_entry.key AS INTEGER) DESC LIMIT 1), json_extract(entry.value, '$.petugas_kurir'), json_extract(entry.value, '$.petugas_mandor'), json_extract(entry.value, '$.lokasi'), '-') FROM json_each(json_extract(tr.history_json, '$.history_summary.delivery_runsheet')) AS entry ORDER BY CAST(entry.key AS INTEGER) DESC LIMIT 1), '') COLLATE NOCASE";
+
 fn sheet_filter_column(field: &str) -> Option<&'static str> {
     match field {
         "position" => Some("r.position"),
@@ -2068,21 +2138,11 @@ fn sheet_filter_column(field: &str) -> Option<&'static str> {
         "detail.shipment_header.nomor_kiriman" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.shipment_header.nomor_kiriman'), r.display_tracking_id)")
         }
-        "computed.days_since_transaction" => {
-            Some("COALESCE(json_extract(tr.detail_json, '$.computed.days_since_transaction'), '')")
-        }
-        "computed.days_since_last_unbagging" => {
-            Some("COALESCE(json_extract(tr.detail_json, '$.computed.days_since_last_unbagging'), '')")
-        }
-        "history_summary.latest_bagging_status" => {
-            Some("COALESCE(json_extract(tr.history_json, '$.history_summary.latest_bagging_status'), '')")
-        }
-        "history_summary.latest_manifest_r7" => {
-            Some("COALESCE(json_extract(tr.history_json, '$.history_summary.latest_manifest_r7'), '')")
-        }
-        "history_summary.latest_delivery_runsheet" => {
-            Some("COALESCE(json_extract(tr.history_json, '$.history_summary.latest_delivery_runsheet'), '')")
-        }
+        "computed.days_since_transaction" => Some(DAYS_SINCE_TRANSACTION_FILTER_SQL),
+        "computed.days_since_last_unbagging" => Some(DAYS_SINCE_LAST_UNBAGGING_FILTER_SQL),
+        "history_summary.latest_bagging_status" => Some(LATEST_BAGGING_STATUS_FILTER_SQL),
+        "history_summary.latest_manifest_r7" => Some(LATEST_MANIFEST_R7_FILTER_SQL),
+        "history_summary.latest_delivery_runsheet" => Some(LATEST_DELIVERY_RUNSHEET_FILTER_SQL),
         "status_akhir.status" => Some("COALESCE(json_extract(tr.status_json, '$.status'), '')"),
         "status_akhir.location" => Some("COALESCE(json_extract(tr.status_json, '$.location'), '')"),
         "status_akhir.officer_name" => {
@@ -2090,6 +2150,8 @@ fn sheet_filter_column(field: &str) -> Option<&'static str> {
         }
         "status_akhir.officer_id" => Some("COALESCE(json_extract(tr.status_json, '$.officer_id'), '')"),
         "status_akhir.datetime" => Some("COALESCE(json_extract(tr.status_json, '$.datetime'), '')"),
+        "status_akhir.date" => Some("COALESCE(json_extract(tr.status_json, '$.date'), '')"),
+        "status_akhir.time" => Some("COALESCE(json_extract(tr.status_json, '$.time'), '')"),
         "detail.actors.pengirim.nama" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.actors.pengirim.nama'), '')")
         }
@@ -2111,6 +2173,9 @@ fn sheet_filter_column(field: &str) -> Option<&'static str> {
         "detail.actors.penerima.kode_pos" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.actors.penerima.kode_pos'), '')")
         }
+        "detail.shipment_header.booking_code" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.shipment_header.booking_code'), '')")
+        }
         "detail.shipment_header.id_pelanggan_korporat" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.shipment_header.id_pelanggan_korporat'), '')")
         }
@@ -2129,17 +2194,50 @@ fn sheet_filter_column(field: &str) -> Option<&'static str> {
         "detail.origin_detail.tanggal_input" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.origin_detail.tanggal_input'), '')")
         }
+        "detail.origin_detail.waktu_input" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.origin_detail.waktu_input'), '')")
+        }
         "detail.package_detail.jenis_layanan" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.package_detail.jenis_layanan'), '')")
         }
+        "detail.package_detail.kriteria_kiriman" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.package_detail.kriteria_kiriman'), '')")
+        }
+        "detail.package_detail.isi_kiriman" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.package_detail.isi_kiriman'), '')")
+        }
+        "detail.package_detail.berat_actual" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.package_detail.berat_actual'), '')")
+        }
+        "detail.package_detail.berat_volumetric" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.package_detail.berat_volumetric'), '')")
+        }
+        "detail.billing_detail.type_pembayaran" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.billing_detail.type_pembayaran'), '')")
+        }
+        "detail.billing_detail.bea_dasar" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.billing_detail.bea_dasar'), '')")
+        }
+        "detail.billing_detail.nilai_barang" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.billing_detail.nilai_barang'), '')")
+        }
+        "detail.billing_detail.htnb" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.billing_detail.htnb'), '')")
+        }
         "detail.billing_detail.cod_info.is_cod" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.billing_detail.cod_info.is_cod'), '')")
+        }
+        "detail.billing_detail.cod_info.virtual_account" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.billing_detail.cod_info.virtual_account'), '')")
         }
         "detail.billing_detail.cod_info.total_cod" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.billing_detail.cod_info.total_cod'), '')")
         }
         "detail.billing_detail.cod_info.status" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.billing_detail.cod_info.status'), '')")
+        }
+        "detail.billing_detail.cod_info.tanggal" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.billing_detail.cod_info.tanggal'), '')")
         }
         "detail.performance_detail.sla_target" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.performance_detail.sla_target'), '')")
@@ -2152,6 +2250,20 @@ fn sheet_filter_column(field: &str) -> Option<&'static str> {
         }
         "computed.delivery_runsheet_count" => {
             Some("COALESCE(json_array_length(json_extract(tr.history_json, '$.history_summary.delivery_runsheet')), 0)")
+        }
+        "pod.photo1_url" => Some("COALESCE(json_extract(tr.history_json, '$.pod.photo1_url'), '')"),
+        "pod.photo2_url" => Some("COALESCE(json_extract(tr.history_json, '$.pod.photo2_url'), '')"),
+        "history_summary.irregularity" => {
+            Some("COALESCE(json_extract(tr.history_json, '$.history_summary.irregularity'), '')")
+        }
+        "history_summary.bagging_unbagging" => {
+            Some("COALESCE(json_extract(tr.history_json, '$.history_summary.bagging_unbagging'), '')")
+        }
+        "history_summary.manifest_r7" => {
+            Some("COALESCE(json_extract(tr.history_json, '$.history_summary.manifest_r7'), '')")
+        }
+        "history_summary.delivery_runsheet" => {
+            Some("COALESCE(json_extract(tr.history_json, '$.history_summary.delivery_runsheet'), '')")
         }
         _ => None,
     }
@@ -2173,21 +2285,11 @@ fn sheet_sort_column(field: &str) -> Option<&'static str> {
         "detail.shipment_header.nomor_kiriman" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.shipment_header.nomor_kiriman'), r.display_tracking_id) COLLATE NOCASE")
         }
-        "computed.days_since_transaction" => {
-            Some("CAST(COALESCE(json_extract(tr.detail_json, '$.computed.days_since_transaction'), 0) AS REAL)")
-        }
-        "computed.days_since_last_unbagging" => {
-            Some("CAST(COALESCE(json_extract(tr.detail_json, '$.computed.days_since_last_unbagging'), 0) AS REAL)")
-        }
-        "history_summary.latest_bagging_status" => {
-            Some("COALESCE(json_extract(tr.history_json, '$.history_summary.latest_bagging_status'), '') COLLATE NOCASE")
-        }
-        "history_summary.latest_manifest_r7" => {
-            Some("COALESCE(json_extract(tr.history_json, '$.history_summary.latest_manifest_r7'), '') COLLATE NOCASE")
-        }
-        "history_summary.latest_delivery_runsheet" => {
-            Some("COALESCE(json_extract(tr.history_json, '$.history_summary.latest_delivery_runsheet'), '') COLLATE NOCASE")
-        }
+        "computed.days_since_transaction" => Some(DAYS_SINCE_TRANSACTION_SORT_SQL),
+        "computed.days_since_last_unbagging" => Some(DAYS_SINCE_LAST_UNBAGGING_SORT_SQL),
+        "history_summary.latest_bagging_status" => Some(LATEST_BAGGING_STATUS_SORT_SQL),
+        "history_summary.latest_manifest_r7" => Some(LATEST_MANIFEST_R7_SORT_SQL),
+        "history_summary.latest_delivery_runsheet" => Some(LATEST_DELIVERY_RUNSHEET_SORT_SQL),
         "status_akhir.status" => {
             Some("COALESCE(json_extract(tr.status_json, '$.status'), '') COLLATE NOCASE")
         }
@@ -2202,6 +2304,12 @@ fn sheet_sort_column(field: &str) -> Option<&'static str> {
         }
         "status_akhir.datetime" => {
             Some("COALESCE(json_extract(tr.status_json, '$.datetime'), '') COLLATE NOCASE")
+        }
+        "status_akhir.date" => {
+            Some("COALESCE(json_extract(tr.status_json, '$.date'), '') COLLATE NOCASE")
+        }
+        "status_akhir.time" => {
+            Some("COALESCE(json_extract(tr.status_json, '$.time'), '') COLLATE NOCASE")
         }
         "detail.actors.pengirim.nama" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.actors.pengirim.nama'), '') COLLATE NOCASE")
@@ -2224,6 +2332,9 @@ fn sheet_sort_column(field: &str) -> Option<&'static str> {
         "detail.actors.penerima.kode_pos" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.actors.penerima.kode_pos'), '') COLLATE NOCASE")
         }
+        "detail.shipment_header.booking_code" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.shipment_header.booking_code'), '') COLLATE NOCASE")
+        }
         "detail.shipment_header.id_pelanggan_korporat" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.shipment_header.id_pelanggan_korporat'), '') COLLATE NOCASE")
         }
@@ -2242,17 +2353,50 @@ fn sheet_sort_column(field: &str) -> Option<&'static str> {
         "detail.origin_detail.tanggal_input" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.origin_detail.tanggal_input'), '') COLLATE NOCASE")
         }
+        "detail.origin_detail.waktu_input" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.origin_detail.waktu_input'), '') COLLATE NOCASE")
+        }
         "detail.package_detail.jenis_layanan" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.package_detail.jenis_layanan'), '') COLLATE NOCASE")
         }
+        "detail.package_detail.kriteria_kiriman" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.package_detail.kriteria_kiriman'), '') COLLATE NOCASE")
+        }
+        "detail.package_detail.isi_kiriman" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.package_detail.isi_kiriman'), '') COLLATE NOCASE")
+        }
+        "detail.package_detail.berat_actual" => {
+            Some("CAST(COALESCE(json_extract(tr.detail_json, '$.package_detail.berat_actual'), 0) AS REAL)")
+        }
+        "detail.package_detail.berat_volumetric" => {
+            Some("CAST(COALESCE(json_extract(tr.detail_json, '$.package_detail.berat_volumetric'), 0) AS REAL)")
+        }
+        "detail.billing_detail.type_pembayaran" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.billing_detail.type_pembayaran'), '') COLLATE NOCASE")
+        }
+        "detail.billing_detail.bea_dasar" => {
+            Some("CAST(COALESCE(json_extract(tr.detail_json, '$.billing_detail.bea_dasar'), 0) AS REAL)")
+        }
+        "detail.billing_detail.nilai_barang" => {
+            Some("CAST(COALESCE(json_extract(tr.detail_json, '$.billing_detail.nilai_barang'), 0) AS REAL)")
+        }
+        "detail.billing_detail.htnb" => {
+            Some("CAST(COALESCE(json_extract(tr.detail_json, '$.billing_detail.htnb'), 0) AS REAL)")
+        }
         "detail.billing_detail.cod_info.is_cod" => {
             Some("CAST(COALESCE(json_extract(tr.detail_json, '$.billing_detail.cod_info.is_cod'), 0) AS INTEGER)")
+        }
+        "detail.billing_detail.cod_info.virtual_account" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.billing_detail.cod_info.virtual_account'), '') COLLATE NOCASE")
         }
         "detail.billing_detail.cod_info.total_cod" => {
             Some("CAST(COALESCE(json_extract(tr.detail_json, '$.billing_detail.cod_info.total_cod'), 0) AS REAL)")
         }
         "detail.billing_detail.cod_info.status" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.billing_detail.cod_info.status'), '') COLLATE NOCASE")
+        }
+        "detail.billing_detail.cod_info.tanggal" => {
+            Some("COALESCE(json_extract(tr.detail_json, '$.billing_detail.cod_info.tanggal'), '') COLLATE NOCASE")
         }
         "detail.performance_detail.sla_target" => {
             Some("COALESCE(json_extract(tr.detail_json, '$.performance_detail.sla_target'), '') COLLATE NOCASE")
@@ -2265,6 +2409,24 @@ fn sheet_sort_column(field: &str) -> Option<&'static str> {
         }
         "computed.delivery_runsheet_count" => {
             Some("COALESCE(json_array_length(json_extract(tr.history_json, '$.history_summary.delivery_runsheet')), 0)")
+        }
+        "pod.photo1_url" => {
+            Some("COALESCE(json_extract(tr.history_json, '$.pod.photo1_url'), '') COLLATE NOCASE")
+        }
+        "pod.photo2_url" => {
+            Some("COALESCE(json_extract(tr.history_json, '$.pod.photo2_url'), '') COLLATE NOCASE")
+        }
+        "history_summary.irregularity" => {
+            Some("COALESCE(json_extract(tr.history_json, '$.history_summary.irregularity'), '') COLLATE NOCASE")
+        }
+        "history_summary.bagging_unbagging" => {
+            Some("COALESCE(json_extract(tr.history_json, '$.history_summary.bagging_unbagging'), '') COLLATE NOCASE")
+        }
+        "history_summary.manifest_r7" => {
+            Some("COALESCE(json_extract(tr.history_json, '$.history_summary.manifest_r7'), '') COLLATE NOCASE")
+        }
+        "history_summary.delivery_runsheet" => {
+            Some("COALESCE(json_extract(tr.history_json, '$.history_summary.delivery_runsheet'), '') COLLATE NOCASE")
         }
         _ => None,
     }
@@ -2403,6 +2565,7 @@ fn parse_optional_json(value: Option<String>) -> rusqlite::Result<Option<serde_j
 fn sheet_row_status_to_db(status: SheetRowStatus) -> &'static str {
     match status {
         SheetRowStatus::Empty => "empty",
+        SheetRowStatus::Pending => "pending",
         SheetRowStatus::Loading => "loading",
         SheetRowStatus::Loaded => "loaded",
         SheetRowStatus::Failed => "failed",
@@ -2413,6 +2576,7 @@ fn sheet_row_status_to_db(status: SheetRowStatus) -> &'static str {
 fn sheet_row_status_from_db(value: &str) -> rusqlite::Result<SheetRowStatus> {
     match value {
         "empty" => Ok(SheetRowStatus::Empty),
+        "pending" => Ok(SheetRowStatus::Pending),
         "loading" => Ok(SheetRowStatus::Loading),
         "loaded" => Ok(SheetRowStatus::Loaded),
         "failed" => Ok(SheetRowStatus::Failed),
@@ -2585,6 +2749,7 @@ mod tests {
 
         assert_eq!(store.pragma_value("journal_mode").unwrap(), "wal");
         assert_eq!(store.pragma_value("foreign_keys").unwrap(), "1");
+        assert_eq!(store.pragma_value("busy_timeout").unwrap(), "5000");
 
         let workspace = store
             .create_workspace(&CreateWorkspaceInput {
@@ -2605,6 +2770,34 @@ mod tests {
         assert_eq!(sheet.workspace_id, workspace.workspace_id);
 
         cleanup_temp_db(&path);
+    }
+
+    #[test]
+    fn create_sheet_does_not_overwrite_existing_sheet_metadata() {
+        let mut store = prepared_store();
+        store
+            .rename_sheet("sheet-1", "Renamed Sheet")
+            .expect("sheet is renamed");
+
+        let sheet = store
+            .create_sheet(&CreateSheetInput {
+                sheet_id: "sheet-1".to_string(),
+                workspace_id: "workspace-1".to_string(),
+                name: "Bootstrap Sheet".to_string(),
+                position: 99,
+            })
+            .expect("existing sheet is returned");
+
+        assert_eq!(sheet.name, "Renamed Sheet");
+        assert_eq!(sheet.position, 0);
+        assert_eq!(
+            store
+                .get_sheet("sheet-1")
+                .expect("sheet lookup succeeds")
+                .expect("sheet exists")
+                .name,
+            "Renamed Sheet"
+        );
     }
 
     #[test]
@@ -2772,6 +2965,87 @@ mod tests {
         assert_eq!(window.rows[0].row_id, "new-local-row");
         assert_eq!(window.rows[0].display_tracking_id, "PNEW");
         assert_eq!(window.rows[0].position, 0);
+    }
+
+    #[test]
+    fn conditional_tracking_updates_do_not_touch_reused_row_ids_with_new_lookup() {
+        let mut store = prepared_store();
+
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "row-1".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 0,
+                display_tracking_id: "POLD".to_string(),
+                lookup_tracking_id: "POLD".to_string(),
+                row_status: SheetRowStatus::Loading,
+                error_message: None,
+            })
+            .expect("initial row is stored");
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "row-1".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 0,
+                display_tracking_id: "PNEW".to_string(),
+                lookup_tracking_id: "PNEW".to_string(),
+                row_status: SheetRowStatus::Empty,
+                error_message: None,
+            })
+            .expect("row id is reused with new lookup");
+        store
+            .upsert_tracking_record(&UpsertTrackingRecordInput {
+                record_id: "track-old".to_string(),
+                display_tracking_id: "POLD".to_string(),
+                lookup_tracking_id: "POLD".to_string(),
+                normalized_status: Some("DELIVERED".to_string()),
+                status_json: serde_json::json!({ "status": "DELIVERED" }),
+                detail_json: serde_json::json!({
+                    "shipment_header": {
+                        "nomor_kiriman": "POLD"
+                    }
+                }),
+                history_json: serde_json::json!({
+                    "history": [],
+                    "history_summary": {}
+                }),
+                raw_blob_id: None,
+                source_url: "https://example.test/old".to_string(),
+            })
+            .expect("old tracking record is stored");
+
+        let attached = store
+            .attach_tracking_record_to_sheet_row_if_lookup_matches(
+                &AttachTrackingRecordToSheetRowInput {
+                    row_id: "row-1".to_string(),
+                    tracking_record_id: "track-old".to_string(),
+                    row_status: SheetRowStatus::Loaded,
+                    error_message: None,
+                },
+                "POLD",
+            )
+            .expect("conditional attach succeeds");
+        let failed = store
+            .update_sheet_row_status_if_lookup_matches(
+                &UpdateSheetRowStatusInput {
+                    row_id: "row-1".to_string(),
+                    row_status: SheetRowStatus::Failed,
+                    error_message: Some("old failure".to_string()),
+                },
+                "POLD",
+            )
+            .expect("conditional status update succeeds");
+        let row = store
+            .get_sheet_row("row-1")
+            .expect("row lookup succeeds")
+            .expect("row exists");
+
+        assert!(!attached);
+        assert!(!failed);
+        assert_eq!(row.lookup_tracking_id, "PNEW");
+        assert_eq!(row.row_status, SheetRowStatus::Empty);
+        assert_eq!(row.error_message, None);
+        assert_eq!(row.status_json, None);
     }
 
     #[test]
@@ -3490,6 +3764,172 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["P260600000001", "P260600000002"]
         );
+    }
+
+    #[test]
+    fn sheet_field_values_include_derived_history_columns() {
+        let mut store = prepared_store();
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "row-1".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 0,
+                display_tracking_id: "P260000000001".to_string(),
+                lookup_tracking_id: "P260000000001".to_string(),
+                row_status: SheetRowStatus::Loaded,
+                error_message: None,
+            })
+            .expect("row is stored");
+        store
+            .upsert_tracking_record(&UpsertTrackingRecordInput {
+                record_id: "record-1".to_string(),
+                display_tracking_id: "P260000000001".to_string(),
+                lookup_tracking_id: "P260000000001".to_string(),
+                normalized_status: Some("INLOCATION".to_string()),
+                status_json: serde_json::json!({
+                    "status": "INLOCATION",
+                }),
+                detail_json: serde_json::json!({
+                    "shipment_header": {
+                        "nomor_kiriman": "P260000000001"
+                    },
+                    "origin_detail": {
+                        "tanggal_input": "2026-06-10"
+                    }
+                }),
+                history_json: serde_json::json!({
+                    "history": [],
+                    "history_summary": {
+                        "bagging_unbagging": [
+                            {
+                                "nomor_kantung": "PID99827450",
+                                "bagging": {
+                                    "tanggal": "2026-06-12",
+                                    "waktu": "08:00:00"
+                                }
+                            },
+                            {
+                                "nomor_kantung": "PID98937705",
+                                "unbagging": {
+                                    "tanggal": "2026-06-13",
+                                    "waktu": "09:00:00"
+                                }
+                            }
+                        ],
+                        "manifest_r7": [
+                            { "nomor_r7": "P20260607095605151" },
+                            { "nomor_r7": "P20260617083040393" }
+                        ],
+                        "delivery_runsheet": [
+                            {
+                                "status": "INVEHICLE",
+                                "tanggal": "2026-06-10",
+                                "petugas_kurir": "Enos"
+                            },
+                            {
+                                "status": "DELIVERYRUNSHEET",
+                                "tanggal": "2026-06-11",
+                                "petugas_kurir": "Junaidi",
+                                "updates": [
+                                    {
+                                        "status": "FAILEDTODELIVERED",
+                                        "tanggal": "2026-06-11",
+                                        "petugas": "Junaidi"
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }),
+                raw_blob_id: None,
+                source_url: "https://example.test/P260000000001".to_string(),
+            })
+            .expect("tracking record is stored");
+        store
+            .attach_tracking_record_to_sheet_row(&AttachTrackingRecordToSheetRowInput {
+                row_id: "row-1".to_string(),
+                tracking_record_id: "record-1".to_string(),
+                row_status: SheetRowStatus::Loaded,
+                error_message: None,
+            })
+            .expect("tracking record is attached");
+
+        let bag_values = store
+            .query_sheet_field_values(
+                &SheetFieldValuesQuery {
+                    sheet_id: "sheet-1".to_string(),
+                    field: "history_summary.latest_bagging_status".to_string(),
+                    filters: vec![],
+                    value_filters: vec![],
+                    limit: 10,
+                },
+                100,
+            )
+            .expect("latest bag value options are queried");
+        assert_eq!(
+            bag_values.values,
+            vec![SheetFieldValueOption {
+                value: "PID98937705 - Unbagging".to_string(),
+                count: 1,
+            }]
+        );
+
+        let manifest_values = store
+            .query_sheet_field_values(
+                &SheetFieldValuesQuery {
+                    sheet_id: "sheet-1".to_string(),
+                    field: "history_summary.latest_manifest_r7".to_string(),
+                    filters: vec![],
+                    value_filters: vec![],
+                    limit: 10,
+                },
+                100,
+            )
+            .expect("latest manifest value options are queried");
+        assert_eq!(
+            manifest_values.values,
+            vec![SheetFieldValueOption {
+                value: "P20260617083040393".to_string(),
+                count: 1,
+            }]
+        );
+
+        let delivery_values = store
+            .query_sheet_field_values(
+                &SheetFieldValuesQuery {
+                    sheet_id: "sheet-1".to_string(),
+                    field: "history_summary.latest_delivery_runsheet".to_string(),
+                    filters: vec![],
+                    value_filters: vec![],
+                    limit: 10,
+                },
+                100,
+            )
+            .expect("latest delivery value options are queried");
+        assert_eq!(
+            delivery_values.values,
+            vec![SheetFieldValueOption {
+                value: "FAILEDTODELIVERED | 2026-06-11 | Junaidi".to_string(),
+                count: 1,
+            }]
+        );
+
+        let unbag_values = store
+            .query_sheet_field_values(
+                &SheetFieldValuesQuery {
+                    sheet_id: "sheet-1".to_string(),
+                    field: "computed.days_since_last_unbagging".to_string(),
+                    filters: vec![],
+                    value_filters: vec![],
+                    limit: 10,
+                },
+                100,
+            )
+            .expect("unbag elapsed day value options are queried");
+        assert_eq!(unbag_values.total_count, 1);
+        assert_eq!(unbag_values.values.len(), 1);
+        assert_eq!(unbag_values.values[0].count, 1);
+        assert!(unbag_values.values[0].value.parse::<i64>().is_ok());
     }
 
     #[test]

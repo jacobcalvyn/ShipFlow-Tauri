@@ -38,7 +38,7 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
         "info": {
             "title": "ShipFlow Service API",
             "version": "v1",
-            "description": "Authenticated local/LAN API for ShipFlow Desktop and trusted internal clients."
+            "description": "Authenticated local/LAN API for ShipFlow Desktop and trusted internal clients. ShipFlow Service exposes only the versioned /v1 API surface; unversioned legacy routes are not served."
         },
         "servers": servers,
         "security": [{ "bearerAuth": [] }],
@@ -527,7 +527,22 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                             "type": "array",
                             "items": { "$ref": "#/components/schemas/TrackHistoryEntry" }
                         },
-                        "history_summary": { "type": "object", "additionalProperties": true }
+                        "history_summary": { "type": "object", "additionalProperties": true },
+                        "contact_enrichment": { "$ref": "#/components/schemas/ContactEnrichmentMetadata" }
+                    }
+                },
+                "ContactEnrichmentMetadata": {
+                    "type": "object",
+                    "required": ["source", "status", "sender_phone_present", "recipient_phone_present"],
+                    "description": "Best-effort contact enrichment metadata. The primary tracking data remains sourced from POS PID detail; lacak-mitra is used only to fill sender/recipient phone numbers.",
+                    "properties": {
+                        "source": { "type": "string", "const": "lacak_mitra" },
+                        "status": {
+                            "type": "string",
+                            "enum": ["cache_hit", "fetched", "missing", "failed", "skipped"]
+                        },
+                        "sender_phone_present": { "type": "boolean" },
+                        "recipient_phone_present": { "type": "boolean" }
                     }
                 },
                 "TrackStatusAkhir": {
@@ -537,7 +552,9 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                         "location": { "type": ["string", "null"] },
                         "officer_name": { "type": ["string", "null"] },
                         "officer_id": { "type": ["string", "null"] },
-                        "datetime": { "type": ["string", "null"] }
+                        "datetime": { "type": ["string", "null"], "description": "Clean final status timestamp formatted as YYYY-MM-DD HH:mm:ss when available." },
+                        "date": { "type": ["string", "null"], "description": "Final status date formatted as YYYY-MM-DD when available." },
+                        "time": { "type": ["string", "null"], "description": "Final status time formatted as HH:mm:ss when available." }
                     }
                 },
                 "TrackPod": {
@@ -789,6 +806,29 @@ mod tests {
             "bearer"
         );
         assert!(document["paths"]["/v1/openapi.json"]["get"].is_object());
+    }
+
+    #[test]
+    fn documents_only_versioned_routes() {
+        let document = service_openapi_document(18422, false);
+        let paths = document["paths"]
+            .as_object()
+            .expect("paths should be an OpenAPI object");
+
+        for legacy_path in [
+            "/health",
+            "/status",
+            "/track/{shipmentId}",
+            "/bag/{bagId}",
+            "/manifest/{manifestId}",
+        ] {
+            assert!(
+                !paths.contains_key(legacy_path),
+                "legacy path should not be documented: {legacy_path}"
+            );
+        }
+
+        assert!(paths.keys().all(|path| path.starts_with("/v1/")));
     }
 
     #[test]
