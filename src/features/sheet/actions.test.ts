@@ -375,21 +375,22 @@ describe("sheet actions", () => {
   });
 
   it("sets exact value filter selections for quick include and exclude actions", () => {
+    const filterPath = "status_akhir.status";
     const initial = {
       ...createDefaultSheetState(),
       valueFilters: {
-        status: ["A", "B", "C"],
+        [filterPath]: ["A", "B", "C"],
       },
     };
 
-    const onlyB = setValueFilterSelectionInSheet(initial, "status", ["B"]);
-    expect(onlyB.valueFilters.status).toEqual(["B"]);
+    const onlyB = setValueFilterSelectionInSheet(initial, filterPath, ["B"]);
+    expect(onlyB.valueFilters[filterPath]).toEqual(["B"]);
 
-    const exceptB = setValueFilterSelectionInSheet(onlyB, "status", ["A", "C"]);
-    expect(exceptB.valueFilters.status).toEqual(["A", "C"]);
+    const exceptB = setValueFilterSelectionInSheet(onlyB, filterPath, ["A", "C"]);
+    expect(exceptB.valueFilters[filterPath]).toEqual(["A", "C"]);
 
-    const cleared = setValueFilterSelectionInSheet(exceptB, "status", []);
-    expect(cleared.valueFilters.status).toBeUndefined();
+    const cleared = setValueFilterSelectionInSheet(exceptB, filterPath, []);
+    expect(cleared.valueFilters[filterPath]).toBeUndefined();
   });
 
   it("forces selection to match visible rows when filter-driven selection is active", () => {

@@ -1,7 +1,11 @@
 Unicode true
 
 !ifndef APP_VERSION
-!define APP_VERSION "0.1.0"
+!error "APP_VERSION is required"
+!endif
+
+!ifndef APP_VERSION_QUAD
+!error "APP_VERSION_QUAD is required"
 !endif
 
 !ifndef SOURCE_EXE
@@ -18,6 +22,10 @@ Unicode true
 
 !define SHIPFLOW_ROOT "C:\ShipFlow"
 !define SHIPFLOW_DATA_ROOT "${SHIPFLOW_ROOT}\Data"
+!define SHIPFLOW_REG_ROOT "Software\ShipFlow"
+!define SHIPFLOW_SERVICE_REG_KEY "${SHIPFLOW_REG_ROOT}\Service"
+!define SHIPFLOW_SERVICE_AUTOSTART_VALUE "ShipFlowService"
+!define SHIPFLOW_SERVICE_LEGACY_AUTOSTART_VALUE "ShipFlowServiceTray"
 
 Name "ShipFlow Service"
 OutFile "${OUT_FILE}"
@@ -26,7 +34,7 @@ RequestExecutionLevel admin
 Icon "${ICON_FILE}"
 UninstallIcon "${ICON_FILE}"
 
-VIProductVersion "0.1.0.0"
+VIProductVersion "${APP_VERSION_QUAD}"
 VIAddVersionKey "ProductName" "ShipFlow Service"
 VIAddVersionKey "CompanyName" "ShipFlow"
 VIAddVersionKey "FileDescription" "ShipFlow Service Installer"
@@ -39,8 +47,13 @@ Page instfiles
 UninstPage uninstConfirm
 UninstPage instfiles
 
+!macro SHIPFLOW_KILL_PROCESS PROCESS_NAME
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM "${PROCESS_NAME}" /T /F'
+!macroend
+
 !macro SHIPFLOW_CLOSE_SERVICE_PROCESSES
-  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM shipflow-service.exe /T /F'
+  !insertmacro SHIPFLOW_KILL_PROCESS "shipflow-service.exe"
+  !insertmacro SHIPFLOW_KILL_PROCESS "ShipFlow Service.exe"
   Sleep 500
 !macroend
 
@@ -55,6 +68,7 @@ UninstPage instfiles
 
 Section "Install"
   SetShellVarContext all
+  SetRegView 64
   !insertmacro SHIPFLOW_CLOSE_SERVICE_PROCESSES
   !insertmacro SHIPFLOW_PREPARE_DATA_DIRS
 
@@ -75,10 +89,16 @@ Section "Install"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "UninstallString" "$INSTDIR\Uninstall.exe"
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "NoModify" 1
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService" "NoRepair" 1
+
+  WriteRegStr HKLM "${SHIPFLOW_SERVICE_REG_KEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKLM "${SHIPFLOW_SERVICE_REG_KEY}" "ExecutablePath" "$INSTDIR\shipflow-service.exe"
+  WriteRegStr HKLM "${SHIPFLOW_SERVICE_REG_KEY}" "ProductName" "ShipFlow Service"
+  WriteRegStr HKLM "${SHIPFLOW_SERVICE_REG_KEY}" "Version" "${APP_VERSION}"
 SectionEnd
 
 Section "Uninstall"
   SetShellVarContext all
+  SetRegView 64
   !insertmacro SHIPFLOW_CLOSE_SERVICE_PROCESSES
 
   Delete "$DESKTOP\ShipFlow Service.lnk"
@@ -90,5 +110,8 @@ Section "Uninstall"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${SHIPFLOW_SERVICE_AUTOSTART_VALUE}"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${SHIPFLOW_SERVICE_LEGACY_AUTOSTART_VALUE}"
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\ShipFlowService"
+  DeleteRegKey HKLM "${SHIPFLOW_SERVICE_REG_KEY}"
 SectionEnd

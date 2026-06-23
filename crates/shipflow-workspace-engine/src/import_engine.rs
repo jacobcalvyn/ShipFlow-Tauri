@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use shipflow_core::model::{BagResponse, ManifestResponse, TrackingError};
+use tokio::time::{timeout, Duration};
 
 use crate::blob_store::{write_blob, BlobStoreError};
 use crate::events::{ImportJobItemDelta, ImportJobProgressEvent};
@@ -20,6 +21,8 @@ use crate::storage::{
     WorkspaceStoreError,
 };
 use crate::tracking::resolve_tracking_id;
+
+const IMPORT_SOURCE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub trait ImportLookupSource {
     fn fetch_bag<'a>(
@@ -272,7 +275,7 @@ where
         let mut tracking_ids = Vec::new();
 
         for bag_id in bag_ids {
-            match self.source.fetch_bag(bag_id).await {
+            match self.fetch_bag_with_timeout(bag_id).await {
                 Ok(response) => {
                     let bag_tracking_ids = extract_bag_tracking_ids(&response);
                     extend_unique(&mut tracking_ids, &bag_tracking_ids);
@@ -315,7 +318,7 @@ where
         let mut manifest_bag_ids = Vec::new();
 
         for manifest_id in manifest_ids {
-            match self.source.fetch_manifest(manifest_id).await {
+            match self.fetch_manifest_with_timeout(manifest_id).await {
                 Ok(response) => {
                     let bag_ids = extract_manifest_bag_ids(&response);
                     extend_unique(&mut manifest_bag_ids, &bag_ids);
@@ -343,7 +346,7 @@ where
         let mut manifest_bags = Vec::new();
         let mut tracking_ids = Vec::new();
         for bag_id in &manifest_bag_ids {
-            match self.source.fetch_bag(bag_id).await {
+            match self.fetch_bag_with_timeout(bag_id).await {
                 Ok(response) => {
                     let bag_tracking_ids = extract_bag_tracking_ids(&response);
                     extend_unique(&mut tracking_ids, &bag_tracking_ids);
@@ -373,6 +376,31 @@ where
             manifest_bags,
             tracking_ids,
             raw_response: stringify_responses(&manifest_responses),
+        }
+    }
+
+    async fn fetch_bag_with_timeout(
+        &mut self,
+        bag_id: &str,
+    ) -> Result<BagResponse, ImportLookupFailure> {
+        match timeout(IMPORT_SOURCE_LOOKUP_TIMEOUT, self.source.fetch_bag(bag_id)).await {
+            Ok(result) => result,
+            Err(_) => Err(ImportLookupFailure::new(import_lookup_timeout_message())),
+        }
+    }
+
+    async fn fetch_manifest_with_timeout(
+        &mut self,
+        manifest_id: &str,
+    ) -> Result<ManifestResponse, ImportLookupFailure> {
+        match timeout(
+            IMPORT_SOURCE_LOOKUP_TIMEOUT,
+            self.source.fetch_manifest(manifest_id),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(ImportLookupFailure::new(import_lookup_timeout_message())),
         }
     }
 
@@ -561,6 +589,13 @@ fn tracking_error_message(error: TrackingError) -> String {
         TrackingError::NotFound(message) => format!("not found: {message}"),
         TrackingError::Upstream(message) => format!("upstream: {message}"),
     }
+}
+
+fn import_lookup_timeout_message() -> String {
+    format!(
+        "Timeout ambil data setelah {} detik.",
+        IMPORT_SOURCE_LOOKUP_TIMEOUT.as_secs()
+    )
 }
 
 fn dedupe_non_empty<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {

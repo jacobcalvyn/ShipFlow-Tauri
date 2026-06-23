@@ -2,12 +2,18 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, Runtime, WebviewUrl, Window};
+use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, Window};
 
+use crate::runtime_log::log_runtime_event;
+use crate::service;
 use crate::workspace_document::{
     get_workspace_document_name_from_path, normalize_workspace_document_path,
     to_display_document_path,
 };
+
+const DESKTOP_WORKSPACE_WINDOW_STATE_KEY: &str = "desktop.workspace";
+const MIN_RESTORED_WORKSPACE_WINDOW_WIDTH: u32 = 640;
+const MIN_RESTORED_WORKSPACE_WINDOW_HEIGHT: u32 = 480;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -147,6 +153,28 @@ impl WindowDocumentState {
             .expect("window document state lock poisoned")
             .remove(label);
     }
+
+    pub fn first_dirty_window<I, S>(
+        &self,
+        labels: I,
+    ) -> Option<(String, WindowDocumentStateSnapshot)>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let by_label = self
+            .by_label
+            .lock()
+            .expect("window document state lock poisoned");
+
+        labels.into_iter().find_map(|label| {
+            let label = label.as_ref();
+            by_label
+                .get(label)
+                .filter(|snapshot| snapshot.is_dirty)
+                .map(|snapshot| (label.to_string(), snapshot.clone()))
+        })
+    }
 }
 
 #[derive(Clone, Default)]
@@ -169,6 +197,13 @@ impl WindowCloseGuardState {
             .remove(label)
     }
 
+    pub fn has_allowance(&self, label: &str) -> bool {
+        self.allowed_labels
+            .lock()
+            .expect("window close guard lock poisoned")
+            .contains(label)
+    }
+
     pub fn clear_window(&self, label: &str) {
         self.allowed_labels
             .lock()
@@ -185,6 +220,49 @@ fn uuid_like_label() -> String {
         .unwrap_or_default()
         .as_nanos();
     format!("{now:x}")
+}
+
+fn restore_workspace_window_state<R: Runtime>(window: &WebviewWindow<R>) {
+    let state = match service::load_window_state(DESKTOP_WORKSPACE_WINDOW_STATE_KEY) {
+        Ok(Some(state)) => state,
+        Ok(None) => return,
+        Err(error) => {
+            log_runtime_event(
+                "ERROR",
+                format!(
+                    "[ShipFlowWindow] failed to load workspace window state '{}': {error}",
+                    DESKTOP_WORKSPACE_WINDOW_STATE_KEY
+                ),
+            );
+            return;
+        }
+    };
+
+    if state.width < MIN_RESTORED_WORKSPACE_WINDOW_WIDTH
+        || state.height < MIN_RESTORED_WORKSPACE_WINDOW_HEIGHT
+    {
+        log_runtime_event(
+            "ERROR",
+            format!(
+                "[ShipFlowWindow] ignored invalid workspace window state '{}' size={}x{}",
+                DESKTOP_WORKSPACE_WINDOW_STATE_KEY, state.width, state.height
+            ),
+        );
+        return;
+    }
+
+    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+        width: state.width,
+        height: state.height,
+    }));
+    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+        x: state.x,
+        y: state.y,
+    }));
+
+    if state.maximized {
+        let _ = window.maximize();
+    }
 }
 
 pub fn set_current_window_title_runtime(window: Window, title: String) -> Result<(), String> {
@@ -283,17 +361,18 @@ pub fn create_workspace_window_runtime<R: Runtime>(
         },
     );
 
-    if let Err(error) =
+    let window =
         tauri::WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
             .title(&title)
             .inner_size(1280.0, 860.0)
             .resizable(true)
             .build()
-    {
-        let _ = launch_state.take(&label);
-        registry.release_window(&label);
-        return Err(format!("Unable to create workspace window: {error}"));
-    }
+            .map_err(|error| {
+                let _ = launch_state.take(&label);
+                registry.release_window(&label);
+                format!("Unable to create workspace window: {error}")
+            })?;
+    restore_workspace_window_state(&window);
 
     Ok(WorkspaceDocumentClaimResult {
         status: "claimed".into(),
@@ -307,4 +386,61 @@ pub fn take_pending_workspace_window_request_runtime(
     launch_state: &WorkspaceWindowLaunchState,
 ) -> Option<WorkspaceWindowRequest> {
     launch_state.take(window.label())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WindowDocumentState, WindowDocumentStateSnapshot};
+
+    #[test]
+    fn first_dirty_window_returns_none_when_registered_windows_are_clean() {
+        let state = WindowDocumentState::default();
+        state.set_for_window(
+            "main",
+            WindowDocumentStateSnapshot {
+                is_dirty: false,
+                document_name: "Main.shipflow".into(),
+            },
+        );
+
+        assert!(state.first_dirty_window(["main"]).is_none());
+    }
+
+    #[test]
+    fn first_dirty_window_returns_first_dirty_registered_window() {
+        let state = WindowDocumentState::default();
+        state.set_for_window(
+            "main",
+            WindowDocumentStateSnapshot {
+                is_dirty: false,
+                document_name: "Main.shipflow".into(),
+            },
+        );
+        state.set_for_window(
+            "workspace-2",
+            WindowDocumentStateSnapshot {
+                is_dirty: true,
+                document_name: "Unsaved.shipflow".into(),
+            },
+        );
+
+        let dirty_window = state
+            .first_dirty_window(["main", "workspace-2"])
+            .expect("dirty window should be detected");
+
+        assert_eq!(dirty_window.0, "workspace-2");
+        assert_eq!(dirty_window.1.document_name, "Unsaved.shipflow");
+    }
+
+    #[test]
+    fn close_guard_can_check_allowance_without_consuming_it() {
+        let guard = super::WindowCloseGuardState::default();
+
+        guard.allow_next_close("main");
+
+        assert!(guard.has_allowance("main"));
+        assert!(guard.has_allowance("main"));
+        assert!(guard.take_allowance("main"));
+        assert!(!guard.has_allowance("main"));
+    }
 }

@@ -9,6 +9,7 @@ export type SheetRow = {
   stale: boolean;
   dirty: boolean;
   error: string;
+  runtimeTrackingRunId?: string | null;
 };
 
 export type ColumnType =
@@ -20,10 +21,15 @@ export type ColumnType =
   | "json"
   | "date";
 
+export type ColumnFilterFieldType = "text" | "number" | "boolean" | "date";
+
 export type ColumnDefinition = {
   path: string;
   label: string;
   type: ColumnType;
+  filterable?: boolean;
+  filterFieldType?: ColumnFilterFieldType;
+  backendField?: string;
   defaultWidth: number;
   minWidth?: number;
   maxWidth?: number;
@@ -124,6 +130,7 @@ export type SheetState = {
   sortState: SortState;
   selectedRowKeys: string[];
   selectionFollowsVisibleRows: boolean;
+  activeTrackingRunId: string | null;
   columnWidths: Record<string, number>;
   hiddenColumnPaths: string[];
   pinnedColumnPaths: string[];

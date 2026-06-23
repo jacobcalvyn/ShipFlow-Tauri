@@ -17,6 +17,11 @@ shipflow-core = { path = "../shipflow-core" }
 shipflow-service-runtime = { path = "../shipflow-service-runtime" }
 tao = { workspace = true }
 tauri = { workspace = true }
+tauri-plugin-single-instance = { workspace = true }
+tauri-plugin-updater = { workspace = true }
 tokio = { workspace = true }
 tower-http = { workspace = true }
 tray-icon = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }

@@ -872,15 +872,16 @@ describe("useWorkspaceCommandsController", () => {
       filters: [],
       sort: [],
     };
-    workspaceEngineMocks.refreshSheetRowsTracking.mockResolvedValueOnce({
+    workspaceEngineMocks.refreshSheetRowsTracking.mockImplementationOnce(async (payload) => ({
       type: "sheet_rows_tracking_refresh",
       payload: {
         sheetId: "sheet-1",
+        runId: payload.runId,
         successCount: 1,
         failedCount: 0,
         rows: [],
       },
-    });
+    }));
 
     const { result } = renderHook(() =>
       useWorkspaceCommandsController(options as never)
@@ -894,11 +895,15 @@ describe("useWorkspaceCommandsController", () => {
       expect(workspaceEngineMocks.refreshSheetRowsTracking).toHaveBeenCalledTimes(1);
     });
 
-    expect(workspaceEngineMocks.refreshSheetRowsTracking).toHaveBeenCalledWith({
-      sheetId: "sheet-1",
-      rowIds: ["rust-failed-row"],
-      forceRefresh: true,
-    }, expect.any(Function));
+    expect(workspaceEngineMocks.refreshSheetRowsTracking).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sheetId: "sheet-1",
+        rowIds: ["rust-failed-row"],
+        forceRefresh: true,
+        runId: expect.any(String),
+      }),
+      expect.any(Function)
+    );
     expect(options.refreshTrackingRows).not.toHaveBeenCalled();
     expect(workspaceEngineMocks.querySheetRows).not.toHaveBeenCalled();
     expect(options.updateActiveSheet).not.toHaveBeenCalled();
@@ -926,11 +931,12 @@ describe("useWorkspaceCommandsController", () => {
       sort: [],
     };
     workspaceEngineMocks.refreshSheetRowsTracking.mockImplementationOnce(
-      async (_payload, onEvent) => {
+      async (payload, onEvent) => {
         onEvent({
           type: "tracking_refresh_progress",
           payload: {
             sheetId: "sheet-1",
+            runId: payload.runId,
             totalCount: 1,
             successCount: 0,
             failedCount: 0,
@@ -952,6 +958,7 @@ describe("useWorkspaceCommandsController", () => {
           type: "tracking_refresh_progress",
           payload: {
             sheetId: "sheet-1",
+            runId: payload.runId,
             totalCount: 1,
             successCount: 0,
             failedCount: 0,
@@ -973,6 +980,7 @@ describe("useWorkspaceCommandsController", () => {
           type: "tracking_refresh_progress",
           payload: {
             sheetId: "sheet-1",
+            runId: payload.runId,
             totalCount: 1,
             successCount: 1,
             failedCount: 0,
@@ -999,6 +1007,7 @@ describe("useWorkspaceCommandsController", () => {
           type: "sheet_rows_tracking_refresh",
           payload: {
             sheetId: "sheet-1",
+            runId: payload.runId,
             successCount: 1,
             failedCount: 0,
             rows: [],
@@ -1016,7 +1025,7 @@ describe("useWorkspaceCommandsController", () => {
     });
 
     await waitFor(() => {
-      expect(options.setWorkspaceState).toHaveBeenCalledTimes(3);
+      expect(options.setWorkspaceState).toHaveBeenCalledTimes(5);
     });
 
     const workspaceUpdaters = vi
@@ -1032,18 +1041,18 @@ describe("useWorkspaceCommandsController", () => {
         },
       },
     };
-    const loadingWorkspace =
-      typeof workspaceUpdaters[0] === "function"
-        ? workspaceUpdaters[0](baseWorkspace)
-        : workspaceUpdaters[0];
-    const latePendingWorkspace =
-      typeof workspaceUpdaters[1] === "function"
-        ? workspaceUpdaters[1](loadingWorkspace)
-        : workspaceUpdaters[1];
-    const loadedWorkspace =
-      typeof workspaceUpdaters[2] === "function"
-        ? workspaceUpdaters[2](latePendingWorkspace)
-        : workspaceUpdaters[2];
+    const workspaces = workspaceUpdaters.reduce<WorkspaceState[]>(
+      (states, updater) => {
+        const previous = states[states.length - 1];
+        const next =
+          typeof updater === "function" ? updater(previous) : updater;
+        return [...states, next];
+      },
+      [baseWorkspace]
+    );
+    const loadingWorkspace = workspaces[2];
+    const latePendingWorkspace = workspaces[3];
+    const loadedWorkspace = workspaces[4];
     const loadingSheet = loadingWorkspace.sheetsById["sheet-1"];
     const latePendingSheet = latePendingWorkspace.sheetsById["sheet-1"];
     const loadedSheet = loadedWorkspace.sheetsById["sheet-1"];
@@ -1124,15 +1133,16 @@ describe("useWorkspaceCommandsController", () => {
       filters: [],
       sort: [],
     };
-    workspaceEngineMocks.refreshSheetRowsTracking.mockResolvedValueOnce({
+    workspaceEngineMocks.refreshSheetRowsTracking.mockImplementationOnce(async (payload) => ({
       type: "sheet_rows_tracking_refresh",
       payload: {
         sheetId: "sheet-1",
+        runId: payload.runId,
         successCount: 2,
         failedCount: 0,
         rows: [],
       },
-    });
+    }));
 
     const { result } = renderHook(() =>
       useWorkspaceCommandsController(options as never)
@@ -1146,11 +1156,15 @@ describe("useWorkspaceCommandsController", () => {
       expect(workspaceEngineMocks.refreshSheetRowsTracking).toHaveBeenCalledTimes(1);
     });
 
-    expect(workspaceEngineMocks.refreshSheetRowsTracking).toHaveBeenCalledWith({
-      sheetId: "sheet-1",
-      rowIds: [],
-      forceRefresh: true,
-    }, expect.any(Function));
+    expect(workspaceEngineMocks.refreshSheetRowsTracking).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sheetId: "sheet-1",
+        rowIds: [],
+        forceRefresh: true,
+        runId: expect.any(String),
+      }),
+      expect.any(Function)
+    );
     expect(workspaceEngineMocks.querySheetRows).not.toHaveBeenCalled();
     expect(options.refreshTrackingRows).not.toHaveBeenCalled();
     expect(options.updateActiveSheet).not.toHaveBeenCalled();
@@ -1201,15 +1215,16 @@ describe("useWorkspaceCommandsController", () => {
         },
       })
       ;
-    workspaceEngineMocks.refreshSheetRowsTracking.mockResolvedValueOnce({
+    workspaceEngineMocks.refreshSheetRowsTracking.mockImplementationOnce(async (payload) => ({
       type: "sheet_rows_tracking_refresh",
       payload: {
         sheetId: "sheet-1",
+        runId: payload.runId,
         successCount: 1,
         failedCount: 0,
         rows: [],
       },
-    });
+    }));
 
     const { result } = renderHook(() =>
       useWorkspaceCommandsController(options as never)
@@ -1223,11 +1238,15 @@ describe("useWorkspaceCommandsController", () => {
       expect(workspaceEngineMocks.refreshSheetRowsTracking).toHaveBeenCalledTimes(1);
     });
 
-    expect(workspaceEngineMocks.refreshSheetRowsTracking).toHaveBeenCalledWith({
-      sheetId: "sheet-1",
-      rowIds: ["rust-filtered-row"],
-      forceRefresh: true,
-    }, expect.any(Function));
+    expect(workspaceEngineMocks.refreshSheetRowsTracking).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sheetId: "sheet-1",
+        rowIds: ["rust-filtered-row"],
+        forceRefresh: true,
+        runId: expect.any(String),
+      }),
+      expect.any(Function)
+    );
     expect(workspaceEngineMocks.querySheetRows).toHaveBeenCalledTimes(1);
     expect(workspaceEngineMocks.querySheetRows).toHaveBeenCalledWith({
       ...options.rustExportRowsQuery,

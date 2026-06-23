@@ -121,8 +121,8 @@ describe("SheetActionBar", () => {
   it("keeps selection row visible and disabled when nothing is selected", () => {
     render(
       <SheetActionBar
-        loadedCount={0}
-        totalShipmentCount={0}
+        loadedCount={6}
+        totalShipmentCount={17}
         loadingCount={0}
         retrackableRowsCount={0}
         retryFailedRowsCount={0}
@@ -162,6 +162,7 @@ describe("SheetActionBar", () => {
       />
     );
 
+    expect(screen.getByText("Total 6/17 kiriman")).toBeInTheDocument();
     expect(screen.getByText("0 row dipilih")).toBeInTheDocument();
     expect(screen.getByText("Import From")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Bag" })).toBeInTheDocument();
@@ -284,6 +285,20 @@ describe("SheetActionBar", () => {
                   kind === "bag" && importSourceDrafts.bag.trim() !== ""
                     ? ["P260000000001", "P260000000002"]
                     : [],
+                sourceItemStates:
+                  importSourceDrafts[kind].trim() !== ""
+                    ? [
+                        {
+                          itemId: importSourceDrafts[kind],
+                          loading: false,
+                          error: "",
+                          trackingIds:
+                            kind === "bag"
+                              ? ["P260000000001", "P260000000002"]
+                              : [],
+                        },
+                      ]
+                    : [],
                 manifestBagStates:
                   kind === "manifest" && importSourceDrafts.manifest.trim() !== ""
                     ? [
@@ -318,6 +333,10 @@ describe("SheetActionBar", () => {
     const bagInput = screen.getByLabelText("ID Bag");
     fireEvent.change(bagInput, { target: { value: "PID123" } });
     expect(screen.getByDisplayValue("PID123")).toBeInTheDocument();
+    fireEvent.change(bagInput, { target: { value: "" } });
+    expect(bagInput).toHaveValue("");
+    fireEvent.change(bagInput, { target: { value: "PID123" } });
+    expect(screen.getByDisplayValue("PID123")).toBeInTheDocument();
 
     fireEvent.click(bagDialog.parentElement as HTMLElement);
     expect(
@@ -342,6 +361,7 @@ describe("SheetActionBar", () => {
     expect(manifestDialog).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
+    expect(screen.getByText("ID Manifest (1) - 1 Berhasil")).toBeInTheDocument();
     expect(
       screen.getByText("Nomor Kantung (2) - Proses ambil id kiriman dari 0/2 kantung")
     ).toBeInTheDocument();
@@ -360,6 +380,7 @@ describe("SheetActionBar", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
 
+    expect(screen.getByText("ID Bag (1) - 2 Kiriman")).toBeInTheDocument();
     expect(screen.getByText("Nomor Kiriman (2)")).toBeInTheDocument();
     expect(screen.getByText("P260000000001")).toBeInTheDocument();
     expect(screen.getByText("P260000000002")).toBeInTheDocument();

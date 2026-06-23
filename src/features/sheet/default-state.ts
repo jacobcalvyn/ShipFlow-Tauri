@@ -24,6 +24,7 @@ export function createDefaultSheetState(): SheetState {
     },
     selectedRowKeys: [],
     selectionFollowsVisibleRows: false,
+    activeTrackingRunId: null,
     columnWidths: getInitialColumnWidths(),
     hiddenColumnPaths: loadStoredStringArray(HIDDEN_COLUMNS_STORAGE_KEY, []),
     pinnedColumnPaths: loadStoredStringArray(

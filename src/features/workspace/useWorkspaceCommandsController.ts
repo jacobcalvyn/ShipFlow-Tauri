@@ -6,7 +6,9 @@ import {
   clearFiltersInSheet,
   clearHiddenFiltersInSheet,
   clearSelectionInSheet,
+  clearTrackingRunInSheet,
   deleteRowsInSheet,
+  startTrackingRunInSheet,
 } from "../sheet/actions";
 import {
   createSheetTableRowsFromRustWindow,
@@ -54,6 +56,12 @@ const CSV_EXCLUDED_COLUMN_PATHS = new Set([
   "history_summary.delivery_runsheet",
 ]);
 const CSV_RUST_EXPORT_WINDOW_LIMIT = 1_000;
+
+function createWorkspaceTrackingRunId(sheetId: string, reason: string) {
+  return `${sheetId}:workspace-${reason}:${Date.now()}:${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
 
 async function collectRustExportRows(query: SheetRowsQuery) {
   const rows: SheetTableRow[] = [];
@@ -347,6 +355,7 @@ export function useWorkspaceCommandsController({
 
     if (rustExportRowsQuery) {
       const targetSheetId = activeSheetId;
+      const trackingRunId = createWorkspaceTrackingRunId(targetSheetId, "retry");
       const retryRowIds = retryFailedEntries
         .map((entry) => entry.engineRowId?.trim() ?? "")
         .filter(Boolean);
@@ -363,24 +372,35 @@ export function useWorkspaceCommandsController({
         tone: "info",
         message: "Proses lacak ulang dimulai.",
       });
+      updateSheetById(targetSheetId, (current) =>
+        startTrackingRunInSheet(current, trackingRunId)
+      );
 
       void refreshSheetRowsTrackingWithProgress(
         {
           sheetId: targetSheetId,
           rowIds: Array.from(new Set(retryRowIds)),
           forceRefresh: true,
+          runId: trackingRunId,
         },
         (event) => {
-          if (event.type === "tracking_refresh_progress") {
+          if (
+            event.type === "tracking_refresh_progress" &&
+            event.payload.runId === trackingRunId
+          ) {
             updateSheetById(targetSheetId, (current) =>
               applyTrackingRefreshProgressToSheet(current, event.payload, {
                 createMissingRow: true,
+                runId: trackingRunId,
               })
             );
           }
         }
       )
         .then((refreshResult) => {
+          if (refreshResult.payload.runId !== trackingRunId) {
+            return;
+          }
           if (refreshResult.payload.rows.length > 0) {
             updateSheetById(targetSheetId, (current) =>
               applyTrackingRefreshRowsToSheet(
@@ -388,6 +408,7 @@ export function useWorkspaceCommandsController({
                 refreshResult.payload.rows,
                 {
                   createMissingRows: true,
+                  runId: trackingRunId,
                 }
               )
             );
@@ -408,6 +429,11 @@ export function useWorkspaceCommandsController({
             message:
               error instanceof Error ? error.message : "Lacak ulang gagal.",
           });
+        })
+        .finally(() => {
+          updateSheetById(targetSheetId, (current) =>
+            clearTrackingRunInSheet(current, trackingRunId)
+          );
         });
       return;
     }
@@ -599,7 +625,11 @@ export function useWorkspaceCommandsController({
     });
 
     if (rustExportRowsQuery) {
+      const trackingRunId = createWorkspaceTrackingRunId(targetSheetId, "retrack");
       const isScopedRustQuery = hasScopedRustRowQuery(rustExportRowsQuery);
+      updateSheetById(targetSheetId, (current) =>
+        startTrackingRunInSheet(current, trackingRunId)
+      );
       void Promise.resolve(
         isScopedRustQuery ? collectRustRefreshRowIds(rustExportRowsQuery) : []
       )
@@ -613,12 +643,17 @@ export function useWorkspaceCommandsController({
               sheetId: targetSheetId,
               rowIds,
               forceRefresh: true,
+              runId: trackingRunId,
             },
             (event) => {
-              if (event.type === "tracking_refresh_progress") {
+              if (
+                event.type === "tracking_refresh_progress" &&
+                event.payload.runId === trackingRunId
+              ) {
                 updateSheetById(targetSheetId, (current) =>
                   applyTrackingRefreshProgressToSheet(current, event.payload, {
                     createMissingRow: true,
+                    runId: trackingRunId,
                   })
                 );
               }
@@ -629,6 +664,9 @@ export function useWorkspaceCommandsController({
           if (!refreshResult) {
             return;
           }
+          if (refreshResult.payload.runId !== trackingRunId) {
+            return;
+          }
           if (refreshResult.payload.rows.length > 0) {
             updateSheetById(targetSheetId, (current) =>
               applyTrackingRefreshRowsToSheet(
@@ -636,6 +674,7 @@ export function useWorkspaceCommandsController({
                 refreshResult.payload.rows,
                 {
                   createMissingRows: true,
+                  runId: trackingRunId,
                 }
               )
             );
@@ -656,6 +695,11 @@ export function useWorkspaceCommandsController({
             message:
               error instanceof Error ? error.message : "Lacak ulang gagal.",
           });
+        })
+        .finally(() => {
+          updateSheetById(targetSheetId, (current) =>
+            clearTrackingRunInSheet(current, trackingRunId)
+          );
         });
       return;
     }

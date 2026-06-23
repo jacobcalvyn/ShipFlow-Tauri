@@ -2,6 +2,12 @@ name: Build Service Windows
 
 on:
   workflow_dispatch:
+    inputs:
+      signed_release:
+        description: "Build signed updater-ready release artifacts. Requires Windows signing and updater secrets."
+        required: false
+        default: "false"
+        type: boolean
 
 permissions:
   contents: read
@@ -10,6 +16,12 @@ jobs:
   build-service-windows:
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+      TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
+      SIGNED_RELEASE: ${{ inputs.signed_release && 'true' || 'false' }}
 
     steps:
       - name: Checkout repository
@@ -49,9 +61,41 @@ jobs:
       - name: Run Rust clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Validate Windows signing secrets
+        if: ${{ inputs.signed_release }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            throw "WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are required for a signed Windows service release."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_PUBLIC_KEY) -or [string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_ENDPOINTS)) {
+            throw "TAURI_UPDATER_PUBLIC_KEY and TAURI_UPDATER_ENDPOINTS are required for updater-ready Windows service releases."
+          }
+
       - name: Build Windows service app binary
-        working-directory: apps/service
-        run: npm exec tauri -- build --features custom-protocol --no-bundle --ci
+        shell: pwsh
+        run: |
+          $configArgs = @()
+          if ($env:SIGNED_RELEASE -eq "true") {
+            $releaseConfigPath = Join-Path $env:RUNNER_TEMP "shipflow-service-release.conf.json"
+            node scripts/create-release-build-config.mjs service $releaseConfigPath
+            $configArgs = @("--config", $releaseConfigPath)
+          }
+          Push-Location apps/service
+          try {
+            npm exec tauri -- build --features custom-protocol --no-bundle --ci @configArgs
+          } finally {
+            Pop-Location
+          }
+
+      - name: Sign Windows service executable
+        if: ${{ inputs.signed_release }}
+        shell: pwsh
+        run: |
+          ./scripts/windows/sign-windows-artifact.ps1 `
+            -ArtifactPath "target/release/shipflow-service.exe" `
+            -CertificateBase64 "$env:WINDOWS_CERTIFICATE" `
+            -CertificatePassword "$env:WINDOWS_CERTIFICATE_PASSWORD"
 
       - name: Install NSIS
         run: choco install nsis -y --no-progress
@@ -60,9 +104,44 @@ jobs:
         shell: pwsh
         run: ./scripts/windows/build-service-installer.ps1
 
+      - name: Sign Windows service installer
+        if: ${{ inputs.signed_release }}
+        shell: pwsh
+        run: |
+          ./scripts/windows/sign-windows-artifact.ps1 `
+            -ArtifactPath "target/release/ShipFlow-Service-Setup.exe" `
+            -CertificateBase64 "$env:WINDOWS_CERTIFICATE" `
+            -CertificatePassword "$env:WINDOWS_CERTIFICATE_PASSWORD"
+
+      - name: Verify Windows service signatures
+        if: ${{ inputs.signed_release }}
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+            -Recurse `
+            -Filter signtool.exe `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+
+          if ($null -eq $signtool) {
+            throw "Unable to find Windows SDK signtool.exe"
+          }
+
+          foreach ($artifact in @(
+            "target/release/shipflow-service.exe",
+            "target/release/ShipFlow-Service-Setup.exe"
+          )) {
+            & $signtool.FullName verify /pa /v $artifact
+          }
+
       - name: Smoke check Windows service artifacts
         shell: pwsh
         run: |
+          if (-not (Test-Path "target/release/shipflow-service.exe")) {
+            throw "Missing service executable"
+          }
           if (-not (Test-Path "target/release/ShipFlow-Service-Setup.exe")) {
             throw "Missing service installer"
           }
@@ -70,9 +149,20 @@ jobs:
             throw "Missing service installer icon"
           }
 
+      - name: Generate Windows service release evidence
+        if: ${{ inputs.signed_release }}
+        run: node scripts/generate-release-evidence.mjs service windows distribution target/release/shipflow-service-windows-distribution.evidence.json
+
+      - name: Verify Windows service release evidence
+        if: ${{ inputs.signed_release }}
+        run: node scripts/verify-release-evidence.mjs service windows distribution target/release/shipflow-service-windows-distribution.evidence.json
+
       - name: Upload Windows service installer
         uses: actions/upload-artifact@v6
         with:
           name: shipflow-service-windows-installer
-          path: target/release/ShipFlow-Service-Setup.exe
+          path: |
+            target/release/shipflow-service-windows-distribution.evidence.json
+            target/release/shipflow-service.exe
+            target/release/ShipFlow-Service-Setup.exe
           if-no-files-found: error

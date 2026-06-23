@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  checkAppUpdate,
   configureApiService,
+  getReleaseHealth,
   getApiServiceStatus,
+  installAppUpdate,
   loadSavedApiServiceConfig,
   testApiServiceConnection as testApiServiceConnectionCommand,
   testExternalTrackingSource as testExternalTrackingSourceCommand,
@@ -35,6 +38,7 @@ const DEFAULT_SERVICE_CONFIG: ServiceConfig = {
   externalApiAuthToken: "",
   allowInsecureExternalApiHttp: false,
   keepRunningInTray: true,
+  startAtLogin: false,
   lastUpdatedAt: "",
 };
 
@@ -110,6 +114,7 @@ function areServiceConfigsEqual(left: ServiceConfig, right: ServiceConfig) {
     left.externalApiAuthToken === right.externalApiAuthToken &&
     left.allowInsecureExternalApiHttp === right.allowInsecureExternalApiHttp &&
     left.keepRunningInTray === right.keepRunningInTray &&
+    left.startAtLogin === right.startAtLogin &&
     left.lastUpdatedAt === right.lastUpdatedAt
   );
 }
@@ -135,7 +140,6 @@ function normalizeServiceConfig(
       profile === "serviceRuntime" ? "managedLocal" : "custom",
     enabled: profile === "serviceRuntime" ? true : config.enabled,
     port: normalizedPort,
-    keepRunningInTray: true,
   };
 
   if (profile === "desktopConnection") {
@@ -424,6 +428,26 @@ export function useServiceSettingsController({
     [previewServiceConfig]
   );
 
+  const previewKeepRunningInTray = useCallback(
+    (keepRunningInTray: boolean) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        keepRunningInTray,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
+  const previewStartAtLogin = useCallback(
+    (startAtLogin: boolean) => {
+      previewServiceConfig((current) => ({
+        ...current,
+        startAtLogin,
+      }));
+    },
+    [previewServiceConfig]
+  );
+
   const previewGenerateServiceToken = useCallback(() => {
     previewServiceConfig((current) => ({
       ...current,
@@ -476,7 +500,6 @@ export function useServiceSettingsController({
     const nextServiceConfig = serviceConfigPreview
       ? {
           ...serviceConfigPreview,
-          keepRunningInTray: true,
           lastUpdatedAt: new Date().toISOString(),
         }
       : null;
@@ -569,13 +592,27 @@ export function useServiceSettingsController({
     return testApiServiceConnectionCommand(config);
   }, []);
 
+  const checkForAppUpdate = useCallback(async () => {
+    return checkAppUpdate();
+  }, []);
+
+  const getAppReleaseHealth = useCallback(async () => {
+    return getReleaseHealth();
+  }, []);
+
+  const installAvailableAppUpdate = useCallback(async () => {
+    return installAppUpdate();
+  }, []);
+
   return {
     apiServiceStatus,
     cancelServiceConfigPreview,
+    checkForAppUpdate,
     confirmServiceConfig,
     copyServiceEndpoint,
     copyServiceToken,
     effectiveServiceConfig,
+    getAppReleaseHealth,
     hasLoadedServiceConfig,
     hasPendingServiceConfigChanges,
     previewAllowInsecureExternalApiHttp,
@@ -585,12 +622,15 @@ export function useServiceSettingsController({
     previewExternalApiAuthToken,
     previewExternalApiBaseUrl,
     previewGenerateServiceToken,
+    previewKeepRunningInTray,
     pasteDesktopServiceAuthToken,
     previewRegenerateServiceToken,
+    previewStartAtLogin,
     previewServiceEnabled,
     previewServiceMode,
     previewServicePort,
     previewTrackingSource,
+    installAvailableAppUpdate,
     testApiServiceConnection,
     testExternalTrackingSource,
   };

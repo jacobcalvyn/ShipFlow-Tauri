@@ -18,6 +18,8 @@ type ServiceSettingsWindowProps = {
   onPreviewServiceEnabled: (enabled: boolean) => void;
   onPreviewServiceMode: (mode: ServiceMode) => void;
   onPreviewServicePort: (port: number) => void;
+  onPreviewKeepRunningInTray: (enabled: boolean) => void;
+  onPreviewStartAtLogin: (enabled: boolean) => void;
   onPreviewTrackingSource: (trackingSource: TrackingSource) => void;
   onPreviewExternalApiBaseUrl: (baseUrl: string) => void;
   onPreviewExternalApiAuthToken: (token: string) => void;
@@ -43,6 +45,8 @@ export function ServiceSettingsWindow({
   onPasteDesktopServiceAuthToken,
   onPreviewServiceMode,
   onPreviewServicePort,
+  onPreviewKeepRunningInTray,
+  onPreviewStartAtLogin,
   onPreviewTrackingSource,
   onPreviewExternalApiBaseUrl,
   onPreviewExternalApiAuthToken,
@@ -202,8 +206,8 @@ export function ServiceSettingsWindow({
   const activeViewDescription =
     activeView === "runtime"
       ? isServiceRuntimeProfile
-        ? "Pilih internal scrap atau external API sebagai sumber data service."
-        : "Pilih sumber tracking utama yang dipakai oleh service lokal."
+        ? "Pilih scrap internal atau API eksternal sebagai sumber data service."
+        : "Pilih sumber lacak utama yang dipakai oleh service lokal."
       : isServiceRuntimeProfile
         ? "Atur port, token wajib, dan akses LAN opsional."
         : "Atur endpoint lokal, mode jaringan, dan token autentikasi untuk klien lain.";
@@ -227,7 +231,7 @@ export function ServiceSettingsWindow({
           <div
             className="service-settings-tabs"
             role="tablist"
-            aria-label="Service sections"
+            aria-label="Bagian pengaturan service"
             aria-orientation="vertical"
           >
             <div className="service-settings-tab-list">
@@ -321,10 +325,10 @@ export function ServiceSettingsWindow({
                 {serviceConfig.desktopConnectionMode === "custom" ? (
                   <>
                     <label className="settings-text-field">
-                      <span className="settings-input-label">ShipFlow Service URL</span>
+                      <span className="settings-input-label">URL Service ShipFlow</span>
                       <input
                         type="url"
-                        aria-label="ShipFlow Service URL"
+                        aria-label="URL Service ShipFlow"
                         value={serviceConfig.desktopServiceUrl}
                         onChange={(event) =>
                           onPreviewDesktopServiceUrl(event.target.value)
@@ -332,10 +336,10 @@ export function ServiceSettingsWindow({
                       />
                     </label>
                     <label className="settings-text-field">
-                      <span className="settings-input-label">ShipFlow Service Token</span>
+                      <span className="settings-input-label">Token Service ShipFlow</span>
                       <input
                         type={isDesktopTokenVisible ? "text" : "password"}
-                        aria-label="ShipFlow Service Bearer Token"
+                        aria-label="Token Service ShipFlow"
                         value={serviceConfig.desktopServiceAuthToken}
                         onChange={(event) =>
                           onPreviewDesktopServiceAuthToken(event.target.value)
@@ -358,7 +362,7 @@ export function ServiceSettingsWindow({
                         }
                         disabled={!serviceConfig.desktopServiceAuthToken}
                       >
-                        Copy
+                        Salin
                       </button>
                       <button
                         type="button"
@@ -368,7 +372,7 @@ export function ServiceSettingsWindow({
                           setServiceConnectionTestResult(null);
                         }}
                       >
-                        Paste
+                        Tempel
                       </button>
                       <button
                         type="button"
@@ -380,7 +384,7 @@ export function ServiceSettingsWindow({
                           !serviceConfig.desktopServiceAuthToken.trim()
                         }
                       >
-                        {isTestingServiceConnection ? "Testing..." : "Tes Service"}
+                        {isTestingServiceConnection ? "Menguji..." : "Tes Service"}
                       </button>
                     </div>
                     {serviceConnectionTestResult ? (
@@ -433,10 +437,10 @@ export function ServiceSettingsWindow({
                 {serviceConfig.trackingSource === "externalApi" ? (
                   <>
                     <label className="settings-text-field">
-                      <span className="settings-input-label">Base URL</span>
+                      <span className="settings-input-label">URL Dasar</span>
                       <input
                         type="url"
-                        aria-label="External API Base URL"
+                        aria-label="URL Dasar API Eksternal"
                         value={serviceConfig.externalApiBaseUrl}
                         onChange={(event) => onPreviewExternalApiBaseUrl(event.target.value)}
                       />
@@ -445,7 +449,7 @@ export function ServiceSettingsWindow({
                       <span className="settings-input-label">Token</span>
                       <input
                         type={isExternalApiTokenVisible ? "text" : "password"}
-                        aria-label="External API Token"
+                        aria-label="Token API Eksternal"
                         value={serviceConfig.externalApiAuthToken}
                         placeholder="Token API dari instance ShipFlow lain"
                         onChange={(event) => onPreviewExternalApiAuthToken(event.target.value)}
@@ -469,7 +473,7 @@ export function ServiceSettingsWindow({
                           !serviceConfig.externalApiAuthToken.trim()
                         }
                       >
-                        {isTestingExternalApi ? "Testing..." : "Tes"}
+                        {isTestingExternalApi ? "Menguji..." : "Tes Koneksi"}
                       </button>
                     </div>
                     <label className="settings-checkbox-option">
@@ -504,7 +508,7 @@ export function ServiceSettingsWindow({
                   </>
                 ) : (
                   <div className="settings-field-help settings-field-help-info">
-                    Mode lacak diatur di ShipFlow Service: internal scrap atau external API.
+                    Mode lacak diatur di ShipFlow Service: scrap internal atau API eksternal.
                   </div>
                 )}
               </div>
@@ -525,12 +529,43 @@ export function ServiceSettingsWindow({
               <div className="service-settings-stack">
                 {serviceConfig.desktopConnectionMode === "custom" ? (
                   <div className="settings-field-help settings-field-help-info">
-                    Desktop hanya memanggil ShipFlow Service. Port API Service, token, internal scrap, dan external API diatur di sisi Service.
+                    Desktop hanya memanggil ShipFlow Service. Port API Service, token, scrap internal, dan API eksternal diatur di sisi Service.
                   </div>
                 ) : (
                   <>
                 <div className="settings-field-help settings-field-help-info">
-                  API Service selalu aktif untuk Desktop. Token wajib dipakai untuk lacak, baik sumbernya internal scrap maupun external API.
+                  API Service selalu aktif untuk Desktop. Token wajib dipakai untuk lacak, baik sumbernya scrap internal maupun API eksternal.
+                </div>
+
+                <div className="settings-field-block">
+                  <span className="settings-input-label">Siklus Service</span>
+                  <div className="service-settings-network-stack">
+                    <label className="settings-checkbox-option service-settings-checkbox-row">
+                      <input
+                        type="checkbox"
+                        aria-label="Biarkan ShipFlow Service tetap aktif di menu bar / system tray"
+                        checked={serviceConfig.keepRunningInTray}
+                        onChange={(event) =>
+                          onPreviewKeepRunningInTray(event.currentTarget.checked)
+                        }
+                      />
+                      <span>Biarkan ShipFlow Service aktif di menu bar / system tray</span>
+                    </label>
+                    <label className="settings-checkbox-option service-settings-checkbox-row">
+                      <input
+                        type="checkbox"
+                        aria-label="Jalankan ShipFlow Service saat login"
+                        checked={serviceConfig.startAtLogin}
+                        onChange={(event) =>
+                          onPreviewStartAtLogin(event.currentTarget.checked)
+                        }
+                      />
+                      <span>Jalankan ShipFlow Service otomatis saat login</span>
+                    </label>
+                    <div className="settings-field-help settings-field-help-info">
+                      Autostart membuka ShipFlow Service saat login. Menu bar / system tray tetap mengikuti pilihan di atas.
+                    </div>
+                  </div>
                 </div>
 
                 <div className="settings-field-block">
@@ -570,7 +605,7 @@ export function ServiceSettingsWindow({
                 </div>
                 {!isPortValid ? (
                   <div className="settings-field-help settings-field-help-error">
-                    Port must be between 1 and 65535.
+                    Port harus di antara 1 dan 65535.
                   </div>
                 ) : null}
 
@@ -588,7 +623,7 @@ export function ServiceSettingsWindow({
                       readOnly
                       aria-label="Token API Service"
                       value={serviceConfig.authToken}
-                      placeholder="Generate token wajib"
+                      placeholder="Buat token wajib"
                     />
                   </label>
                   <div className="settings-inline-actions service-settings-field-actions">
@@ -605,7 +640,7 @@ export function ServiceSettingsWindow({
                       onClick={() => onCopyServiceToken(serviceConfig.authToken)}
                       disabled={!serviceConfig.authToken}
                     >
-                      Copy
+                      Salin
                     </button>
                     {serviceConfig.authToken ? (
                       <button
@@ -621,7 +656,7 @@ export function ServiceSettingsWindow({
                           onRegenerateServiceToken();
                         }}
                       >
-                        {isRegenerateTokenArmed ? "Konfirmasi" : "Regenerate"}
+                        {isRegenerateTokenArmed ? "Konfirmasi" : "Buat Ulang"}
                       </button>
                     ) : (
                       <button
@@ -629,7 +664,7 @@ export function ServiceSettingsWindow({
                         className="sheet-tab-action"
                         onClick={onGenerateServiceToken}
                       >
-                        Generate
+                        Buat
                       </button>
                     )}
                   </div>
@@ -645,9 +680,10 @@ export function ServiceSettingsWindow({
                     className="sheet-tab-action"
                     onClick={() => onCopyServiceEndpoint(serviceGuideBaseUrl)}
                   >
-                    Copy Endpoint
+                    Salin Endpoint
                   </button>
                 </div>
+
                   </>
                 )}
               </div>

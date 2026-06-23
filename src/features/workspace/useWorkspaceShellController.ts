@@ -12,7 +12,9 @@ type AppMenuCommand =
   | "new-window"
   | "open-document-in-new-window"
   | "show-settings"
-  | "show-service-settings";
+  | "show-service-settings"
+  | "check-for-updates"
+  | "install-app-update";
 
 type AppMenuCommandPayload = {
   command: AppMenuCommand;
@@ -35,6 +37,17 @@ type UseWorkspaceShellControllerOptions = {
   createNewWorkspaceWindow: () => Promise<unknown> | void;
   openWorkspaceInNewWindow: () => Promise<unknown> | void;
   openShipFlowServiceApp: () => Promise<unknown> | void;
+  checkForAppUpdate: () => Promise<{
+    available: boolean;
+    currentVersion: string;
+    version: string | null;
+  }>;
+  installAvailableAppUpdate: () => Promise<{
+    available: boolean;
+    currentVersion: string;
+    version: string | null;
+  }>;
+  showNotice: (notice: { tone: "success" | "error" | "info"; message: string }) => void;
 };
 
 export function useWorkspaceShellController({
@@ -48,6 +61,9 @@ export function useWorkspaceShellController({
   createNewWorkspaceWindow,
   openWorkspaceInNewWindow,
   openShipFlowServiceApp,
+  checkForAppUpdate,
+  installAvailableAppUpdate,
+  showNotice,
 }: UseWorkspaceShellControllerOptions) {
   const [settingsOpenRequestToken, setSettingsOpenRequestToken] = useState(0);
   const [displayScale, setDisplayScale] = useState<DisplayScale>(() => {
@@ -108,6 +124,42 @@ export function useWorkspaceShellController({
     hasPendingServiceConfigChanges,
   ]);
 
+  const handleCheckForUpdates = useCallback(async () => {
+    try {
+      const status = await checkForAppUpdate();
+      showNotice({
+        tone: status.available ? "info" : "success",
+        message: status.available
+          ? `Update ShipFlow ${status.version ?? ""} tersedia.`
+          : `ShipFlow sudah versi terbaru (${status.currentVersion}).`,
+      });
+    } catch (error) {
+      showNotice({
+        tone: "error",
+        message:
+          error instanceof Error ? error.message : "Gagal memeriksa update ShipFlow.",
+      });
+    }
+  }, [checkForAppUpdate, showNotice]);
+
+  const handleInstallAppUpdate = useCallback(async () => {
+    try {
+      const status = await installAvailableAppUpdate();
+      showNotice({
+        tone: status.available ? "info" : "success",
+        message: status.available
+          ? "Installer update ShipFlow sedang dijalankan."
+          : `ShipFlow sudah versi terbaru (${status.currentVersion}).`,
+      });
+    } catch (error) {
+      showNotice({
+        tone: "error",
+        message:
+          error instanceof Error ? error.message : "Gagal menginstall update ShipFlow.",
+      });
+    }
+  }, [installAvailableAppUpdate, showNotice]);
+
   useEffect(() => {
     let isDisposed = false;
     let unlistenAppMenu: null | (() => void) = null;
@@ -140,6 +192,12 @@ export function useWorkspaceShellController({
           case "show-service-settings":
             void openShipFlowServiceApp();
             break;
+          case "check-for-updates":
+            void handleCheckForUpdates();
+            break;
+          case "install-app-update":
+            void handleInstallAppUpdate();
+            break;
           default:
             break;
         }
@@ -162,6 +220,8 @@ export function useWorkspaceShellController({
   }, [
     createNewWorkspaceDocument,
     createNewWorkspaceWindow,
+    handleCheckForUpdates,
+    handleInstallAppUpdate,
     openShipFlowServiceApp,
     openWorkspaceDocumentWithPicker,
     openWorkspaceInNewWindow,

@@ -16,33 +16,42 @@ use serde::{Deserialize, Serialize};
 
 use self::http_api::run_service_process;
 use self::process_runtime::{
-    ensure_service_tray_process_running, is_expected_service_process,
-    is_expected_service_settings_process, is_process_alive, is_service_runtime_ready,
-    launch_shipflow_service_settings_companion, spawn_service_process, stop_service_process,
-    sync_service_tray_companion, wait_for_service_runtime,
+    claim_current_service_tray_process, ensure_service_tray_process_running,
+    is_expected_service_process, is_service_runtime_ready,
+    launch_shipflow_service_settings_companion, spawn_service_process,
+    stop_service_process as stop_api_service_process,
+    stop_service_settings_process as stop_settings_ui_process,
+    stop_service_tray_process as stop_tray_process, sync_service_tray_companion,
+    wait_for_service_runtime,
+};
+#[cfg(target_os = "windows")]
+use self::process_runtime::{
+    claim_desktop_ui_single_instance, claim_service_settings_ui_single_instance,
+    request_desktop_activation_and_wait, request_service_settings_activation_and_wait,
 };
 use self::runtime_config::{
     error_status, running_status, stopped_status, validate_desktop_service_connection_config,
     validate_service_config,
 };
+#[cfg(target_os = "windows")]
+use self::state_store::clear_recorded_service_settings_pid;
 use self::state_store::{
-    clear_recorded_desktop_pid, clear_recorded_service_settings_pid, load_desktop_service_config,
-    load_saved_config, persist_desktop_activation_request, persist_desktop_service_config,
-    persist_runtime_config, persist_saved_config, persist_service_pid,
-    persist_service_settings_activation_request, read_recorded_desktop_pid, read_recorded_pid,
-    read_recorded_service_settings_pid,
+    load_desktop_service_config, load_saved_config, persist_desktop_service_config,
+    persist_runtime_config, persist_saved_config, persist_service_pid, read_recorded_pid,
 };
 use self::tray_runtime::run_service_tray_app;
 use crate::tracking::model::{TrackingSource, TrackingSourceConfig};
 
 pub use self::state_store::{
     clear_current_desktop_process, clear_current_service_settings_process,
-    load_saved_api_service_config, register_current_desktop_process,
-    register_current_service_settings_process, take_pending_desktop_activation_request,
-    take_pending_service_settings_activation_request,
+    load_saved_api_service_config, load_window_state, persist_window_state,
+    register_current_desktop_process, register_current_service_settings_process,
+    take_pending_desktop_activation_request, take_pending_service_settings_activation_request,
+    SavedWindowState,
 };
 
 const SERVICE_PROCESS_FLAG: &str = "--shipflow-service-process";
+const SERVICE_AUTOSTART_FLAG: &str = "--shipflow-service-autostart";
 const SERVICE_TRAY_FLAG: &str = "--shipflow-service-tray";
 const SERVICE_OPEN_SETTINGS_FLAG: &str = "--shipflow-service-open-settings";
 const SERVICE_CONFIG_ARG: &str = "--service-config-base64";
@@ -52,8 +61,10 @@ const SERVICE_CONFIG_FILE_NAME: &str = "config.json";
 const DESKTOP_SERVICE_CONFIG_FILE_NAME: &str = "desktop-service-config.json";
 const SERVICE_RUNTIME_CONFIG_FILE_NAME: &str = "runtime-config.json";
 const SERVICE_TOKEN_VAULT_FILE_NAME: &str = "tokens.json";
+const WINDOW_STATE_FILE_NAME: &str = "window-state.json";
 const SERVICE_PID_FILE_NAME: &str = "pid";
 const SERVICE_TRAY_PID_FILE_NAME: &str = "tray.pid";
+const SERVICE_TRAY_LAUNCH_LOCK_FILE_NAME: &str = "tray-launch.lock";
 const DESKTOP_PID_FILE_NAME: &str = "desktop.pid";
 const DESKTOP_REQUEST_FILE_NAME: &str = "desktop-request.json";
 const SERVICE_COMPANION_BINARY_BASENAME: &str = "shipflow-service";
@@ -65,7 +76,9 @@ const SERVICE_TRAY_OPEN_SETTINGS_ID: &str = "service-tray-open-settings";
 const SERVICE_TRAY_OPEN_DESKTOP_ID: &str = "service-tray-open-desktop";
 const SERVICE_TRAY_COPY_ENDPOINT_ID: &str = "service-tray-copy-endpoint";
 const SERVICE_TRAY_COPY_TOKEN_ID: &str = "service-tray-copy-token";
+const SERVICE_TRAY_RESTART_SERVICE_ID: &str = "service-tray-restart-service";
 const SERVICE_TRAY_STOP_SERVICE_ID: &str = "service-tray-stop-service";
+const SERVICE_TRAY_QUIT_ID: &str = "service-tray-quit";
 const SERVICE_TRAY_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const SERVICE_SETTINGS_PID_FILE_NAME: &str = "service-settings.pid";
 const SERVICE_SETTINGS_REQUEST_FILE_NAME: &str = "service-settings-request.json";
@@ -98,6 +111,10 @@ fn default_desktop_service_url() -> String {
     "http://127.0.0.1:18422".into()
 }
 
+fn default_start_at_login() -> bool {
+    false
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiServiceConfig {
@@ -117,6 +134,8 @@ pub struct ApiServiceConfig {
     pub external_api_auth_token: String,
     pub allow_insecure_external_api_http: bool,
     pub keep_running_in_tray: bool,
+    #[serde(default = "default_start_at_login")]
+    pub start_at_login: bool,
     pub last_updated_at: String,
 }
 
@@ -319,34 +338,39 @@ pub fn config_as_desktop_service_connection(mut config: ApiServiceConfig) -> Api
 }
 
 pub fn maybe_delegate_desktop_launch_to_existing_process() -> Result<bool, String> {
-    if let Some(pid) = read_recorded_desktop_pid() {
-        if is_process_alive(pid) {
-            persist_desktop_activation_request(&DesktopActivationRequest {
-                focus_main_window: true,
-            })?;
+    #[cfg(target_os = "windows")]
+    {
+        if !claim_desktop_ui_single_instance()? {
+            request_desktop_activation_and_wait()?;
             return Ok(true);
         }
 
-        clear_recorded_desktop_pid();
+        Ok(false)
     }
 
-    Ok(false)
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(false)
+    }
 }
 
 pub fn maybe_delegate_service_settings_launch_to_existing_process() -> Result<bool, String> {
-    let should_show_window = should_show_service_settings_window_from_current_args();
-    if let Some(pid) = read_recorded_service_settings_pid() {
-        if is_expected_service_settings_process(pid) {
-            persist_service_settings_activation_request(&DesktopActivationRequest {
-                focus_main_window: should_show_window,
-            })?;
+    #[cfg(target_os = "windows")]
+    {
+        let should_show_window = should_show_service_settings_window_from_current_args();
+        if !claim_service_settings_ui_single_instance()? {
+            request_service_settings_activation_and_wait(should_show_window)?;
             return Ok(true);
         }
 
         clear_recorded_service_settings_pid();
+        Ok(false)
     }
 
-    Ok(false)
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(false)
+    }
 }
 
 pub fn launch_service_settings_app() -> Result<(), String> {
@@ -354,7 +378,28 @@ pub fn launch_service_settings_app() -> Result<(), String> {
 }
 
 pub fn should_show_service_settings_window_from_current_args() -> bool {
-    env::args().any(|argument| argument == SERVICE_OPEN_SETTINGS_FLAG)
+    should_show_service_settings_window_for_args(env::args())
+}
+
+pub fn should_show_service_settings_window_for_args<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut has_open_settings_flag = false;
+    let mut has_background_flag = false;
+
+    for argument in args {
+        match argument.as_ref() {
+            SERVICE_OPEN_SETTINGS_FLAG => has_open_settings_flag = true,
+            SERVICE_AUTOSTART_FLAG | SERVICE_TRAY_FLAG | SERVICE_PROCESS_FLAG => {
+                has_background_flag = true
+            }
+            _ => {}
+        }
+    }
+
+    has_open_settings_flag || !has_background_flag
 }
 
 pub fn ensure_tracking_service_runtime(
@@ -393,12 +438,47 @@ pub fn persist_desktop_service_connection_config(config: &ApiServiceConfig) -> R
     persist_desktop_service_config(&config)
 }
 
+pub fn maybe_run_service_autostart_from_current_args() -> Result<bool, String> {
+    let is_service_autostart = env::args()
+        .skip(1)
+        .any(|argument| argument == SERVICE_AUTOSTART_FLAG);
+    if !is_service_autostart {
+        return Ok(false);
+    }
+
+    let Some(config) = load_saved_config()? else {
+        return Ok(true);
+    };
+
+    if !config.start_at_login || config.uses_custom_desktop_service_connection() {
+        return Ok(true);
+    }
+
+    if config.enabled {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("Unable to create service autostart runtime: {error}"))?;
+        runtime.block_on(ApiServiceController::default().configure(config.clone()))?;
+    }
+
+    if config.keep_running_in_tray {
+        ensure_service_tray_process_running()?;
+    }
+
+    Ok(true)
+}
+
 pub fn maybe_run_service_tray_from_current_args() -> Result<bool, String> {
     let is_service_tray_process = env::args()
         .skip(1)
         .any(|argument| argument == SERVICE_TRAY_FLAG);
     if !is_service_tray_process {
         return Ok(false);
+    }
+
+    if !claim_current_service_tray_process()? {
+        return Ok(true);
     }
 
     run_service_tray_app()
@@ -410,6 +490,18 @@ pub fn sync_service_tray_companion_for_config(config: &ApiServiceConfig) -> Resu
 
 pub fn ensure_service_tray_companion_running() -> Result<(), String> {
     ensure_service_tray_process_running()
+}
+
+pub fn stop_service_process() {
+    stop_api_service_process();
+}
+
+pub fn stop_service_tray_companion() {
+    stop_tray_process();
+}
+
+pub fn stop_service_settings_companion() {
+    stop_settings_ui_process();
 }
 
 pub fn maybe_run_service_process_from_current_args() -> Result<bool, String> {
@@ -457,7 +549,7 @@ mod tests {
     };
 
     use super::{
-        ensure_tracking_service_runtime,
+        ensure_tracking_service_runtime, should_show_service_settings_window_for_args,
         state_store::{
             load_desktop_service_config, load_runtime_config, load_saved_config,
             persist_runtime_config, persist_saved_config,
@@ -509,6 +601,7 @@ mod tests {
             external_api_auth_token: String::new(),
             allow_insecure_external_api_http: false,
             keep_running_in_tray: true,
+            start_at_login: true,
             last_updated_at: "2026-04-21T00:00:00.000Z".into(),
         }
     }
@@ -522,6 +615,31 @@ mod tests {
             auth_token: String::new(),
             ..service_runtime_config()
         }
+    }
+
+    #[test]
+    fn missing_start_at_login_deserializes_to_opt_in_disabled() {
+        let config = serde_json::from_str::<ApiServiceConfig>(
+            r#"{
+              "version": 1,
+              "desktopConnectionMode": "managedLocal",
+              "desktopServiceUrl": "http://127.0.0.1:18422",
+              "desktopServiceAuthToken": "",
+              "enabled": true,
+              "mode": "local",
+              "port": 18422,
+              "authToken": "sf_service_token",
+              "trackingSource": "default",
+              "externalApiBaseUrl": "",
+              "externalApiAuthToken": "",
+              "allowInsecureExternalApiHttp": false,
+              "keepRunningInTray": true,
+              "lastUpdatedAt": "2026-04-21T00:00:00.000Z"
+            }"#,
+        )
+        .expect("legacy service config should deserialize");
+
+        assert!(!config.start_at_login);
     }
 
     #[test]
@@ -597,5 +715,73 @@ mod tests {
             .expect_err("desktop tracking should still require the service API token");
 
         assert!(error.contains("token"));
+    }
+
+    #[test]
+    fn service_settings_launch_shows_window_for_user_open_but_not_background_flags() {
+        assert!(should_show_service_settings_window_for_args(
+            std::iter::empty::<&str>()
+        ));
+        assert!(should_show_service_settings_window_for_args([
+            "shipflow-service"
+        ]));
+        assert!(should_show_service_settings_window_for_args([
+            "shipflow-service",
+            super::SERVICE_OPEN_SETTINGS_FLAG
+        ]));
+        assert!(should_show_service_settings_window_for_args([
+            super::SERVICE_OPEN_SETTINGS_FLAG
+        ]));
+        assert!(!should_show_service_settings_window_for_args([
+            "shipflow-service",
+            super::SERVICE_TRAY_FLAG
+        ]));
+        assert!(!should_show_service_settings_window_for_args([
+            super::SERVICE_TRAY_FLAG
+        ]));
+        assert!(!should_show_service_settings_window_for_args([
+            "shipflow-service",
+            super::SERVICE_AUTOSTART_FLAG
+        ]));
+        assert!(!should_show_service_settings_window_for_args([
+            super::SERVICE_AUTOSTART_FLAG
+        ]));
+        assert!(!should_show_service_settings_window_for_args([
+            "shipflow-service",
+            super::SERVICE_PROCESS_FLAG
+        ]));
+        assert!(!should_show_service_settings_window_for_args([
+            super::SERVICE_PROCESS_FLAG
+        ]));
+    }
+
+    #[test]
+    fn service_settings_explicit_open_wins_over_background_launch_flags() {
+        assert!(should_show_service_settings_window_for_args([
+            "shipflow-service",
+            super::SERVICE_TRAY_FLAG,
+            super::SERVICE_OPEN_SETTINGS_FLAG
+        ]));
+        assert!(should_show_service_settings_window_for_args([
+            "shipflow-service",
+            super::SERVICE_AUTOSTART_FLAG,
+            super::SERVICE_OPEN_SETTINGS_FLAG
+        ]));
+        assert!(should_show_service_settings_window_for_args([
+            "shipflow-service",
+            super::SERVICE_PROCESS_FLAG,
+            super::SERVICE_OPEN_SETTINGS_FLAG
+        ]));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn non_windows_ui_launch_delegation_is_owned_by_tauri_lifecycle() {
+        assert!(!super::maybe_delegate_desktop_launch_to_existing_process()
+            .expect("desktop pre-delegation should not fail off Windows"));
+        assert!(
+            !super::maybe_delegate_service_settings_launch_to_existing_process()
+                .expect("service settings pre-delegation should not fail off Windows")
+        );
     }
 }

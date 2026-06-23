@@ -67,6 +67,7 @@ impl From<&ImportJobItem> for ImportJobItemDelta {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackingRefreshProgressEvent {
+    pub run_id: Option<String>,
     pub sheet_id: String,
     pub row: SheetRowProjection,
     pub total_count: u32,

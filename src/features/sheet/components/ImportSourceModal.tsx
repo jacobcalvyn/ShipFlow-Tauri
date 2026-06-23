@@ -1,4 +1,4 @@
-import { ChangeEvent } from "react";
+import { ChangeEvent, useEffect, useRef, useState } from "react";
 import {
   ImportSourceItemLookupState,
   ImportSourceLookupStates,
@@ -54,6 +54,10 @@ function getManifestBagStatusClass(loading: boolean, error: string) {
   return "status-ready";
 }
 
+function isTimeoutError(error: string) {
+  return error.toLowerCase().includes("timeout");
+}
+
 function getSourceItemResultLabel(
   kind: ImportSourceModalKind,
   sourceItemStates: ImportSourceItemLookupState[],
@@ -85,7 +89,9 @@ function getSourceItemLabel(
   }
 
   if (state.error.trim() !== "") {
-    return `${state.itemId} - Gagal ambil data`;
+    return `${state.itemId} - ${
+      isTimeoutError(state.error) ? "Timeout ambil data" : "Gagal ambil data"
+    }`;
   }
 
   if (kind === "bag") {
@@ -155,7 +161,9 @@ function getManifestBagItemLabel(
   }
 
   if (state.error.trim() !== "") {
-    return `${state.bagId} - Gagal ambil data`;
+    return `${state.bagId} - ${
+      isTimeoutError(state.error) ? "Timeout ambil data" : "Gagal ambil data"
+    }`;
   }
 
   return `${state.bagId} - ${state.trackingIds.length} Kiriman`;
@@ -184,6 +192,8 @@ export function ImportSourceModal({
   onRetryFailed,
   onClose,
 }: ImportSourceModalProps) {
+  const [localValue, setLocalValue] = useState(value);
+  const inputFocusedRef = useRef(false);
   const title =
     kind === "bag"
       ? "Import ID Kiriman dari Bag"
@@ -200,9 +210,7 @@ export function ImportSourceModal({
     .filter((state) => state.error.trim() !== "")
     .map((state) => state.itemId);
   const hasPendingSourceLookups = sourceItemStates.some((state) => state.loading);
-  const shouldShowSourceItemStates = sourceItemStates.some(
-    (state) => state.loading || state.error.trim() !== ""
-  );
+  const shouldShowSourceItemStates = sourceItemStates.length > 0;
   const manifestBagStates = !isBagModal
     ? lookupState.manifestBagStates?.length
       ? lookupState.manifestBagStates
@@ -229,10 +237,33 @@ export function ImportSourceModal({
     manifestBagIds: isBagModal ? [] : failedManifestBagIds,
   };
 
+  useEffect(() => {
+    inputFocusedRef.current = false;
+    setLocalValue(value);
+  }, [kind]);
+
+  useEffect(() => {
+    if (!inputFocusedRef.current) {
+      setLocalValue(value);
+    }
+  }, [value]);
+
+  const submitCurrentValue = () => {
+    if (localValue !== value) {
+      onValueChange(localValue);
+    }
+    onSubmit();
+  };
+
   return (
     <div className="import-source-modal-backdrop">
       <div
-        className="import-source-modal"
+        className={[
+          "import-source-modal",
+          !isBagModal ? "import-source-modal-wide" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
         role="dialog"
         aria-modal="true"
         aria-labelledby="import-source-modal-title"
@@ -250,12 +281,23 @@ export function ImportSourceModal({
             <textarea
               id={inputId}
               className="import-source-modal-input"
-              value={value}
+              value={localValue}
               placeholder={inputPlaceholder}
               autoFocus
               rows={4}
+              onFocus={() => {
+                inputFocusedRef.current = true;
+              }}
+              onBlur={() => {
+                inputFocusedRef.current = false;
+                if (localValue !== value) {
+                  onValueChange(localValue);
+                }
+              }}
               onChange={(event: ChangeEvent<HTMLTextAreaElement>) => {
-                onValueChange(event.target.value);
+                const nextValue = event.target.value;
+                setLocalValue(nextValue);
+                onValueChange(nextValue);
               }}
               onKeyDown={(event) => {
                 if (
@@ -264,7 +306,7 @@ export function ImportSourceModal({
                   !lookupState.loading
                 ) {
                   event.preventDefault();
-                  onSubmit();
+                  submitCurrentValue();
                 }
               }}
             />
@@ -274,130 +316,139 @@ export function ImportSourceModal({
               {lookupState.error}
             </p>
           ) : null}
-          {shouldShowSourceItemStates ? (
-            <div className="import-source-modal-result">
-              <span className="import-source-modal-result-label">
-                {getSourceItemResultLabel(
-                  kind,
-                  sourceItemStates,
-                  lookupState.trackingIds.length
-                )}
-              </span>
-              <div className="import-source-modal-id-list">
-                {sourceItemStates.map((state) => (
-                  <div
-                    key={state.itemId}
-                    className="import-source-modal-id-item import-source-modal-id-item-with-status"
-                    title={
-                      state.error
-                        ? `${state.itemId}: ${state.error}`
-                        : state.loading
-                          ? `${state.itemId}: sedang diambil`
-                          : `${state.itemId}: berhasil`
-                    }
-                  >
-                    <span
-                      className={`row-status-dot ${getManifestBagStatusClass(
-                        state.loading,
+          <div
+            className={[
+              "import-source-modal-result-layout",
+              !isBagModal ? "import-source-modal-result-layout-split" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          >
+            {shouldShowSourceItemStates ? (
+              <div className="import-source-modal-result">
+                <span className="import-source-modal-result-label">
+                  {getSourceItemResultLabel(
+                    kind,
+                    sourceItemStates,
+                    lookupState.trackingIds.length
+                  )}
+                </span>
+                <div className="import-source-modal-id-list">
+                  {sourceItemStates.map((state) => (
+                    <div
+                      key={state.itemId}
+                      className="import-source-modal-id-item import-source-modal-id-item-with-status"
+                      title={
                         state.error
-                      )}`}
-                      aria-hidden="true"
-                    />
-                    <span className="import-source-modal-id-text">
-                      {getSourceItemLabel(kind, state)}
-                    </span>
-                    {state.error.trim() !== "" ? (
-                      <button
-                        type="button"
-                        className="import-source-modal-inline-action"
-                        disabled={isBusy}
-                        onClick={() =>
-                          onRetryFailed({
-                            sourceItemIds: [state.itemId],
-                            manifestBagIds: [],
-                          })
-                        }
-                      >
-                        Ambil ulang
-                      </button>
-                    ) : null}
-                  </div>
-                ))}
+                          ? `${state.itemId}: ${state.error}`
+                          : state.loading
+                            ? `${state.itemId}: sedang diambil`
+                            : `${state.itemId}: berhasil`
+                      }
+                    >
+                      <span
+                        className={`row-status-dot ${getManifestBagStatusClass(
+                          state.loading,
+                          state.error
+                        )}`}
+                        aria-hidden="true"
+                      />
+                      <span className="import-source-modal-id-text">
+                        {getSourceItemLabel(kind, state)}
+                      </span>
+                      {state.error.trim() !== "" ? (
+                        <button
+                          type="button"
+                          className="import-source-modal-inline-action"
+                          disabled={isBusy}
+                          onClick={() =>
+                            onRetryFailed({
+                              sourceItemIds: [state.itemId],
+                              manifestBagIds: [],
+                            })
+                          }
+                        >
+                          Ambil ulang
+                        </button>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
-          ) : null}
-          {isBagModal && lookupState.trackingIds.length > 0 ? (
-            <div className="import-source-modal-result">
-              <span className="import-source-modal-result-label">
-                Nomor Kiriman ({lookupState.trackingIds.length})
-              </span>
-              <div className="import-source-modal-id-list">
-                {lookupState.trackingIds.map((trackingId) => (
-                  <div key={trackingId} className="import-source-modal-id-item">
-                    {trackingId}
-                  </div>
-                ))}
+            ) : null}
+            {isBagModal && lookupState.trackingIds.length > 0 ? (
+              <div className="import-source-modal-result">
+                <span className="import-source-modal-result-label">
+                  Nomor Kiriman ({lookupState.trackingIds.length})
+                </span>
+                <div className="import-source-modal-id-list">
+                  {lookupState.trackingIds.map((trackingId) => (
+                    <div key={trackingId} className="import-source-modal-id-item">
+                      {trackingId}
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
-          ) : null}
-          {isBagModal && lookupState.rawResponse && lookupState.trackingIds.length === 0 ? (
-            <p className="import-source-modal-empty">
-              Tidak ada nomor kiriman yang ditemukan pada hasil Bag.
-            </p>
-          ) : null}
-          {!isBagModal && manifestBagStates.length > 0 ? (
-            <div className="import-source-modal-result">
-              <span className="import-source-modal-result-label">
-                {getManifestResultLabel(manifestBagStates)}
-              </span>
-              <div className="import-source-modal-id-list">
-                {manifestBagStates.map((state) => (
-                  <div
-                    key={state.bagId}
-                    className="import-source-modal-id-item import-source-modal-id-item-with-status"
-                    title={
-                      state.error
-                        ? `${state.bagId}: ${state.error}`
-                        : state.loading
-                          ? `${state.bagId}: sedang dilacak`
-                          : `${state.bagId}: ${state.trackingIds.length} nomor kiriman`
-                    }
-                  >
-                    <span
-                      className={`row-status-dot ${getManifestBagStatusClass(
-                        state.loading,
+            ) : null}
+            {isBagModal && lookupState.rawResponse && lookupState.trackingIds.length === 0 ? (
+              <p className="import-source-modal-empty">
+                Tidak ada nomor kiriman yang ditemukan pada hasil Bag.
+              </p>
+            ) : null}
+            {!isBagModal && manifestBagStates.length > 0 ? (
+              <div className="import-source-modal-result">
+                <span className="import-source-modal-result-label">
+                  {getManifestResultLabel(manifestBagStates)}
+                </span>
+                <div className="import-source-modal-id-list">
+                  {manifestBagStates.map((state) => (
+                    <div
+                      key={state.bagId}
+                      className="import-source-modal-id-item import-source-modal-id-item-with-status"
+                      title={
                         state.error
-                      )}`}
-                      aria-hidden="true"
-                    />
-                    <span className="import-source-modal-id-text">
-                      {getManifestBagItemLabel(state)}
-                    </span>
-                    {state.error.trim() !== "" ? (
-                      <button
-                        type="button"
-                        className="import-source-modal-inline-action"
-                        disabled={isBusy}
-                        onClick={() =>
-                          onRetryFailed({
-                            sourceItemIds: [],
-                            manifestBagIds: [state.bagId],
-                          })
-                        }
-                      >
-                        Ambil ulang
-                      </button>
-                    ) : null}
-                  </div>
-                ))}
+                          ? `${state.bagId}: ${state.error}`
+                          : state.loading
+                            ? `${state.bagId}: sedang dilacak`
+                            : `${state.bagId}: ${state.trackingIds.length} nomor kiriman`
+                      }
+                    >
+                      <span
+                        className={`row-status-dot ${getManifestBagStatusClass(
+                          state.loading,
+                          state.error
+                        )}`}
+                        aria-hidden="true"
+                      />
+                      <span className="import-source-modal-id-text">
+                        {getManifestBagItemLabel(state)}
+                      </span>
+                      {state.error.trim() !== "" ? (
+                        <button
+                          type="button"
+                          className="import-source-modal-inline-action"
+                          disabled={isBusy}
+                          onClick={() =>
+                            onRetryFailed({
+                              sourceItemIds: [],
+                              manifestBagIds: [state.bagId],
+                            })
+                          }
+                        >
+                          Ambil ulang
+                        </button>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
-          ) : null}
-          {!isBagModal && lookupState.rawResponse && manifestBagStates.length === 0 ? (
-            <p className="import-source-modal-empty">
-              Tidak ada nomor kantung yang ditemukan pada hasil Manifest.
-            </p>
-          ) : null}
+            ) : null}
+            {!isBagModal && lookupState.rawResponse && manifestBagStates.length === 0 ? (
+              <p className="import-source-modal-empty">
+                Tidak ada nomor kantung yang ditemukan pada hasil Manifest.
+              </p>
+            ) : null}
+          </div>
         </div>
         <div className="import-source-modal-footer">
           {isBagModal ? (
@@ -452,8 +503,8 @@ export function ImportSourceModal({
           <button
             type="button"
             className="action-button action-button-accent"
-            onClick={onSubmit}
-            disabled={isBusy || value.trim() === ""}
+            onClick={submitCurrentValue}
+            disabled={isBusy || localValue.trim() === ""}
           >
             {isBusy ? "Memuat..." : "Ambil Data"}
           </button>

@@ -120,6 +120,7 @@ pub struct RefreshSheetRowsTrackingRequest {
     pub sheet_id: String,
     pub row_ids: Vec<String>,
     pub force_refresh: bool,
+    pub run_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

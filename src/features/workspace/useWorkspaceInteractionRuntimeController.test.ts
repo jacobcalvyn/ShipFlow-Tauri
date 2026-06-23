@@ -1,8 +1,12 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SheetState } from "../sheet/types";
 import { createDefaultSheetState } from "../sheet/default-state";
-import type { ImportJobDetail, WorkspaceEngineEvent } from "../workspace-engine/client";
+import type {
+  ImportJobDetail,
+  ImportSourcePreviewResult,
+  WorkspaceEngineEvent,
+} from "../workspace-engine/client";
 import type { WorkspaceState } from "./types";
 import {
   applyWorkspaceEngineImportJobDetail,
@@ -12,11 +16,14 @@ import {
 
 const mocks = vi.hoisted(() => ({
   createImportJobMock: vi.fn(),
+  clearSheetRowsMock: vi.fn(),
   getImportJobMock: vi.fn(),
   previewImportSourceMock: vi.fn(),
+  querySheetRowsMock: vi.fn(),
   refreshSheetRowsTrackingMock: vi.fn(),
   retryImportJobFailedWithProgressMock: vi.fn(),
   runImportJobWithProgressMock: vi.fn(),
+  upsertSheetRowsMock: vi.fn(),
   useWorkspaceRuntimeCommandsControllerMock: vi.fn(),
   useWorkspaceTableControllersMock: vi.fn(),
 }));
@@ -26,13 +33,16 @@ vi.mock("../workspace-engine/client", async () => {
   return {
     ...actual,
     createImportJob: mocks.createImportJobMock,
+    clearSheetRows: mocks.clearSheetRowsMock,
     getImportJob: mocks.getImportJobMock,
     previewImportSource: mocks.previewImportSourceMock,
+    querySheetRows: mocks.querySheetRowsMock,
     refreshSheetRowsTracking: mocks.refreshSheetRowsTrackingMock,
     refreshSheetRowsTrackingWithProgress: mocks.refreshSheetRowsTrackingMock,
     retryImportJobFailedWithProgress:
       mocks.retryImportJobFailedWithProgressMock,
     runImportJobWithProgress: mocks.runImportJobWithProgressMock,
+    upsertSheetRows: mocks.upsertSheetRowsMock,
   };
 });
 
@@ -45,9 +55,31 @@ vi.mock("./useWorkspaceTableControllers", () => ({
   useWorkspaceTableControllers: mocks.useWorkspaceTableControllersMock,
 }));
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+
+  return { promise, resolve, reject };
+}
+
+function createPreviewResponse(payload: ImportSourcePreviewResult) {
+  return {
+    type: "import_source_preview" as const,
+    payload,
+  };
+}
+
 describe("useWorkspaceInteractionRuntimeController", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("collects import refresh targets from Rust job item row ids", () => {
@@ -322,6 +354,567 @@ describe("useWorkspaceInteractionRuntimeController", () => {
     });
   });
 
+  it("updates bag import preview state as each source id finishes", async () => {
+    const sheetState: SheetState = {
+      ...createDefaultSheetState(),
+      importSourceDrafts: {
+        bag: "PID-A\nPID-B",
+        manifest: "",
+      },
+    };
+    const workspaceRef: { current: WorkspaceState } = {
+      current: {
+        version: 1,
+        activeSheetId: "sheet-1",
+        sheetOrder: ["sheet-1"],
+        sheetMetaById: {
+          "sheet-1": {
+            name: "Sheet 1",
+            color: "blue",
+            icon: "sheet",
+          },
+        },
+        sheetsById: {
+          "sheet-1": sheetState,
+        },
+      },
+    };
+    const updateSheet = vi.fn(
+      (sheetId: string, updater: (sheet: SheetState) => SheetState) => {
+        const currentSheet = workspaceRef.current.sheetsById[sheetId];
+        workspaceRef.current = {
+          ...workspaceRef.current,
+          sheetsById: {
+            ...workspaceRef.current.sheetsById,
+            [sheetId]: updater(currentSheet),
+          },
+        };
+      }
+    );
+    type PreviewResponse = ReturnType<typeof createPreviewResponse>;
+    const previewRequests = new Map<
+      string,
+      ReturnType<typeof createDeferred<PreviewResponse>>
+    >();
+    mocks.previewImportSourceMock.mockImplementation(
+      ({ ids }: { ids: string[] }) => {
+        const deferred = createDeferred<ReturnType<typeof createPreviewResponse>>();
+        previewRequests.set(ids[0], deferred);
+        return deferred.promise;
+      }
+    );
+    mocks.useWorkspaceRuntimeCommandsControllerMock.mockReturnValue({
+      fetchRow: vi.fn(),
+      copySelectedTrackingIds: vi.fn(),
+      invalidateSheetTrackingWork: vi.fn(),
+    });
+    mocks.useWorkspaceTableControllersMock.mockReturnValue({});
+
+    const { result } = renderHook(() =>
+      useWorkspaceInteractionRuntimeController({
+        activeSheet: sheetState,
+        activeSheetId: "sheet-1",
+        workspaceTabs: [{ id: "sheet-1", name: "Sheet 1" }],
+        workspaceRef,
+        setWorkspaceState: vi.fn(),
+        updateActiveSheet: vi.fn(),
+        updateSheet,
+        setHoveredColumn: vi.fn(),
+        deleteAllTimeoutRef: { current: null },
+        deleteAllArmedSheetIdRef: { current: null },
+        deleteSelectedTimeoutRef: { current: null },
+        deleteSelectedArmedSheetIdRef: { current: null },
+        deleteSelectedArmedSheetId: null,
+        setDeleteSelectedArmedSheetId: vi.fn(),
+        armDeleteAll: vi.fn(),
+        disarmDeleteAll: vi.fn(),
+        armDeleteSelected: vi.fn(),
+        disarmDeleteSelected: vi.fn(),
+        resizeStateRef: { current: null },
+        sheetScrollRef: { current: null },
+        sheetScrollPositionsRef: { current: new Map() },
+        columnMenuRefs: { current: new Map() },
+        highlightedColumnTimeoutRef: { current: null },
+        highlightedColumnSheetIdRef: { current: null },
+        activeFilterCount: 0,
+        allTrackingIds: [],
+        exportableTableRows: [],
+        rustExportRowsQuery: null,
+        retrackableRows: [],
+        retryFailedEntries: [],
+        selectedEngineRowIds: [],
+        selectedTrackingIds: [],
+        selectedVisibleRowKeys: [],
+        visibleColumns: [],
+        visibleColumnPathSet: new Set(),
+        visibleSelectableKeys: [],
+        effectiveColumnWidths: {},
+        pinnedColumnSet: new Set(),
+        allVisibleSelected: false,
+        showNotice: vi.fn(),
+        onWorkspaceEngineMutation: vi.fn(),
+      } as never)
+    );
+
+    const lookupPromise = result.current.runImportSourceLookup("bag");
+
+    await waitFor(() => {
+      expect(previewRequests.has("PID-A")).toBe(true);
+      expect(previewRequests.has("PID-B")).toBe(true);
+    });
+
+    act(() => {
+      previewRequests.get("PID-A")?.resolve(
+        createPreviewResponse({
+          kind: "bag",
+          sourceItems: [
+            {
+              sourceItemId: "PID-A",
+              sourceItemKind: "bag",
+              status: "succeeded",
+              trackingIds: ["P1"],
+              sheetRowIds: [],
+              errorMessage: null,
+            },
+          ],
+          manifestBags: [],
+          trackingIds: ["P1"],
+          rawResponse: JSON.stringify({ nomor_kantung: "PID-A" }),
+        })
+      );
+    });
+
+    await waitFor(() => {
+      const state =
+        workspaceRef.current.sheetsById["sheet-1"].importSourceLookupStates.bag;
+      expect(state.loading).toBe(true);
+      expect(state.trackingIds).toEqual(["P1"]);
+      expect(state.sourceItemStates).toEqual([
+        {
+          itemId: "PID-A",
+          loading: false,
+          error: "",
+          trackingIds: ["P1"],
+        },
+        {
+          itemId: "PID-B",
+          loading: true,
+          error: "",
+          trackingIds: [],
+        },
+      ]);
+    });
+
+    act(() => {
+      previewRequests.get("PID-B")?.resolve(
+        createPreviewResponse({
+          kind: "bag",
+          sourceItems: [
+            {
+              sourceItemId: "PID-B",
+              sourceItemKind: "bag",
+              status: "succeeded",
+              trackingIds: ["P2"],
+              sheetRowIds: [],
+              errorMessage: null,
+            },
+          ],
+          manifestBags: [],
+          trackingIds: ["P2"],
+          rawResponse: JSON.stringify({ nomor_kantung: "PID-B" }),
+        })
+      );
+    });
+
+    await lookupPromise;
+
+    expect(
+      workspaceRef.current.sheetsById["sheet-1"].importSourceLookupStates.bag
+    ).toMatchObject({
+      loading: false,
+      trackingIds: ["P1", "P2"],
+      sourceItemStates: [
+        {
+          itemId: "PID-A",
+          loading: false,
+          error: "",
+          trackingIds: ["P1"],
+        },
+        {
+          itemId: "PID-B",
+          loading: false,
+          error: "",
+          trackingIds: ["P2"],
+        },
+      ],
+    });
+    expect(mocks.previewImportSourceMock).toHaveBeenCalledWith({
+      kind: "bag",
+      ids: ["PID-A"],
+    });
+    expect(mocks.previewImportSourceMock).toHaveBeenCalledWith({
+      kind: "bag",
+      ids: ["PID-B"],
+    });
+  });
+
+  it("marks a stuck bag import preview source as timed out", async () => {
+    vi.useFakeTimers();
+
+    const sheetState: SheetState = {
+      ...createDefaultSheetState(),
+      importSourceDrafts: {
+        bag: "PID-SLOW",
+        manifest: "",
+      },
+    };
+    const workspaceRef: { current: WorkspaceState } = {
+      current: {
+        version: 1,
+        activeSheetId: "sheet-1",
+        sheetOrder: ["sheet-1"],
+        sheetMetaById: {
+          "sheet-1": {
+            name: "Sheet 1",
+            color: "blue",
+            icon: "sheet",
+          },
+        },
+        sheetsById: {
+          "sheet-1": sheetState,
+        },
+      },
+    };
+    const updateSheet = vi.fn(
+      (sheetId: string, updater: (sheet: SheetState) => SheetState) => {
+        const currentSheet = workspaceRef.current.sheetsById[sheetId];
+        workspaceRef.current = {
+          ...workspaceRef.current,
+          sheetsById: {
+            ...workspaceRef.current.sheetsById,
+            [sheetId]: updater(currentSheet),
+          },
+        };
+      }
+    );
+    mocks.previewImportSourceMock.mockReturnValue(new Promise(() => {}));
+    mocks.useWorkspaceRuntimeCommandsControllerMock.mockReturnValue({
+      fetchRow: vi.fn(),
+      copySelectedTrackingIds: vi.fn(),
+      invalidateSheetTrackingWork: vi.fn(),
+    });
+    mocks.useWorkspaceTableControllersMock.mockReturnValue({});
+
+    const { result } = renderHook(() =>
+      useWorkspaceInteractionRuntimeController({
+        activeSheet: sheetState,
+        activeSheetId: "sheet-1",
+        workspaceTabs: [{ id: "sheet-1", name: "Sheet 1" }],
+        workspaceRef,
+        setWorkspaceState: vi.fn(),
+        updateActiveSheet: vi.fn(),
+        updateSheet,
+        setHoveredColumn: vi.fn(),
+        deleteAllTimeoutRef: { current: null },
+        deleteAllArmedSheetIdRef: { current: null },
+        deleteSelectedTimeoutRef: { current: null },
+        deleteSelectedArmedSheetIdRef: { current: null },
+        deleteSelectedArmedSheetId: null,
+        setDeleteSelectedArmedSheetId: vi.fn(),
+        armDeleteAll: vi.fn(),
+        disarmDeleteAll: vi.fn(),
+        armDeleteSelected: vi.fn(),
+        disarmDeleteSelected: vi.fn(),
+        resizeStateRef: { current: null },
+        sheetScrollRef: { current: null },
+        sheetScrollPositionsRef: { current: new Map() },
+        columnMenuRefs: { current: new Map() },
+        highlightedColumnTimeoutRef: { current: null },
+        highlightedColumnSheetIdRef: { current: null },
+        activeFilterCount: 0,
+        allTrackingIds: [],
+        exportableTableRows: [],
+        rustExportRowsQuery: null,
+        retrackableRows: [],
+        retryFailedEntries: [],
+        selectedEngineRowIds: [],
+        selectedTrackingIds: [],
+        selectedVisibleRowKeys: [],
+        visibleColumns: [],
+        visibleColumnPathSet: new Set(),
+        visibleSelectableKeys: [],
+        effectiveColumnWidths: {},
+        pinnedColumnSet: new Set(),
+        allVisibleSelected: false,
+        showNotice: vi.fn(),
+        onWorkspaceEngineMutation: vi.fn(),
+      } as never)
+    );
+
+    const lookupPromise = result.current.runImportSourceLookup("bag");
+    expect(mocks.previewImportSourceMock).toHaveBeenCalledWith({
+      kind: "bag",
+      ids: ["PID-SLOW"],
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+      await lookupPromise;
+    });
+
+    const state =
+      workspaceRef.current.sheetsById["sheet-1"].importSourceLookupStates.bag;
+    expect(state.loading).toBe(false);
+    expect(state.trackingIds).toEqual([]);
+    expect(state.sourceItemStates).toEqual([
+      {
+        itemId: "PID-SLOW",
+        loading: false,
+        error: "Timeout ambil data setelah 30 detik.",
+        trackingIds: [],
+      },
+    ]);
+    expect(state.error).toContain("PID-SLOW: Timeout ambil data");
+  });
+
+  it("updates manifest import preview source and bag states incrementally", async () => {
+    const sheetState: SheetState = {
+      ...createDefaultSheetState(),
+      importSourceDrafts: {
+        bag: "",
+        manifest: "MNF-A\nMNF-B",
+      },
+    };
+    const workspaceRef: { current: WorkspaceState } = {
+      current: {
+        version: 1,
+        activeSheetId: "sheet-1",
+        sheetOrder: ["sheet-1"],
+        sheetMetaById: {
+          "sheet-1": {
+            name: "Sheet 1",
+            color: "blue",
+            icon: "sheet",
+          },
+        },
+        sheetsById: {
+          "sheet-1": sheetState,
+        },
+      },
+    };
+    const updateSheet = vi.fn(
+      (sheetId: string, updater: (sheet: SheetState) => SheetState) => {
+        const currentSheet = workspaceRef.current.sheetsById[sheetId];
+        workspaceRef.current = {
+          ...workspaceRef.current,
+          sheetsById: {
+            ...workspaceRef.current.sheetsById,
+            [sheetId]: updater(currentSheet),
+          },
+        };
+      }
+    );
+    type PreviewResponse = ReturnType<typeof createPreviewResponse>;
+    const previewRequests = new Map<
+      string,
+      ReturnType<typeof createDeferred<PreviewResponse>>
+    >();
+    mocks.previewImportSourceMock.mockImplementation(
+      ({ ids }: { ids: string[] }) => {
+        const deferred = createDeferred<PreviewResponse>();
+        previewRequests.set(ids[0], deferred);
+        return deferred.promise;
+      }
+    );
+    mocks.useWorkspaceRuntimeCommandsControllerMock.mockReturnValue({
+      fetchRow: vi.fn(),
+      copySelectedTrackingIds: vi.fn(),
+      invalidateSheetTrackingWork: vi.fn(),
+    });
+    mocks.useWorkspaceTableControllersMock.mockReturnValue({});
+
+    const { result } = renderHook(() =>
+      useWorkspaceInteractionRuntimeController({
+        activeSheet: sheetState,
+        activeSheetId: "sheet-1",
+        workspaceTabs: [{ id: "sheet-1", name: "Sheet 1" }],
+        workspaceRef,
+        setWorkspaceState: vi.fn(),
+        updateActiveSheet: vi.fn(),
+        updateSheet,
+        setHoveredColumn: vi.fn(),
+        deleteAllTimeoutRef: { current: null },
+        deleteAllArmedSheetIdRef: { current: null },
+        deleteSelectedTimeoutRef: { current: null },
+        deleteSelectedArmedSheetIdRef: { current: null },
+        deleteSelectedArmedSheetId: null,
+        setDeleteSelectedArmedSheetId: vi.fn(),
+        armDeleteAll: vi.fn(),
+        disarmDeleteAll: vi.fn(),
+        armDeleteSelected: vi.fn(),
+        disarmDeleteSelected: vi.fn(),
+        resizeStateRef: { current: null },
+        sheetScrollRef: { current: null },
+        sheetScrollPositionsRef: { current: new Map() },
+        columnMenuRefs: { current: new Map() },
+        highlightedColumnTimeoutRef: { current: null },
+        highlightedColumnSheetIdRef: { current: null },
+        activeFilterCount: 0,
+        allTrackingIds: [],
+        exportableTableRows: [],
+        rustExportRowsQuery: null,
+        retrackableRows: [],
+        retryFailedEntries: [],
+        selectedEngineRowIds: [],
+        selectedTrackingIds: [],
+        selectedVisibleRowKeys: [],
+        visibleColumns: [],
+        visibleColumnPathSet: new Set(),
+        visibleSelectableKeys: [],
+        effectiveColumnWidths: {},
+        pinnedColumnSet: new Set(),
+        allVisibleSelected: false,
+        showNotice: vi.fn(),
+        onWorkspaceEngineMutation: vi.fn(),
+      } as never)
+    );
+
+    const lookupPromise = result.current.runImportSourceLookup("manifest");
+
+    await waitFor(() => {
+      expect(previewRequests.has("MNF-A")).toBe(true);
+      expect(previewRequests.has("MNF-B")).toBe(true);
+    });
+
+    act(() => {
+      previewRequests.get("MNF-A")?.resolve(
+        createPreviewResponse({
+          kind: "manifest",
+          sourceItems: [
+            {
+              sourceItemId: "MNF-A",
+              sourceItemKind: "manifest",
+              status: "succeeded",
+              trackingIds: ["PID-A"],
+              sheetRowIds: [],
+              errorMessage: null,
+            },
+          ],
+          manifestBags: [
+            {
+              sourceItemId: "PID-A",
+              sourceItemKind: "manifest_bag",
+              status: "succeeded",
+              trackingIds: ["P1"],
+              sheetRowIds: [],
+              errorMessage: null,
+            },
+          ],
+          trackingIds: ["P1"],
+          rawResponse: JSON.stringify({ manifest: "MNF-A" }),
+        })
+      );
+    });
+
+    await waitFor(() => {
+      const state =
+        workspaceRef.current.sheetsById["sheet-1"].importSourceLookupStates
+          .manifest;
+      expect(state.loading).toBe(true);
+      expect(state.trackingIds).toEqual(["P1"]);
+      expect(state.sourceItemStates).toEqual([
+        {
+          itemId: "MNF-A",
+          loading: false,
+          error: "",
+          trackingIds: ["PID-A"],
+        },
+        {
+          itemId: "MNF-B",
+          loading: true,
+          error: "",
+          trackingIds: [],
+        },
+      ]);
+      expect(state.manifestBagStates).toEqual([
+        {
+          bagId: "PID-A",
+          loading: false,
+          error: "",
+          trackingIds: ["P1"],
+        },
+      ]);
+    });
+
+    act(() => {
+      previewRequests.get("MNF-B")?.resolve(
+        createPreviewResponse({
+          kind: "manifest",
+          sourceItems: [
+            {
+              sourceItemId: "MNF-B",
+              sourceItemKind: "manifest",
+              status: "succeeded",
+              trackingIds: ["PID-B"],
+              sheetRowIds: [],
+              errorMessage: null,
+            },
+          ],
+          manifestBags: [
+            {
+              sourceItemId: "PID-B",
+              sourceItemKind: "manifest_bag",
+              status: "succeeded",
+              trackingIds: ["P2"],
+              sheetRowIds: [],
+              errorMessage: null,
+            },
+          ],
+          trackingIds: ["P2"],
+          rawResponse: JSON.stringify({ manifest: "MNF-B" }),
+        })
+      );
+    });
+
+    await lookupPromise;
+
+    expect(
+      workspaceRef.current.sheetsById["sheet-1"].importSourceLookupStates
+        .manifest
+    ).toMatchObject({
+      loading: false,
+      trackingIds: ["P1", "P2"],
+      sourceItemStates: [
+        {
+          itemId: "MNF-A",
+          loading: false,
+          error: "",
+          trackingIds: ["PID-A"],
+        },
+        {
+          itemId: "MNF-B",
+          loading: false,
+          error: "",
+          trackingIds: ["PID-B"],
+        },
+      ],
+      manifestBagStates: [
+        {
+          bagId: "PID-A",
+          loading: false,
+          error: "",
+          trackingIds: ["P1"],
+        },
+        {
+          bagId: "PID-B",
+          loading: false,
+          error: "",
+          trackingIds: ["P2"],
+        },
+      ],
+    });
+  });
+
   it("retries a committed import through the Rust failed-only job channel", async () => {
     const sheetState = {
       deleteAllArmed: false,
@@ -537,11 +1130,15 @@ describe("useWorkspaceInteractionRuntimeController", () => {
       expect.any(Function)
     );
     expect(mocks.previewImportSourceMock).not.toHaveBeenCalled();
-    expect(mocks.refreshSheetRowsTrackingMock).toHaveBeenCalledWith({
-      sheetId: "sheet-1",
-      rowIds: ["sheet-1:row:1"],
-      forceRefresh: true,
-    }, expect.any(Function));
+    expect(mocks.refreshSheetRowsTrackingMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sheetId: "sheet-1",
+        rowIds: ["sheet-1:row:1"],
+        forceRefresh: true,
+        runId: expect.any(String),
+      }),
+      expect.any(Function)
+    );
     expect(onWorkspaceEngineMutation).toHaveBeenCalledTimes(2);
     expect(showNotice).toHaveBeenLastCalledWith({
       tone: "success",
@@ -553,14 +1150,34 @@ describe("useWorkspaceInteractionRuntimeController", () => {
     ).toEqual(["P1", "P2"]);
   });
 
-  it("commits imports without copying Rust row windows into React sheet rows", async () => {
+  it("commits previewed import tracking ids without refetching source ids", async () => {
     const initialRows = createDefaultSheetState().rows;
     const sheetState: SheetState = {
       ...createDefaultSheetState(),
       importSourceModalKind: "bag",
       importSourceDrafts: {
-        bag: "PID-OK",
+        bag: "PID-EDITED-AFTER-PREVIEW",
         manifest: "",
+      },
+      importSourceLookupStates: {
+        ...createDefaultSheetState().importSourceLookupStates,
+        bag: {
+          loading: false,
+          rawResponse: "",
+          error: "",
+          trackingIds: ["P2606020189412.30"],
+          jobId: null,
+          requestKey: "bag:preview:1",
+          sourceItemStates: [
+            {
+              itemId: "PID-OK",
+              loading: false,
+              error: "",
+              trackingIds: ["P2606020189412.30"],
+            },
+          ],
+          manifestBagStates: [],
+        },
       },
       rows: [
         {
@@ -600,56 +1217,29 @@ describe("useWorkspaceInteractionRuntimeController", () => {
         };
       }
     );
-    const created: ImportJobDetail = {
-      summary: {
-        jobId: "job-1",
+    mocks.querySheetRowsMock.mockResolvedValue({
+      type: "sheet_rows",
+      payload: {
         sheetId: "sheet-1",
-        kind: "bag",
-        mode: "append",
-        status: "running",
+        offset: 0,
+        limit: 1,
         totalCount: 1,
-        successCount: 0,
-        failedCount: 0,
-        pendingCount: 1,
+        hasMore: false,
+        nextOffset: null,
+        rows: [],
       },
-      items: [
-        {
-          itemId: "job-1:item:0",
-          sourceItemId: "PID-OK",
-          sourceItemKind: "bag",
-          position: 0,
-          status: "pending",
-          trackingIds: [],
-          sheetRowIds: [],
-          errorMessage: null,
-          attemptCount: 0,
-        },
-      ],
-    };
-    const completed: ImportJobDetail = {
-      summary: {
-        ...created.summary,
-        status: "completed",
-        successCount: 1,
-        pendingCount: 0,
-      },
-      items: [
-        {
-          ...created.items[0],
-          status: "succeeded",
-          trackingIds: ["P2606020189412.30"],
-          sheetRowIds: ["sheet-1:row:0"],
-          attemptCount: 1,
-        },
-      ],
-    };
-    mocks.createImportJobMock.mockResolvedValue({
-      type: "import_job_detail",
-      payload: created,
     });
-    mocks.runImportJobWithProgressMock.mockResolvedValue({
-      type: "import_job_detail",
-      payload: completed,
+    mocks.upsertSheetRowsMock.mockResolvedValue({
+      type: "sheet_rows",
+      payload: {
+        sheetId: "sheet-1",
+        offset: 0,
+        limit: 1,
+        totalCount: 2,
+        hasMore: false,
+        nextOffset: null,
+        rows: [],
+      },
     });
     mocks.refreshSheetRowsTrackingMock.mockResolvedValue({
       type: "sheet_rows_tracking_refresh",
@@ -659,9 +1249,9 @@ describe("useWorkspaceInteractionRuntimeController", () => {
         failedCount: 0,
         rows: [
           {
-            rowId: "sheet-1:row:0",
+            rowId: "sheet-1:import:batch:0",
             sheetId: "sheet-1",
-            position: 0,
+            position: 1,
             displayTrackingId: "P2606020189412.30",
             lookupTrackingId: "P2606020189412",
             rowStatus: "loaded",
@@ -739,17 +1329,34 @@ describe("useWorkspaceInteractionRuntimeController", () => {
       });
     });
 
-    expect(mocks.createImportJobMock).toHaveBeenCalledWith({
+    expect(mocks.createImportJobMock).not.toHaveBeenCalled();
+    expect(mocks.runImportJobWithProgressMock).not.toHaveBeenCalled();
+    expect(mocks.querySheetRowsMock).toHaveBeenCalledWith({
       sheetId: "sheet-1",
-      kind: "bag",
-      ids: ["PID-OK"],
-      mode: "append",
+      offset: 0,
+      limit: 1000,
+      filters: [],
+      valueFilters: [],
+      sort: [],
     });
-    expect(mocks.refreshSheetRowsTrackingMock).toHaveBeenCalledWith({
+    expect(mocks.upsertSheetRowsMock).toHaveBeenCalledWith({
       sheetId: "sheet-1",
-      rowIds: ["sheet-1:row:0"],
-      forceRefresh: true,
-    }, expect.any(Function));
+      rows: [
+        expect.objectContaining({
+          position: 1,
+          displayTrackingId: "P2606020189412.30",
+        }),
+      ],
+    });
+    expect(mocks.refreshSheetRowsTrackingMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sheetId: "sheet-1",
+        rowIds: [expect.stringMatching(/^sheet-1:import:/)],
+        forceRefresh: true,
+        runId: expect.any(String),
+      }),
+      expect.any(Function)
+    );
     expect(onWorkspaceEngineMutation).toHaveBeenCalledTimes(1);
     expect(workspaceRef.current.sheetsById["sheet-1"].importSourceModalKind).toBeNull();
     expect(
@@ -759,6 +1366,208 @@ describe("useWorkspaceInteractionRuntimeController", () => {
     ).not.toContain("P2606020189412.30");
     expect(workspaceRef.current.sheetsById["sheet-1"].rows[0].trackingInput).toBe(
       "LOCAL-DRAFT"
+    );
+  });
+
+  it("dedupes appended import tracking ids beyond the first Rust row window", async () => {
+    const sheetState: SheetState = {
+      ...createDefaultSheetState(),
+      importSourceModalKind: "bag",
+      importSourceDrafts: {
+        bag: "PID-OK",
+        manifest: "",
+      },
+      importSourceLookupStates: {
+        ...createDefaultSheetState().importSourceLookupStates,
+        bag: {
+          loading: false,
+          rawResponse: "",
+          error: "",
+          trackingIds: ["P2606020189412.30"],
+          jobId: null,
+          requestKey: "bag:preview:1",
+          sourceItemStates: [
+            {
+              itemId: "PID-OK",
+              loading: false,
+              error: "",
+              trackingIds: ["P2606020189412.30"],
+            },
+          ],
+          manifestBagStates: [],
+        },
+      },
+    };
+    const workspaceRef: { current: WorkspaceState } = {
+      current: {
+        version: 1,
+        activeSheetId: "sheet-1",
+        sheetOrder: ["sheet-1"],
+        sheetMetaById: {
+          "sheet-1": {
+            name: "Sheet 1",
+            color: "blue",
+            icon: "sheet",
+          },
+        },
+        sheetsById: {
+          "sheet-1": sheetState,
+        },
+      },
+    };
+    const updateSheet = vi.fn(
+      (sheetId: string, updater: (sheet: SheetState) => SheetState) => {
+        const currentSheet = workspaceRef.current.sheetsById[sheetId];
+        workspaceRef.current = {
+          ...workspaceRef.current,
+          sheetsById: {
+            ...workspaceRef.current.sheetsById,
+            [sheetId]: updater(currentSheet),
+          },
+        };
+      }
+    );
+    mocks.querySheetRowsMock
+      .mockResolvedValueOnce({
+        type: "sheet_rows",
+        payload: {
+          sheetId: "sheet-1",
+          offset: 0,
+          limit: 1000,
+          totalCount: 1001,
+          hasMore: true,
+          nextOffset: 1000,
+          rows: [
+            {
+              rowId: "sheet-1:row:0",
+              sheetId: "sheet-1",
+              position: 0,
+              displayTrackingId: "P-OTHER",
+              lookupTrackingId: "P-OTHER",
+              rowStatus: "loaded",
+              errorMessage: null,
+              statusJson: null,
+              detailJson: null,
+              historyJson: null,
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        type: "sheet_rows",
+        payload: {
+          sheetId: "sheet-1",
+          offset: 1000,
+          limit: 1,
+          totalCount: 1001,
+          hasMore: false,
+          nextOffset: null,
+          rows: [
+            {
+              rowId: "sheet-1:row:1000",
+              sheetId: "sheet-1",
+              position: 1000,
+              displayTrackingId: "P2606020189412.30",
+              lookupTrackingId: "P2606020189412",
+              rowStatus: "loaded",
+              errorMessage: null,
+              statusJson: null,
+              detailJson: null,
+              historyJson: null,
+            },
+          ],
+        },
+      });
+    mocks.refreshSheetRowsTrackingMock.mockResolvedValue({
+      type: "sheet_rows_tracking_refresh",
+      payload: {
+        sheetId: "sheet-1",
+        successCount: 1,
+        failedCount: 0,
+        rows: [],
+      },
+    });
+    mocks.useWorkspaceRuntimeCommandsControllerMock.mockReturnValue({
+      fetchRow: vi.fn(),
+      copySelectedTrackingIds: vi.fn(),
+      invalidateSheetTrackingWork: vi.fn(),
+    });
+    mocks.useWorkspaceTableControllersMock.mockReturnValue({});
+    const showNotice = vi.fn();
+
+    const { result } = renderHook(() =>
+      useWorkspaceInteractionRuntimeController({
+        activeSheet: sheetState,
+        activeSheetId: "sheet-1",
+        workspaceTabs: [{ id: "sheet-1", name: "Sheet 1" }],
+        workspaceRef,
+        setWorkspaceState: vi.fn(),
+        updateActiveSheet: vi.fn(),
+        updateSheet,
+        setHoveredColumn: vi.fn(),
+        deleteAllTimeoutRef: { current: null },
+        deleteAllArmedSheetIdRef: { current: null },
+        deleteSelectedTimeoutRef: { current: null },
+        deleteSelectedArmedSheetIdRef: { current: null },
+        deleteSelectedArmedSheetId: null,
+        setDeleteSelectedArmedSheetId: vi.fn(),
+        armDeleteAll: vi.fn(),
+        disarmDeleteAll: vi.fn(),
+        armDeleteSelected: vi.fn(),
+        disarmDeleteSelected: vi.fn(),
+        resizeStateRef: { current: null },
+        sheetScrollRef: { current: null },
+        sheetScrollPositionsRef: { current: new Map() },
+        columnMenuRefs: { current: new Map() },
+        highlightedColumnTimeoutRef: { current: null },
+        highlightedColumnSheetIdRef: { current: null },
+        activeFilterCount: 0,
+        allTrackingIds: [],
+        exportableTableRows: [],
+        rustExportRowsQuery: null,
+        retrackableRows: [],
+        retryFailedEntries: [],
+        selectedEngineRowIds: [],
+        selectedTrackingIds: [],
+        selectedVisibleRowKeys: [],
+        visibleColumns: [],
+        visibleColumnPathSet: new Set(),
+        visibleSelectableKeys: [],
+        effectiveColumnWidths: {},
+        pinnedColumnSet: new Set(),
+        allVisibleSelected: false,
+        showNotice,
+      } as never)
+    );
+
+    act(() => {
+      result.current.importBagTrackingIds("append");
+    });
+
+    await waitFor(() => {
+      expect(showNotice).toHaveBeenCalledWith({
+        tone: "success",
+        message: "1 nomor kiriman dari Bag sudah ada dan dilacak ulang.",
+      });
+    });
+
+    expect(mocks.querySheetRowsMock).toHaveBeenCalledTimes(2);
+    expect(mocks.querySheetRowsMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        sheetId: "sheet-1",
+        offset: 1000,
+        limit: 1000,
+      })
+    );
+    expect(mocks.upsertSheetRowsMock).not.toHaveBeenCalled();
+    expect(mocks.refreshSheetRowsTrackingMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sheetId: "sheet-1",
+        rowIds: ["sheet-1:row:1000"],
+        forceRefresh: true,
+      }),
+      expect.any(Function)
     );
   });
 

@@ -3,7 +3,11 @@ import type {
   SheetRowsQuery,
   SheetValueFilter,
 } from "../workspace-engine/client";
-import { canUseColumnValueFilter } from "./columns";
+import {
+  COLUMNS,
+  canUseColumnTextFilter,
+  canUseColumnValueFilter,
+} from "./columns";
 import type { ColumnDefinition, SheetRow, SheetState } from "./types";
 
 const RUST_ROW_QUERY_FIELD_PATHS = new Set([
@@ -59,6 +63,7 @@ const RUST_ROW_QUERY_FIELD_PATHS = new Set([
   "history_summary.delivery_runsheet",
   "computed.delivery_runsheet_count",
 ]);
+const COLUMN_BY_PATH = new Map(COLUMNS.map((column) => [column.path, column]));
 
 function parseFormattedNumberValue(value: string) {
   const normalized = value
@@ -132,11 +137,14 @@ function getVisibleValueFilters(
     }
 
     const column = columnByPath.get(path);
-    if (!column || !canRustQueryField(path)) {
+    if (!column) {
       return null;
     }
     if (!canUseColumnValueFilter(column)) {
       continue;
+    }
+    if (!canRustQueryField(path)) {
+      return null;
     }
 
     const rawValues = new Set<string>();
@@ -169,6 +177,7 @@ function getVisibleTextFilters(
   visibleColumns: ColumnDefinition[]
 ): SheetFilter[] {
   return visibleColumns
+    .filter(canUseColumnTextFilter)
     .map((column) => ({
       field: column.path,
       value: sheetState.filters[column.path]?.trim() ?? "",
@@ -181,7 +190,10 @@ function hasIncompleteTrackingRows(rows: SheetRow[]) {
 }
 
 export function canRustQueryField(path: string) {
-  return RUST_ROW_QUERY_FIELD_PATHS.has(path);
+  const column = COLUMN_BY_PATH.get(path);
+  return Boolean(
+    column && canUseColumnTextFilter(column) && RUST_ROW_QUERY_FIELD_PATHS.has(path)
+  );
 }
 
 export function createRustSheetQueryFilterParts(params: {

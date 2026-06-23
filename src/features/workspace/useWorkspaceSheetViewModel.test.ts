@@ -884,6 +884,25 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
     });
   });
 
+  it("does not query Rust value options for non-filterable photo and raw JSON columns", async () => {
+    const photoSheet = {
+      ...createDefaultSheetState(),
+      openColumnMenuPath: "pod.photo1_url",
+    };
+    const jsonSheet = {
+      ...createDefaultSheetState(),
+      openColumnMenuPath: "history_summary.bagging_unbagging",
+    };
+
+    renderHook(() => useWorkspaceSheetViewModel(photoSheet, "sheet-1"));
+    renderHook(() => useWorkspaceSheetViewModel(jsonSheet, "sheet-1"));
+
+    await waitFor(() => {
+      expect(mocks.querySheetRows).toHaveBeenCalled();
+    });
+    expect(mocks.querySheetFieldValues).not.toHaveBeenCalled();
+  });
+
   it("queries Rust row windows while legacy tracking work is queued in the React mirror", async () => {
     mocks.querySheetRows.mockResolvedValueOnce({
       type: "sheet_rows",
@@ -1286,6 +1305,83 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
       },
     ]);
     expect(result.current.visibleSelectableKeys).toEqual(["rust-row-1"]);
+  });
+
+  it("keeps total shipment count unfiltered when filters narrow Rust rows", async () => {
+    mocks.querySheetRows.mockImplementation(async (query) => {
+      if (query.filters.length === 0) {
+        return {
+          type: "sheet_rows",
+          payload: {
+            sheetId: "sheet-1",
+            offset: 0,
+            limit: 1,
+            totalCount: 47,
+            hasMore: true,
+            nextOffset: 1,
+            rows: [
+              {
+                rowId: "rust-row-total-probe",
+                position: 0,
+                displayTrackingId: "P1",
+                lookupTrackingId: "P1",
+                rowStatus: "loaded",
+                errorMessage: null,
+                statusJson: null,
+                detailJson: null,
+                historyJson: null,
+              },
+            ],
+          },
+        };
+      }
+
+      return {
+        type: "sheet_rows",
+        payload: {
+          sheetId: "sheet-1",
+          offset: 0,
+          limit: 500,
+          totalCount: 6,
+          hasMore: false,
+          nextOffset: null,
+          rows: Array.from({ length: 6 }, (_, index) => ({
+            rowId: `rust-row-${index + 1}`,
+            position: index,
+            displayTrackingId: `P${index + 1}`,
+            lookupTrackingId: `P${index + 1}`,
+            rowStatus: "loaded" as const,
+            errorMessage: null,
+            statusJson: null,
+            detailJson: null,
+            historyJson: null,
+          })),
+        },
+      };
+    });
+    const sheet = {
+      ...createAnalyticsSheet(),
+      activeMode: "workspace" as const,
+      filters: {
+        "detail.shipment_header.nomor_kiriman": "P",
+      },
+    };
+
+    const { result } = renderHook(() =>
+      useWorkspaceSheetViewModel(sheet, "sheet-1")
+    );
+
+    await waitFor(() => {
+      expect(result.current.loadedCount).toBe(6);
+      expect(result.current.totalShipmentCount).toBe(47);
+    });
+    expect(mocks.querySheetRows).toHaveBeenCalledWith({
+      sheetId: "sheet-1",
+      offset: 0,
+      limit: 1,
+      filters: [],
+      sort: [],
+    });
   });
 
   it("reprojects an existing Rust row window against React mirror changes without requerying", async () => {

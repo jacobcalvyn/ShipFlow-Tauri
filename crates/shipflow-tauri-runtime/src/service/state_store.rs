@@ -6,7 +6,7 @@ mod paths;
 use std::collections::HashMap;
 use std::{
     fs,
-    io::ErrorKind,
+    io::{ErrorKind, Write},
     path::{Path, PathBuf},
 };
 
@@ -19,7 +19,7 @@ use paths::{
     desktop_pid_path, desktop_request_path, desktop_service_config_path, legacy_service_state_dirs,
     legacy_state_dir_override, service_config_path, service_pid_path, service_runtime_config_path,
     service_settings_pid_path, service_settings_request_path, service_token_vault_path,
-    service_tray_pid_path, state_dir_override,
+    service_tray_launch_lock_path, service_tray_pid_path, state_dir_override, window_state_path,
 };
 
 #[cfg(unix)]
@@ -76,10 +76,44 @@ struct TokenVaultFile {
     tokens: HashMap<String, String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedWindowState {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub maximized: bool,
+}
+
+pub(super) struct StateFileLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for StateFileLockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowStateFile {
+    version: u8,
+    windows: HashMap<String, SavedWindowState>,
+}
+
 fn empty_token_vault() -> TokenVaultFile {
     TokenVaultFile {
         version: 1,
         tokens: HashMap::new(),
+    }
+}
+
+fn empty_window_state_file() -> WindowStateFile {
+    WindowStateFile {
+        version: 1,
+        windows: HashMap::new(),
     }
 }
 
@@ -150,6 +184,56 @@ fn write_token_vault(vault: &TokenVaultFile) -> Result<(), String> {
         serialized,
         "service token vault",
     )
+}
+
+fn read_window_state_file() -> Result<WindowStateFile, String> {
+    let primary_path = window_state_path();
+    let Some((source_path, bytes)) = read_first_state_file(primary_path.clone(), "window state")?
+    else {
+        return Ok(empty_window_state_file());
+    };
+
+    let mut state: WindowStateFile = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Unable to parse window state: {error}"))?;
+    state.version = 1;
+
+    if source_path != primary_path {
+        let _ = write_window_state_file(&state);
+    }
+
+    Ok(state)
+}
+
+fn write_window_state_file(state: &WindowStateFile) -> Result<(), String> {
+    let serialized = serde_json::to_vec_pretty(state)
+        .map_err(|error| format!("Unable to serialize window state: {error}"))?;
+    write_state_file(window_state_path(), serialized, "window state")
+}
+
+pub fn load_window_state(window_key: &str) -> Result<Option<SavedWindowState>, String> {
+    let window_key = window_key.trim();
+    if window_key.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(read_window_state_file()?.windows.get(window_key).cloned())
+}
+
+pub fn persist_window_state(
+    window_key: &str,
+    window_state: &SavedWindowState,
+) -> Result<(), String> {
+    let window_key = window_key.trim();
+    if window_key.is_empty() {
+        return Err("Window state key cannot be empty.".into());
+    }
+
+    let mut state = read_window_state_file()?;
+    state.version = 1;
+    state
+        .windows
+        .insert(window_key.to_string(), window_state.clone());
+    write_window_state_file(&state)
 }
 
 fn token_key(role: &str, field: &str) -> String {
@@ -371,16 +455,54 @@ pub fn persist_service_tray_pid(pid: u32) -> Result<(), String> {
     persist_pid_file(service_tray_pid_path(), pid, "API service tray process id")
 }
 
+pub(super) fn claim_service_tray_launch_lock() -> Result<Option<StateFileLockGuard>, String> {
+    paths::ensure_service_state_dir()?;
+    let path = service_tray_launch_lock_path();
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            writeln!(file, "{}", std::process::id()).map_err(|error| {
+                format!(
+                    "Unable to write API service tray launch lock at {}: {error}",
+                    path.to_string_lossy()
+                )
+            })?;
+            set_user_only_permissions(&path, 0o600);
+            Ok(Some(StateFileLockGuard { path }))
+        }
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(None),
+        Err(error) => Err(format!(
+            "Unable to claim API service tray launch lock at {}: {error}",
+            path.to_string_lossy()
+        )),
+    }
+}
+
+pub(super) fn clear_service_tray_launch_lock() {
+    clear_path(service_tray_launch_lock_path());
+}
+
+pub(super) fn persist_desktop_pid(pid: u32) -> Result<(), String> {
+    persist_pid_file(desktop_pid_path(), pid, "desktop process id")
+}
+
+pub(super) fn persist_service_settings_pid(pid: u32) -> Result<(), String> {
+    persist_pid_file(
+        service_settings_pid_path(),
+        pid,
+        "service settings process id",
+    )
+}
+
 pub fn register_current_desktop_process() -> Result<(), String> {
-    persist_pid_file(desktop_pid_path(), std::process::id(), "desktop process id")
+    persist_desktop_pid(std::process::id())
 }
 
 pub fn register_current_service_settings_process() -> Result<(), String> {
-    persist_pid_file(
-        service_settings_pid_path(),
-        std::process::id(),
-        "service settings process id",
-    )
+    persist_service_settings_pid(std::process::id())
 }
 
 fn read_pid_file(path: PathBuf) -> Option<u32> {
@@ -433,10 +555,12 @@ pub fn clear_recorded_desktop_pid() {
 
 pub fn clear_current_desktop_process() {
     clear_recorded_desktop_pid();
+    clear_desktop_activation_request();
 }
 
 pub fn clear_current_service_settings_process() {
     clear_recorded_service_settings_pid();
+    clear_service_settings_activation_request();
 }
 
 pub fn persist_service_settings_activation_request(
@@ -450,6 +574,26 @@ pub fn persist_service_settings_activation_request(
         payload,
         "service settings activation request",
     )
+}
+
+pub fn service_settings_activation_request_exists() -> bool {
+    state_file_candidates(&service_settings_request_path())
+        .into_iter()
+        .any(|path| path.exists())
+}
+
+pub fn desktop_activation_request_exists() -> bool {
+    state_file_candidates(&desktop_request_path())
+        .into_iter()
+        .any(|path| path.exists())
+}
+
+pub fn clear_desktop_activation_request() {
+    clear_path(desktop_request_path());
+}
+
+pub fn clear_service_settings_activation_request() {
+    clear_path(service_settings_request_path());
 }
 
 pub fn persist_desktop_activation_request(
@@ -506,12 +650,19 @@ mod tests {
     };
 
     use super::{
-        load_desktop_service_config, load_runtime_config, load_saved_config,
-        persist_desktop_activation_request, persist_desktop_service_config, persist_runtime_config,
-        persist_saved_config, persist_service_pid, persist_service_settings_activation_request,
-        read_recorded_pid, service_config_path, service_pid_path, service_token_vault_path,
-        take_pending_desktop_activation_request, take_pending_service_settings_activation_request,
-        ApiServiceConfig, DesktopActivationRequest,
+        claim_service_tray_launch_lock, clear_current_desktop_process,
+        clear_current_service_settings_process, clear_desktop_activation_request,
+        clear_service_settings_activation_request, clear_service_tray_launch_lock,
+        desktop_activation_request_exists, load_desktop_service_config, load_runtime_config,
+        load_saved_config, load_window_state, persist_desktop_activation_request,
+        persist_desktop_service_config, persist_runtime_config, persist_saved_config,
+        persist_service_pid, persist_service_settings_activation_request, persist_window_state,
+        read_recorded_desktop_pid, read_recorded_pid, read_recorded_service_settings_pid,
+        register_current_desktop_process, register_current_service_settings_process,
+        service_config_path, service_pid_path, service_settings_activation_request_exists,
+        service_token_vault_path, take_pending_desktop_activation_request,
+        take_pending_service_settings_activation_request, ApiServiceConfig,
+        DesktopActivationRequest, SavedWindowState,
     };
     use crate::service::{ApiServiceMode, DesktopServiceConnectionMode};
     use crate::test_support::runtime_state_dir_test_lock;
@@ -586,6 +737,7 @@ mod tests {
             external_api_auth_token: "external-token".into(),
             allow_insecure_external_api_http: false,
             keep_running_in_tray: true,
+            start_at_login: true,
             last_updated_at: "2026-04-21T00:00:00.000Z".into(),
         }
     }
@@ -682,6 +834,7 @@ mod tests {
                 enabled: false,
                 mode: ApiServiceMode::Local,
                 keep_running_in_tray: false,
+                start_at_login: false,
                 ..sample_config()
             };
 
@@ -819,6 +972,40 @@ mod tests {
     }
 
     #[test]
+    fn service_tray_launch_lock_allows_one_active_launcher() {
+        with_state_dir("shipflow-service-tray-launch-lock-test", || {
+            let first_guard = claim_service_tray_launch_lock()
+                .expect("first tray launch lock claim should not fail");
+            assert!(first_guard.is_some());
+
+            let second_guard = claim_service_tray_launch_lock()
+                .expect("second tray launch lock claim should not fail");
+            assert!(second_guard.is_none());
+
+            drop(first_guard);
+
+            let third_guard = claim_service_tray_launch_lock()
+                .expect("third tray launch lock claim should not fail");
+            assert!(third_guard.is_some());
+        });
+    }
+
+    #[test]
+    fn service_tray_launch_lock_can_be_cleared_after_stale_wait() {
+        with_state_dir("shipflow-service-tray-launch-lock-clear-test", || {
+            let first_guard = claim_service_tray_launch_lock()
+                .expect("first tray launch lock claim should not fail");
+            assert!(first_guard.is_some());
+
+            clear_service_tray_launch_lock();
+
+            let second_guard = claim_service_tray_launch_lock()
+                .expect("second tray launch lock claim should not fail");
+            assert!(second_guard.is_some());
+        });
+    }
+
+    #[test]
     fn desktop_activation_request_is_consumed_once() {
         with_state_dir("shipflow-service-desktop-request-test", || {
             let request = DesktopActivationRequest {
@@ -855,6 +1042,103 @@ mod tests {
 
             assert_eq!(first_take, Some(request));
             assert_eq!(second_take, None);
+        });
+    }
+
+    #[test]
+    fn activation_requests_can_be_cleared_after_timeout() {
+        with_state_dir("shipflow-activation-request-clear-test", || {
+            let request = DesktopActivationRequest {
+                focus_main_window: true,
+            };
+
+            persist_desktop_activation_request(&request)
+                .expect("desktop activation request should persist");
+            persist_service_settings_activation_request(&request)
+                .expect("service settings activation request should persist");
+
+            assert!(desktop_activation_request_exists());
+            assert!(service_settings_activation_request_exists());
+
+            clear_desktop_activation_request();
+            clear_service_settings_activation_request();
+
+            assert!(!desktop_activation_request_exists());
+            assert!(!service_settings_activation_request_exists());
+            assert!(take_pending_desktop_activation_request()
+                .expect("desktop activation request read should not fail")
+                .is_none());
+            assert!(take_pending_service_settings_activation_request()
+                .expect("service settings activation request read should not fail")
+                .is_none());
+        });
+    }
+
+    #[test]
+    fn current_ui_process_cleanup_clears_pid_and_activation_request() {
+        with_state_dir("shipflow-current-ui-cleanup-test", || {
+            let request = DesktopActivationRequest {
+                focus_main_window: true,
+            };
+
+            register_current_desktop_process().expect("desktop process should register");
+            register_current_service_settings_process()
+                .expect("service settings process should register");
+            persist_desktop_activation_request(&request)
+                .expect("desktop activation request should persist");
+            persist_service_settings_activation_request(&request)
+                .expect("service settings activation request should persist");
+
+            assert!(read_recorded_desktop_pid().is_some());
+            assert!(read_recorded_service_settings_pid().is_some());
+            assert!(desktop_activation_request_exists());
+            assert!(service_settings_activation_request_exists());
+
+            clear_current_desktop_process();
+            clear_current_service_settings_process();
+
+            assert!(read_recorded_desktop_pid().is_none());
+            assert!(read_recorded_service_settings_pid().is_none());
+            assert!(!desktop_activation_request_exists());
+            assert!(!service_settings_activation_request_exists());
+        });
+    }
+
+    #[test]
+    fn window_state_persists_by_window_key() {
+        with_state_dir("shipflow-window-state-test", || {
+            let desktop_state = SavedWindowState {
+                x: 120,
+                y: 80,
+                width: 1440,
+                height: 900,
+                maximized: false,
+            };
+            let service_state = SavedWindowState {
+                x: 200,
+                y: 140,
+                width: 980,
+                height: 820,
+                maximized: true,
+            };
+
+            persist_window_state("desktop.main", &desktop_state)
+                .expect("desktop window state should persist");
+            persist_window_state("service.settings", &service_state)
+                .expect("service window state should persist");
+
+            assert_eq!(
+                load_window_state("desktop.main").expect("desktop window state should load"),
+                Some(desktop_state)
+            );
+            assert_eq!(
+                load_window_state("service.settings").expect("service window state should load"),
+                Some(service_state)
+            );
+            assert_eq!(
+                load_window_state("unknown").expect("unknown window state should load"),
+                None
+            );
         });
     }
 }

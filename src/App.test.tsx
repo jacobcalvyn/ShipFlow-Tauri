@@ -633,6 +633,7 @@ describe("App workspace isolation", () => {
         sheetId: string;
         rowIds: string[];
         forceRefresh: boolean;
+        runId?: string | null;
       },
       onProgress?: (event: unknown) => void
     ) => {
@@ -657,17 +658,21 @@ describe("App workspace isolation", () => {
             return null;
           }
           trackedShipmentIds.push(row.lookupTrackingId);
-          const refreshedRow = createWorkspaceEngineSheetRow(
-            payload.sheetId,
-            row.displayTrackingId,
-            position,
-            true
-          );
+          const refreshedRow = {
+            ...createWorkspaceEngineSheetRow(
+              payload.sheetId,
+              row.displayTrackingId,
+              position,
+              true
+            ),
+            rowId: row.rowId,
+          };
           nextRows[position] = refreshedRow;
           onProgress?.({
             type: "tracking_refresh_progress",
             payload: {
               sheetId: payload.sheetId,
+              runId: payload.runId ?? null,
               row: refreshedRow,
               totalCount: rowIds.length,
               successCount: nextRows.filter(
@@ -691,6 +696,7 @@ describe("App workspace isolation", () => {
         type: "sheet_rows_tracking_refresh",
         payload: {
           sheetId: payload.sheetId,
+          runId: payload.runId ?? null,
           successCount: rows.length,
           failedCount: 0,
           rows: shouldReturnRows ? rows : [],
@@ -1934,13 +1940,13 @@ describe("App workspace isolation", () => {
 
     await waitFor(() => {
       expect(screen.queryByRole("tab", { name: "Sheet 2" })).not.toBeInTheDocument();
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
     });
 
     resolveRequest("P2");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
     });
   });
 
@@ -1961,7 +1967,7 @@ describe("App workspace isolation", () => {
       "aria-selected",
       "true"
     );
-    expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+    expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
     expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("");
   });
 
@@ -2161,7 +2167,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PEXIST1");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Bag" }));
@@ -2219,16 +2225,11 @@ describe("App workspace isolation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Bag" }));
 
     await waitFor(() => {
-      expectWorkspaceEngineCommandCount("get_import_job", 1);
       expect(screen.getByLabelText("ID Bag")).toHaveValue("PID-REPLACE");
       expect(screen.getByText("Nomor Kiriman (1)")).toBeInTheDocument();
       expect(screen.getByText("P260000000001")).toBeInTheDocument();
     });
-    expect(
-      getWorkspaceEngineCommandCalls("get_import_job")[0]?.[1]?.command?.payload
-    ).toEqual({
-      jobId: "workspace-engine-job-1",
-    });
+    expectWorkspaceEngineCommandCount("get_import_job", 0);
   }, 20_000);
 
   it("appends bag lookup shipment ids into the active sheet", async () => {
@@ -2245,7 +2246,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PEXIST2");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Bag" }));
@@ -2417,7 +2418,7 @@ describe("App workspace isolation", () => {
       resolveRequest("PEXIST-MANIFEST");
 
       await waitFor(() => {
-        expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+        expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
       });
 
       fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
@@ -2630,7 +2631,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PEXIST-MANIFEST-REPLACE");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
@@ -2762,7 +2763,7 @@ describe("App workspace isolation", () => {
       });
 
       await waitFor(() => {
-        expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+        expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
       });
 
       fireEvent.click(screen.getByRole("button", { name: "Bag" }));
@@ -2829,7 +2830,7 @@ describe("App workspace isolation", () => {
       });
 
       await waitFor(() => {
-        expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+        expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
       });
 
       fireEvent.click(screen.getByRole("button", { name: "Bag" }));
@@ -2852,7 +2853,7 @@ describe("App workspace isolation", () => {
       });
 
       await waitFor(() => {
-        expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+        expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
       });
     },
     20_000
@@ -2872,7 +2873,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PSEL1");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
@@ -2889,7 +2890,7 @@ describe("App workspace isolation", () => {
       expectInvokeCount("track_shipment", 1);
       expectWorkspaceEngineCommandCount("transfer_sheet_rows", 1);
       expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("PSEL1");
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
   }, 20_000);
 
@@ -2907,7 +2908,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PMOVE1");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
@@ -2929,7 +2930,7 @@ describe("App workspace isolation", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
 
     await waitFor(() => {
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
       expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("");
     });
   });
@@ -2948,7 +2949,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PAPP1");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
@@ -2964,7 +2965,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PAPP2");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
@@ -2995,7 +2996,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PAPP1");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 2/2 kiriman")).toBeInTheDocument();
     });
   }, 20_000);
 
@@ -3013,7 +3014,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PMOVE2");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
@@ -3040,7 +3041,7 @@ describe("App workspace isolation", () => {
     await waitFor(() => {
       expectInvokeCount("track_shipment", 2);
       expectWorkspaceEngineCommandCount("transfer_sheet_rows", 1);
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }));
@@ -3065,7 +3066,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PDRAG1");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
@@ -3081,7 +3082,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PDRAG2");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
@@ -3110,7 +3111,7 @@ describe("App workspace isolation", () => {
     await waitFor(() => {
       expectInvokeCount("track_shipment", 2);
       expectWorkspaceEngineCommandCount("transfer_sheet_rows", 1);
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }));
@@ -3120,7 +3121,7 @@ describe("App workspace isolation", () => {
       expect(screen.getAllByDisplayValue("PDRAG1")[0]).toBeInTheDocument();
     });
     await waitFor(() => {
-      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 2/2 kiriman")).toBeInTheDocument();
     });
   });
 
@@ -3357,13 +3358,13 @@ describe("App workspace isolation", () => {
     resolveRequest("P4");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
 
     await waitFor(() => {
-      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 2/2 kiriman")).toBeInTheDocument();
     });
   });
 
@@ -3381,7 +3382,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PTOAST");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Lacak Ulang" }));
@@ -3519,7 +3520,7 @@ describe("App workspace isolation", () => {
     resolveRequest("P400");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
     });
   });
 
@@ -3545,7 +3546,7 @@ describe("App workspace isolation", () => {
     resolveRequest("P405");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
       expect(firstInput).toHaveValue("");
     });
   });
@@ -3597,7 +3598,7 @@ describe("App workspace isolation", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 2/2 kiriman")).toBeInTheDocument();
       const [currentFirstInput, currentSecondInput] =
         screen.getAllByPlaceholderText("Masukkan ID") as HTMLInputElement[];
       expect(currentFirstInput).toHaveValue("P408");
@@ -3619,7 +3620,7 @@ describe("App workspace isolation", () => {
     resolveRequest("P500");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.change(screen.getAllByPlaceholderText("Filter")[1], {
@@ -3632,6 +3633,36 @@ describe("App workspace isolation", () => {
 
     await waitFor(() => {
       expect(screen.getAllByDisplayValue("P501")[0]).toBeInTheDocument();
+    });
+  });
+
+  it("does not auto-select visible rows when filters are active", async () => {
+    render(<App />);
+
+    const [firstInput, secondInput] = screen.getAllByPlaceholderText("Masukkan ID");
+    fireEvent.change(firstInput, { target: { value: "P690" } });
+    fireEvent.blur(firstInput);
+    fireEvent.change(secondInput, { target: { value: "P691" } });
+    fireEvent.blur(secondInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 2);
+    });
+
+    resolveRequest("P690");
+    resolveRequest("P691");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 2/2 kiriman")).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getAllByPlaceholderText("Filter")[0], {
+      target: { value: "P690" },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("0 row dipilih")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Hapus Terselect" })).toBeDisabled();
     });
   });
 
@@ -3662,7 +3693,7 @@ describe("App workspace isolation", () => {
     resolveRequest("P701");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
   });
 
@@ -3683,7 +3714,7 @@ describe("App workspace isolation", () => {
     resolveRequest("P801");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 2/2 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
@@ -3721,7 +3752,7 @@ describe("App workspace isolation", () => {
     resolveRequest("P821");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 2/2 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
@@ -3761,7 +3792,7 @@ describe("App workspace isolation", () => {
       );
     });
 
-    expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+    expect(screen.getByText("Total 0/1 kiriman")).toBeInTheDocument();
   });
 
   it("keeps three sheets isolated under concurrent tracking pressure", async () => {
@@ -3796,17 +3827,17 @@ describe("App workspace isolation", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 3" }));
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }));
     await waitFor(() => {
-      expect(screen.getByText("Total 3 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 3/3 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
   }, 20_000);
 
@@ -3858,7 +3889,7 @@ describe("App workspace isolation", () => {
       resolveRequest("PCOPY");
 
       await waitFor(() => {
-        expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+        expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
       });
 
       fireEvent.click(screen.getByRole("button", { name: "Copy ID Kiriman" }));
@@ -4381,7 +4412,7 @@ describe("App workspace isolation", () => {
 
     const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
     expect(firstInput).toHaveValue("");
-    expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+    expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
 
     await waitFor(() => {
       expect(window.localStorage.getItem("shipflow-workspace-state")).not.toContain(
@@ -4440,7 +4471,7 @@ describe("App workspace isolation", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "API" }));
     expect(
       screen.getByText(
-        "API Service selalu aktif untuk Desktop. Token wajib dipakai untuk lacak, baik sumbernya internal scrap maupun external API."
+        "API Service selalu aktif untuk Desktop. Token wajib dipakai untuk lacak, baik sumbernya scrap internal maupun API eksternal."
       )
     ).toBeInTheDocument();
     expect(screen.getByText("Localhost selalu aktif untuk Desktop")).toBeInTheDocument();
@@ -4453,7 +4484,7 @@ describe("App workspace isolation", () => {
 
     const tokenField = screen.getByLabelText("Token API Service") as HTMLInputElement;
     expect(tokenField.value).toBe("");
-    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Buat" }));
     expect(tokenField.value).toMatch(/^sf_[a-f0-9]+$/);
 
     fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
@@ -4478,7 +4509,7 @@ describe("App workspace isolation", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "API" }));
     const originalToken = (screen.getByLabelText("Token API Service") as HTMLInputElement).value;
     expect(originalToken).toBe("");
-    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Buat" }));
     fireEvent.click(screen.getByRole("button", { name: "Reset Perubahan" }));
 
     expect(window.localStorage.getItem("shipflow-service-config")).toBeNull();
@@ -4527,6 +4558,7 @@ describe("App workspace isolation", () => {
       externalApiAuthToken: "",
       allowInsecureExternalApiHttp: false,
       keepRunningInTray: true,
+      startAtLogin: true,
       lastUpdatedAt: "2026-04-18T00:00:00.000Z",
     };
 
@@ -4539,10 +4571,10 @@ describe("App workspace isolation", () => {
         "true"
       );
       expect(screen.getByRole("radio", { name: "API ShipFlow Eksternal" })).toBeChecked();
-      expect(screen.getByLabelText("External API Base URL")).toHaveValue(
+      expect(screen.getByLabelText("URL Dasar API Eksternal")).toHaveValue(
         "https://scrappid3.jacobcalvyn.io"
       );
-      expect(screen.getByLabelText("External API Token")).toHaveValue("");
+      expect(screen.getByLabelText("Token API Eksternal")).toHaveValue("");
     });
   });
 
@@ -4552,16 +4584,16 @@ describe("App workspace isolation", () => {
 
     fireEvent.click(await screen.findByRole("tab", { name: "Sumber Lacak" }));
     fireEvent.click(await screen.findByRole("radio", { name: "API ShipFlow Eksternal" }));
-    fireEvent.change(screen.getByLabelText("External API Base URL"), {
+    fireEvent.change(screen.getByLabelText("URL Dasar API Eksternal"), {
       target: { value: "https://scrappid3.jacobcalvyn.io" },
     });
-    fireEvent.change(screen.getByLabelText("External API Token"), {
+    fireEvent.change(screen.getByLabelText("Token API Eksternal"), {
       target: {
         value: "sf_32c18e59ecca4f91e23070d33c74a230a0ccc73161b6ae79",
       },
     });
     fireEvent.click(screen.getByRole("tab", { name: "API" }));
-    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Buat" }));
     fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
 
     await waitFor(() => {
@@ -4600,6 +4632,39 @@ describe("App workspace isolation", () => {
     expect(screen.getByLabelText("Token API Service")).toHaveValue(initialToken);
   });
 
+  it("keeps service autostart explicit when tray persistence is disabled", async () => {
+    setShipFlowWindowKind("service-settings");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "API" }));
+
+    const keepRunningInTray = screen.getByLabelText(
+      "Biarkan ShipFlow Service tetap aktif di menu bar / system tray"
+    );
+    const startAtLogin = screen.getByLabelText("Jalankan ShipFlow Service saat login");
+
+    expect(keepRunningInTray).toBeChecked();
+    expect(startAtLogin).not.toBeChecked();
+    expect(startAtLogin).toBeEnabled();
+
+    fireEvent.click(startAtLogin);
+    expect(startAtLogin).toBeChecked();
+
+    fireEvent.click(keepRunningInTray);
+
+    expect(keepRunningInTray).not.toBeChecked();
+    expect(startAtLogin).toBeChecked();
+    expect(startAtLogin).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("configure_api_service")).toHaveLength(1);
+      expect(persistedServiceConfig?.keepRunningInTray).toBe(false);
+      expect(persistedServiceConfig?.startAtLogin).toBe(true);
+    });
+  });
+
   it("falls back to native clipboard bridge for copying all and selected tracking IDs", async () => {
     render(<App />);
 
@@ -4614,7 +4679,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PCOPY1");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Copy ID Kiriman" }));
@@ -4641,15 +4706,15 @@ describe("App workspace isolation", () => {
 
     fireEvent.click(await screen.findByRole("tab", { name: "Sumber Lacak" }));
     fireEvent.click(await screen.findByRole("radio", { name: "API ShipFlow Eksternal" }));
-    fireEvent.change(screen.getByLabelText("External API Base URL"), {
+    fireEvent.change(screen.getByLabelText("URL Dasar API Eksternal"), {
       target: { value: "https://scrappid3.jacobcalvyn.io" },
     });
-    fireEvent.change(screen.getByLabelText("External API Token"), {
+    fireEvent.change(screen.getByLabelText("Token API Eksternal"), {
       target: {
         value: "sf_32c18e59ecca4f91e23070d33c74a230a0ccc73161b6ae79",
       },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Tes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Tes Koneksi" }));
 
     await waitFor(() => {
       expect(getInvokeCalls("test_external_tracking_source")).toHaveLength(1);

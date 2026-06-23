@@ -88,6 +88,12 @@ fn parse_args() -> Result<Option<CliConfig>, String> {
 fn run_service_settings_app() {
     shipflow_tauri_runtime::install_runtime_logging();
 
+    if shipflow_tauri_runtime::maybe_run_service_autostart_from_current_args()
+        .expect("failed to initialize ShipFlow service login autostart")
+    {
+        return;
+    }
+
     if shipflow_tauri_runtime::maybe_run_service_tray_from_current_args()
         .expect("failed to initialize ShipFlow service tray companion")
     {
@@ -147,6 +153,7 @@ fn main() {
     if env::args().len() == 1
         || env::args().skip(1).any(|argument| {
             argument == "--shipflow-service-process"
+                || argument == "--shipflow-service-autostart"
                 || argument == "--shipflow-service-tray"
                 || argument == "--shipflow-service-open-settings"
         })

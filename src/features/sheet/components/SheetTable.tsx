@@ -11,6 +11,7 @@ import {
 } from "react";
 import { ColumnHeaderCell } from "./ColumnHeaderCell";
 import { SheetBodyRow } from "./SheetBodyRow";
+import { canUseColumnTextFilter } from "../columns";
 import type { SheetTableRow } from "../table-row-view";
 import { ColumnDefinition, ValueFilterOption } from "../types";
 import { getColumnToneClass } from "../utils";
@@ -378,14 +379,18 @@ export function SheetTable({
                     .join(" ")}
                   onMouseEnter={() => onHoverColumn(index)}
                 >
-                  <input
-                    className="filter-input"
-                    value={filters[column.path] ?? ""}
-                    onChange={(event) =>
-                      onFilterChange(column.path, event.target.value)
-                    }
-                    placeholder="Filter"
-                  />
+                  {canUseColumnTextFilter(column) ? (
+                    <input
+                      className="filter-input"
+                      value={filters[column.path] ?? ""}
+                      onChange={(event) =>
+                        onFilterChange(column.path, event.target.value)
+                      }
+                      placeholder="Filter"
+                    />
+                  ) : (
+                    <span className="filter-input filter-input-disabled">-</span>
+                  )}
                 </th>
               );
             })}

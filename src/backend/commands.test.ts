@@ -27,6 +27,7 @@ describe("backend command boundary", () => {
       externalApiAuthToken: "",
       allowInsecureExternalApiHttp: false,
       keepRunningInTray: true,
+      startAtLogin: true,
       lastUpdatedAt: "2026-05-02T00:00:00.000Z",
     } satisfies ServiceConfig;
 
@@ -43,6 +44,7 @@ describe("backend command boundary", () => {
       "lastUpdatedAt",
       "mode",
       "port",
+      "startAtLogin",
       "trackingSource",
       "version",
     ]);
@@ -50,10 +52,17 @@ describe("backend command boundary", () => {
 
   it("routes typed wrappers to stable Tauri command names", async () => {
     invokeMock.mockResolvedValueOnce({ status: "running" });
-    const { getApiServiceStatus } = await import("./commands");
+    const { checkAppUpdate, getApiServiceStatus, getReleaseHealth, installAppUpdate } =
+      await import("./commands");
 
     await getApiServiceStatus();
+    await checkAppUpdate();
+    await installAppUpdate();
+    await getReleaseHealth();
 
-    expect(invokeMock).toHaveBeenCalledWith("get_api_service_status");
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "get_api_service_status");
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "check_app_update");
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "install_app_update");
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "get_release_health");
   });
 });

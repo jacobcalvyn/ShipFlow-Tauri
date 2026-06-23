@@ -1,4 +1,4 @@
-import { TRACKING_COLUMN_PATH } from "./columns";
+import { TRACKING_COLUMN_PATH, isColumnFilterablePath } from "./columns";
 
 export function countActiveTextFilters(
   filters: Record<string, string>,
@@ -9,7 +9,7 @@ export function countActiveTextFilters(
       return false;
     }
 
-    return value.trim() !== "";
+    return isColumnFilterablePath(path) && value.trim() !== "";
   }).length;
 }
 
@@ -22,7 +22,7 @@ export function countActiveValueFilters(
       return false;
     }
 
-    return values.length > 0;
+    return isColumnFilterablePath(path) && values.length > 0;
   }).length;
 }
 
@@ -32,7 +32,8 @@ export function sanitizeTextFilters(
 ) {
   return Object.fromEntries(
     Object.entries(filters).filter(
-      ([path, value]) => validPaths.has(path) && value.trim() !== ""
+      ([path, value]) =>
+        validPaths.has(path) && isColumnFilterablePath(path) && value.trim() !== ""
     )
   );
 }
@@ -43,7 +44,7 @@ export function sanitizeValueFilters(
 ) {
   return Object.fromEntries(
     Object.entries(valueFilters).flatMap(([path, values]) => {
-      if (!validPaths.has(path)) {
+      if (!validPaths.has(path) || !isColumnFilterablePath(path)) {
         return [];
       }
 

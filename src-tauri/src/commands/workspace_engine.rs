@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use shipflow_tauri_runtime::service::{load_desktop_service_connection_config, ApiServiceConfig};
 use shipflow_tauri_runtime::service_client::{
@@ -31,6 +32,9 @@ const DEFAULT_WORKSPACE_NAME: &str = "Default Workspace";
 const DEFAULT_WORKSPACE_SHEET_ID: &str = "default-sheet";
 const DEFAULT_WORKSPACE_SHEET_NAME: &str = "Sheet 1";
 const MAX_CONCURRENT_DESKTOP_TRACKING_LOOKUPS: usize = 5;
+const DESKTOP_SERVICE_CONNECT_TIMEOUT_SECS: u64 = 5;
+const DESKTOP_SERVICE_READ_TIMEOUT_SECS: u64 = 30;
+const DESKTOP_SERVICE_REQUEST_TIMEOUT_SECS: u64 = 35;
 static DESKTOP_TRACKING_BATCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
@@ -120,6 +124,7 @@ pub async fn workspace_engine_refresh_sheet_rows_tracking_with_progress(
             &request.sheet_id,
             &request.row_ids,
             request.force_refresh,
+            request.run_id,
             |event| {
                 let _ = on_event.send(event);
             },
@@ -165,9 +170,14 @@ struct DesktopServiceLookupSource {
 
 impl DesktopServiceLookupSource {
     fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-        }
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(DESKTOP_SERVICE_CONNECT_TIMEOUT_SECS))
+            .read_timeout(Duration::from_secs(DESKTOP_SERVICE_READ_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(DESKTOP_SERVICE_REQUEST_TIMEOUT_SECS))
+            .build()
+            .expect("failed to create desktop service lookup client");
+
+        Self { client }
     }
 
     fn load_config() -> Result<ApiServiceConfig, String> {

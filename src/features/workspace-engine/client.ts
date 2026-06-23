@@ -100,6 +100,7 @@ export type ImportJobProgressEvent = {
 };
 
 export type TrackingRefreshProgressEvent = {
+  runId?: string | null;
   sheetId: string;
   row: SheetRowProjection;
   totalCount: number;
@@ -183,6 +184,7 @@ export type RefreshSheetRowsTrackingRequest = {
   sheetId: string;
   rowIds: string[];
   forceRefresh: boolean;
+  runId?: string | null;
 };
 
 export type UpsertSheetRowsRequest = {
@@ -253,6 +255,7 @@ export type SheetFieldValuesResult = {
 };
 
 export type SheetRowsTrackingRefreshResult = {
+  runId?: string | null;
   sheetId: string;
   successCount: number;
   failedCount: number;

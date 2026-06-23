@@ -223,12 +223,24 @@ function getProjectionTableRowStatus(
   }
 }
 
-function canUseLocalCompletedRowOverRustProjection(projection: SheetRowProjection) {
-  return (
+function canUseLocalCompletedRow(
+  projection: SheetRowProjection,
+  legacyRow: SheetRow | undefined
+): boolean {
+  const hasLocalRuntimeRun = Boolean(legacyRow?.runtimeTrackingRunId);
+  const canPreferCompletedLocalRow =
     projection.rowStatus === "empty" ||
-    projection.rowStatus === "pending" ||
-    projection.rowStatus === "loading" ||
-    projection.rowStatus === "stale"
+    projection.rowStatus === "stale" ||
+    hasLocalRuntimeRun;
+
+  return Boolean(
+    legacyRow?.shipment &&
+      !legacyRow.loading &&
+      !legacyRow.queued &&
+      !legacyRow.error &&
+      !legacyRow.dirty &&
+      !legacyRow.stale &&
+      canPreferCompletedLocalRow
   );
 }
 
@@ -327,24 +339,20 @@ export function createSheetTableRowsFromRustWindow(
     const legacyRow =
       legacyRowByProjectionKey ??
       legacyRowByTrackingId.get(projection.displayTrackingId);
-    if (
-      canUseLocalCompletedRowOverRustProjection(projection) &&
-      legacyRow?.shipment &&
-      !legacyRow.loading &&
-      !legacyRow.queued &&
-      !legacyRow.error &&
-      !legacyRow.dirty &&
-      !legacyRow.stale
-    ) {
+    const localCompletedRow =
+      legacyRow && canUseLocalCompletedRow(projection, legacyRow)
+        ? legacyRow
+        : undefined;
+    if (localCompletedRow) {
       const tableRow = {
-        ...createSheetTableRowFromSheetRow(legacyRow),
+        ...createSheetTableRowFromSheetRow(localCompletedRow),
         engineRowId: projection.rowId,
         position: projection.position,
       };
       return withStableTableRowReference(
         tableRow,
         previousRowsByIdentity,
-        createSheetRowRenderSignature(legacyRow, {
+        createSheetRowRenderSignature(localCompletedRow, {
           engineRowId: projection.rowId,
           position: projection.position,
         })
@@ -357,9 +365,11 @@ export function createSheetTableRowsFromRustWindow(
       shipment,
       legacyRow
     );
+    const hasLocalTrackingRuntimeMarker = Boolean(legacyRow?.runtimeTrackingRunId);
     const hasLocalRuntimeState = Boolean(
       legacyRow &&
-        (legacyRow.loading ||
+        (hasLocalTrackingRuntimeMarker ||
+          legacyRow.loading ||
           legacyRow.queued ||
           (projection.rowStatus !== "loaded" &&
             (legacyRow.error || legacyRow.dirty || legacyRow.stale)))

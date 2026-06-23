@@ -21,8 +21,10 @@ export function ServiceSettingsApp() {
     previewExternalApiAuthToken,
     previewExternalApiBaseUrl,
     previewGenerateServiceToken,
+    previewKeepRunningInTray,
     pasteDesktopServiceAuthToken,
     previewRegenerateServiceToken,
+    previewStartAtLogin,
     previewServiceEnabled,
     previewServiceMode,
     previewServicePort,
@@ -62,6 +64,8 @@ export function ServiceSettingsApp() {
         onPreviewServiceEnabled={previewServiceEnabled}
         onPreviewServiceMode={previewServiceMode}
         onPreviewServicePort={previewServicePort}
+        onPreviewKeepRunningInTray={previewKeepRunningInTray}
+        onPreviewStartAtLogin={previewStartAtLogin}
         onPreviewTrackingSource={previewTrackingSource}
         onPreviewExternalApiBaseUrl={previewExternalApiBaseUrl}
         onPreviewExternalApiAuthToken={previewExternalApiAuthToken}

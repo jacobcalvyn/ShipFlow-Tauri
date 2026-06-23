@@ -2,6 +2,7 @@ import {
   COLUMNS,
   INITIAL_ROW_COUNT,
   TRACKING_COLUMN_PATH,
+  isColumnFilterablePath,
 } from "./columns";
 import {
   getDefaultSheetAnalyticsMetricAggregation,
@@ -34,6 +35,14 @@ import {
   toggleValueFilterSelection,
 } from "./state";
 
+function withRuntimeTrackingRunId(
+  row: SheetState["rows"][number],
+  runId?: string | null
+) {
+  const { runtimeTrackingRunId: _runtimeTrackingRunId, ...baseRow } = row;
+  return runId ? { ...baseRow, runtimeTrackingRunId: runId } : baseRow;
+}
+
 export function setSheetViewModeInSheet(
   sheetState: SheetState,
   activeMode: SheetViewMode
@@ -47,6 +56,42 @@ export function setSheetViewModeInSheet(
     activeMode,
     openColumnMenuPath: null,
     highlightedColumnPath: null,
+  };
+}
+
+export function startTrackingRunInSheet(
+  sheetState: SheetState,
+  trackingRunId: string
+) {
+  if (sheetState.activeTrackingRunId === trackingRunId) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    activeTrackingRunId: trackingRunId,
+  };
+}
+
+export function clearTrackingRunInSheet(
+  sheetState: SheetState,
+  trackingRunId?: string | null
+) {
+  if (
+    trackingRunId &&
+    sheetState.activeTrackingRunId &&
+    sheetState.activeTrackingRunId !== trackingRunId
+  ) {
+    return sheetState;
+  }
+
+  if (sheetState.activeTrackingRunId === null) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    activeTrackingRunId: null,
   };
 }
 
@@ -278,7 +323,7 @@ export function setTrackingInputInSheet(
     rows: ensureTrailingEmptyRows(
       sheetState.rows.map((row) =>
         row.key === rowKey
-          ? {
+          ? withRuntimeTrackingRunId({
               ...row,
               trackingInput: nextTrackingInput,
               shipment: nextTrackingInputTrimmed === "" ? null : row.shipment,
@@ -292,7 +337,7 @@ export function setTrackingInputInSheet(
                 nextTrackingInputTrimmed !== "" &&
                 nextTrackingInputTrimmed !== row.trackingInput.trim(),
               error: "",
-            }
+            })
           : row
       )
     ),
@@ -304,7 +349,7 @@ export function clearRowInSheet(sheetState: SheetState, rowKey: string) {
     ...sheetState,
     rows: sheetState.rows.map((row) =>
       row.key === rowKey
-        ? {
+        ? withRuntimeTrackingRunId({
             ...row,
             shipment: null,
             loading: false,
@@ -312,7 +357,7 @@ export function clearRowInSheet(sheetState: SheetState, rowKey: string) {
             stale: false,
             dirty: false,
             error: "",
-          }
+          })
         : row
     ),
   };
@@ -344,13 +389,14 @@ export function setRowServerUnavailableInSheet(
 export function setRowLoadingInSheet(
   sheetState: SheetState,
   rowKey: string,
-  trackingInput: string
+  trackingInput: string,
+  options: { runId?: string | null } = {}
 ) {
   return {
     ...sheetState,
     rows: sheetState.rows.map((row) =>
       row.key === rowKey
-        ? {
+        ? withRuntimeTrackingRunId({
             ...row,
             trackingInput,
             loading: true,
@@ -358,7 +404,7 @@ export function setRowLoadingInSheet(
             stale: row.shipment !== null,
             dirty: row.shipment !== null,
             error: "",
-          }
+          }, options.runId)
         : row
     ),
   };
@@ -368,14 +414,15 @@ export function setRowSuccessInSheet(
   sheetState: SheetState,
   rowKey: string,
   trackingInput: string,
-  shipment: NonNullable<(typeof sheetState.rows)[number]["shipment"]>
+  shipment: NonNullable<(typeof sheetState.rows)[number]["shipment"]>,
+  options: { runId?: string | null } = {}
 ) {
   return {
     ...sheetState,
     rows: ensureTrailingEmptyRows(
       sheetState.rows.map((row) =>
         row.key === rowKey
-          ? {
+          ? withRuntimeTrackingRunId({
               ...row,
               trackingInput,
               shipment,
@@ -384,7 +431,7 @@ export function setRowSuccessInSheet(
               stale: false,
               dirty: false,
               error: "",
-            }
+            }, options.runId)
           : row
       )
     ),
@@ -448,7 +495,7 @@ export function clearTrackingCellInSheet(sheetState: SheetState, rowKey: string)
     rows: ensureTrailingEmptyRows(
       sheetState.rows.map((row) =>
         row.key === rowKey
-          ? {
+          ? withRuntimeTrackingRunId({
               ...row,
               trackingInput: "",
               shipment: null,
@@ -457,7 +504,7 @@ export function clearTrackingCellInSheet(sheetState: SheetState, rowKey: string)
               stale: false,
               dirty: false,
               error: "",
-            }
+            })
           : row
       )
     ),
@@ -467,13 +514,14 @@ export function clearTrackingCellInSheet(sheetState: SheetState, rowKey: string)
 export function setRowErrorInSheet(
   sheetState: SheetState,
   rowKey: string,
-  error: string
+  error: string,
+  options: { runId?: string | null } = {}
 ) {
   return {
     ...sheetState,
     rows: sheetState.rows.map((row) =>
       row.key === rowKey
-        ? {
+        ? withRuntimeTrackingRunId({
             ...row,
             shipment: row.shipment,
             loading: false,
@@ -481,7 +529,7 @@ export function setRowErrorInSheet(
             stale: row.shipment !== null,
             dirty: row.shipment !== null,
             error,
-          }
+          }, options.runId)
         : row
     ),
   };
@@ -489,7 +537,8 @@ export function setRowErrorInSheet(
 
 export function setRowsQueuedInSheet(
   sheetState: SheetState,
-  entries: SheetTableRowTrackingEntry[]
+  entries: SheetTableRowTrackingEntry[],
+  options: { runId?: string | null } = {}
 ) {
   if (entries.length === 0) {
     return sheetState;
@@ -507,7 +556,7 @@ export function setRowsQueuedInSheet(
         return row;
       }
 
-      return {
+      return withRuntimeTrackingRunId({
         ...row,
         trackingInput,
         loading: false,
@@ -515,7 +564,7 @@ export function setRowsQueuedInSheet(
         stale: false,
         dirty: false,
         error: "",
-      };
+      }, options.runId);
     }),
   };
 }
@@ -532,7 +581,7 @@ export function applyBulkPasteToSheet(
   for (let offset = 0; offset < values.length; offset += 1) {
     const row = expandedRows[startIndex + offset];
     targetKeys.push(row.key);
-    expandedRows[startIndex + offset] = {
+    expandedRows[startIndex + offset] = withRuntimeTrackingRunId({
       ...row,
       trackingInput: values[offset],
       shipment: null,
@@ -541,7 +590,7 @@ export function applyBulkPasteToSheet(
       stale: false,
       dirty: false,
       error: "",
-    };
+    });
   }
 
   return {
@@ -559,6 +608,19 @@ export function setTextFilterInSheet(
   path: string,
   value: string
 ) {
+  if (!isColumnFilterablePath(path)) {
+    if (!(path in sheetState.filters)) {
+      return sheetState;
+    }
+
+    const nextFilters = { ...sheetState.filters };
+    delete nextFilters[path];
+    return {
+      ...sheetState,
+      filters: nextFilters,
+    };
+  }
+
   return {
     ...sheetState,
     filters: {
@@ -573,6 +635,10 @@ export function toggleValueFilterInSheet(
   path: string,
   value: string
 ) {
+  if (!isColumnFilterablePath(path)) {
+    return sheetState;
+  }
+
   return {
     ...sheetState,
     valueFilters: toggleValueFilterSelection(sheetState.valueFilters, path, value),
@@ -584,6 +650,10 @@ export function setValueFilterSelectionInSheet(
   path: string,
   values: string[]
 ) {
+  if (!isColumnFilterablePath(path)) {
+    return sheetState;
+  }
+
   return {
     ...sheetState,
     valueFilters: setValueFilterSelection(sheetState.valueFilters, path, values),
@@ -923,6 +993,43 @@ export function setImportSourceLookupSuccessInSheet(
   };
 }
 
+export function setImportSourceLookupProgressInSheet(
+  sheetState: SheetState,
+  kind: ImportSourceModalKind,
+  rawResponse: string,
+  trackingIds: string[],
+  requestKey: string,
+  loading: boolean,
+  manifestBagStates: NonNullable<
+    SheetState["importSourceLookupStates"]["manifest"]["manifestBagStates"]
+  > = [],
+  sourceItemStates: NonNullable<
+    SheetState["importSourceLookupStates"]["manifest"]["sourceItemStates"]
+  > = []
+) {
+  const currentLookupState = sheetState.importSourceLookupStates[kind];
+  if (currentLookupState.requestKey !== requestKey) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    importSourceLookupStates: {
+      ...sheetState.importSourceLookupStates,
+      [kind]: {
+        ...currentLookupState,
+        loading,
+        rawResponse,
+        error: "",
+        trackingIds,
+        requestKey,
+        sourceItemStates,
+        manifestBagStates,
+      },
+    },
+  };
+}
+
 export function setImportSourceLookupErrorInSheet(
   sheetState: SheetState,
   kind: ImportSourceModalKind,
@@ -1061,6 +1168,7 @@ export function deleteRowsInSheet(
     rows: [...filledRows, ...emptyRows, ...createEmptyRows(rowKeys.length)],
     selectedRowKeys: sheetState.selectedRowKeys.filter((key) => !rowKeys.includes(key)),
     selectionFollowsVisibleRows: false,
+    activeTrackingRunId: null,
   };
 }
 
@@ -1078,6 +1186,7 @@ export function clearAllDataInSheet(sheetState: SheetState) {
     },
     selectedRowKeys: [],
     selectionFollowsVisibleRows: false,
+    activeTrackingRunId: null,
     openColumnMenuPath: null,
     highlightedColumnPath: null,
     deleteAllArmed: false,
@@ -1092,6 +1201,7 @@ export function clearAllDataInSheet(sheetState: SheetState) {
         rawResponse: "",
         error: "",
         trackingIds: [],
+        jobId: null,
         requestKey: null,
         sourceItemStates: [],
         manifestBagStates: [],
@@ -1101,6 +1211,7 @@ export function clearAllDataInSheet(sheetState: SheetState) {
         rawResponse: "",
         error: "",
         trackingIds: [],
+        jobId: null,
         requestKey: null,
         sourceItemStates: [],
         manifestBagStates: [],
@@ -1123,6 +1234,7 @@ export function clearSheetDataPreservingImportStateInSheet(sheetState: SheetStat
     },
     selectedRowKeys: [],
     selectionFollowsVisibleRows: false,
+    activeTrackingRunId: null,
     openColumnMenuPath: null,
     highlightedColumnPath: null,
     deleteAllArmed: false,
@@ -1146,6 +1258,7 @@ export function armDeleteAllInSheet(sheetState: SheetState) {
         rawResponse: "",
         error: "",
         trackingIds: [],
+        jobId: null,
         requestKey: null,
         sourceItemStates: [],
         manifestBagStates: [],
@@ -1155,6 +1268,7 @@ export function armDeleteAllInSheet(sheetState: SheetState) {
         rawResponse: "",
         error: "",
         trackingIds: [],
+        jobId: null,
         requestKey: null,
         sourceItemStates: [],
         manifestBagStates: [],

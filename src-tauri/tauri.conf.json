@@ -33,9 +33,6 @@
         "installerHooks": "../scripts/windows/desktop-installer-hooks.nsh"
       }
     },
-    "macOS": {
-      "signingIdentity": "-"
-    },
     "icon": [
       "icons/icon.png",
       "icons/icon.ico"

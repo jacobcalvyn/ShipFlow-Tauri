@@ -11,29 +11,64 @@ import {
 
 describe("sheet state utils", () => {
   it("counts active text and value filters with optional visibility", () => {
-    const visiblePaths = new Set(["a", "b"]);
+    const visiblePaths = new Set([
+      "status_akhir.status",
+      "pod.photo1_url",
+      "detail.package_detail.jenis_layanan",
+    ]);
 
-    expect(countActiveTextFilters({ a: "x", b: " ", c: "y" }, visiblePaths)).toBe(1);
-    expect(countActiveValueFilters({ a: ["A"], b: [], c: ["C"] }, visiblePaths)).toBe(1);
+    expect(
+      countActiveTextFilters(
+        {
+          "status_akhir.status": "INLOCATION",
+          "pod.photo1_url": "photo",
+          "detail.actors.pengirim.nama": "hidden",
+        },
+        visiblePaths
+      )
+    ).toBe(1);
+    expect(
+      countActiveValueFilters(
+        {
+          "detail.package_detail.jenis_layanan": ["PKH"],
+          "pod.photo1_url": ["photo"],
+          "detail.actors.pengirim.nama": ["hidden"],
+        },
+        visiblePaths
+      )
+    ).toBe(1);
   });
 
   it("sanitizes filter payloads against valid paths", () => {
-    const validPaths = new Set(["a", "b"]);
+    const validPaths = new Set([
+      "status_akhir.status",
+      "pod.photo1_url",
+      "detail.package_detail.jenis_layanan",
+    ]);
 
-    expect(sanitizeTextFilters({ a: "x", b: " ", c: "y" }, validPaths)).toEqual({
-      a: "x",
-    });
     expect(
-      sanitizeValueFilters(
+      sanitizeTextFilters(
         {
-          a: ["A", "A", ""],
-          b: [],
-          c: ["C"],
+          "status_akhir.status": "INLOCATION",
+          "pod.photo1_url": "photo",
+          "detail.actors.pengirim.nama": "hidden",
         },
         validPaths
       )
     ).toEqual({
-      a: ["A"],
+      "status_akhir.status": "INLOCATION",
+    });
+    expect(
+      sanitizeValueFilters(
+        {
+          "detail.package_detail.jenis_layanan": ["PKH", "PKH", ""],
+          "pod.photo1_url": ["photo"],
+          "detail.actors.pengirim.nama": ["hidden"],
+        },
+        validPaths
+      )
+    ).toEqual({
+      "detail.package_detail.jenis_layanan": ["PKH"],
     });
   });
 

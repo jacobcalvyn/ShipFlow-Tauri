@@ -2,6 +2,8 @@ use serde::Serialize;
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+use shipflow_tauri_runtime::runtime_log::log_runtime_event;
+
 const APP_MENU_EVENT: &str = "shipflow://app-menu-command";
 const APP_MENU_NEW_DOCUMENT_ID: &str = "app-menu-new-document";
 const APP_MENU_OPEN_DOCUMENT_ID: &str = "app-menu-open-document";
@@ -10,6 +12,8 @@ const APP_MENU_SAVE_DOCUMENT_AS_ID: &str = "app-menu-save-document-as";
 const APP_MENU_NEW_WINDOW_ID: &str = "app-menu-new-window";
 const APP_MENU_OPEN_DOCUMENT_IN_NEW_WINDOW_ID: &str = "app-menu-open-document-in-new-window";
 const APP_MENU_SHOW_SETTINGS_ID: &str = "app-menu-show-settings";
+const APP_MENU_CHECK_FOR_UPDATES_ID: &str = "app-menu-check-for-updates";
+const APP_MENU_INSTALL_APP_UPDATE_ID: &str = "app-menu-install-app-update";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,10 +78,28 @@ pub(crate) fn build_desktop_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Resul
         true,
         None::<&str>,
     )?;
+    #[cfg(target_os = "macos")]
+    let settings_label = "Preferences...";
+    #[cfg(not(target_os = "macos"))]
+    let settings_label = "Settings...";
     let settings_item = MenuItem::with_id(
         app,
         APP_MENU_SHOW_SETTINGS_ID,
-        "Settings...",
+        settings_label,
+        true,
+        Some("CmdOrCtrl+,"),
+    )?;
+    let check_for_updates_item = MenuItem::with_id(
+        app,
+        APP_MENU_CHECK_FOR_UPDATES_ID,
+        "Check for Updates...",
+        true,
+        None::<&str>,
+    )?;
+    let install_app_update_item = MenuItem::with_id(
+        app,
+        APP_MENU_INSTALL_APP_UPDATE_ID,
+        "Install Available Update...",
         true,
         None::<&str>,
     )?;
@@ -146,6 +168,9 @@ pub(crate) fn build_desktop_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Resul
             &PredefinedMenuItem::separator(app)?,
             &settings_item,
             &PredefinedMenuItem::separator(app)?,
+            &check_for_updates_item,
+            &install_app_update_item,
+            &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::services(app, None)?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::hide(app, None)?,
@@ -161,7 +186,12 @@ pub(crate) fn build_desktop_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Resul
         app,
         "Help",
         true,
-        &[&PredefinedMenuItem::about(app, None, Some(about_metadata))?],
+        &[
+            &check_for_updates_item,
+            &install_app_update_item,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::about(app, None, Some(about_metadata))?,
+        ],
     )?;
 
     Menu::with_items(
@@ -190,6 +220,10 @@ fn emit_workspace_menu_command<R: Runtime>(app: &AppHandle<R>, command: &str) {
         });
 
     if let Some(label) = target_label {
+        log_runtime_event(
+            "INFO",
+            format!("[ShipFlowDesktopMenu] command {command} emitted to {label}"),
+        );
         let _ = app.emit_to(
             label,
             APP_MENU_EVENT,
@@ -211,6 +245,8 @@ pub(crate) fn handle_desktop_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str
             emit_workspace_menu_command(app, "open-document-in-new-window")
         }
         APP_MENU_SHOW_SETTINGS_ID => emit_workspace_menu_command(app, "show-settings"),
+        APP_MENU_CHECK_FOR_UPDATES_ID => emit_workspace_menu_command(app, "check-for-updates"),
+        APP_MENU_INSTALL_APP_UPDATE_ID => emit_workspace_menu_command(app, "install-app-update"),
         _ => {}
     }
 }

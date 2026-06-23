@@ -1,8 +1,14 @@
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_os = "macos")]
 use crate::app_runtime::{
-    build_tracking_client, handle_service_settings_window_event, load_service_window_icon,
-    service_settings_setup,
+    build_service_settings_menu, handle_service_settings_menu_event,
+    open_service_settings_window_runtime,
+};
+use crate::app_runtime::{
+    build_service_settings_single_instance_plugin, build_tracking_client,
+    handle_service_settings_window_event, load_service_window_icon,
+    maybe_install_signed_updater_plugin, service_settings_setup,
 };
 use crate::lookup_runtime::LookupCacheState;
 use crate::os_bridge::{
@@ -10,7 +16,7 @@ use crate::os_bridge::{
 };
 use crate::runtime_log::log_runtime_event;
 use crate::service::{
-    ensure_tracking_service_runtime, ApiServiceConfig, ApiServiceController, ApiServiceStatus,
+    self, ensure_tracking_service_runtime, ApiServiceConfig, ApiServiceController, ApiServiceStatus,
 };
 use crate::service_client::{
     test_api_service_connection as test_api_service_connection_client, track_bag_via_service,
@@ -23,6 +29,10 @@ use crate::service_runtime::{
 };
 use crate::tracking::model::{
     BagResponse, ManifestResponse, TrackingClientState, TrackingSourceConfig,
+};
+use crate::updater_runtime::{
+    app_release_health, check_app_update_runtime, install_app_update_runtime, AppReleaseHealth,
+    AppUpdateStatus,
 };
 
 #[tauri::command]
@@ -219,6 +229,21 @@ fn validate_tracking_source_config(config: ApiServiceConfig) -> Result<(), Strin
     validate_tracking_source_config_runtime(config)
 }
 
+#[tauri::command]
+fn get_release_health(app_handle: tauri::AppHandle) -> AppReleaseHealth {
+    app_release_health(&app_handle)
+}
+
+#[tauri::command]
+async fn check_app_update(app_handle: tauri::AppHandle) -> Result<AppUpdateStatus, String> {
+    check_app_update_runtime(app_handle).await
+}
+
+#[tauri::command]
+async fn install_app_update(app_handle: tauri::AppHandle) -> Result<AppUpdateStatus, String> {
+    install_app_update_runtime(app_handle).await
+}
+
 pub fn run_service_settings_with_context(mut context: tauri::Context<tauri::Wry>) {
     crate::install_runtime_logging();
     let tracking_client = build_tracking_client("ShipFlow Service/0.1");
@@ -234,7 +259,8 @@ pub fn run_service_settings_with_context(mut context: tauri::Context<tauri::Wry>
     }
     context.config_mut().app.windows.clear();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
+        .plugin(build_service_settings_single_instance_plugin())
         .manage(TrackingClientState {
             client: tracking_client,
             source_config: Arc::new(Mutex::new(TrackingSourceConfig::default())),
@@ -245,7 +271,16 @@ pub fn run_service_settings_with_context(mut context: tauri::Context<tauri::Wry>
         .manage(ApiServiceController::default())
         .manage(TrayState::default())
         .setup(service_settings_setup)
-        .on_window_event(handle_service_settings_window_event)
+        .on_window_event(handle_service_settings_window_event);
+
+    let builder = maybe_install_signed_updater_plugin(builder, context.config());
+
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .menu(build_service_settings_menu)
+        .on_menu_event(|app, event| handle_service_settings_menu_event(app, event.id().as_ref()));
+
+    let app = builder
         .invoke_handler(tauri::generate_handler![
             track_bag,
             track_manifest,
@@ -258,8 +293,33 @@ pub fn run_service_settings_with_context(mut context: tauri::Context<tauri::Wry>
             get_api_service_status,
             test_api_service_connection,
             test_external_tracking_source,
-            validate_tracking_source_config
+            validate_tracking_source_config,
+            get_release_health,
+            check_app_update,
+            install_app_update
         ])
-        .run(context)
-        .expect("error while running ShipFlow Service");
+        .build(context)
+        .expect("error while building ShipFlow Service");
+
+    app.run(handle_service_settings_run_event);
+}
+
+fn handle_service_settings_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
+    match event {
+        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+            service::stop_service_process();
+            service::stop_service_tray_companion();
+            service::clear_current_service_settings_process();
+        }
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => {
+            if let Err(error) = open_service_settings_window_runtime(app) {
+                log_runtime_event(
+                    "ERROR",
+                    format!("[ShipFlowService] failed to reopen service settings window: {error}"),
+                );
+            }
+        }
+        _ => {}
+    }
 }

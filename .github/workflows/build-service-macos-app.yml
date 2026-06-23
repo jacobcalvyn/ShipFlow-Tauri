@@ -2,6 +2,12 @@ name: Build Service macOS
 
 on:
   workflow_dispatch:
+    inputs:
+      signed_release:
+        description: "Build signed and notarized release artifacts. Requires Apple Developer ID and updater secrets."
+        required: false
+        default: "false"
+        type: boolean
 
 permissions:
   contents: read
@@ -20,6 +26,9 @@ jobs:
       APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
       APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+      TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+      TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
+      SIGNED_RELEASE: ${{ inputs.signed_release && 'true' || 'false' }}
 
     steps:
       - name: Checkout repository
@@ -59,8 +68,34 @@ jobs:
       - name: Run Rust clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Validate macOS signing secrets
+        if: ${{ inputs.signed_release }}
+        shell: bash
+        run: |
+          missing=0
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::${name} is required for a signed macOS service release."
+              missing=1
+            fi
+          done
+
+          for name in TAURI_UPDATER_PUBLIC_KEY TAURI_UPDATER_ENDPOINTS; do
+            if [ -z "${!name}" ]; then
+              echo "::error::${name} is required for an updater-ready macOS service release."
+              missing=1
+            fi
+          done
+
+          if { [ -z "$APPLE_API_PRIVATE_KEY" ] || [ -z "$APPLE_API_KEY" ] || [ -z "$APPLE_API_ISSUER" ]; } && { [ -z "$APPLE_ID" ] || [ -z "$APPLE_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; }; then
+            echo "::error::App Store Connect API key or Apple ID notarization credentials are required."
+            missing=1
+          fi
+
+          exit "$missing"
+
       - name: Import Apple signing certificate
-        if: ${{ env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_SIGNING_IDENTITY != '' }}
+        if: ${{ inputs.signed_release }}
         shell: bash
         run: |
           CERTIFICATE_PATH="$RUNNER_TEMP/apple_certificate.p12"
@@ -82,53 +117,85 @@ jobs:
           printf '%s' "$APPLE_API_PRIVATE_KEY" > "$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8"
           echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8" >> "$GITHUB_ENV"
 
-      - name: Build signed macOS service app bundle
-        if: ${{ env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_SIGNING_IDENTITY != '' }}
-        working-directory: apps/service
+      - name: Build macOS service app bundle and DMG installer
         shell: bash
         run: |
-          ../../node_modules/.bin/tauri build --features custom-protocol --bundles app --ci --config "{\"bundle\":{\"macOS\":{\"signingIdentity\":\"$APPLE_SIGNING_IDENTITY\"}}}"
+          CONFIG_ARGS=()
+          if [ "$SIGNED_RELEASE" = "true" ]; then
+            RELEASE_CONFIG_PATH="$RUNNER_TEMP/shipflow-service-release.conf.json"
+            node scripts/create-release-build-config.mjs service "$RELEASE_CONFIG_PATH"
+            CONFIG_ARGS=(--config "$RELEASE_CONFIG_PATH")
+          fi
+          (
+            cd apps/service
+            ../../node_modules/.bin/tauri build --features custom-protocol --bundles app,dmg --ci "${CONFIG_ARGS[@]}"
+          )
 
-      - name: Build ad-hoc macOS service app bundle
-        if: ${{ env.APPLE_CERTIFICATE == '' || env.APPLE_CERTIFICATE_PASSWORD == '' || env.APPLE_SIGNING_IDENTITY == '' }}
-        working-directory: apps/service
-        env:
-          APPLE_CERTIFICATE: ""
-          APPLE_CERTIFICATE_PASSWORD: ""
-          APPLE_SIGNING_IDENTITY: ""
-          APPLE_ID: ""
-          APPLE_PASSWORD: ""
-          APPLE_TEAM_ID: ""
-          APPLE_API_KEY: ""
-          APPLE_API_ISSUER: ""
-          APPLE_API_PRIVATE_KEY: ""
-          APPLE_API_KEY_PATH: ""
-        run: ../../node_modules/.bin/tauri build --features custom-protocol --bundles app --ci
+      - name: Sign macOS service readiness bundle
+        if: ${{ !inputs.signed_release }}
+        run: bash scripts/macos/sign-dev-app-bundle.sh "target/release/bundle/macos/ShipFlow Service.app"
 
       - name: Smoke check macOS service artifacts
         shell: bash
         run: |
-          APP_PATH="$(find target/release/bundle/macos -maxdepth 1 -name 'ShipFlow Service.app' -print -quit)"
+          BUNDLE_ROOT="target/release/bundle/macos"
+          DIST_ROOT="target/release/bundle"
+          APP_PATH="$(find "$BUNDLE_ROOT" -maxdepth 1 -name 'ShipFlow Service.app' -print -quit)"
+          DMG_PATH="$(find "$DIST_ROOT" -name '*.dmg' -print -quit)"
           test -n "$APP_PATH"
+          test -n "$DMG_PATH"
           test -n "$(find "$APP_PATH/Contents/Resources" -maxdepth 1 -name '*.icns' -print -quit)"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Contents/Info.plist")" = "com.shipflow.service"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist")" = "shipflow-service"
 
       - name: Verify macOS service app bundle signature
+        if: ${{ inputs.signed_release }}
         shell: bash
         run: |
-          APP_PATH="$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          BUNDLE_ROOT="target/release/bundle/macos"
+          APP_PATH="$(find "$BUNDLE_ROOT" -maxdepth 1 -name '*.app' -print -quit)"
           test -n "$APP_PATH"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      - name: Notarize macOS service app bundle
+        if: ${{ inputs.signed_release }}
+        shell: bash
+        run: |
+          BUNDLE_ROOT="target/release/bundle/macos"
+          APP_PATH="$(find "$BUNDLE_ROOT" -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          bash scripts/macos/notarize-app.sh "$APP_PATH" "ShipFlow Service"
+
+      - name: Notarize macOS service DMG installer
+        if: ${{ inputs.signed_release }}
+        shell: bash
+        run: |
+          DMG_PATH="$(find target/release/bundle -name '*.dmg' -print -quit)"
+          test -n "$DMG_PATH"
+          bash scripts/macos/notarize-app.sh "$DMG_PATH" "ShipFlow Service DMG"
 
       - name: Archive macOS service app bundle
         shell: bash
         run: |
-          APP_PATH="$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          BUNDLE_ROOT="target/release/bundle/macos"
+          APP_PATH="$(find "$BUNDLE_ROOT" -maxdepth 1 -name '*.app' -print -quit)"
           test -n "$APP_PATH"
-          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" target/release/bundle/macos/ShipFlow-Service-macos-app.zip
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$BUNDLE_ROOT/ShipFlow-Service-macos-app.zip"
 
-      - name: Upload macOS service app archive
+      - name: Generate macOS service release evidence
+        if: ${{ inputs.signed_release }}
+        run: node scripts/generate-release-evidence.mjs service macos distribution target/release/bundle/shipflow-service-macos-distribution.evidence.json
+
+      - name: Verify macOS service release evidence
+        if: ${{ inputs.signed_release }}
+        run: node scripts/verify-release-evidence.mjs service macos distribution target/release/bundle/shipflow-service-macos-distribution.evidence.json
+
+      - name: Upload macOS service distribution artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: shipflow-service-macos-app
-          path: target/release/bundle/macos/ShipFlow-Service-macos-app.zip
+          name: shipflow-service-macos-distribution
+          path: |
+            target/release/bundle/shipflow-service-macos-distribution.evidence.json
+            target/release/bundle/macos/ShipFlow-Service-macos-app.zip
+            target/release/bundle/**/*.dmg
           if-no-files-found: error

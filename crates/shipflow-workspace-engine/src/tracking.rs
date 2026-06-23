@@ -36,6 +36,7 @@ pub struct ResolvedTrackingId {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SheetRowsTrackingRefreshResult {
+    pub run_id: Option<String>,
     pub sheet_id: String,
     pub success_count: u32,
     pub failed_count: u32,
@@ -275,7 +276,7 @@ where
         row_ids: &[String],
         force_refresh: bool,
     ) -> TrackingEngineResult<SheetRowsTrackingRefreshResult> {
-        self.refresh_sheet_rows_with_progress(sheet_id, row_ids, force_refresh, |_| {})
+        self.refresh_sheet_rows_with_progress(sheet_id, row_ids, force_refresh, None, |_| {})
             .await
     }
 
@@ -284,6 +285,7 @@ where
         sheet_id: &str,
         row_ids: &[String],
         force_refresh: bool,
+        run_id: Option<String>,
         mut on_progress: F,
     ) -> TrackingEngineResult<SheetRowsTrackingRefreshResult>
     where
@@ -370,15 +372,15 @@ where
             force_refresh
         );
         for (_, grouped_rows) in rows_by_lookup_id.iter_mut().take(next_lookup_to_activate) {
-            activate_tracking_lookup_group(
-                self.store,
+            let mut activation_context = TrackingLookupActivationContext {
                 sheet_id,
+                run_id: run_id.as_deref(),
                 total_count,
                 success_count,
                 failed_count,
-                grouped_rows,
-                &mut on_progress,
-            )?;
+                on_progress: &mut on_progress,
+            };
+            activate_tracking_lookup_group(self.store, &mut activation_context, grouped_rows)?;
         }
 
         for (_, grouped_rows) in rows_by_lookup_id.iter() {
@@ -388,6 +390,7 @@ where
                 }
 
                 on_progress(TrackingRefreshProgressEvent {
+                    run_id: run_id.clone(),
                     sheet_id: sheet_id.to_string(),
                     row: row.clone(),
                     total_count,
@@ -436,6 +439,7 @@ where
                                             .saturating_sub(success_count)
                                             .saturating_sub(failed_count);
                                         terminal_events.push(TrackingRefreshProgressEvent {
+                                            run_id: run_id.clone(),
                                             sheet_id: sheet_id.to_string(),
                                             row: row.clone(),
                                             total_count,
@@ -469,6 +473,7 @@ where
                                             .saturating_sub(success_count)
                                             .saturating_sub(failed_count);
                                         terminal_events.push(TrackingRefreshProgressEvent {
+                                            run_id: run_id.clone(),
                                             sheet_id: sheet_id.to_string(),
                                             row: row.clone(),
                                             total_count,
@@ -498,14 +503,18 @@ where
                     if next_lookup_to_activate < rows_by_lookup_id.len() {
                         let activating_lookup_id =
                             rows_by_lookup_id[next_lookup_to_activate].0.clone();
-                        if let Err(error) = activate_tracking_lookup_group(
-                            self.store,
+                        let mut activation_context = TrackingLookupActivationContext {
                             sheet_id,
+                            run_id: run_id.as_deref(),
                             total_count,
                             success_count,
                             failed_count,
+                            on_progress: &mut on_progress,
+                        };
+                        if let Err(error) = activate_tracking_lookup_group(
+                            self.store,
+                            &mut activation_context,
                             &mut rows_by_lookup_id[next_lookup_to_activate].1,
-                            &mut on_progress,
                         ) {
                             storage_error = Some(error);
                             return false;
@@ -543,6 +552,7 @@ where
                         .saturating_sub(success_count)
                         .saturating_sub(failed_count);
                     on_progress(TrackingRefreshProgressEvent {
+                        run_id: run_id.clone(),
                         sheet_id: sheet_id.to_string(),
                         row: row.clone(),
                         total_count,
@@ -582,6 +592,7 @@ where
                     .saturating_sub(success_count)
                     .saturating_sub(failed_count);
                 on_progress(TrackingRefreshProgressEvent {
+                    run_id: run_id.clone(),
                     sheet_id: sheet_id.to_string(),
                     row: row.clone(),
                     total_count,
@@ -604,6 +615,7 @@ where
         );
 
         Ok(SheetRowsTrackingRefreshResult {
+            run_id,
             sheet_id: sheet_id.to_string(),
             success_count,
             failed_count,
@@ -612,29 +624,38 @@ where
     }
 }
 
-fn activate_tracking_lookup_group<F>(
-    store: &mut SqliteWorkspaceStore,
-    sheet_id: &str,
+struct TrackingLookupActivationContext<'a, F>
+where
+    F: FnMut(TrackingRefreshProgressEvent),
+{
+    sheet_id: &'a str,
+    run_id: Option<&'a str>,
     total_count: u32,
     success_count: u32,
     failed_count: u32,
+    on_progress: &'a mut F,
+}
+
+fn activate_tracking_lookup_group<F>(
+    store: &mut SqliteWorkspaceStore,
+    context: &mut TrackingLookupActivationContext<'_, F>,
     grouped_rows: &mut [SheetRowProjection],
-    on_progress: &mut F,
 ) -> TrackingEngineResult<()>
 where
     F: FnMut(TrackingRefreshProgressEvent),
 {
-    let pending_count = total_count
-        .saturating_sub(success_count)
-        .saturating_sub(failed_count);
+    let pending_count = context
+        .total_count
+        .saturating_sub(context.success_count)
+        .saturating_sub(context.failed_count);
     if let Some(first_row) = grouped_rows.first() {
         eprintln!(
             "[ShipFlowWorkspaceEngine] tracking_batch_activate sheetId={} lookupId={} rowCount={} success={} failed={} pending={}",
-            sheet_id,
+            context.sheet_id,
             first_row.lookup_tracking_id,
             grouped_rows.len(),
-            success_count,
-            failed_count,
+            context.success_count,
+            context.failed_count,
             pending_count
         );
     }
@@ -652,12 +673,13 @@ where
         }
         row.row_status = SheetRowStatus::Loading;
         row.error_message = None;
-        on_progress(TrackingRefreshProgressEvent {
-            sheet_id: sheet_id.to_string(),
+        (context.on_progress)(TrackingRefreshProgressEvent {
+            run_id: context.run_id.map(ToOwned::to_owned),
+            sheet_id: context.sheet_id.to_string(),
             row: row.clone(),
-            total_count,
-            success_count,
-            failed_count,
+            total_count: context.total_count,
+            success_count: context.success_count,
+            failed_count: context.failed_count,
             pending_count,
         });
     }
@@ -983,7 +1005,7 @@ mod tests {
         {
             let mut engine = TrackingEngine::new(&mut store, &mut source);
             engine
-                .refresh_sheet_rows_with_progress("sheet-1", &[], true, |event| {
+                .refresh_sheet_rows_with_progress("sheet-1", &[], true, None, |event| {
                     events.push((event.row.display_tracking_id.clone(), event.row.row_status));
                 })
                 .await
@@ -1030,7 +1052,7 @@ mod tests {
         let result = {
             let mut engine = TrackingEngine::new(&mut store, &mut source);
             engine
-                .refresh_sheet_rows_with_progress("sheet-1", &[], true, |_| {})
+                .refresh_sheet_rows_with_progress("sheet-1", &[], true, None, |_| {})
                 .await
                 .expect("sheet refresh completes")
         };
@@ -1092,6 +1114,7 @@ mod tests {
                         "row-1".to_string(),
                     ],
                     true,
+                    None,
                     |_| {},
                 )
                 .await
@@ -1139,7 +1162,7 @@ mod tests {
         let result = {
             let mut engine = TrackingEngine::new(&mut store, &mut source);
             engine
-                .refresh_sheet_rows_with_progress("sheet-1", &[], true, |_| {})
+                .refresh_sheet_rows_with_progress("sheet-1", &[], true, None, |_| {})
                 .await
                 .expect("batch source errors become row failures")
         };
@@ -1246,17 +1269,20 @@ mod tests {
             .expect("new row is stored");
         let mut grouped_rows = vec![old_row];
         let mut events = Vec::new();
+        {
+            let mut collect_event = |event| events.push(event);
+            let mut activation_context = TrackingLookupActivationContext {
+                sheet_id: "sheet-1",
+                run_id: None,
+                total_count: 1,
+                success_count: 0,
+                failed_count: 0,
+                on_progress: &mut collect_event,
+            };
 
-        activate_tracking_lookup_group(
-            &mut store,
-            "sheet-1",
-            1,
-            0,
-            0,
-            &mut grouped_rows,
-            &mut |event| events.push(event),
-        )
-        .expect("stale activation is ignored");
+            activate_tracking_lookup_group(&mut store, &mut activation_context, &mut grouped_rows)
+                .expect("stale activation is ignored");
+        }
         let current = store
             .get_sheet_row("row-1")
             .expect("row lookup succeeds")

@@ -2,9 +2,11 @@ import { ClipboardEvent, FocusEvent, MutableRefObject, useCallback, useEffect, u
 import {
   applyBulkPasteToSheet,
   clearTrackingCellInSheet,
+  clearTrackingRunInSheet,
   setRowErrorInSheet,
   setRowLoadingInSheet,
   setRowsQueuedInSheet,
+  startTrackingRunInSheet,
   setTrackingInputInSheet,
   settleRowRuntimeStateInSheet,
 } from "../sheet/actions";
@@ -303,6 +305,10 @@ function createRequestId() {
   return `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function createTrackingRunId(sheetId: string, runToken: number) {
+  return `${sheetId}:tracking-run:${runToken}:${Date.now()}`;
+}
+
 function classifyTrackingError(error: unknown): TrackingErrorClass {
   if (error instanceof DOMException && error.name === "AbortError") {
     return "abort";
@@ -495,6 +501,7 @@ export function useTrackingRuntimeController({
       bumpSheetEpoch(bulkRunEpochBySheetRef, sheetId);
       activeBulkRunTokenBySheetRef.current.delete(sheetId);
       pendingBulkEntriesBySheetRef.current.delete(sheetId);
+      updateSheet(sheetId, (current) => clearTrackingRunInSheet(current));
 
       requestControllersRef.current.forEach((controller, requestKey) => {
         if (requestKey.startsWith(`${sheetId}:`)) {
@@ -510,7 +517,7 @@ export function useTrackingRuntimeController({
         }
       });
     },
-    [bumpSheetEpoch]
+    [bumpSheetEpoch, updateSheet]
   );
 
   const abortRowTrackingWork = useCallback(
@@ -872,7 +879,13 @@ export function useTrackingRuntimeController({
           pendingQueueCount:
             pendingBulkEntriesBySheetRef.current.get(sheetId)?.length ?? 0,
         });
-        updateSheet(sheetId, (current) => setRowsQueuedInSheet(current, validEntries));
+        const activeTrackingRunId =
+          workspaceRef.current.sheetsById[sheetId]?.activeTrackingRunId ?? null;
+        updateSheet(sheetId, (current) =>
+          setRowsQueuedInSheet(current, validEntries, {
+            runId: activeTrackingRunId,
+          })
+        );
         try {
           await upsertTrackingRowsIntoEngine(sheetId, validEntries, options?.sheetState);
           emitTrackingRunLog("queued_entries_upserted", {
@@ -904,10 +917,12 @@ export function useTrackingRuntimeController({
 
       const bulkRunToken = bulkRunTokenRef.current + 1;
       bulkRunTokenRef.current = bulkRunToken;
+      const trackingRunId = createTrackingRunId(sheetId, bulkRunToken);
       activeBulkRunTokenBySheetRef.current.set(sheetId, bulkRunToken);
       emitTrackingRunLog("run_start", {
         sheetId,
         runToken: bulkRunToken,
+        runId: trackingRunId,
         inputCount: entries.length,
         validCount: validEntries.length,
         forceRefresh: options?.forceRefresh === true,
@@ -974,10 +989,17 @@ export function useTrackingRuntimeController({
             emitTrackingTelemetry("start", requestMeta);
           }
         });
-        updateSheet(sheetId, (current) => setRowsQueuedInSheet(current, queueUpdates));
+        updateSheet(sheetId, (current) =>
+          setRowsQueuedInSheet(
+            startTrackingRunInSheet(current, trackingRunId),
+            queueUpdates,
+            { runId: trackingRunId }
+          )
+        );
         emitTrackingRunLog("run_queued", {
           sheetId,
           runToken: bulkRunToken,
+          runId: trackingRunId,
           queuedCount: queueUpdates.length,
         });
         try {
@@ -1017,11 +1039,13 @@ export function useTrackingRuntimeController({
                 (entry) => entry.engineRowId?.trim() || entry.key
               ),
               forceRefresh: options?.forceRefresh === true,
+              runId: trackingRunId,
             },
             (event) => {
               if (
                 event.type !== "tracking_refresh_progress" ||
                 event.payload.sheetId !== sheetId ||
+                event.payload.runId !== trackingRunId ||
                 getSheetEpoch(bulkRunEpochBySheetRef, sheetId) !== currentBulkEpoch
               ) {
                 return;
@@ -1050,8 +1074,17 @@ export function useTrackingRuntimeController({
                 const currentRow = workspaceRef.current.sheetsById[
                   sheetId
                 ]?.rows.find((candidate) => candidate.key === entry.key);
+                if (!currentRow) {
+                  emitTrackingRunLog("progress_ignored_missing_current_row", {
+                    sheetId,
+                    runToken: bulkRunToken,
+                    rowId: row.rowId,
+                    rowKey: entry.key,
+                    displayTrackingId: row.displayTrackingId,
+                  });
+                  return;
+                }
                 if (
-                  currentRow &&
                   sanitizeTrackingInput(currentRow.trackingInput) !== entry.value
                 ) {
                   emitTrackingRunLog("progress_ignored_stale_input", {
@@ -1068,6 +1101,7 @@ export function useTrackingRuntimeController({
                   applyTrackingRefreshProgressToSheet(current, event.payload, {
                     rowKey: entry.key,
                     createMissingRow: true,
+                    runId: trackingRunId,
                   })
                 );
               } else {
@@ -1082,10 +1116,14 @@ export function useTrackingRuntimeController({
           );
           onWorkspaceEngineMutation?.(sheetId);
 
-          if (getSheetEpoch(bulkRunEpochBySheetRef, sheetId) !== currentBulkEpoch) {
+          if (
+            response.payload.runId !== trackingRunId ||
+            getSheetEpoch(bulkRunEpochBySheetRef, sheetId) !== currentBulkEpoch
+          ) {
             emitTrackingRunLog("run_result_ignored_epoch_changed", {
               sheetId,
               runToken: bulkRunToken,
+              runId: trackingRunId,
               responseRows: response.payload.rows.length,
             });
             return;
@@ -1094,22 +1132,37 @@ export function useTrackingRuntimeController({
           if (response.payload.rows.length > 0) {
             const getRowKey = (projection: SheetRowProjection) => {
               const entry = queuedEntryByKey.get(projection.rowId);
-              if (entry) {
-                return entry.key;
+              const matchingEntry =
+                entry ??
+                queueUpdates.find(
+                  (candidate) =>
+                    (candidate.engineRowId?.trim() || candidate.key) ===
+                      projection.rowId ||
+                    sanitizeTrackingInput(candidate.value) ===
+                      projection.displayTrackingId
+                );
+              if (!matchingEntry) {
+                return undefined;
               }
 
-              return queueUpdates.find(
-                (candidate) =>
-                  (candidate.engineRowId?.trim() || candidate.key) ===
-                    projection.rowId ||
-                  sanitizeTrackingInput(candidate.value) ===
-                    projection.displayTrackingId
-              )?.key;
+              const currentRow = workspaceRef.current.sheetsById[
+                sheetId
+              ]?.rows.find((candidate) => candidate.key === matchingEntry.key);
+              if (
+                !currentRow ||
+                sanitizeTrackingInput(currentRow.trackingInput) !==
+                  matchingEntry.value
+              ) {
+                return undefined;
+              }
+
+              return matchingEntry.key;
             };
             updateSheet(sheetId, (current) =>
               applyTrackingRefreshRowsToSheet(current, response.payload.rows, {
                 getRowKey,
-                createMissingRows: true,
+                createMissingRows: false,
+                runId: trackingRunId,
               })
             );
           }
@@ -1117,6 +1170,7 @@ export function useTrackingRuntimeController({
           emitTrackingRunLog("run_complete", {
             sheetId,
             runToken: bulkRunToken,
+            runId: trackingRunId,
             successCount: response.payload.successCount,
             failedCount: response.payload.failedCount,
             responseRows: response.payload.rows.length,
@@ -1181,6 +1235,7 @@ export function useTrackingRuntimeController({
         emitTrackingRunLog("run_finalized", {
           sheetId,
           runToken: bulkRunToken,
+          runId: trackingRunId,
           pendingQueueCount: pendingEntries.length,
         });
         if (pendingEntries.length > 0) {
@@ -1188,6 +1243,10 @@ export function useTrackingRuntimeController({
             sheetId,
             pendingEntries,
             pendingEntries[0]?.options
+          );
+        } else {
+          updateSheet(sheetId, (current) =>
+            clearTrackingRunInSheet(current, trackingRunId)
           );
         }
       }

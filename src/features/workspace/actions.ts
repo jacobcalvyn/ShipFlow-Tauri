@@ -38,6 +38,7 @@ function cloneSheetState(sourceSheet: SheetState): SheetState {
     sortState: { ...sourceSheet.sortState },
     selectedRowKeys: [],
     selectionFollowsVisibleRows: false,
+    activeTrackingRunId: null,
     columnWidths: { ...sourceSheet.columnWidths },
     hiddenColumnPaths: [...sourceSheet.hiddenColumnPaths],
     pinnedColumnPaths: [...sourceSheet.pinnedColumnPaths],

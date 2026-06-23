@@ -193,7 +193,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - Sticky selector column and sticky `Nomor Kiriman`
 - Keyboard row navigation in `Nomor Kiriman` with `Enter`, `ArrowUp`, and `ArrowDown`
 - Row checkbox selection for copy/delete actions
-- When any text or value filter is active, row selection automatically follows the visible filtered rows only
+- Text and value filters do not auto-select rows; existing selections are only pruned when selected rows leave the visible result set
 - Column context menu for:
   - sort
   - pin / unpin
@@ -243,6 +243,7 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
 - Value-filter popups show per-value item counts, for example `PID94102398 - UNBAGGING (33)`
 - Hovering a value-filter option exposes `Filter ini` and `Filter kecuali ini` shortcuts for quick include/exclude filtering
 - Value-filter popups for sender/recipient name, address, and latest delivery columns use a wider panel for long values
+- Column filter capability is metadata-driven from the column registry: normal text/number/date/boolean columns are filterable, while POD image and raw JSON/history columns are marked non-filterable and do not expose text or value-filter controls.
 - The workspace layout is tuned to be more compact so tabs, actions, shortcuts, and the sheet grid fit more comfortably in one screen
 - Toast notifications are shown as a fixed top-right queue and do not shift the sheet layout
 - `history_summary.delivery_runsheet` now keeps the latest delivery result as one update with:
@@ -403,10 +404,12 @@ The main table currently focuses on:
 - External API tracking uses the `/v1` route as authoritative when the configured base URL includes `/v1` or `/v1/openapi.json`, avoiding an unnecessary legacy fallback request on `404`.
 - External API tracking starts a hedged duplicate request when a request is still pending after a short delay, then uses whichever identical request finishes first to reduce random tail-latency spikes.
 - Active, dirty, and loading rows remain visible even while filters are active.
-- Filtered views now force selection to exactly the currently visible shipment IDs, and clearing filters stops that auto-follow mode before normal manual selection resumes.
+- Filtered views keep manual selection stable and only prune selected row keys that are no longer visible, so applying a filter does not implicitly select every matching shipment.
 - Request telemetry is emitted for `start`, `success`, `fail`, and `abort` with `sheetId`, `rowKey`, and `shipmentId`.
 - `Delete All` resets rows, filters, value filters, sort state, and in-flight tracking work so the table returns to a clean input state.
 - `Lacak Ulang` marks all target rows as queued first, then promotes only the active worker row to loading while preserving completed/failed row status.
+- Batch tracking refreshes carry a per-sheet `runId`; stale progress/results from cancelled, deleted, or superseded runs are ignored so old events cannot restore deleted rows or downgrade completed rows back to pending.
+- Batch tracking progress updates local row runtime state only; Rust row-window/cache mutation is emitted after the batch result settles, not once per row progress event.
 - Sheet duplication deep-copies analytics arrays and aggregation maps, so the duplicate sheet cannot mutate the source sheet's pivot configuration by shared reference.
 - Workspace persistence repairs duplicate persisted sheet IDs, duplicate row keys, and duplicate selected row keys during load instead of allowing corrupted saved state to destabilize the workspace.
 - Legacy persisted `cod_total` value aggregations are migrated to the current `Total COD` analytics field key.
@@ -421,8 +424,16 @@ The main table currently focuses on:
 - Launching `ShipFlow Service` normally starts it in the background and keeps only the system-tray/menu-bar entry visible.
 - Closing the `ShipFlow Service` settings window hides it and keeps the service tray companion available.
 - Reopening `ShipFlow Service` from the tray/menu-bar entry focuses or recreates the existing settings window instead of starting a duplicate settings instance.
+- On macOS, `ShipFlow Service` stays in accessory/menu-bar mode while hidden, switches to a regular app policy when the settings window is shown, exposes native About/Preferences/Hide/Quit menu items, and handles Dock/Finder reopen by focusing the existing settings window.
+- Quitting `ShipFlow Service` from the native menu or tray stops the API runtime and any open Service settings UI instead of leaving a duplicate or hidden process behind.
+- `Start ShipFlow Service at login` is an explicit Service setting. It remains independent from the current-session menu-bar/system-tray persistence toggle.
+- Service autostart defaults off until the user explicitly enables `Start ShipFlow Service at login`.
+- Desktop and Service settings register the official Tauri single-instance plugin before other plugins, so duplicate UI launches are delegated to the running app lifecycle before another window is created.
+- macOS duplicate launches focus the existing app through the Tauri single-instance callback, Dock/Finder reopen handling, and app-bundle activation via `open -b`; Windows keeps the named-mutex guard plus activation request fallback.
+- On Windows, closing a clean Desktop main window hides it behind a tray icon; the tray can reopen the same Desktop UI or quit the Desktop process explicitly.
 - If the Service tray/menu-bar companion cannot start, the Service settings window is shown as a fallback so the user can still edit configuration.
 - Desktop and Service cross-launch helpers look for the separately installed app first and no longer fall back to launching the current app as the other product.
+- On Windows, cross-launch discovery prefers the installer-written `ExecutablePath` registry value and falls back to `InstallLocation`, so Desktop and Service can still find each other when the install directory contains spaces or the binary name changes.
 - Desktop custom connection saves no longer start or stop the Service tray companion.
 - Windows Desktop and Service installers run shutdown hooks before install and uninstall replacement, so running ShipFlow processes are closed before files are overwritten.
 - Custom Desktop-to-Service lookups re-check the authenticated `/v1/status` identity before sending shipment, bag, or manifest IDs to a custom endpoint.
@@ -525,6 +536,8 @@ Latest CLI/runtime smoke baseline, verified on 2026-04-25:
 
 The CLI smoke test does not replace a visual Desktop smoke pass. Still verify the Tauri window flow for standalone service settings, POD hover previews, and native workspace save dialogs before a user-facing release.
 
+For signed installed artifacts, use [docs/native-runtime-release-smoke-checklist.md](./docs/native-runtime-release-smoke-checklist.md). That checklist is the required release evidence for native single-instance behavior, explicit autostart, Windows Desktop close/reopen/exit behavior, menu/tray lifecycle, stable Desktop/Service discovery, and signed updater installation on macOS and Windows.
+
 Latest frontend workspace and pivot/grafik audit baseline, verified on 2026-05-29:
 
 - `npm run security:baseline` passes the Tauri capability, CSP, and updater artifact config checks.
@@ -622,7 +635,7 @@ npm run build:service
 
 This builds the Service app binary with Tauri `custom-protocol` enabled, so the Service settings window uses embedded production assets instead of a localhost dev server. This raw binary is for local build validation only.
 
-Build the standalone service macOS app bundle:
+Build a local standalone service macOS app bundle for developer smoke checks:
 
 ```bash
 npm run build:service:bundle:macos
@@ -638,18 +651,26 @@ npm run build:bundle:nsis
 
 This builds the Desktop app binary and packages it with the custom NSIS installer that installs to `C:\ShipFlow\Desktop`.
 
-Build the macOS app bundle only:
+Build a local macOS app bundle for developer smoke checks:
 
 ```bash
 npm run build:bundle:macos
 ```
 
-Build signed updater artifacts when `TAURI_SIGNING_PRIVATE_KEY` is configured:
+Local macOS bundle commands are not release publishing paths. Distributable Desktop,
+Service, and updater artifacts must be produced by the signed GitHub Actions workflows
+or an equivalent explicit `APPLE_SIGNING_IDENTITY` overlay.
+
+Build signed updater artifacts with the required Tauri signing key and updater endpoint configuration:
 
 ```bash
 npm run build:updater:desktop
 npm run build:updater:service
 ```
+
+The signed updater workflow also notarizes and staples the macOS `.app` bundle
+and any generated DMG installer before upload. Windows updater builds verify the
+generated installer signatures with `signtool`.
 
 ## GitHub Actions Quality Gate
 
@@ -700,6 +721,9 @@ What it does:
 - runs `cargo test --workspace --all-targets`
 - runs `cargo clippy --workspace --all-targets -- -D warnings`
 - builds the Desktop NSIS installer without bundling `ShipFlow Service`
+- requires `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD`
+- signs `target/release/shipflow3-tauri.exe` before packaging
+- signs `target/release/ShipFlow-Desktop-Setup.exe` after packaging
 - installs Desktop to `C:\ShipFlow\Desktop` and prepares writable runtime data folders under `C:\ShipFlow\Data`
 - wires the Desktop NSIS installer to close running Desktop processes before reinstall or uninstall replacement
 - smoke-checks the Desktop executable and installer icon
@@ -733,12 +757,14 @@ What it does:
 - runs `cargo fmt --all -- --check`
 - runs `cargo test --workspace --all-targets`
 - runs `cargo clippy --workspace --all-targets -- -D warnings`
-- optionally uses Apple signing and notarization credentials when the corresponding `APPLE_*` repository secrets are configured
-- otherwise falls back to Tauri ad-hoc signing (`bundle.macOS.signingIdentity = "-"`) so the app bundle is still signed for local validation
+- requires Apple Developer ID signing and notarization credentials before building a distributable artifact
 - builds the Desktop macOS app bundle without bundling `ShipFlow Service`
+- builds a signed Desktop macOS DMG installer for user installation
 - smoke-checks the generated app bundle and icon resources
 - verifies the generated `.app` bundle signature with `codesign --verify --deep --strict`
+- submits the signed app and DMG installer to Apple notarization, staples the notary tickets, and runs `spctl --assess`
 - archives the `.app` bundle as a `.zip` artifact to preserve the macOS bundle structure during download
+- uploads the notarized DMG installer alongside the app archive
 
 Triggers:
 
@@ -748,12 +774,12 @@ Triggers:
 The uploaded macOS outputs are:
 
 - `target/release/bundle/macos/ShipFlow-Desktop-macos-app.zip`
+- `target/release/bundle/**/*.dmg`
 
 Important notes:
 
 - A browser-downloaded macOS app should be signed to avoid the broken-app warning from Gatekeeper.
-- Ad-hoc signing is sufficient for local/manual validation, especially on Apple Silicon, but it is not a substitute for a Developer ID Application certificate plus notarization.
-- For distribution to other users, configure the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and notarization credentials (`APPLE_API_*` or `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`) as described in the Tauri macOS signing documentation.
+- Configure the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and notarization credentials (`APPLE_API_*` or `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`) before publishing Desktop artifacts.
 
 ## GitHub Actions Build Service Windows
 
@@ -775,8 +801,12 @@ What it does:
 - runs `cargo test --workspace --all-targets`
 - runs `cargo clippy --workspace --all-targets -- -D warnings`
 - builds `apps/service` through Tauri in no-bundle release mode with `custom-protocol` enabled
+- requires `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD`
+- signs `target/release/shipflow-service.exe` before packaging
+- signs `target/release/ShipFlow-Service-Setup.exe` after packaging
 - builds an admin Windows installer with NSIS
 - installs Service to `C:\ShipFlow\Service` and prepares writable runtime data folders under `C:\ShipFlow\Data`
+- removes the explicit `ShipFlowServiceTray` user autostart entry during uninstall
 - builds the Windows Service app without a console window, applies the Service icon to the app executable and installer, and closes running `shipflow-service.exe` processes before reinstall or uninstall replacement
 - smoke-checks the generated installer and Service icon
 - uploads the Windows Service installer artifact: `shipflow-service-windows-installer`
@@ -809,13 +839,13 @@ What it does:
 - runs `cargo fmt --all -- --check`
 - runs `cargo test --workspace --all-targets`
 - runs `cargo clippy --workspace --all-targets -- -D warnings`
-- imports the Apple Developer ID certificate and notarization key when `APPLE_*` secrets are configured
-- otherwise falls back to Tauri ad-hoc signing after clearing Apple signing environment variables, so partial secrets do not trigger an invalid certificate import
-- builds and signs a macOS `ShipFlow Service.app` bundle with the Service icon
+- requires Apple Developer ID signing and notarization credentials before building a distributable Service artifact
+- builds and signs a macOS `ShipFlow Service.app` bundle and DMG installer with the Service icon
 - smoke-checks the generated app bundle and icon resources
 - verifies the generated `.app` bundle signature with `codesign --verify --deep --strict`
+- submits the signed Service app and DMG installer to Apple notarization, staples the notary tickets, and runs `spctl --assess`
 - archives the `.app` bundle as a `.zip` artifact to preserve the macOS bundle structure during download
-- uploads the macOS Service app artifact: `shipflow-service-macos-app`
+- uploads the macOS Service distribution artifact: `shipflow-service-macos-distribution`
 
 Triggers:
 
@@ -825,13 +855,13 @@ Triggers:
 The uploaded macOS Service output is:
 
 - `target/release/bundle/macos/ShipFlow-Service-macos-app.zip`
+- `apps/service/target/release/bundle/**/*.dmg`
 
 Desktop installers no longer include the service app. Install ShipFlow Service separately, then configure Desktop with the service port and token.
 
 Important macOS distribution note:
 
 - A downloaded `ShipFlow Service.app` must be Developer ID signed and notarized to pass Gatekeeper without the "Apple could not verify" warning.
-- The Service workflow falls back to ad-hoc signing only when Apple signing/notarization secrets are missing; that fallback is for local validation, not end-user distribution.
 - Configure the same `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and notarization credentials used by the Desktop macOS workflow before publishing the Service artifact.
 
 ## Tests
@@ -872,6 +902,7 @@ Rust tests are now split by domain and cover:
 - embedded API bearer-auth validation
 - authenticated service readiness probing and ShipFlow service identity checks
 - service settings activation, single-instance detection, and tray companion lifecycle checks
+- native runtime release gates compile and lint the shared Tauri runtime on macOS and Windows through the `Quality Gate` workflow matrix
 - backend shipment-ID normalization and validation
 - backend bag-ID and manifest-ID normalization and validation
 - service-side bag / manifest lookup endpoint encoding and error-message parsing

@@ -41,6 +41,7 @@ describe("useWorkspaceServiceSurfaceController", () => {
     });
     expect(result.current).toEqual({
       ...serviceSettings,
+      showNotice,
       openShipFlowServiceApp: expect.any(Function),
     });
 

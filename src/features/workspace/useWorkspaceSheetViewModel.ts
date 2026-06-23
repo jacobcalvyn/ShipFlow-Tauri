@@ -57,6 +57,7 @@ import {
   type SheetFieldValuesQuery,
   type SheetFieldValuesResult,
   type SheetFilter,
+  type SheetRowsQuery,
   type SheetRowWindow,
   type SheetValueFilter,
 } from "../workspace-engine/client";
@@ -324,6 +325,11 @@ export function useWorkspaceSheetViewModel(
     field: string;
     options: ValueFilterOption[];
   } | null>(null);
+  const [rustUnfilteredTotalCountState, setRustUnfilteredTotalCountState] =
+    useState<{
+      queryKey: string;
+      totalCount: number;
+    } | null>(null);
   const [rustRowWindowRequest, setRustRowWindowRequest] = useState<{
     baseKey: string | null;
     offset: number;
@@ -444,6 +450,35 @@ export function useWorkspaceSheetViewModel(
         : null,
     [rustSheetRowsQuery, workspaceEngineSyncGeneration]
   );
+  const needsUnfilteredRustTotalCount =
+    activeFilterCount > 0 || ignoredHiddenFilterCount > 0;
+  const rustUnfilteredTotalRowsQuery = useMemo<SheetRowsQuery | null>(() => {
+    if (
+      !activeSheetId ||
+      activeSheet.activeMode !== "workspace" ||
+      !needsUnfilteredRustTotalCount
+    ) {
+      return null;
+    }
+
+    return {
+      sheetId: activeSheetId,
+      offset: 0,
+      limit: 1,
+      filters: [],
+      sort: [],
+    };
+  }, [activeSheet.activeMode, activeSheetId, needsUnfilteredRustTotalCount]);
+  const rustUnfilteredTotalRowsQueryKey = useMemo(
+    () =>
+      rustUnfilteredTotalRowsQuery
+        ? JSON.stringify({
+            query: rustUnfilteredTotalRowsQuery,
+            workspaceEngineCacheGeneration,
+          })
+        : null,
+    [rustUnfilteredTotalRowsQuery, workspaceEngineCacheGeneration]
+  );
   const requestVisibleRowWindow = useCallback(
     (range: { startIndex: number; endIndex: number }) => {
       if (!rustSheetRowsBaseQueryKey) {
@@ -529,6 +564,39 @@ export function useWorkspaceSheetViewModel(
     rustSheetRowsQueryKey,
     workspaceEngineCacheGeneration,
   ]);
+
+  useEffect(() => {
+    if (!rustUnfilteredTotalRowsQuery || !rustUnfilteredTotalRowsQueryKey) {
+      setRustUnfilteredTotalCountState((current) =>
+        current === null ? current : null
+      );
+      return undefined;
+    }
+
+    let cancelled = false;
+    querySheetRows(rustUnfilteredTotalRowsQuery)
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+
+        setRustUnfilteredTotalCountState({
+          queryKey: rustUnfilteredTotalRowsQueryKey,
+          totalCount: response.payload?.totalCount ?? 0,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRustUnfilteredTotalCountState((current) =>
+            current?.queryKey === rustUnfilteredTotalRowsQueryKey ? null : current
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rustUnfilteredTotalRowsQuery, rustUnfilteredTotalRowsQueryKey]);
 
   useEffect(() => {
     if (!rustValueOptionsQuery || !rustValueOptionsQueryKey) {
@@ -636,11 +704,23 @@ export function useWorkspaceSheetViewModel(
   const totalShipmentCount = useMemo(
     () => {
       const displayedCount = getTotalTableRowTrackingCount(displayedTableRows);
-      return displayedRowWindow
+      const displayedTotal = displayedRowWindow
         ? Math.max(displayedRowWindow.totalCount, displayedCount)
         : displayedCount;
+      const unfilteredTotal =
+        rustUnfilteredTotalCountState?.queryKey === rustUnfilteredTotalRowsQueryKey
+          ? rustUnfilteredTotalCountState.totalCount
+          : 0;
+
+      return Math.max(displayedTotal, unfilteredTotal, legacyNonEmptyRows.length);
     },
-    [displayedRowWindow?.totalCount, displayedTableRows]
+    [
+      displayedRowWindow?.totalCount,
+      displayedTableRows,
+      legacyNonEmptyRows.length,
+      rustUnfilteredTotalCountState,
+      rustUnfilteredTotalRowsQueryKey,
+    ]
   );
 
   const trackingColumnAutoWidth = useMemo(

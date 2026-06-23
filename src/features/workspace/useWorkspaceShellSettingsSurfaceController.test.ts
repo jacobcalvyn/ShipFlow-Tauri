@@ -29,6 +29,9 @@ describe("useWorkspaceShellSettingsSurfaceController", () => {
       cancelServiceConfigPreview: vi.fn(),
       confirmServiceConfig: vi.fn(),
       openShipFlowServiceApp: vi.fn(),
+      checkForAppUpdate: vi.fn(),
+      installAvailableAppUpdate: vi.fn(),
+      showNotice: vi.fn(),
     };
     const shellSettings = {
       effectiveDisplayScale: "small",
@@ -55,6 +58,9 @@ describe("useWorkspaceShellSettingsSurfaceController", () => {
       createNewWorkspaceWindow: document.createNewWorkspaceWindow,
       openWorkspaceInNewWindow: document.openWorkspaceInNewWindow,
       openShipFlowServiceApp: service.openShipFlowServiceApp,
+      checkForAppUpdate: service.checkForAppUpdate,
+      installAvailableAppUpdate: service.installAvailableAppUpdate,
+      showNotice: service.showNotice,
     });
     expect(result.current).toBe(shellSettings);
   });

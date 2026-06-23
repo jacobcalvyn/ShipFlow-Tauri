@@ -190,6 +190,115 @@ describe("sheet table row view", () => {
     });
   });
 
+  it("uses locally completed tracking progress over a stale loaded Rust projection", () => {
+    const legacyRows = createEmptyRows(1);
+    legacyRows[0] = {
+      ...legacyRows[0],
+      key: "legacy-visible-key",
+      trackingInput: "P103",
+      shipment: {
+        ...createShipment("P103"),
+        status_akhir: {
+          status: "DELIVERED",
+        },
+      },
+      runtimeTrackingRunId: "run-1",
+    };
+    const window: SheetRowWindow = {
+      sheetId: "sheet-1",
+      offset: 0,
+      limit: 1,
+      totalCount: 1,
+      hasMore: false,
+      nextOffset: null,
+      rows: [
+        {
+          rowId: "rust-row-1",
+          position: 0,
+          displayTrackingId: "P103",
+          lookupTrackingId: "P103",
+          rowStatus: "loaded",
+          errorMessage: null,
+          statusJson: {
+            status: "INLOCATION",
+          },
+          detailJson: {
+            shipment_header: {
+              nomor_kiriman: "P103",
+            },
+          },
+          historyJson: null,
+        },
+      ],
+    };
+
+    const rows = createSheetTableRowsFromRustWindow(window, legacyRows);
+
+    expect(rows[0]).toMatchObject({
+      key: "legacy-visible-key",
+      engineRowId: "rust-row-1",
+      trackingInput: "P103",
+      status: "Ready",
+      loading: false,
+      queued: false,
+      error: "",
+    });
+    expect(rows[0].shipment?.status_akhir.status).toBe("DELIVERED");
+  });
+
+  it("uses local runtime error over a stale loaded Rust projection", () => {
+    const legacyRows = createEmptyRows(1);
+    legacyRows[0] = {
+      ...legacyRows[0],
+      key: "legacy-visible-key",
+      trackingInput: "P103",
+      shipment: createShipment("P103"),
+      stale: true,
+      dirty: true,
+      error: "upstream timeout",
+      runtimeTrackingRunId: "run-1",
+    };
+    const window: SheetRowWindow = {
+      sheetId: "sheet-1",
+      offset: 0,
+      limit: 1,
+      totalCount: 1,
+      hasMore: false,
+      nextOffset: null,
+      rows: [
+        {
+          rowId: "rust-row-1",
+          position: 0,
+          displayTrackingId: "P103",
+          lookupTrackingId: "P103",
+          rowStatus: "loaded",
+          errorMessage: null,
+          statusJson: {
+            status: "DELIVERED",
+          },
+          detailJson: {
+            shipment_header: {
+              nomor_kiriman: "P103",
+            },
+          },
+          historyJson: null,
+        },
+      ],
+    };
+
+    const rows = createSheetTableRowsFromRustWindow(window, legacyRows);
+
+    expect(rows[0]).toMatchObject({
+      key: "legacy-visible-key",
+      engineRowId: "rust-row-1",
+      trackingInput: "P103",
+      status: "Error",
+      loading: false,
+      queued: false,
+      error: "upstream timeout",
+    });
+  });
+
   it("keeps active local loading state over a pending Rust projection", () => {
     const legacyRows = createEmptyRows(1);
     legacyRows[0] = {
@@ -275,7 +384,7 @@ describe("sheet table row view", () => {
     });
   });
 
-  it("keeps a locally completed row over a stale pending Rust projection", () => {
+  it("uses pending Rust projection over a locally completed row without active run", () => {
     const legacyRows = createEmptyRows(1);
     legacyRows[0] = {
       ...legacyRows[0],
@@ -311,12 +420,12 @@ describe("sheet table row view", () => {
       key: "legacy-visible-key",
       engineRowId: "rust-row-1",
       trackingInput: "P104",
-      status: "Ready",
+      status: "Pending",
       loading: false,
-      queued: false,
+      queued: true,
       error: "",
     });
-    expect(rows[0].shipment?.status_akhir.status).toBe("DELIVERED");
+    expect(rows[0].shipment).toBeNull();
   });
 
   it("keeps a locally completed row over an empty Rust projection during tracking progress", () => {
@@ -363,7 +472,7 @@ describe("sheet table row view", () => {
     expect(rows[0].shipment?.status_akhir.status).toBe("DELIVERED");
   });
 
-  it("keeps a locally completed row over a stale loading Rust projection", () => {
+  it("uses loading Rust projection over a locally completed row without active run", () => {
     const legacyRows = createEmptyRows(1);
     legacyRows[0] = {
       ...legacyRows[0],
@@ -399,12 +508,12 @@ describe("sheet table row view", () => {
       key: "legacy-visible-key",
       engineRowId: "rust-row-1",
       trackingInput: "P105",
-      status: "Ready",
-      loading: false,
+      status: "Loading",
+      loading: true,
       queued: false,
       error: "",
     });
-    expect(rows[0].shipment?.status_akhir.status).toBe("DELIVERED");
+    expect(rows[0].shipment).toBeNull();
   });
 
   it("counts pending Rust projections as in-progress rows", () => {

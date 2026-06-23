@@ -22,5 +22,8 @@ export function useWorkspaceShellSettingsSurfaceController({
     createNewWorkspaceWindow: document.createNewWorkspaceWindow,
     openWorkspaceInNewWindow: document.openWorkspaceInNewWindow,
     openShipFlowServiceApp: service.openShipFlowServiceApp,
+    checkForAppUpdate: service.checkForAppUpdate,
+    installAvailableAppUpdate: service.installAvailableAppUpdate,
+    showNotice: service.showNotice,
   });
 }

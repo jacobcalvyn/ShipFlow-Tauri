@@ -17,8 +17,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "macOS": {
-      "signingIdentity": "-"
+    "windows": {
+      "nsis": {
+        "installerHooks": "../../scripts/windows/service-installer-hooks.nsh"
+      }
     },
     "icon": [
       "../../src-tauri/icons/service-icon.png",

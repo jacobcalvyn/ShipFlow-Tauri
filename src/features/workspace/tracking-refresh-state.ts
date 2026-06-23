@@ -87,8 +87,13 @@ function ensureSheetRowForProjection(
 export function applyTrackingRefreshProgressToSheet(
   sheetState: SheetState,
   event: TrackingRefreshProgressEvent,
-  options: { rowKey?: string; createMissingRow?: boolean } = {}
+  options: { rowKey?: string; createMissingRow?: boolean; runId?: string | null } = {}
 ) {
+  const runId = options.runId ?? event.runId ?? null;
+  if (runId && sheetState.activeTrackingRunId !== runId) {
+    return sheetState;
+  }
+
   const ensured = ensureSheetRowForProjection(
     sheetState,
     event.row,
@@ -112,38 +117,55 @@ export function applyTrackingRefreshProgressToSheet(
   }
 
   if (event.row.rowStatus === "loading") {
-    return setRowLoadingInSheet(
-      ensured.sheetState,
-      rowKey,
-      event.row.displayTrackingId
-    );
-  }
-
-  if (event.row.rowStatus === "pending") {
     if (
-      currentRow?.loading ||
-      currentRow?.shipment ||
-      currentRow?.error ||
-      currentRow?.dirty ||
-      currentRow?.stale
+      !runId &&
+      currentRow &&
+      !currentRow.loading &&
+      !currentRow.queued &&
+      (currentRow.shipment || currentRow.error || currentRow.dirty || currentRow.stale)
     ) {
       return sheetState;
     }
 
-    return setRowsQueuedInSheet(ensured.sheetState, [
-      {
-        key: rowKey,
-        value: event.row.displayTrackingId,
-        engineRowId: event.row.rowId,
-      },
-    ]);
+    return setRowLoadingInSheet(
+      ensured.sheetState,
+      rowKey,
+      event.row.displayTrackingId,
+      { runId }
+    );
+  }
+
+  if (event.row.rowStatus === "pending") {
+    if (currentRow?.loading) {
+      return sheetState;
+    }
+
+    if (
+      !runId &&
+      (currentRow?.shipment || currentRow?.error || currentRow?.dirty || currentRow?.stale)
+    ) {
+      return sheetState;
+    }
+
+    return setRowsQueuedInSheet(
+      ensured.sheetState,
+      [
+        {
+          key: rowKey,
+          value: event.row.displayTrackingId,
+          engineRowId: event.row.rowId,
+        },
+      ],
+      { runId }
+    );
   }
 
   if (event.row.rowStatus === "failed") {
     return setRowErrorInSheet(
       ensured.sheetState,
       rowKey,
-      event.row.errorMessage ?? "Tracking request failed."
+      event.row.errorMessage ?? "Tracking request failed.",
+      { runId }
     );
   }
 
@@ -154,7 +176,8 @@ export function applyTrackingRefreshProgressToSheet(
         ensured.sheetState,
         rowKey,
         event.row.displayTrackingId,
-        shipment
+        shipment,
+        { runId }
       );
     }
   }
@@ -168,8 +191,13 @@ export function applyTrackingRefreshRowsToSheet(
   options: {
     getRowKey?: (row: SheetRowProjection) => string | undefined;
     createMissingRows?: boolean;
+    runId?: string | null;
   } = {}
 ) {
+  if (options.runId && sheetState.activeTrackingRunId !== options.runId) {
+    return sheetState;
+  }
+
   return rows.reduce(
     (current, row) =>
       applyTrackingRefreshProgressToSheet(
@@ -181,10 +209,12 @@ export function applyTrackingRefreshRowsToSheet(
           successCount: 0,
           failedCount: 0,
           pendingCount: 0,
+          runId: options.runId ?? null,
         },
         {
           rowKey: options.getRowKey?.(row),
           createMissingRow: options.createMissingRows,
+          runId: options.runId,
         }
       ),
     sheetState

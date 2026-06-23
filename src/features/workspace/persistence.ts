@@ -73,6 +73,7 @@ export function createStorageSafeWorkspaceState(
         {
           ...sheetState,
           deleteAllArmed: false,
+          activeTrackingRunId: null,
           openColumnMenuPath: null,
           highlightedColumnPath: null,
           importSourceModalKind: null,
@@ -102,15 +103,20 @@ export function createStorageSafeWorkspaceState(
               manifestBagStates: [],
             },
           },
-          rows: sheetState.rows.map((row) => ({
-            ...row,
-            loading: false,
-            queued: false,
-            shipment:
-              mode === "full" && row.shipment ? createStorageSafeTrackResponse(row.shipment) : null,
-            stale: mode === "full" ? row.stale : false,
-            dirty: mode === "full" ? row.dirty : false,
-          })),
+          rows: sheetState.rows.map((row) => {
+            const { runtimeTrackingRunId: _runtimeTrackingRunId, ...storageRow } = row;
+            return {
+              ...storageRow,
+              loading: false,
+              queued: false,
+              shipment:
+                mode === "full" && row.shipment
+                  ? createStorageSafeTrackResponse(row.shipment)
+                  : null,
+              stale: mode === "full" ? row.stale : false,
+              dirty: mode === "full" ? row.dirty : false,
+            };
+          }),
         },
       ])
     ),
@@ -465,6 +471,7 @@ export function normalizePersistedWorkspaceState(
             typeof candidate === "object" &&
             (candidate as { selectionFollowsVisibleRows?: unknown }).selectionFollowsVisibleRows
         ),
+        activeTrackingRunId: null,
         columnWidths:
           candidate && typeof candidate === "object" && typeof (candidate as { columnWidths?: unknown }).columnWidths === "object"
             ? {

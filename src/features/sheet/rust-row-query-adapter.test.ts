@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TrackResponse } from "../../types";
-import { COLUMNS } from "./columns";
+import { COLUMNS, canUseColumnFilter } from "./columns";
 import { createDefaultSheetState } from "./default-state";
 import { createRustSheetRowsQuery } from "./rust-row-query-adapter";
 
@@ -305,11 +305,11 @@ describe("Rust row query adapter", () => {
     ]);
   });
 
-  it("keeps visible non-json sheet columns on the Rust query path", () => {
+  it("keeps visible filterable sheet columns on the Rust query path", () => {
     const sheet = createDefaultSheetState();
     const context = createVisibleColumnContext();
 
-    for (const column of COLUMNS.filter((item) => item.type !== "json")) {
+    for (const column of COLUMNS.filter(canUseColumnFilter)) {
       const query = createRustSheetRowsQuery({
         sheetId: "sheet-1",
         sheetState: {
@@ -330,6 +330,32 @@ describe("Rust row query adapter", () => {
         },
       ]);
     }
+  });
+
+  it("ignores stale filters on non-filterable photo and raw JSON columns", () => {
+    const sheet = createDefaultSheetState();
+    const context = createVisibleColumnContext();
+
+    const query = createRustSheetRowsQuery({
+      sheetId: "sheet-1",
+      sheetState: {
+        ...sheet,
+        filters: {
+          "pod.photo1_url": "photo",
+          "history_summary.bagging_unbagging": "PID",
+        },
+        valueFilters: {
+          "pod.photo1_url": ["photo"],
+          "history_summary.bagging_unbagging": ["PID"],
+        },
+      },
+      nonEmptyRows: [],
+      ...context,
+    });
+
+    expect(query).not.toBeNull();
+    expect(query?.filters).toEqual([]);
+    expect(query?.valueFilters).toBeUndefined();
   });
 
   it("keeps filtered or sorted incomplete tracking rows on the legacy path", () => {

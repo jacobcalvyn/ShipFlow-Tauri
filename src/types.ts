@@ -218,6 +218,7 @@ export type ServiceConfig = {
   externalApiAuthToken: string;
   allowInsecureExternalApiHttp: boolean;
   keepRunningInTray: boolean;
+  startAtLogin: boolean;
   lastUpdatedAt: string;
 };
 
@@ -230,4 +231,12 @@ export type ApiServiceStatus = {
   bindAddress: string | null;
   port: number | null;
   errorMessage: string | null;
+};
+
+export type AppUpdateStatus = {
+  available: boolean;
+  currentVersion: string;
+  version: string | null;
+  body: string | null;
+  downloadUrl: string | null;
 };

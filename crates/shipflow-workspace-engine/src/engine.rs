@@ -344,6 +344,7 @@ where
                         &request.sheet_id,
                         &request.row_ids,
                         request.force_refresh,
+                        request.run_id,
                     )
                     .await?;
                 Ok(WorkspaceEngineResponse::SheetRowsTrackingRefresh(result))
@@ -649,6 +650,7 @@ where
         sheet_id: &str,
         row_ids: &[String],
         force_refresh: bool,
+        run_id: Option<String>,
     ) -> WorkspaceEngineRuntimeResult<SheetRowsTrackingRefreshResult> {
         let mut tracking_engine = TrackingEngine::with_blob_root_path(
             &mut self.store,
@@ -656,7 +658,7 @@ where
             self.blob_root_path.clone(),
         );
         Ok(tracking_engine
-            .refresh_sheet_rows(sheet_id, row_ids, force_refresh)
+            .refresh_sheet_rows_with_progress(sheet_id, row_ids, force_refresh, run_id, |_| {})
             .await?)
     }
 
@@ -665,6 +667,7 @@ where
         sheet_id: &str,
         row_ids: &[String],
         force_refresh: bool,
+        run_id: Option<String>,
         mut on_event: F,
     ) -> WorkspaceEngineRuntimeResult<SheetRowsTrackingRefreshResult>
     where
@@ -676,7 +679,7 @@ where
             self.blob_root_path.clone(),
         );
         Ok(tracking_engine
-            .refresh_sheet_rows_with_progress(sheet_id, row_ids, force_refresh, |event| {
+            .refresh_sheet_rows_with_progress(sheet_id, row_ids, force_refresh, run_id, |event| {
                 on_event(WorkspaceEngineEvent::TrackingRefreshProgress(event));
             })
             .await?)
@@ -1498,6 +1501,7 @@ mod tests {
                         "row-1".to_string(),
                     ],
                     force_refresh: true,
+                    run_id: Some("test-run".to_string()),
                 },
             ))
             .await

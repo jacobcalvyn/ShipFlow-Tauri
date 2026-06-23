@@ -45,7 +45,49 @@ function createLoadedEvent(displayTrackingId: string): TrackingRefreshProgressEv
   };
 }
 
+function createShipment(trackingId: string): NonNullable<SheetRow["shipment"]> {
+  return {
+    url: "https://example.test",
+    detail: {
+      shipment_header: { nomor_kiriman: trackingId },
+      origin_detail: {},
+      package_detail: {},
+      billing_detail: { cod_info: { is_cod: false } },
+      actors: { pengirim: {}, penerima: {} },
+      performance_detail: {},
+    },
+    status_akhir: { status: "DELIVERED" },
+    pod: {},
+    history: [],
+    history_summary: {
+      irregularity: [],
+      bagging_unbagging: [],
+      manifest_r7: [],
+      delivery_runsheet: [],
+    },
+  };
+}
+
 describe("tracking refresh state", () => {
+  it("ignores progress from a stale tracking run", () => {
+    const sheet = {
+      ...createDefaultSheetState(),
+      activeTrackingRunId: "run-current",
+      rows: [createRow({ trackingInput: "PNEW" })],
+    };
+
+    const staleEvent = {
+      ...createLoadedEvent("PNEW"),
+      runId: "run-old",
+    };
+    const nextSheet = applyTrackingRefreshProgressToSheet(sheet, staleEvent, {
+      rowKey: "row-1",
+    });
+
+    expect(nextSheet).toBe(sheet);
+    expect(nextSheet.rows[0]?.shipment).toBeNull();
+  });
+
   it("ignores stale final results when the visible row input has changed", () => {
     const sheet = {
       ...createDefaultSheetState(),
@@ -94,6 +136,78 @@ describe("tracking refresh state", () => {
     );
   });
 
+  it("marks terminal progress rows with the active tracking run", () => {
+    const sheet = {
+      ...createDefaultSheetState(),
+      activeTrackingRunId: "run-1",
+      rows: [createRow({ trackingInput: "PNEW" })],
+    };
+
+    const nextSheet = applyTrackingRefreshProgressToSheet(
+      sheet,
+      {
+        ...createLoadedEvent("PNEW"),
+        runId: "run-1",
+      },
+      {
+        rowKey: "row-1",
+        runId: "run-1",
+      }
+    );
+
+    expect(nextSheet.rows[0]).toMatchObject({
+      trackingInput: "PNEW",
+      loading: false,
+      queued: false,
+      runtimeTrackingRunId: "run-1",
+    });
+    expect(nextSheet.rows[0]?.shipment?.detail.shipment_header.nomor_kiriman).toBe(
+      "PNEW"
+    );
+  });
+
+  it("marks active pending progress over previous shipment data", () => {
+    const sheet = {
+      ...createDefaultSheetState(),
+      activeTrackingRunId: "run-1",
+      rows: [
+        createRow({
+          trackingInput: "PNEW",
+          shipment: createShipment("PNEW"),
+        }),
+      ],
+    };
+
+    const pendingEvent: TrackingRefreshProgressEvent = {
+      ...createLoadedEvent("PNEW"),
+      runId: "run-1",
+      successCount: 0,
+      pendingCount: 1,
+      row: {
+        ...createLoadedEvent("PNEW").row,
+        rowStatus: "pending",
+        statusJson: null,
+        detailJson: null,
+      },
+    };
+
+    const nextSheet = applyTrackingRefreshProgressToSheet(sheet, pendingEvent, {
+      rowKey: "row-1",
+      runId: "run-1",
+    });
+
+    expect(nextSheet.rows[0]).toMatchObject({
+      trackingInput: "PNEW",
+      loading: false,
+      queued: true,
+      error: "",
+      runtimeTrackingRunId: "run-1",
+    });
+    expect(nextSheet.rows[0]?.shipment?.detail.shipment_header.nomor_kiriman).toBe(
+      "PNEW"
+    );
+  });
+
   it("creates a local mirror row for loaded Rust-only projections", () => {
     const sheet = {
       ...createDefaultSheetState(),
@@ -134,5 +248,69 @@ describe("tracking refresh state", () => {
 
     expect(nextSheet).toBe(sheet);
     expect(nextSheet.rows).toEqual([]);
+  });
+
+  it("keeps an active retrack loading row from being downgraded to pending", () => {
+    const sheet = {
+      ...createDefaultSheetState(),
+      activeTrackingRunId: "run-1",
+      rows: [createRow({ trackingInput: "PNEW" })],
+    };
+
+    const loadedSheet = applyTrackingRefreshProgressToSheet(
+      sheet,
+      {
+        ...createLoadedEvent("PNEW"),
+        runId: "run-1",
+      },
+      {
+        rowKey: "row-1",
+        runId: "run-1",
+      }
+    );
+
+    const loadingEvent: TrackingRefreshProgressEvent = {
+      ...createLoadedEvent("PNEW"),
+      runId: "run-1",
+      successCount: 0,
+      pendingCount: 1,
+      row: {
+        ...createLoadedEvent("PNEW").row,
+        rowStatus: "loading",
+        statusJson: null,
+        detailJson: null,
+      },
+    };
+    const afterLoading = applyTrackingRefreshProgressToSheet(
+      loadedSheet,
+      loadingEvent,
+      {
+        rowKey: "row-1",
+        runId: "run-1",
+      }
+    );
+    const pendingEvent: TrackingRefreshProgressEvent = {
+      ...loadingEvent,
+      row: {
+        ...loadingEvent.row,
+        rowStatus: "pending",
+      },
+    };
+    const afterPending = applyTrackingRefreshProgressToSheet(
+      afterLoading,
+      pendingEvent,
+      {
+        rowKey: "row-1",
+        runId: "run-1",
+      }
+    );
+
+    expect(afterLoading).not.toBe(loadedSheet);
+    expect(afterPending).toBe(afterLoading);
+    expect(afterPending.rows[0]).toMatchObject({
+      loading: true,
+      queued: false,
+      error: "",
+    });
   });
 });

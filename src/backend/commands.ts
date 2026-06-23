@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ApiServiceStatus,
+  AppUpdateStatus,
   ServiceConfig,
 } from "../types";
 import type { WorkspaceDocumentFile } from "../features/workspace/document";
@@ -31,7 +32,10 @@ export type ReleaseHealth = {
   targetOs: string;
   targetArch: string;
   packageName: string;
+  productName: string;
+  appIdentifier: string;
   debugBuild: boolean;
+  updaterPluginReady: boolean;
 };
 
 export type WorkspaceWindowLaunchRequest = {
@@ -77,6 +81,14 @@ export function logFrontendRuntimeEvent(level: "info" | "error", message: string
 
 export function getReleaseHealth() {
   return invokeCommand<ReleaseHealth>("get_release_health");
+}
+
+export function checkAppUpdate() {
+  return invokeCommand<AppUpdateStatus>("check_app_update");
+}
+
+export function installAppUpdate() {
+  return invokeCommand<AppUpdateStatus>("install_app_update");
 }
 
 export function openShipflowServiceApp() {

@@ -1,6 +1,5 @@
 import { HIDDEN_COLUMNS_STORAGE_KEY, PINNED_COLUMNS_STORAGE_KEY, SELECTOR_COLUMN_WIDTH } from "../sheet/columns";
 import {
-  forceSelectionToVisibleRowsInSheet,
   pruneSelectionToVisibleRowsInSheet,
   setHighlightedColumnInSheet,
   setOpenColumnMenuInSheet,
@@ -138,15 +137,10 @@ export function useWorkspaceTableShellController({
   }, [highlightedColumnTimeoutRef]);
 
   useEffect(() => {
-    if (hasActiveFilters) {
-      updateActiveSheet((current) =>
-        forceSelectionToVisibleRowsInSheet(current, visibleSelectableKeys)
-      );
-      return;
+    if (!hasActiveFilters) {
+      updateActiveSheet((current) => stopSelectionFollowingVisibleRowsInSheet(current));
     }
-
-    updateActiveSheet((current) => stopSelectionFollowingVisibleRowsInSheet(current));
-  }, [hasActiveFilters, updateActiveSheet, visibleSelectableKeys]);
+  }, [hasActiveFilters, updateActiveSheet]);
 
   useEffect(() => {
     if (!activeSheetSelectionFollowsVisibleRows) {

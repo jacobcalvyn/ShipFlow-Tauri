@@ -2,6 +2,12 @@ name: Build Desktop Windows
 
 on:
   workflow_dispatch:
+    inputs:
+      signed_release:
+        description: "Build signed updater-ready release artifacts. Requires Windows signing and updater secrets."
+        required: false
+        default: "false"
+        type: boolean
 
 permissions:
   contents: read
@@ -10,6 +16,12 @@ jobs:
   build-windows:
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+      TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
+      SIGNED_RELEASE: ${{ inputs.signed_release && 'true' || 'false' }}
 
     steps:
       - name: Checkout repository
@@ -49,8 +61,36 @@ jobs:
       - name: Run Rust clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Validate Windows signing secrets
+        if: ${{ inputs.signed_release }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            throw "WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are required for a signed Windows desktop release."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_PUBLIC_KEY) -or [string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_ENDPOINTS)) {
+            throw "TAURI_UPDATER_PUBLIC_KEY and TAURI_UPDATER_ENDPOINTS are required for updater-ready Windows desktop releases."
+          }
+
       - name: Build Windows desktop app binary
-        run: npm exec tauri -- build --no-bundle --config src-tauri/tauri.bundle.conf.json --ci
+        shell: pwsh
+        run: |
+          if ($env:SIGNED_RELEASE -eq "true") {
+            $releaseConfigPath = Join-Path $env:RUNNER_TEMP "shipflow-desktop-release.conf.json"
+            node scripts/create-release-build-config.mjs desktop $releaseConfigPath
+            npm exec tauri -- build --no-bundle --config $releaseConfigPath --ci
+          } else {
+            npm exec tauri -- build --no-bundle --ci
+          }
+
+      - name: Sign Windows desktop executable
+        if: ${{ inputs.signed_release }}
+        shell: pwsh
+        run: |
+          ./scripts/windows/sign-windows-artifact.ps1 `
+            -ArtifactPath "target/release/shipflow3-tauri.exe" `
+            -CertificateBase64 "$env:WINDOWS_CERTIFICATE" `
+            -CertificatePassword "$env:WINDOWS_CERTIFICATE_PASSWORD"
 
       - name: Install NSIS
         run: choco install nsis -y --no-progress
@@ -58,6 +98,38 @@ jobs:
       - name: Build Windows desktop installer
         shell: pwsh
         run: ./scripts/windows/build-desktop-installer.ps1
+
+      - name: Sign Windows desktop installer
+        if: ${{ inputs.signed_release }}
+        shell: pwsh
+        run: |
+          ./scripts/windows/sign-windows-artifact.ps1 `
+            -ArtifactPath "target/release/ShipFlow-Desktop-Setup.exe" `
+            -CertificateBase64 "$env:WINDOWS_CERTIFICATE" `
+            -CertificatePassword "$env:WINDOWS_CERTIFICATE_PASSWORD"
+
+      - name: Verify Windows desktop signatures
+        if: ${{ inputs.signed_release }}
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+            -Recurse `
+            -Filter signtool.exe `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+
+          if ($null -eq $signtool) {
+            throw "Unable to find Windows SDK signtool.exe"
+          }
+
+          foreach ($artifact in @(
+            "target/release/shipflow3-tauri.exe",
+            "target/release/ShipFlow-Desktop-Setup.exe"
+          )) {
+            & $signtool.FullName verify /pa /v $artifact
+          }
 
       - name: Smoke check Windows desktop artifacts
         shell: pwsh
@@ -72,9 +144,20 @@ jobs:
             throw "Missing desktop installer icon"
           }
 
+      - name: Generate Windows desktop release evidence
+        if: ${{ inputs.signed_release }}
+        run: node scripts/generate-release-evidence.mjs desktop windows distribution target/release/shipflow-desktop-windows-distribution.evidence.json
+
+      - name: Verify Windows desktop release evidence
+        if: ${{ inputs.signed_release }}
+        run: node scripts/verify-release-evidence.mjs desktop windows distribution target/release/shipflow-desktop-windows-distribution.evidence.json
+
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v6
         with:
           name: shipflow-desktop-windows-installer
-          path: target/release/ShipFlow-Desktop-Setup.exe
+          path: |
+            target/release/shipflow-desktop-windows-distribution.evidence.json
+            target/release/shipflow3-tauri.exe
+            target/release/ShipFlow-Desktop-Setup.exe
           if-no-files-found: error
