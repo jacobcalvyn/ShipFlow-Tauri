@@ -146,11 +146,14 @@ Pure derived state:
 
 - `getNonEmptyRows(sheet)`
 - `getDisplayedRows(sheet, columns)`
-- `getLoadedCount(sheet, displayedRows)`
-- `getSelectedVisibleRowKeys(sheet, displayedRows)`
-- `getExportableRows(sheet, displayedRows)`
 - `getValueOptionsByPath(sheet, columns)`
 - `getPinnedLeftMap(sheet, columns, widths)`
+
+The production table render path no longer depends on canonical `SheetRow[]`
+objects after display filtering. `useWorkspaceSheetViewModel` builds
+`SheetTableRow` projection view models, then derives visible selection,
+tracking IDs, retry/retrack entries, loaded/loading counts, export rows,
+visible totals, and tracking column auto-width from those projections.
 
 ### 2. Sheet Actions
 

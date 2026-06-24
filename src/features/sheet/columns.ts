@@ -1,4 +1,4 @@
-import { ColumnDefinition } from "./types";
+import { ColumnDefinition, ColumnFilterFieldType } from "./types";
 
 export const INITIAL_ROW_COUNT = 50;
 export const MIN_EMPTY_TRAILING_ROWS = 5;
@@ -15,6 +15,50 @@ export const DELIVERY_RUNSHEET_COUNT_COLUMN_PATH =
   "computed.delivery_runsheet_count";
 export const HIDDEN_COLUMNS_STORAGE_KEY = "shipflow-hidden-columns";
 export const PINNED_COLUMNS_STORAGE_KEY = "shipflow-pinned-columns";
+
+function getDefaultFilterFieldType(
+  column: Pick<ColumnDefinition, "type">
+): ColumnFilterFieldType {
+  switch (column.type) {
+    case "currency":
+    case "weight":
+    case "number":
+      return "number";
+    case "boolean":
+      return "boolean";
+    case "date":
+      return "date";
+    default:
+      return "text";
+  }
+}
+
+export function canUseColumnFilter(
+  column: Pick<ColumnDefinition, "filterable" | "type">
+) {
+  return column.filterable !== false && column.type !== "json";
+}
+
+export function canUseColumnTextFilter(
+  column: Pick<ColumnDefinition, "filterable" | "type">
+) {
+  return canUseColumnFilter(column);
+}
+
+export function canUseColumnValueFilter(
+  column: Pick<ColumnDefinition, "filterable" | "type">
+) {
+  return canUseColumnFilter(column);
+}
+
+export function getColumnFilterFieldType(column: ColumnDefinition) {
+  return column.filterFieldType ?? getDefaultFilterFieldType(column);
+}
+
+export function getColumnBackendField(column: ColumnDefinition) {
+  return column.backendField ?? column.path;
+}
+
 export const ANALYTICS_FIELD_COLUMN_PATHS = [
   TRACKING_COLUMN_PATH,
   DAYS_SINCE_TRANSACTION_COLUMN_PATH,
@@ -25,7 +69,8 @@ export const ANALYTICS_FIELD_COLUMN_PATHS = [
   "status_akhir.location",
   "status_akhir.officer_name",
   "status_akhir.officer_id",
-  "status_akhir.datetime",
+  "status_akhir.date",
+  "status_akhir.time",
   "detail.actors.pengirim.nama",
   "detail.actors.pengirim.telepon",
   "detail.actors.pengirim.alamat",
@@ -127,11 +172,18 @@ export const COLUMNS: ColumnDefinition[] = [
     minWidth: 130,
   },
   {
-    path: "status_akhir.datetime",
+    path: "status_akhir.date",
+    label: "Tanggal Status Akhir",
+    type: "text",
+    defaultWidth: 170,
+    minWidth: 150,
+  },
+  {
+    path: "status_akhir.time",
     label: "Waktu Status Akhir",
     type: "text",
-    defaultWidth: 190,
-    minWidth: 160,
+    defaultWidth: 160,
+    minWidth: 140,
   },
   {
     path: "detail.actors.pengirim.nama",
@@ -365,6 +417,7 @@ export const COLUMNS: ColumnDefinition[] = [
     path: "pod.photo1_url",
     label: "POD Photo 1",
     type: "text",
+    filterable: false,
     defaultWidth: 240,
     minWidth: 200,
   },
@@ -372,6 +425,7 @@ export const COLUMNS: ColumnDefinition[] = [
     path: "pod.photo2_url",
     label: "POD Photo 2",
     type: "text",
+    filterable: false,
     defaultWidth: 240,
     minWidth: 200,
   },
@@ -379,6 +433,7 @@ export const COLUMNS: ColumnDefinition[] = [
     path: "history_summary.irregularity",
     label: "History Summary Irregularity",
     type: "json",
+    filterable: false,
     defaultWidth: 300,
     minWidth: 240,
   },
@@ -386,6 +441,7 @@ export const COLUMNS: ColumnDefinition[] = [
     path: "history_summary.bagging_unbagging",
     label: "History Summary Bagging Unbagging",
     type: "json",
+    filterable: false,
     defaultWidth: 320,
     minWidth: 260,
   },
@@ -393,6 +449,7 @@ export const COLUMNS: ColumnDefinition[] = [
     path: "history_summary.manifest_r7",
     label: "History Summary Manifest R7",
     type: "json",
+    filterable: false,
     defaultWidth: 300,
     minWidth: 240,
   },
@@ -400,6 +457,7 @@ export const COLUMNS: ColumnDefinition[] = [
     path: "history_summary.delivery_runsheet",
     label: "History Summary Delivery Runsheet",
     type: "json",
+    filterable: false,
     defaultWidth: 320,
     minWidth: 260,
   },
@@ -413,3 +471,22 @@ export const COLUMNS: ColumnDefinition[] = [
     compact: true,
   },
 ];
+
+export const FILTERABLE_COLUMN_PATHS = new Set(
+  COLUMNS.filter(canUseColumnFilter).map((column) => column.path)
+);
+
+export const COLUMN_FILTER_REGISTRY = Object.fromEntries(
+  COLUMNS.map((column) => [
+    column.path,
+    {
+      filterable: canUseColumnFilter(column),
+      fieldType: getColumnFilterFieldType(column),
+      backendField: getColumnBackendField(column),
+    },
+  ])
+);
+
+export function isColumnFilterablePath(path: string) {
+  return FILTERABLE_COLUMN_PATHS.has(path);
+}

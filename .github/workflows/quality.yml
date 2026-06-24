@@ -53,6 +53,23 @@ jobs:
       - name: Check security baseline
         run: npm run security:baseline
 
+      - name: Check release script syntax
+        run: |
+          node --check scripts/build-updater-artifacts.mjs
+          node --check scripts/create-release-build-config.mjs
+          node --check scripts/generate-release-evidence.mjs
+          node --check scripts/test-native-runtime-evidence-verifier.mjs
+          node --check scripts/verify-release-evidence.mjs
+          node --check scripts/verify-native-runtime-evidence.mjs
+          node --check scripts/verify-updater-signatures.mjs
+          node --check scripts/verify-security-baseline.mjs
+          bash -n scripts/macos/notarize-app.sh
+          bash -n scripts/macos/collect-native-runtime-evidence.sh
+          bash -n scripts/macos/resign-updater-artifacts-after-notarization.sh
+
+      - name: Smoke check native runtime evidence verifier
+        run: npm run test:native-runtime-evidence
+
       - name: Run frontend tests
         run: npm test
 
@@ -67,6 +84,84 @@ jobs:
 
       - name: Check Rust format
         run: cargo fmt --all -- --check
+
+      - name: Run Rust tests
+        run: cargo test --workspace --all-targets
+
+      - name: Run Rust clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  native-runtime:
+    name: Native Runtime (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Check security baseline
+        run: npm run security:baseline
+
+      - name: Check Windows release script syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $scriptPaths = @(
+            "scripts/windows/resolve-makensis.ps1",
+            "scripts/windows/resolve-tauri-version.ps1",
+            "scripts/windows/sign-windows-artifact.ps1",
+            "scripts/windows/sign-windows-artifact-from-env.ps1",
+            "scripts/windows/build-desktop-installer.ps1",
+            "scripts/windows/build-service-installer.ps1",
+            "scripts/windows/collect-native-runtime-evidence.ps1"
+          )
+          $syntaxErrors = @()
+          foreach ($scriptPath in $scriptPaths) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $scriptPath).Path,
+              [ref] $tokens,
+              [ref] $parseErrors
+            ) | Out-Null
+            foreach ($parseError in $parseErrors) {
+              $syntaxErrors += "${scriptPath}: $($parseError.Message)"
+            }
+          }
+
+          if ($syntaxErrors.Count -gt 0) {
+            $syntaxErrors | ForEach-Object { Write-Error $_ }
+            throw "Windows release PowerShell syntax check failed."
+          }
+
+      - name: Build frontend
+        run: npm run build
 
       - name: Run Rust tests
         run: cargo test --workspace --all-targets

@@ -17,6 +17,7 @@ function createServiceConfig(overrides: Partial<ServiceConfig> = {}): ServiceCon
     externalApiAuthToken: "",
     allowInsecureExternalApiHttp: false,
     keepRunningInTray: true,
+    startAtLogin: true,
     lastUpdatedAt: "",
     ...overrides,
   };

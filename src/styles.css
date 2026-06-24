@@ -311,10 +311,13 @@ button {
   justify-content: space-between;
   gap: var(--tabs-panel-gap);
   padding: var(--tabs-panel-padding-y) var(--tabs-panel-padding-x);
-  border: 1px solid #d8e1ea;
+  border: 1px solid rgba(216, 225, 234, 0.7);
   border-radius: 12px;
-  background: #ffffff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.03);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .document-toolbar-status-text {
@@ -1659,15 +1662,23 @@ button {
 
 .import-source-modal {
   width: min(480px, calc(100% - 48px));
+  max-height: calc(100vh - 48px);
   border: 1px solid #d6e0ea;
   border-radius: 16px;
   background: #ffffff;
   box-shadow: 0 20px 44px rgba(15, 23, 42, 0.18);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.import-source-modal-wide {
+  width: min(1120px, calc(100% - 48px));
 }
 
 .import-source-modal-header,
 .import-source-modal-footer {
+  flex: 0 0 auto;
   padding: 16px 18px;
 }
 
@@ -1682,8 +1693,10 @@ button {
 }
 
 .import-source-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 18px;
-  min-height: 120px;
+  overflow: auto;
   color: #475569;
   font-size: 0.92rem;
 }
@@ -1702,12 +1715,15 @@ button {
 
 .import-source-modal-input {
   width: 100%;
+  min-height: 104px;
   border: 1px solid #cbd5e1;
   border-radius: 10px;
   background: #ffffff;
   color: #0f172a;
   padding: 11px 12px;
   font-size: 0.94rem;
+  line-height: 1.45;
+  resize: vertical;
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
@@ -1739,13 +1755,26 @@ button {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+}
+
+.import-source-modal-result-layout {
+  display: flex;
+  flex-direction: column;
+}
+
+.import-source-modal-result-layout-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 16px;
+  align-items: start;
 }
 
 .import-source-modal-id-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 260px;
+  max-height: min(320px, 44vh);
   overflow: auto;
   border: 1px solid #d6e0ea;
   border-radius: 12px;
@@ -1773,6 +1802,34 @@ button {
   margin-top: 0;
 }
 
+.import-source-modal-id-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.import-source-modal-inline-action {
+  flex: 0 0 auto;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fff7f7;
+  color: #b91c1c;
+  padding: 5px 8px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.import-source-modal-inline-action:hover:not(:disabled) {
+  border-color: #fca5a5;
+  background: #fee2e2;
+}
+
+.import-source-modal-inline-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .import-source-modal-result-label {
   color: #334155;
   font-size: 0.82rem;
@@ -1796,9 +1853,22 @@ button {
 
 .import-source-modal-footer {
   display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
   gap: 10px;
   justify-content: flex-end;
   border-top: 1px solid #e2e8f0;
+}
+
+@media (max-width: 900px) {
+  .import-source-modal-wide {
+    width: min(640px, calc(100% - 32px));
+  }
+
+  .import-source-modal-result-layout-split {
+    display: flex;
+    flex-direction: column;
+  }
 }
 
 .selection-actions-row {
@@ -1942,6 +2012,20 @@ button {
   font-size: var(--action-font-size);
   font-weight: 600;
   line-height: 1.2;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.action-button:hover:not(:disabled) {
+  border-color: #94a3b8;
+  background: #f8fafc;
+  color: #0f172a;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 6px -1px rgba(15, 23, 42, 0.05);
+}
+
+.action-button:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
 }
 
 .action-button-label {
@@ -1951,12 +2035,28 @@ button {
 .action-button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+  transform: none !important;
+  box-shadow: none !important;
 }
 
 .action-button-danger {
   border-color: #fecaca;
   color: #b91c1c;
   background: #fff7f7;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.action-button-danger:hover:not(:disabled) {
+  border-color: #fca5a5;
+  background: #fef2f2;
+  color: #991b1b;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 6px -1px rgba(185, 28, 28, 0.05);
+}
+
+.action-button-danger:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
 }
 
 .action-button-accent {
@@ -2259,7 +2359,7 @@ button {
   max-width: 1040px;
   margin: 0 auto;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .service-settings-title {
@@ -2359,6 +2459,8 @@ button {
   flex: 1 1 auto;
   min-height: 0;
   gap: 16px;
+  overflow-y: auto;
+  padding-right: 6px;
 }
 
 .service-settings-footer {
@@ -2811,7 +2913,7 @@ button {
 }
 
 .settings-field-help-info {
-  color: #1d4ed8;
+  color: #475569;
 }
 
 .settings-service-status {
@@ -3069,7 +3171,8 @@ button {
   }
 
   .service-settings-panel {
-    flex: 1 0 auto;
+    flex: 1 1 auto;
+    min-height: 0;
   }
 
   .service-settings-workbench {
@@ -3111,6 +3214,7 @@ button {
     flex-direction: column;
     align-items: stretch;
   }
+
 }
 
 .column-manager {
@@ -3865,6 +3969,11 @@ button {
   color: #475569;
 }
 
+.filter-input-disabled {
+  display: block;
+  color: #94a3b8;
+}
+
 .sheet-input {
   font-size: 0.88rem;
   white-space: nowrap;
@@ -4167,4 +4276,66 @@ button {
     left: auto;
     max-width: calc(100vw - 40px);
   }
+}
+
+/* ==========================================================================
+   DESKTOP NATIVE INTERACTION & VISUAL IMPROVEMENTS
+   ========================================================================== */
+
+/* 1. Text selection control for app chrome and commands */
+button, .sheet-tabs-list, .service-settings-tabs, th {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea,
+[contenteditable="true"],
+.cell-text,
+.tracking-cell,
+.settings-field-help,
+.service-settings-endpoint-code,
+.service-settings-sidebar-note,
+.service-settings-title p {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* 2. Platform-Specific Styling Overrides */
+html[data-platform="macos"] :focus-visible {
+  outline: 3px solid rgba(59, 130, 246, 0.5);
+  outline-offset: 1px;
+}
+
+html[data-platform="windows"] :focus-visible {
+  outline: 2px solid #005fb8;
+  outline-offset: 1px;
+}
+
+html[data-platform="macos"] {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 3. Minimalist Native Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.25);
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.45);
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }

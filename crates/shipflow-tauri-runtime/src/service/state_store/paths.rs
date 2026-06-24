@@ -5,7 +5,8 @@ use crate::service::{
     DESKTOP_PID_FILE_NAME, DESKTOP_REQUEST_FILE_NAME, DESKTOP_SERVICE_CONFIG_FILE_NAME,
     SERVICE_CONFIG_FILE_NAME, SERVICE_PID_FILE_NAME, SERVICE_RUNTIME_CONFIG_FILE_NAME,
     SERVICE_SETTINGS_PID_FILE_NAME, SERVICE_SETTINGS_REQUEST_FILE_NAME, SERVICE_STATE_DIR_NAME,
-    SERVICE_TOKEN_VAULT_FILE_NAME, SERVICE_TRAY_PID_FILE_NAME,
+    SERVICE_TOKEN_VAULT_FILE_NAME, SERVICE_TRAY_LAUNCH_LOCK_FILE_NAME, SERVICE_TRAY_PID_FILE_NAME,
+    WINDOW_STATE_FILE_NAME,
 };
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -204,12 +205,20 @@ pub(super) fn service_token_vault_path() -> PathBuf {
     service_state_dir().join(SERVICE_TOKEN_VAULT_FILE_NAME)
 }
 
+pub(super) fn window_state_path() -> PathBuf {
+    service_state_dir().join(WINDOW_STATE_FILE_NAME)
+}
+
 pub(super) fn service_pid_path() -> PathBuf {
     service_state_dir().join(SERVICE_PID_FILE_NAME)
 }
 
 pub(super) fn service_tray_pid_path() -> PathBuf {
     service_state_dir().join(SERVICE_TRAY_PID_FILE_NAME)
+}
+
+pub(super) fn service_tray_launch_lock_path() -> PathBuf {
+    service_state_dir().join(SERVICE_TRAY_LAUNCH_LOCK_FILE_NAME)
 }
 
 pub(super) fn service_settings_pid_path() -> PathBuf {

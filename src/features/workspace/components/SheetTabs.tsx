@@ -76,7 +76,7 @@ type SheetTabsProps = {
 };
 
 type SheetDropTransferMode = "copy" | "move";
-type DesktopSettingsTab = "display" | "service" | "release";
+type DesktopSettingsTab = "display" | "service";
 
 const DEFAULT_DESKTOP_SERVICE_PORT = 18422;
 
@@ -1000,22 +1000,6 @@ export function SheetTabs({
                     >
                       Koneksi Service
                     </button>
-                    <button
-                      type="button"
-                      id="desktop-settings-release-tab"
-                      className={[
-                        "settings-nav-button",
-                        activeSettingsTab === "release" ? "is-active" : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" ")}
-                      role="tab"
-                      aria-selected={activeSettingsTab === "release"}
-                      aria-controls="desktop-settings-release-panel"
-                      onClick={() => setActiveSettingsTab("release")}
-                    >
-                      Release Health
-                    </button>
                   </div>
                   <div className="settings-content">
                     {activeSettingsTab === "display" ? (
@@ -1086,33 +1070,6 @@ export function SheetTabs({
                         aria-labelledby="desktop-settings-service-tab"
                       >
                         <DesktopServiceConnectionPanel
-                          panel="connection"
-                          serviceConfig={serviceConfig}
-                          desktopServicePortDraft={desktopServicePortDraft}
-                          isDesktopServicePortValid={isDesktopServicePortValid}
-                          isDesktopTokenVisible={isDesktopTokenVisible}
-                          isTestingServiceConnection={isTestingServiceConnection}
-                          serviceConnectionTestResult={serviceConnectionTestResult}
-                          onDesktopServicePortDraftChange={handleDesktopServicePortDraftChange}
-                          onPreviewDesktopServiceAuthToken={onPreviewDesktopServiceAuthToken}
-                          onClearConnectionTestResult={() => setServiceConnectionTestResult(null)}
-                          onToggleDesktopTokenVisibility={() =>
-                            setIsDesktopTokenVisible((current) => !current)
-                          }
-                          onCopyServiceToken={onCopyServiceToken}
-                          onPasteDesktopServiceAuthToken={onPasteDesktopServiceAuthToken}
-                          onTestServiceConnection={handleTestServiceConnection}
-                        />
-                      </section>
-                    ) : null}
-                    {activeSettingsTab === "release" ? (
-                      <section
-                        id="desktop-settings-release-panel"
-                        role="tabpanel"
-                        aria-labelledby="desktop-settings-release-tab"
-                      >
-                        <DesktopServiceConnectionPanel
-                          panel="release"
                           serviceConfig={serviceConfig}
                           desktopServicePortDraft={desktopServicePortDraft}
                           isDesktopServicePortValid={isDesktopServicePortValid}

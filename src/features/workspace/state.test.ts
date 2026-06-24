@@ -1,11 +1,11 @@
-import { createDefaultWorkspaceState } from "./default-state";
 import {
-  appendTrackingIdsToExistingSheetInWorkspace,
+  DEFAULT_WORKSPACE_SHEET_ID,
+  createDefaultWorkspaceState,
+} from "./default-state";
+import {
   createSheetInWorkspace,
-  createSheetWithTrackingIdsInWorkspace,
   deleteSheetInWorkspace,
-  moveTrackingIdsToExistingSheetInWorkspace,
-  moveTrackingIdsToNewSheetInWorkspace,
+  reconcileWorkspaceSheetsFromEngine,
   renameSheetInWorkspace,
   setActiveSheetInWorkspace,
   updateActiveSheetInWorkspace,
@@ -26,6 +26,7 @@ describe("workspace state", () => {
 
     expect(workspace.version).toBe(1);
     expect(workspace.sheetOrder).toHaveLength(1);
+    expect(workspace.activeSheetId).toBe(DEFAULT_WORKSPACE_SHEET_ID);
     expect(workspace.activeSheetId).toBe(workspace.sheetOrder[0]);
     expect(getActiveSheetName(workspace)).toBe("Sheet 1");
     expect(activeSheet.rows.length).toBeGreaterThan(0);
@@ -99,7 +100,7 @@ describe("workspace state", () => {
     expect(getActiveSheetName(afterDelete)).toBe("Investigasi SLA");
   });
 
-  it("duplicates a sheet without carrying transient loading and error state", () => {
+  it("duplicates sheet settings without carrying local row data", () => {
     let workspace = createDefaultWorkspaceState();
     const sourceSheetId = workspace.activeSheetId;
 
@@ -157,7 +158,8 @@ describe("workspace state", () => {
     expect(duplicatedSheet.analytics.metricAggregations).not.toBe(
       workspace.sheetsById[sourceSheetId].analytics.metricAggregations
     );
-    expect(duplicatedSheet.rows[0].trackingInput).toBe("P2603310114291");
+    expect(duplicatedSheet.rows[0].trackingInput).toBe("");
+    expect(duplicatedSheet.rows[0].shipment).toBeNull();
     expect(duplicatedSheet.rows[0].loading).toBe(false);
     expect(duplicatedSheet.rows[0].error).toBe("");
   });
@@ -233,150 +235,55 @@ describe("workspace state", () => {
     ]);
   });
 
-  it("creates a clean sheet seeded only with tracking ids", () => {
+  it("reconciles sheet metadata from the Rust engine without dropping local sheets", () => {
+    let workspace = createDefaultWorkspaceState();
+    const firstSheetId = workspace.activeSheetId;
+
+    workspace = createSheetInWorkspace(workspace, { activate: false });
+    const localOnlySheetId = workspace.sheetOrder[1];
+
+    const next = reconcileWorkspaceSheetsFromEngine(workspace, [
+      {
+        sheetId: firstSheetId,
+        workspaceId: "workspace-1",
+        name: "Engine Sheet",
+        position: 1,
+        viewMode: "workspace",
+      },
+      {
+        sheetId: "engine-sheet-2",
+        workspaceId: "workspace-1",
+        name: "Rust Only",
+        position: 0,
+        viewMode: "workspace",
+      },
+    ]);
+
+    expect(next.sheetOrder).toEqual([
+      "engine-sheet-2",
+      firstSheetId,
+      localOnlySheetId,
+    ]);
+    expect(next.activeSheetId).toBe(firstSheetId);
+    expect(next.sheetMetaById[firstSheetId]?.name).toBe("Engine Sheet");
+    expect(next.sheetMetaById["engine-sheet-2"]?.name).toBe("Rust Only");
+    expect(next.sheetsById["engine-sheet-2"]).toBeDefined();
+    expect(next.sheetsById[localOnlySheetId]).toBe(workspace.sheetsById[localOnlySheetId]);
+  });
+
+  it("ignores Rust sheet metadata when bootstrap ids do not match local tabs yet", () => {
     const workspace = createDefaultWorkspaceState();
-    const result = createSheetWithTrackingIdsInWorkspace(workspace, [
-      "P2603001",
-      "P2603002",
-    ]);
-    const seededSheet = result.workspaceState.sheetsById[result.sheetId];
 
-    expect(result.workspaceState.activeSheetId).toBe(result.sheetId);
-    expect(seededSheet.rows[0].trackingInput).toBe("P2603001");
-    expect(seededSheet.rows[1].trackingInput).toBe("P2603002");
-    expect(seededSheet.rows[0].shipment).toBeNull();
-    expect(seededSheet.selectedRowKeys).toEqual([]);
-    expect(result.targetKeys).toHaveLength(2);
-  });
-
-  it("appends tracking ids into an existing sheet without replacing current data", () => {
-    let workspace = createDefaultWorkspaceState();
-    const firstSheetId = workspace.activeSheetId;
-
-    workspace = updateActiveSheetInWorkspace(workspace, (sheet) => ({
-      ...sheet,
-      rows: sheet.rows.map((row, index) =>
-        index === 0
-          ? {
-              ...row,
-              trackingInput: "P2603999",
-            }
-          : row
-      ),
-    }));
-
-    workspace = createSheetInWorkspace(workspace, { activate: false });
-    const secondSheetId = workspace.sheetOrder[1];
-    const result = appendTrackingIdsToExistingSheetInWorkspace(workspace, secondSheetId, [
-      "P2604001",
-      "P2604002",
+    const next = reconcileWorkspaceSheetsFromEngine(workspace, [
+      {
+        sheetId: "engine-bootstrap-sheet",
+        workspaceId: "workspace-1",
+        name: "Engine Sheet",
+        position: 0,
+        viewMode: "workspace",
+      },
     ]);
 
-    const targetSheet = result.workspaceState.sheetsById[secondSheetId];
-
-    expect(result.workspaceState.activeSheetId).toBe(firstSheetId);
-    expect(targetSheet.rows[0].trackingInput).toBe("P2604001");
-    expect(targetSheet.rows[1].trackingInput).toBe("P2604002");
-    expect(result.targetKeys).toHaveLength(2);
-  });
-
-  it("moves tracking ids into an existing sheet and removes them from the source sheet", () => {
-    let workspace = createDefaultWorkspaceState();
-    const firstSheetId = workspace.activeSheetId;
-
-    workspace = updateActiveSheetInWorkspace(workspace, (sheet) => ({
-      ...sheet,
-      rows: sheet.rows.map((row, index) =>
-        index === 0
-          ? {
-              ...row,
-              trackingInput: "P2604999",
-            }
-          : row
-      ),
-      selectedRowKeys: [sheet.rows[0].key],
-    }));
-
-    workspace = createSheetInWorkspace(workspace, { activate: false });
-    const secondSheetId = workspace.sheetOrder[1];
-    const sourceRowKey = workspace.sheetsById[firstSheetId].rows[0].key;
-    const result = moveTrackingIdsToExistingSheetInWorkspace(
-      workspace,
-      firstSheetId,
-      secondSheetId,
-      [sourceRowKey],
-      ["P2604999"]
-    );
-
-    const targetSheet = result.workspaceState.sheetsById[secondSheetId];
-    const sourceSheet = result.workspaceState.sheetsById[firstSheetId];
-
-    expect(targetSheet.rows[0].trackingInput).toBe("P2604999");
-    expect(sourceSheet.rows[0].trackingInput).toBe("");
-    expect(sourceSheet.selectedRowKeys).toEqual([]);
-  });
-
-  it("moves tracking ids into a new sheet and clears them from the source sheet", () => {
-    let workspace = createDefaultWorkspaceState();
-    const firstSheetId = workspace.activeSheetId;
-    workspace = createSheetInWorkspace(workspace, { activate: false });
-    const secondSheetId = workspace.sheetOrder[1];
-    const sourceRowKey = workspace.sheetsById[firstSheetId].rows[0].key;
-
-    workspace = updateActiveSheetInWorkspace(workspace, (sheet) => ({
-      ...sheet,
-      rows: sheet.rows.map((row, index) =>
-        index === 0
-          ? {
-              ...row,
-              trackingInput: "P2605001",
-            }
-          : row
-      ),
-      selectedRowKeys: [sheet.rows[0].key],
-    }));
-
-    const result = moveTrackingIdsToNewSheetInWorkspace(
-      workspace,
-      firstSheetId,
-      [sourceRowKey],
-      ["P2605001"]
-    );
-
-    const newSheet = result.workspaceState.sheetsById[result.sheetId];
-    const sourceSheet = result.workspaceState.sheetsById[firstSheetId];
-
-    expect(result.workspaceState.activeSheetId).toBe(result.sheetId);
-    expect(result.workspaceState.sheetMetaById[result.sheetId]?.name).toBe("Sheet 1 - 1");
-    expect(result.workspaceState.sheetOrder).toEqual([
-      firstSheetId,
-      result.sheetId,
-      secondSheetId,
-    ]);
-    expect(newSheet.rows[0].trackingInput).toBe("P2605001");
-    expect(sourceSheet.rows[0].trackingInput).toBe("");
-    expect(sourceSheet.selectedRowKeys).toEqual([]);
-  });
-
-  it("uses the source sheet name when copying ids into a new sheet", () => {
-    let workspace = createDefaultWorkspaceState();
-    const sourceSheetId = workspace.activeSheetId;
-    workspace = createSheetInWorkspace(workspace, { activate: false });
-    const secondSheetId = workspace.sheetOrder[1];
-
-    workspace = renameSheetInWorkspace(workspace, sourceSheetId, "Prio");
-
-    const result = createSheetWithTrackingIdsInWorkspace(
-      workspace,
-      ["P2606001"],
-      { sourceSheetId }
-    );
-
-    expect(result.workspaceState.sheetMetaById[result.sheetId]?.name).toBe("Prio - 1");
-    expect(result.workspaceState.sheetOrder).toEqual([
-      sourceSheetId,
-      result.sheetId,
-      secondSheetId,
-    ]);
+    expect(next).toBe(workspace);
   });
 });

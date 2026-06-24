@@ -1,10 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ApiServiceStatus,
-  BagResponse,
-  ManifestResponse,
+  AppUpdateStatus,
   ServiceConfig,
-  TrackResponse,
 } from "../types";
 import type { WorkspaceDocumentFile } from "../features/workspace/document";
 
@@ -34,7 +32,10 @@ export type ReleaseHealth = {
   targetOs: string;
   targetArch: string;
   packageName: string;
+  productName: string;
+  appIdentifier: string;
   debugBuild: boolean;
+  updaterPluginReady: boolean;
 };
 
 export type WorkspaceWindowLaunchRequest = {
@@ -56,33 +57,6 @@ function invokeCommand<T>(command: string, args?: Record<string, unknown>) {
   }
 
   return invoke<T>(command, args);
-}
-
-export function trackShipment(args: {
-  shipmentId: string;
-  forceRefresh: boolean;
-  sheetId: string;
-  rowKey: string;
-}) {
-  return invokeCommand<TrackResponse>("track_shipment", args);
-}
-
-export function trackBag(args: {
-  bagId: string;
-  forceRefresh: boolean;
-  sheetId: string;
-  rowKey: string;
-}) {
-  return invokeCommand<BagResponse>("track_bag", args);
-}
-
-export function trackManifest(args: {
-  manifestId: string;
-  forceRefresh: boolean;
-  sheetId: string;
-  rowKey: string;
-}) {
-  return invokeCommand<ManifestResponse>("track_manifest", args);
 }
 
 export function resolvePodImage(imageSource: string) {
@@ -107,6 +81,14 @@ export function logFrontendRuntimeEvent(level: "info" | "error", message: string
 
 export function getReleaseHealth() {
   return invokeCommand<ReleaseHealth>("get_release_health");
+}
+
+export function checkAppUpdate() {
+  return invokeCommand<AppUpdateStatus>("check_app_update");
+}
+
+export function installAppUpdate() {
+  return invokeCommand<AppUpdateStatus>("install_app_update");
 }
 
 export function openShipflowServiceApp() {

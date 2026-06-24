@@ -4,15 +4,17 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use reqwest::{Client, StatusCode as ReqwestStatusCode, Url};
+use reqwest::Client;
+#[cfg(test)]
+use reqwest::RequestBuilder;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use shipflow_core::{
     model::{
         BagResponse, ManifestResponse, TrackResponse, TrackingError, TrackingHtmlResponse,
         TrackingSource, TrackingSourceConfig,
     },
-    upstream::{parse_external_api_base_url, resolve_tracking_html_request},
+    upstream::resolve_tracking_html_request,
 };
 use std::{
     collections::VecDeque,
@@ -21,11 +23,11 @@ use std::{
 use tokio::task::JoinSet;
 
 use crate::api_contract::{
-    envelope, error_response_v1, generate_request_id, legacy_error_response, REQUEST_ID_HEADER_NAME,
+    envelope, error_response_v1, generate_request_id, REQUEST_ID_HEADER_NAME,
 };
+use crate::contact_cache::ContactCacheState;
 use crate::jobs::{
-    BatchJobItemStatus, BatchJobRegistry, BatchJobResultSnapshot, BatchJobStatus,
-    BatchTrackJobStart, MAX_BATCH_SHIPMENT_IDS, MAX_BATCH_SHIPMENT_ID_LENGTH,
+    BatchJobRegistry, BatchTrackJobStart, MAX_BATCH_SHIPMENT_IDS, MAX_BATCH_SHIPMENT_ID_LENGTH,
 };
 use crate::lookup_cache::{
     resolve_bag_request_cached, resolve_manifest_request_cached, resolve_tracking_request_cached,
@@ -49,7 +51,7 @@ const JOB_SCHEMA_VERSION: &str = "shipflow.service.job.v1";
 const SERVICE_UPSTREAM_CONNECT_TIMEOUT_SECS: u64 = 10;
 const SERVICE_UPSTREAM_READ_TIMEOUT_SECS: u64 = 60;
 const SERVICE_UPSTREAM_REQUEST_TIMEOUT_SECS: u64 = 90;
-const MAX_CONCURRENT_BATCH_TRACK_LOOKUPS: usize = 10;
+const MAX_CONCURRENT_BATCH_TRACK_LOOKUPS: usize = 5;
 
 #[derive(Clone)]
 pub struct HttpApiState {
@@ -60,6 +62,7 @@ pub struct HttpApiState {
     pub port: u16,
     pub tracking_source: shipflow_core::model::TrackingSourceConfig,
     pub lookup_cache: LookupCacheState,
+    pub contact_cache: ContactCacheState,
     pub job_registry: BatchJobRegistry,
 }
 
@@ -88,12 +91,6 @@ struct CapabilitiesResponse {
 struct BatchTrackRequest {
     shipment_ids: Vec<String>,
     force_refresh: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RemoteApiEnvelope<T> {
-    data: T,
 }
 
 pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), String> {
@@ -128,6 +125,7 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
         tracking_source,
         lookup_cache: LookupCacheState::default()
             .with_persistent_store(PersistentLookupStore::open_default()),
+        contact_cache: ContactCacheState::default(),
         job_registry: BatchJobRegistry::default(),
     };
     let router = build_router(app_state);
@@ -139,11 +137,6 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
 
 fn build_router(app_state: HttpApiState) -> Router {
     Router::new()
-        .route("/health", get(health_handler))
-        .route("/status", get(status_handler))
-        .route("/track/:shipment_id", get(track_handler))
-        .route("/bag/:bag_id", get(bag_handler))
-        .route("/manifest/:manifest_id", get(manifest_handler))
         .route("/v1/status", get(v1_status_handler))
         .route("/v1/openapi.json", get(v1_openapi_handler))
         .route("/v1/capabilities", get(v1_capabilities_handler))
@@ -156,29 +149,6 @@ fn build_router(app_state: HttpApiState) -> Router {
         .route("/v1/jobs/:job_id/result", get(v1_get_job_result))
         .route("/v1/jobs/:job_id/cancel", post(v1_cancel_job))
         .with_state(app_state)
-}
-
-async fn health_handler(
-    State(state): State<HttpApiState>,
-    headers: HeaderMap,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    authorize_request(&headers, &state.auth_token)?;
-    Ok(Json(json!({ "ok": true })))
-}
-
-async fn status_handler(
-    State(state): State<HttpApiState>,
-    headers: HeaderMap,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    authorize_request(&headers, &state.auth_token)?;
-
-    Ok(Json(json!({
-        "service": "running",
-        "product": SERVICE_STATUS_PRODUCT,
-        "mode": state.mode,
-        "bindAddress": state.bind_address,
-        "port": state.port,
-    })))
 }
 
 async fn v1_status_handler(
@@ -267,36 +237,6 @@ async fn v1_openapi_handler(
     )))
 }
 
-async fn track_handler(
-    State(state): State<HttpApiState>,
-    headers: HeaderMap,
-    Path(shipment_id): Path<String>,
-) -> Result<Json<TrackResponse>, (StatusCode, Json<Value>)> {
-    let started_at = Instant::now();
-    authorize_request(&headers, &state.auth_token)?;
-    let request_options = read_lookup_request_options(&headers);
-    let normalized_id = shipment_id.trim().to_string();
-
-    let result = resolve_tracking_request_cached(
-        &state.lookup_cache,
-        &state.client,
-        &state.tracking_source,
-        &normalized_id,
-        request_options,
-    )
-    .await;
-    log_service_tracking_timing(
-        "legacy",
-        &normalized_id,
-        started_at,
-        &state.tracking_source,
-        request_options.force_refresh,
-        result.is_ok(),
-    );
-
-    result.map(Json).map_err(map_tracking_error)
-}
-
 async fn v1_track_handler(
     State(state): State<HttpApiState>,
     headers: HeaderMap,
@@ -321,6 +261,7 @@ async fn v1_track_handler(
 
     let result = resolve_tracking_request_cached(
         &state.lookup_cache,
+        &state.contact_cache,
         &state.client,
         &state.tracking_source,
         &normalized_id,
@@ -378,26 +319,6 @@ async fn v1_tracking_html_handler(
         .map_err(|error| map_tracking_error_v1(error, TRACK_HTML_SCHEMA_VERSION, request_id))
 }
 
-async fn bag_handler(
-    State(state): State<HttpApiState>,
-    headers: HeaderMap,
-    Path(bag_id): Path<String>,
-) -> Result<Json<BagResponse>, (StatusCode, Json<Value>)> {
-    authorize_request(&headers, &state.auth_token)?;
-    let request_options = read_lookup_request_options(&headers);
-
-    resolve_bag_request_cached(
-        &state.lookup_cache,
-        &state.client,
-        &state.tracking_source,
-        bag_id.trim(),
-        request_options,
-    )
-    .await
-    .map(Json)
-    .map_err(map_tracking_error)
-}
-
 async fn v1_bag_handler(
     State(state): State<HttpApiState>,
     headers: HeaderMap,
@@ -428,26 +349,6 @@ async fn v1_bag_handler(
     .await
     .map(|payload| envelope(BAG_SCHEMA_VERSION, response_request_id, payload))
     .map_err(|error| map_tracking_error_v1(error, BAG_SCHEMA_VERSION, request_id))
-}
-
-async fn manifest_handler(
-    State(state): State<HttpApiState>,
-    headers: HeaderMap,
-    Path(manifest_id): Path<String>,
-) -> Result<Json<ManifestResponse>, (StatusCode, Json<Value>)> {
-    authorize_request(&headers, &state.auth_token)?;
-    let request_options = read_lookup_request_options(&headers);
-
-    resolve_manifest_request_cached(
-        &state.lookup_cache,
-        &state.client,
-        &state.tracking_source,
-        manifest_id.trim(),
-        request_options,
-    )
-    .await
-    .map(Json)
-    .map_err(map_tracking_error)
 }
 
 async fn v1_manifest_handler(
@@ -687,6 +588,7 @@ async fn run_track_batch_job(
             tasks.spawn(async move {
                 let result = resolve_tracking_request_cached(
                     &state_for_lookup.lookup_cache,
+                    &state_for_lookup.contact_cache,
                     &state_for_lookup.client,
                     &state_for_lookup.tracking_source,
                     shipment_id.trim(),
@@ -733,231 +635,21 @@ async fn run_track_batch_job(
 }
 
 async fn try_run_external_api_batch_job(
-    state: &HttpApiState,
-    job_id: &str,
-    shipment_ids: &[String],
-    force_refresh: bool,
+    _state: &HttpApiState,
+    _job_id: &str,
+    _shipment_ids: &[String],
+    _force_refresh: bool,
 ) -> bool {
-    if state.tracking_source.tracking_source != TrackingSource::ExternalApi {
-        return false;
-    }
-
-    match run_external_api_batch_job(state, job_id, shipment_ids, force_refresh).await {
-        Ok(ExternalBatchOutcome::Completed) => true,
-        Ok(ExternalBatchOutcome::Unsupported) => false,
-        Err(error) => {
-            state.job_registry.fail(job_id, error);
-            true
-        }
-    }
+    // Keep batch execution local so ShipFlow can stream per-item progress with the
+    // local concurrency window instead of waiting for a remote batch job to finish.
+    false
 }
 
-enum ExternalBatchOutcome {
-    Completed,
-    Unsupported,
-}
-
-async fn run_external_api_batch_job(
-    state: &HttpApiState,
-    job_id: &str,
-    shipment_ids: &[String],
-    force_refresh: bool,
-) -> Result<ExternalBatchOutcome, String> {
-    let source_config = &state.tracking_source;
-    let Some(auth_token) = external_api_auth_token(source_config) else {
-        return Err("External API bearer token is required.".into());
-    };
-    let base_url = parse_external_api_base_url(
-        &source_config.external_api_base_url,
-        source_config.allow_insecure_external_api_http,
-    )
-    .map_err(tracking_error_message)?;
-
-    let start_endpoint = base_url
-        .join("v1/jobs/track-batch")
-        .map_err(|error| format!("External API batch endpoint is invalid: {error}"))?;
-    let start_response = state
-        .client
-        .post(start_endpoint)
-        .bearer_auth(auth_token)
-        .header("content-type", "application/json")
-        .body(
-            serde_json::to_string(&BatchTrackRequest {
-                shipment_ids: shipment_ids.to_vec(),
-                force_refresh: Some(force_refresh),
-            })
-            .map_err(|error| format!("Unable to serialize External API batch request: {error}"))?,
-        )
-        .send()
-        .await
-        .map_err(|error| format!("External API batch request failed: {error}"))?;
-
-    if start_response.status() == ReqwestStatusCode::NOT_FOUND {
-        return Ok(ExternalBatchOutcome::Unsupported);
-    }
-
-    if !start_response.status().is_success() {
-        return Err(format!(
-            "External API batch request returned HTTP {}: {}",
-            start_response.status(),
-            start_response.text().await.unwrap_or_default()
-        ));
-    }
-
-    let start_body = start_response
-        .text()
-        .await
-        .map_err(|error| format!("External API batch start response could not be read: {error}"))?;
-    let start = serde_json::from_str::<RemoteApiEnvelope<BatchTrackJobStart>>(&start_body)
-        .map_err(|error| format!("External API batch start response is invalid: {error}"))?
-        .data;
-    let status_url = external_api_relative_url(&base_url, &start.status_endpoint)?;
-    let result_url = external_api_relative_url(&base_url, &start.result_endpoint)?;
-    let mut poll_count = 0_u16;
-
-    loop {
-        if state.job_registry.is_cancel_requested(job_id) {
-            let cancel_url =
-                external_api_relative_url(&base_url, &format!("/v1/jobs/{}/cancel", start.job_id))?;
-            let _ = state
-                .client
-                .post(cancel_url)
-                .bearer_auth(auth_token)
-                .send()
-                .await;
-        }
-
-        let status_response = state
-            .client
-            .get(status_url.clone())
-            .bearer_auth(auth_token)
-            .send()
-            .await
-            .map_err(|error| format!("External API batch status request failed: {error}"))?;
-
-        if !status_response.status().is_success() {
-            return Err(format!(
-                "External API batch status returned HTTP {}: {}",
-                status_response.status(),
-                status_response.text().await.unwrap_or_default()
-            ));
-        }
-
-        let status_body = status_response.text().await.map_err(|error| {
-            format!("External API batch status response could not be read: {error}")
-        })?;
-        let status =
-            serde_json::from_str::<RemoteApiEnvelope<crate::jobs::BatchJobSnapshot>>(&status_body)
-                .map_err(|error| format!("External API batch status response is invalid: {error}"))?
-                .data;
-
-        if matches!(
-            status.status,
-            BatchJobStatus::Completed | BatchJobStatus::Cancelled | BatchJobStatus::Failed
-        ) {
-            let result_response = state
-                .client
-                .get(result_url)
-                .bearer_auth(auth_token)
-                .send()
-                .await
-                .map_err(|error| format!("External API batch result request failed: {error}"))?;
-
-            if !result_response.status().is_success() {
-                return Err(format!(
-                    "External API batch result returned HTTP {}: {}",
-                    result_response.status(),
-                    result_response.text().await.unwrap_or_default()
-                ));
-            }
-
-            let result_body = result_response.text().await.map_err(|error| {
-                format!("External API batch result response could not be read: {error}")
-            })?;
-            let result =
-                serde_json::from_str::<RemoteApiEnvelope<BatchJobResultSnapshot>>(&result_body)
-                    .map_err(|error| {
-                        format!("External API batch result response is invalid: {error}")
-                    })?
-                    .data;
-
-            mirror_external_batch_results(state, job_id, shipment_ids, result);
-            return Ok(ExternalBatchOutcome::Completed);
-        }
-
-        poll_count = poll_count.saturating_add(1);
-        if poll_count >= 600 {
-            return Err("External API batch job timed out.".into());
-        }
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
-fn mirror_external_batch_results(
-    state: &HttpApiState,
-    job_id: &str,
-    requested_ids: &[String],
-    result: BatchJobResultSnapshot,
-) {
-    let mut completed_ids = Vec::with_capacity(result.results.len());
-    for item in result.results {
-        completed_ids.push(item.id.clone());
-        match item.status {
-            BatchJobItemStatus::Success => {
-                if let Some(data) = item.data {
-                    state.job_registry.push_success(job_id, item.id, data);
-                } else {
-                    state.job_registry.push_error(
-                        job_id,
-                        item.id,
-                        "External API returned an empty result.".into(),
-                    );
-                }
-            }
-            BatchJobItemStatus::Error => {
-                state.job_registry.push_error(
-                    job_id,
-                    item.id,
-                    item.error
-                        .unwrap_or_else(|| "External API batch item failed.".into()),
-                );
-            }
-            BatchJobItemStatus::Cancelled => {
-                state.job_registry.push_cancelled(job_id, item.id);
-            }
-        }
-    }
-
-    for shipment_id in requested_ids {
-        if !completed_ids
-            .iter()
-            .any(|completed_id| completed_id == shipment_id)
-        {
-            state.job_registry.push_error(
-                job_id,
-                shipment_id.clone(),
-                "External API did not return this ID.".into(),
-            );
-        }
-    }
-
-    state.job_registry.finish(job_id);
-}
-
-fn external_api_auth_token(source_config: &TrackingSourceConfig) -> Option<&str> {
-    let token = source_config.external_api_auth_token.trim();
-    if token.is_empty() {
-        None
-    } else {
-        Some(token)
-    }
-}
-
-fn external_api_relative_url(base_url: &Url, endpoint: &str) -> Result<Url, String> {
-    base_url
-        .join(endpoint.trim_start_matches('/'))
-        .map_err(|error| format!("External API batch URL is invalid: {error}"))
+#[cfg(test)]
+fn external_api_request(request: RequestBuilder, api_token: &str) -> RequestBuilder {
+    request
+        .bearer_auth(api_token)
+        .header("x-api-token", api_token)
 }
 
 fn log_service_tracking_timing(
@@ -986,14 +678,6 @@ fn tracking_source_label(tracking_source: &TrackingSourceConfig) -> &'static str
     }
 }
 
-fn authorize_request(
-    headers: &HeaderMap,
-    expected_token: &str,
-) -> Result<(), (StatusCode, Json<Value>)> {
-    authorize_request_message(headers, expected_token)
-        .map_err(|message| legacy_error_response(StatusCode::UNAUTHORIZED, &message))
-}
-
 fn authorize_request_message(headers: &HeaderMap, expected_token: &str) -> Result<(), String> {
     let Some(raw_header) = headers.get(AUTHORIZATION) else {
         return Err("Authorization header is required.".into());
@@ -1012,18 +696,6 @@ fn authorize_request_message(headers: &HeaderMap, expected_token: &str) -> Resul
     }
 
     Ok(())
-}
-
-fn map_tracking_error(error: TrackingError) -> (StatusCode, Json<Value>) {
-    match error {
-        TrackingError::BadRequest(message) => {
-            legacy_error_response(StatusCode::BAD_REQUEST, &message)
-        }
-        TrackingError::NotFound(message) => legacy_error_response(StatusCode::NOT_FOUND, &message),
-        TrackingError::Upstream(message) => {
-            legacy_error_response(StatusCode::BAD_GATEWAY, &message)
-        }
-    }
 }
 
 fn map_tracking_error_v1(
@@ -1096,17 +768,45 @@ mod tests {
     use shipflow_core::model::{TrackingSource, TrackingSourceConfig};
     use tower::ServiceExt;
 
-    use super::{authorize_request, build_router, read_lookup_request_options, HttpApiState};
+    use super::{
+        authorize_request_message, build_router, external_api_request, read_lookup_request_options,
+        HttpApiState,
+    };
     use crate::{
-        jobs::BatchJobRegistry, lookup_cache::LookupCacheState, model::ServiceRuntimeMode,
-        FORCE_REFRESH_HEADER_NAME,
+        contact_cache::ContactCacheState, jobs::BatchJobRegistry, lookup_cache::LookupCacheState,
+        model::ServiceRuntimeMode, FORCE_REFRESH_HEADER_NAME,
     };
 
     #[test]
-    fn rejects_missing_authorization_header() {
-        let result = authorize_request(&HeaderMap::new(), "secret-token");
+    fn external_api_batch_requests_include_bearer_and_x_api_token_headers() {
+        let request = external_api_request(
+            reqwest::Client::new().get("https://shipflow.example.test/v1/status"),
+            "sf_external_token",
+        )
+        .build()
+        .expect("request should build");
 
-        assert!(matches!(result, Err((StatusCode::UNAUTHORIZED, _))));
+        assert_eq!(
+            request
+                .headers()
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer sf_external_token")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("x-api-token")
+                .and_then(|value| value.to_str().ok()),
+            Some("sf_external_token")
+        );
+    }
+
+    #[test]
+    fn rejects_missing_authorization_header() {
+        let result = authorize_request_message(&HeaderMap::new(), "secret-token");
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1114,7 +814,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, "Bearer secret-token".parse().unwrap());
 
-        let result = authorize_request(&headers, "secret-token");
+        let result = authorize_request_message(&headers, "secret-token");
 
         assert!(result.is_ok());
     }
@@ -1124,9 +824,36 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, "Bearer other-token".parse().unwrap());
 
-        let result = authorize_request(&headers, "secret-token");
+        let result = authorize_request_message(&headers, "secret-token");
 
-        assert!(matches!(result, Err((StatusCode::UNAUTHORIZED, _))));
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn legacy_routes_are_not_served() {
+        let router = build_router(test_state());
+
+        for uri in [
+            "/health",
+            "/status",
+            "/track/P2603310114291",
+            "/bag/PID1",
+            "/manifest/MAN1",
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header(AUTHORIZATION, "Bearer secret-token")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+        }
     }
 
     #[test]
@@ -1241,6 +968,7 @@ mod tests {
             port: 18422,
             tracking_source: TrackingSourceConfig::default(),
             lookup_cache: LookupCacheState::default(),
+            contact_cache: ContactCacheState::default(),
             job_registry: BatchJobRegistry::default(),
         }
     }

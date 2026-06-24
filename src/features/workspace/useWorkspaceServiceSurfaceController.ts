@@ -32,6 +32,7 @@ export function useWorkspaceServiceSurfaceController({
 
   return {
     ...serviceSettings,
+    showNotice,
     openShipFlowServiceApp,
   };
 }

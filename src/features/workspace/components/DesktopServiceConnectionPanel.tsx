@@ -1,5 +1,3 @@
-import { useState } from "react";
-import { getReleaseHealth, type ReleaseHealth } from "../../../backend/commands";
 import { ServiceConfig } from "../../../types";
 
 type ServiceConnectionTestResult = {
@@ -8,7 +6,6 @@ type ServiceConnectionTestResult = {
 } | null;
 
 type DesktopServiceConnectionPanelProps = {
-  panel: "connection" | "release";
   serviceConfig: ServiceConfig;
   desktopServicePortDraft: string;
   isDesktopServicePortValid: boolean;
@@ -25,7 +22,6 @@ type DesktopServiceConnectionPanelProps = {
 };
 
 export function DesktopServiceConnectionPanel({
-  panel,
   serviceConfig,
   desktopServicePortDraft,
   isDesktopServicePortValid,
@@ -40,48 +36,6 @@ export function DesktopServiceConnectionPanel({
   onPasteDesktopServiceAuthToken,
   onTestServiceConnection,
 }: DesktopServiceConnectionPanelProps) {
-  const [releaseHealth, setReleaseHealth] = useState<ReleaseHealth | null>(null);
-  const [releaseHealthError, setReleaseHealthError] = useState<string | null>(null);
-
-  const showReleaseHealth = () => {
-    setReleaseHealthError(null);
-    void getReleaseHealth()
-      .then((health) => setReleaseHealth(health))
-      .catch((error) =>
-        setReleaseHealthError(
-          error instanceof Error ? error.message : "Gagal membaca release health."
-        )
-      );
-  };
-
-  if (panel === "release") {
-    return (
-      <div className="settings-pane">
-        <div className="settings-pane-header">
-          <h4>Release Health</h4>
-          <p>Cek versi app, platform, dan jenis build yang sedang berjalan.</p>
-        </div>
-        <div className="service-settings-stack">
-          <button type="button" className="sheet-tab-action" onClick={showReleaseHealth}>
-            Cek Health
-          </button>
-          {releaseHealth ? (
-            <div className="settings-field-help settings-field-help-info" role="status">
-              {releaseHealth.packageName} {releaseHealth.appVersion} · {releaseHealth.targetOs}/
-              {releaseHealth.targetArch}
-              {releaseHealth.debugBuild ? " · debug" : " · release"}
-            </div>
-          ) : null}
-          {releaseHealthError ? (
-            <div className="settings-field-help settings-field-help-error" role="status">
-              {releaseHealthError}
-            </div>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="settings-pane">
       <div className="settings-pane-header">

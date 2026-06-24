@@ -46,7 +46,7 @@ describe("useWorkspaceTableShellController", () => {
     window.localStorage.clear();
   });
 
-  it("forces selection to exactly visible rows while filters are active", () => {
+  it("does not select visible rows just because filters are active", () => {
     const updateActiveSheet = vi.fn();
     const options = createOptions({
       hasActiveFilters: true,
@@ -63,8 +63,8 @@ describe("useWorkspaceTableShellController", () => {
 
     const nextSheet = applyActiveSheetUpdaters(initialSheet, updateActiveSheet);
 
-    expect(nextSheet.selectionFollowsVisibleRows).toBe(true);
-    expect(nextSheet.selectedRowKeys).toEqual(["row-2", "row-4"]);
+    expect(nextSheet.selectionFollowsVisibleRows).toBe(false);
+    expect(nextSheet.selectedRowKeys).toEqual([]);
   });
 
   it("stops following visible rows when filters are cleared without selecting everything", () => {

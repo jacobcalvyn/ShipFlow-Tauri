@@ -1,0 +1,231 @@
+name: Build Updater Artifacts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-updater:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: desktop
+            platform: macos
+          - target: desktop
+            platform: windows
+          - target: service
+            platform: macos
+          - target: service
+            platform: windows
+    runs-on: ${{ matrix.platform == 'windows' && 'windows-latest' || 'macos-latest' }}
+    timeout-minutes: 45
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+      TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Windows bundler
+        if: ${{ matrix.platform == 'windows' }}
+        run: choco install nsis -y --no-progress
+
+      - name: Validate macOS signing secrets
+        if: ${{ matrix.platform == 'macos' }}
+        shell: bash
+        run: |
+          missing=0
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::${name} is required for signed macOS updater artifacts."
+              missing=1
+            fi
+          done
+
+          if { [ -z "$APPLE_API_PRIVATE_KEY" ] || [ -z "$APPLE_API_KEY" ] || [ -z "$APPLE_API_ISSUER" ]; } && { [ -z "$APPLE_ID" ] || [ -z "$APPLE_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; }; then
+            echo "::error::App Store Connect API key or Apple ID notarization credentials are required."
+            missing=1
+          fi
+
+          exit "$missing"
+
+      - name: Validate Windows signing secrets
+        if: ${{ matrix.platform == 'windows' }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            throw "WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are required for signed Windows updater artifacts."
+          }
+
+      - name: Import Apple signing certificate
+        if: ${{ matrix.platform == 'macos' }}
+        shell: bash
+        run: |
+          CERTIFICATE_PATH="$RUNNER_TEMP/apple_certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/shipflow-updater-signing.keychain-db"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 -D > "$CERTIFICATE_PATH"
+          security create-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Prepare App Store Connect key
+        if: ${{ matrix.platform == 'macos' && env.APPLE_API_PRIVATE_KEY != '' && env.APPLE_API_KEY != '' }}
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8" >> "$GITHUB_ENV"
+
+      - name: Check security baseline
+        run: npm run security:baseline
+
+      - name: Build signed updater artifacts
+        run: node scripts/build-updater-artifacts.mjs "${{ matrix.target }}"
+
+      - name: Verify Windows updater installer signatures
+        if: ${{ matrix.platform == 'windows' }}
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+            -Recurse `
+            -Filter signtool.exe `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+
+          if ($null -eq $signtool) {
+            throw "Unable to find Windows SDK signtool.exe"
+          }
+
+          if ("${{ matrix.target }}" -eq "service") {
+            $roots = @("apps/service/target/release/bundle")
+          } else {
+            $roots = @("target/release/bundle")
+          }
+
+          $artifacts = @()
+          foreach ($root in $roots) {
+            if (Test-Path $root) {
+              $artifacts += Get-ChildItem -Path $root -Recurse -File -Include *.exe,*.msi
+            }
+          }
+
+          if ($artifacts.Count -eq 0) {
+            throw "No Windows updater installer artifacts were found to verify."
+          }
+
+          foreach ($artifact in $artifacts) {
+            & $signtool.FullName verify /pa /v $artifact.FullName
+          }
+
+      - name: Notarize macOS updater artifacts
+        if: ${{ matrix.platform == 'macos' }}
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = "desktop" ]; then
+            BUNDLE_ROOT="target/release/bundle/macos"
+            ARTIFACT_ROOT="target/release/bundle"
+          else
+            BUNDLE_ROOT="apps/service/target/release/bundle/macos"
+            ARTIFACT_ROOT="apps/service/target/release/bundle"
+          fi
+
+          APP_PATH="$(find "$BUNDLE_ROOT" -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          if [ "${{ matrix.target }}" = "desktop" ]; then
+            PRODUCT_NAME="ShipFlow Desktop"
+          else
+            PRODUCT_NAME="ShipFlow Service"
+          fi
+          bash scripts/macos/notarize-app.sh "$APP_PATH" "$PRODUCT_NAME"
+
+          find "$ARTIFACT_ROOT" -name '*.dmg' -print0 | while IFS= read -r -d '' DMG_PATH; do
+            bash scripts/macos/notarize-app.sh "$DMG_PATH" "$PRODUCT_NAME DMG"
+          done
+
+      - name: Re-sign macOS updater artifacts after notarization
+        if: ${{ matrix.platform == 'macos' }}
+        shell: bash
+        run: bash scripts/macos/resign-updater-artifacts-after-notarization.sh "${{ matrix.target }}"
+
+      - name: Verify updater signature artifacts
+        run: node scripts/verify-updater-signatures.mjs "${{ matrix.target }}" "${{ matrix.platform }}"
+
+      - name: Generate updater evidence manifest
+        run: node scripts/generate-release-evidence.mjs "${{ matrix.target }}" "${{ matrix.platform }}" updater "release-evidence/${{ matrix.target }}-${{ matrix.platform }}-updater.evidence.json"
+
+      - name: Verify updater evidence manifest
+        run: node scripts/verify-release-evidence.mjs "${{ matrix.target }}" "${{ matrix.platform }}" updater "release-evidence/${{ matrix.target }}-${{ matrix.platform }}-updater.evidence.json"
+
+      - name: Upload desktop updater artifacts
+        if: ${{ matrix.target == 'desktop' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: shipflow-desktop-${{ matrix.platform }}-updater-artifacts
+          path: |
+            release-evidence/desktop-${{ matrix.platform }}-updater.evidence.json
+            target/release/bundle/**/*.sig
+            target/release/bundle/**/*.zip
+            target/release/bundle/**/*.tar.gz
+            target/release/bundle/**/*.AppImage
+            target/release/bundle/**/*.msi
+            target/release/bundle/**/*.exe
+            target/release/bundle/**/*.dmg
+          if-no-files-found: error
+
+      - name: Upload service updater artifacts
+        if: ${{ matrix.target == 'service' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: shipflow-service-${{ matrix.platform }}-updater-artifacts
+          path: |
+            release-evidence/service-${{ matrix.platform }}-updater.evidence.json
+            apps/service/target/release/bundle/**/*.sig
+            apps/service/target/release/bundle/**/*.zip
+            apps/service/target/release/bundle/**/*.tar.gz
+            apps/service/target/release/bundle/**/*.AppImage
+            apps/service/target/release/bundle/**/*.msi
+            apps/service/target/release/bundle/**/*.exe
+            apps/service/target/release/bundle/**/*.dmg
+          if-no-files-found: error

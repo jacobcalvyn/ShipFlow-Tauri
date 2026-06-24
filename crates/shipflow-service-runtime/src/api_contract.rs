@@ -3,7 +3,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{http::StatusCode, Json};
 use serde::Serialize;
-use serde_json::{json, Value};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 pub const API_VERSION: &str = "v1";
@@ -93,15 +92,6 @@ pub fn error_response_v1(
             },
             warnings: Vec::new(),
         }),
-    )
-}
-
-pub fn legacy_error_response(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
-    (
-        status,
-        Json(json!({
-            "error": message,
-        })),
     )
 }
 

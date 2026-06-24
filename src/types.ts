@@ -70,6 +70,8 @@ export type TrackStatusAkhir = {
   officer_name?: string;
   officer_id?: string;
   datetime?: string;
+  date?: string;
+  time?: string;
 };
 
 export type TrackPod = {
@@ -142,6 +144,13 @@ export type HistorySummary = {
   delivery_runsheet: DeliveryRunsheetSummary[];
 };
 
+export type ContactEnrichmentMetadata = {
+  source: "lacak_mitra";
+  status: "cache_hit" | "fetched" | "missing" | "failed" | "skipped";
+  sender_phone_present: boolean;
+  recipient_phone_present: boolean;
+};
+
 export type TrackResponse = {
   url: string;
   detail: TrackDetail;
@@ -149,6 +158,7 @@ export type TrackResponse = {
   pod: TrackPod;
   history: TrackHistoryEntry[];
   history_summary: HistorySummary;
+  contact_enrichment?: ContactEnrichmentMetadata;
 };
 
 export type BagItem = {
@@ -208,6 +218,7 @@ export type ServiceConfig = {
   externalApiAuthToken: string;
   allowInsecureExternalApiHttp: boolean;
   keepRunningInTray: boolean;
+  startAtLogin: boolean;
   lastUpdatedAt: string;
 };
 
@@ -220,4 +231,12 @@ export type ApiServiceStatus = {
   bindAddress: string | null;
   port: number | null;
   errorMessage: string | null;
+};
+
+export type AppUpdateStatus = {
+  available: boolean;
+  currentVersion: string;
+  version: string | null;
+  body: string | null;
+  downloadUrl: string | null;
 };

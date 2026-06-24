@@ -1,11 +1,16 @@
 import { Dispatch, MutableRefObject, SetStateAction, useCallback } from "react";
 import { writeClipboardText } from "../clipboard";
 import { COLUMNS } from "../sheet/columns";
+import type {
+  SheetTableRow,
+  SheetTableRowTrackingEntry,
+} from "../sheet/table-row-view";
 import { SheetState } from "../sheet/types";
 import { useTrackingRuntimeController } from "../tracking/useTrackingRuntimeController";
 import { useSelectionTransferController } from "./useSelectionTransferController";
 import { useWorkspaceCommandsController } from "./useWorkspaceCommandsController";
 import { WorkspaceState } from "./types";
+import type { SheetRowsQuery } from "../workspace-engine/client";
 
 type Notice = {
   tone: "success" | "error" | "info";
@@ -36,14 +41,17 @@ type UseWorkspaceRuntimeCommandsControllerOptions = {
   highlightedColumnTimeoutRef: MutableRefObject<number | null>;
   highlightedColumnSheetIdRef: MutableRefObject<string | null>;
   allTrackingIds: string[];
-  exportableRows: SheetState["rows"];
-  retrackableRows: Array<{ key: string; value: string }>;
-  retryFailedEntries: Array<{ key: string; value: string }>;
+  exportableTableRows: SheetTableRow[];
+  rustExportRowsQuery: SheetRowsQuery | null;
+  retrackableRows: SheetTableRowTrackingEntry[];
+  retryFailedEntries: SheetTableRowTrackingEntry[];
+  selectedEngineRowIds: string[];
   selectedTrackingIds: string[];
   selectedVisibleRowKeys: string[];
   visibleColumns: ReadonlyArray<(typeof COLUMNS)[number]>;
   visibleColumnPathSet: Set<string>;
   showNotice: (notice: Notice) => void;
+  onWorkspaceEngineMutation?: (sheetIds?: string | string[]) => void;
 };
 
 export function useWorkspaceRuntimeCommandsController({
@@ -70,14 +78,17 @@ export function useWorkspaceRuntimeCommandsController({
   highlightedColumnTimeoutRef,
   highlightedColumnSheetIdRef,
   allTrackingIds,
-  exportableRows,
+  exportableTableRows,
+  rustExportRowsQuery,
   retrackableRows,
   retryFailedEntries,
+  selectedEngineRowIds,
   selectedTrackingIds,
   selectedVisibleRowKeys,
   visibleColumns,
   visibleColumnPathSet,
   showNotice,
+  onWorkspaceEngineMutation,
 }: UseWorkspaceRuntimeCommandsControllerOptions) {
   const {
     abortRowTrackingWork,
@@ -88,11 +99,12 @@ export function useWorkspaceRuntimeCommandsController({
     handleTrackingInputChange,
     handleTrackingInputPaste,
     invalidateSheetTrackingWork,
-    runBulkPasteFetches,
+    refreshTrackingRows,
   } = useTrackingRuntimeController({
     workspaceRef,
     updateSheet,
     disarmDeleteAll,
+    onWorkspaceEngineMutation,
   });
 
   const focusFirstTrackingInput = useCallback(() => {
@@ -119,6 +131,7 @@ export function useWorkspaceRuntimeCommandsController({
     activeSheetId,
     workspaceTabs,
     selectedTrackingIds,
+    selectedEngineRowIds,
     selectedVisibleRowKeys,
     workspaceRef,
     setWorkspaceState,
@@ -126,8 +139,8 @@ export function useWorkspaceRuntimeCommandsController({
     disarmDeleteAll,
     disarmDeleteSelected,
     abortRowTrackingWork,
-    runBulkPasteFetches,
     showNotice,
+    onWorkspaceEngineMutation,
   });
 
   const {
@@ -151,9 +164,11 @@ export function useWorkspaceRuntimeCommandsController({
     activeSheetId,
     activeSheetDeleteAllArmed: activeSheet.deleteAllArmed,
     allTrackingIds,
-    exportableRows,
+    exportableTableRows,
+    rustExportRowsQuery,
     retrackableRows,
     retryFailedEntries,
+    selectedEngineRowIds,
     selectedTrackingIds,
     selectedVisibleRowKeys,
     deleteSelectedArmedSheetId,
@@ -181,7 +196,8 @@ export function useWorkspaceRuntimeCommandsController({
     abortRowTrackingWork,
     invalidateSheetTrackingWork,
     forgetSheetTrackingRuntime,
-    runBulkPasteFetches,
+    refreshTrackingRows,
+    onWorkspaceEngineMutation,
   });
 
   return {
@@ -215,6 +231,6 @@ export function useWorkspaceRuntimeCommandsController({
     renameActiveSheet,
     retrackAllRows,
     retryFailedRows,
-    runBulkPasteFetches,
+    refreshTrackingRows,
   };
 }

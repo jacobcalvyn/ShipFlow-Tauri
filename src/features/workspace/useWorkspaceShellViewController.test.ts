@@ -118,16 +118,24 @@ describe("useWorkspaceShellViewController", () => {
     };
     const sheetViewModel = {
       loadedCount: 1,
-      totalShipmentCount: 2,
+      totalShipmentCount: 37,
       loadingCount: 0,
-      retrackableRows: [{ key: "row-1", value: "A" }],
+      retrackableRows: [],
       retryFailedEntries: [{ key: "row-2", value: "B" }],
-      exportableRows: [{ key: "row-1" }],
+      exportableTableRows: [],
+      rustExportRowsQuery: {
+        sheetId: "sheet-1",
+        offset: 0,
+        limit: 1_000,
+        filters: [],
+        sort: [],
+      },
       activeFilterCount: 1,
-      selectedVisibleRowKeys: ["row-1"],
+      selectedVisibleRowKeys: [],
       ignoredHiddenFilterCount: 0,
       columnShortcuts: [{ path: "status", label: "Status" }],
-      displayedRows: [{ key: "row-1" }],
+      displayedTableRows: [{ key: "row-1" }],
+      displayedRowWindow: null,
       visibleColumns: [{ path: "status" }],
       hiddenColumns: [{ path: "courier" }],
       effectiveColumnWidths: { status: 120 },
@@ -179,6 +187,7 @@ describe("useWorkspaceShellViewController", () => {
           },
         ],
       },
+      requestVisibleRowWindow: vi.fn(),
     };
     const interactionRefs = {
       hoveredColumn: 2,
@@ -295,6 +304,8 @@ describe("useWorkspaceShellViewController", () => {
     expect(mocks.useWorkspaceActionBarPropsMock).toHaveBeenCalledWith(
       expect.objectContaining({
         loadedCount: sheetViewModel.loadedCount,
+        retrackableRowsCount: 37,
+        exportableRowsCount: 37,
         deleteSelectedArmed: true,
         retrackAllRows: interactionRuntime.retrackAllRows,
         appendTargetSheets: interactionRuntime.appendTargetSheets,
@@ -312,7 +323,7 @@ describe("useWorkspaceShellViewController", () => {
     expect(mocks.useWorkspaceTablePropsMock).toHaveBeenCalledWith(
       expect.objectContaining({
         activeSheetId: "sheet-1",
-        displayedRows: sheetViewModel.displayedRows,
+        displayedTableRows: sheetViewModel.displayedTableRows,
         hoveredColumn: interactionRefs.hoveredColumn,
         filters: activeSheet.filters,
         handleSheetScroll: interactionRuntime.handleSheetScroll,

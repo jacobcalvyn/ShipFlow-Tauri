@@ -36,7 +36,7 @@ type UseWorkspaceTableInteractionControllerOptions = {
     sheetId: string,
     rowKey: string,
     shipmentIdOverride?: string,
-    options?: { forceRefresh?: boolean }
+    options?: { forceRefresh?: boolean; position?: number; engineRowId?: string }
   ) => Promise<void>;
   showNotice: (notice: WorkspaceTableInteractionNotice) => void;
 };
@@ -95,7 +95,12 @@ export function useWorkspaceTableInteractionController({
   );
 
   const handleTrackingInputKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLInputElement>, sheetId: string, rowKey: string) => {
+    (
+      event: KeyboardEvent<HTMLInputElement>,
+      sheetId: string,
+      rowKey: string,
+      options?: { position?: number; engineRowId?: string }
+    ) => {
       const currentInput = event.currentTarget;
       event.stopPropagation();
       if ("stopImmediatePropagation" in event.nativeEvent) {
@@ -114,7 +119,7 @@ export function useWorkspaceTableInteractionController({
         }
         const moved = focusTrackingInputRelative(currentInput, 1);
         if (!moved) {
-          void fetchRow(sheetId, rowKey, currentInput.value);
+          void fetchRow(sheetId, rowKey, currentInput.value, options);
           currentInput.blur();
         }
         return;

@@ -15,5 +15,8 @@ tauri-build = { workspace = true }
 
 [dependencies]
 serde = { workspace = true }
+reqwest = { workspace = true }
+shipflow-workspace-engine = { path = "../crates/shipflow-workspace-engine" }
 shipflow-tauri-runtime = { path = "../crates/shipflow-tauri-runtime" }
 tauri = { workspace = true }
+tokio = { workspace = true }

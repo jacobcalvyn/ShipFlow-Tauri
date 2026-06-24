@@ -38,6 +38,7 @@ impl Default for TrayServiceSnapshot {
                 external_api_auth_token: String::new(),
                 allow_insecure_external_api_http: false,
                 keep_running_in_tray: true,
+                start_at_login: false,
                 last_updated_at: String::new(),
             },
             service_status: ApiServiceStatus::default(),
@@ -121,12 +122,12 @@ pub async fn configure_api_service_runtime<R: Runtime>(
             format!("[ShipFlowTray] failed to sync tray after configure: {error}"),
         );
     }
-    if !config.uses_custom_desktop_service_connection() {
+    if result.is_ok() && !config.uses_custom_desktop_service_connection() {
         if let Err(error) = sync_service_tray_companion_for_config(&config) {
-            log_runtime_event(
-                "ERROR",
-                format!("[ShipFlowTray] failed to sync tray companion after configure: {error}"),
-            );
+            let message =
+                format!("[ShipFlowTray] failed to sync tray companion after configure: {error}");
+            log_runtime_event("ERROR", message.clone());
+            return Err(message);
         }
     }
 

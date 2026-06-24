@@ -22,6 +22,7 @@ vi.mock("qrcode", () => ({
 import { SheetTable } from "./SheetTable";
 import { COLUMNS } from "../columns";
 import { SheetRow } from "../types";
+import { createSheetTableRowsFromSheetRows } from "../table-row-view";
 
 const visibleColumns = COLUMNS.slice(0, 6);
 const columnWidths = Object.fromEntries(
@@ -65,7 +66,7 @@ describe("SheetTable benchmark", () => {
       <SheetTable
         sheetId="bench-sheet"
         displayScale="small"
-        displayedRows={rows}
+        displayedTableRows={createSheetTableRowsFromSheetRows(rows)}
         visibleColumns={visibleColumns}
         hiddenColumns={[]}
         columnWidths={columnWidths}

@@ -82,15 +82,15 @@ Recommended contract style:
 
 - loopback HTTP first
 - versioned request / response models
-- explicit health/config/status endpoints
+- explicit status, discovery, and lookup endpoints
 
 Suggested endpoint families:
 
-- `GET /health`
-- `GET /service/config`
-- `POST /service/config`
-- `GET /service/status`
-- `POST /track`
+- `GET /v1/status`
+- `GET /v1/capabilities`
+- `GET /v1/openapi.json`
+- `GET /v1/track/:shipment_id`
+- `POST /v1/jobs/track-batch`
 - `POST /pod/resolve`
 
 ## Migration Structure

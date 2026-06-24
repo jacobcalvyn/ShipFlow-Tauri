@@ -10,6 +10,7 @@ import {
   ImportSourceDrafts,
   ImportSourceLookupStates,
   ImportSourceModalKind,
+  ImportSourceRetryTargets,
 } from "../types";
 import { ImportSourceModal } from "./ImportSourceModal";
 
@@ -58,7 +59,10 @@ type SheetActionBarProps = {
   onSetImportSourceDraft: (kind: ImportSourceModalKind, value: string) => void;
   onImportBagTrackingIds: (mode: "replace" | "append") => void;
   onImportManifestTrackingIds: (mode: "replace" | "append") => void;
-  onRunImportSourceLookup: (kind: ImportSourceModalKind) => void;
+  onRunImportSourceLookup: (
+    kind: ImportSourceModalKind,
+    retryTargets?: ImportSourceRetryTargets
+  ) => void;
   onStartSelectedIdsDrag?: (event: ReactDragEvent<HTMLButtonElement>) => void;
   onEndSelectedIdsDrag?: () => void;
 };
@@ -509,7 +513,10 @@ export function SheetActionBar({
   const progressLabel =
     loadingCount > 0
       ? `${loadedCount}/${totalShipmentCount} kiriman dimuat`
-      : `Total ${totalShipmentCount} kiriman`;
+      : `Total ${loadedCount}/${totalShipmentCount} kiriman`;
+
+  const isMac = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac");
+  const copyShortcutHint = isMac ? " [⌘C]" : " [Ctrl+C]";
 
   return (
     <div className="sheet-action-layout">
@@ -592,7 +599,7 @@ export function SheetActionBar({
               className="action-button"
               onClick={onCopyAllIds}
               disabled={retrackableRowsCount === 0}
-              title="Copy ID Kiriman"
+              title={"Copy ID Kiriman" + copyShortcutHint}
             >
               <ActionIcon>
                 <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -683,7 +690,7 @@ export function SheetActionBar({
               className="action-button"
               onClick={onCopySelectedIds}
               disabled={!hasSelection}
-              title="Copy ID Kiriman Terselect"
+              title={"Copy ID Kiriman Terselect" + copyShortcutHint}
             >
               <ActionIcon>
                 <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -743,6 +750,9 @@ export function SheetActionBar({
           onImportBagTrackingIds={onImportBagTrackingIds}
           onImportManifestTrackingIds={onImportManifestTrackingIds}
           onSubmit={() => onRunImportSourceLookup(importSourceModalKind)}
+          onRetryFailed={(targets) =>
+            onRunImportSourceLookup(importSourceModalKind, targets)
+          }
           onClose={onCloseImportSourceModal}
         />
       ) : null}

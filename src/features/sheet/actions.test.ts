@@ -7,6 +7,7 @@ import {
   deleteRowsInSheet,
   forceSelectionToVisibleRowsInSheet,
   openImportSourceModalInSheet,
+  setImportSourceJobInSheet,
   setSheetAnalyticsChartTypeInSheet,
   setSheetAnalyticsGroupByPathsInSheet,
   setSheetAnalyticsMetricAggregationInSheet,
@@ -14,12 +15,15 @@ import {
   setSheetAnalyticsSourceScopeInSheet,
   setSheetViewModeInSheet,
   setImportSourceDraftInSheet,
+  startImportSourceLookupInSheet,
   setRowErrorInSheet,
   setRowLoadingInSheet,
   setRowSuccessInSheet,
   setRowsQueuedInSheet,
   setValueFilterSelectionInSheet,
   setTrackingInputInSheet,
+  settleRowRuntimeStateInSheet,
+  settleRowsRuntimeStateInSheet,
   stopSelectionFollowingVisibleRowsInSheet,
   toggleRowSelectionInSheet,
 } from "./actions";
@@ -176,9 +180,11 @@ describe("sheet actions", () => {
 
     const dirtyState = setTrackingInputInSheet(initial, rowKey, "P2603310114291");
     expect(() => assertValidSheetState(dirtyState)).not.toThrow();
+    expect(dirtyState.rows[0].dirty).toBe(true);
 
     const loadingState = setRowLoadingInSheet(dirtyState, rowKey, "P2603310114291");
     expect(() => assertValidSheetState(loadingState)).not.toThrow();
+    expect(loadingState.rows[0].dirty).toBe(false);
 
     const errorState = setRowErrorInSheet(loadingState, rowKey, "timeout");
     expect(() => assertValidSheetState(errorState)).not.toThrow();
@@ -247,6 +253,88 @@ describe("sheet actions", () => {
     expect(() => assertValidSheetState(queuedState)).not.toThrow();
   });
 
+  it("settles runtime flags without copying or clearing shipment detail", () => {
+    const initial = createDefaultSheetState();
+    const firstRowKey = initial.rows[0].key;
+    const secondRowKey = initial.rows[1].key;
+    const successState = setRowSuccessInSheet(
+      setRowSuccessInSheet(initial, firstRowKey, "P2603310114291", {
+        url: "https://example.test/1",
+        detail: {
+          shipment_header: { nomor_kiriman: "P2603310114291" },
+          origin_detail: {},
+          package_detail: {},
+          billing_detail: { cod_info: { is_cod: false } },
+          actors: { pengirim: {}, penerima: {} },
+          performance_detail: {},
+        },
+        status_akhir: {},
+        pod: {},
+        history: [],
+        history_summary: {
+          irregularity: [],
+          bagging_unbagging: [],
+          manifest_r7: [],
+          delivery_runsheet: [],
+        },
+      }),
+      secondRowKey,
+      "P2603310114292",
+      {
+        url: "https://example.test/2",
+        detail: {
+          shipment_header: { nomor_kiriman: "P2603310114292" },
+          origin_detail: {},
+          package_detail: {},
+          billing_detail: { cod_info: { is_cod: false } },
+          actors: { pengirim: {}, penerima: {} },
+          performance_detail: {},
+        },
+        status_akhir: {},
+        pod: {},
+        history: [],
+        history_summary: {
+          irregularity: [],
+          bagging_unbagging: [],
+          manifest_r7: [],
+          delivery_runsheet: [],
+        },
+      }
+    );
+    const loadingState = setRowsQueuedInSheet(
+      setRowLoadingInSheet(successState, firstRowKey, "P2603310114291"),
+      [{ key: secondRowKey, value: "P2603310114292" }]
+    );
+
+    const singleSettled = settleRowRuntimeStateInSheet(
+      loadingState,
+      firstRowKey
+    );
+    const fullySettled = settleRowsRuntimeStateInSheet(singleSettled, [
+      secondRowKey,
+    ]);
+
+    expect(fullySettled.rows[0]).toMatchObject({
+      trackingInput: "P2603310114291",
+      loading: false,
+      queued: false,
+      stale: false,
+      dirty: false,
+      error: "",
+    });
+    expect(fullySettled.rows[1]).toMatchObject({
+      trackingInput: "P2603310114292",
+      loading: false,
+      queued: false,
+      stale: false,
+      dirty: false,
+      error: "",
+    });
+    expect(fullySettled.rows[0].shipment).toBe(successState.rows[0].shipment);
+    expect(fullySettled.rows[1].shipment).toBe(successState.rows[1].shipment);
+    expect(() => assertValidSheetState(fullySettled)).not.toThrow();
+  });
+
   it("clears carried tracking state when a row input becomes empty", () => {
     const initial = createDefaultSheetState();
     const rowKey = initial.rows[0].key;
@@ -287,21 +375,22 @@ describe("sheet actions", () => {
   });
 
   it("sets exact value filter selections for quick include and exclude actions", () => {
+    const filterPath = "status_akhir.status";
     const initial = {
       ...createDefaultSheetState(),
       valueFilters: {
-        status: ["A", "B", "C"],
+        [filterPath]: ["A", "B", "C"],
       },
     };
 
-    const onlyB = setValueFilterSelectionInSheet(initial, "status", ["B"]);
-    expect(onlyB.valueFilters.status).toEqual(["B"]);
+    const onlyB = setValueFilterSelectionInSheet(initial, filterPath, ["B"]);
+    expect(onlyB.valueFilters[filterPath]).toEqual(["B"]);
 
-    const exceptB = setValueFilterSelectionInSheet(onlyB, "status", ["A", "C"]);
-    expect(exceptB.valueFilters.status).toEqual(["A", "C"]);
+    const exceptB = setValueFilterSelectionInSheet(onlyB, filterPath, ["A", "C"]);
+    expect(exceptB.valueFilters[filterPath]).toEqual(["A", "C"]);
 
-    const cleared = setValueFilterSelectionInSheet(exceptB, "status", []);
-    expect(cleared.valueFilters.status).toBeUndefined();
+    const cleared = setValueFilterSelectionInSheet(exceptB, filterPath, []);
+    expect(cleared.valueFilters[filterPath]).toBeUndefined();
   });
 
   it("forces selection to match visible rows when filter-driven selection is active", () => {
@@ -354,5 +443,38 @@ describe("sheet actions", () => {
       bag: "PID123",
       manifest: "MNF456",
     });
+  });
+
+  it("keeps Rust import job ids scoped to the active import request", () => {
+    const initial = createDefaultSheetState();
+    const loading = startImportSourceLookupInSheet(
+      initial,
+      "bag",
+      "request-1",
+      ["PID123"]
+    );
+
+    const attached = setImportSourceJobInSheet(
+      loading,
+      "bag",
+      "request-1",
+      "job-1"
+    );
+    const stale = setImportSourceJobInSheet(
+      attached,
+      "bag",
+      "request-2",
+      "job-2"
+    );
+    const restarted = startImportSourceLookupInSheet(
+      attached,
+      "bag",
+      "request-3",
+      ["PID456"]
+    );
+
+    expect(attached.importSourceLookupStates.bag.jobId).toBe("job-1");
+    expect(stale.importSourceLookupStates.bag.jobId).toBe("job-1");
+    expect(restarted.importSourceLookupStates.bag.jobId).toBeNull();
   });
 });

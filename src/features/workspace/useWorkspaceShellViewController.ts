@@ -162,14 +162,23 @@ export function useWorkspaceShellViewController({
     dropSelectedIdsToExistingSheet: interactionRuntime.dropSelectedIdsToExistingSheet,
     dropSelectedIdsToNewSheet: interactionRuntime.dropSelectedIdsToNewSheet,
   });
+  const rustActionRowCount = sheetViewModel.rustExportRowsQuery
+    ? sheetViewModel.totalShipmentCount
+    : null;
+  const actionTrackingRowsCount =
+    rustActionRowCount ?? sheetViewModel.retrackableRows.length;
+  const exportableRowsCount =
+    rustActionRowCount !== null && sheetViewModel.selectedVisibleRowKeys.length === 0
+      ? rustActionRowCount
+      : sheetViewModel.exportableTableRows.length;
   const sheetActionBarProps = useWorkspaceActionBarProps({
     loadedCount: sheetViewModel.loadedCount,
     totalShipmentCount: sheetViewModel.totalShipmentCount,
     loadingCount: sheetViewModel.loadingCount,
-    retrackableRowsCount: sheetViewModel.retrackableRows.length,
+    retrackableRowsCount: actionTrackingRowsCount,
     retryFailedRowsCount: sheetViewModel.retryFailedEntries.length,
     deleteAllArmed: activeSheet.deleteAllArmed,
-    exportableRowsCount: sheetViewModel.exportableRows.length,
+    exportableRowsCount,
     activeFilterCount: sheetViewModel.activeFilterCount,
     selectedRowCount: sheetViewModel.selectedVisibleRowKeys.length,
     deleteSelectedArmed: deleteArm.deleteSelectedArmedSheetId === activeSheetId,
@@ -204,7 +213,8 @@ export function useWorkspaceShellViewController({
   const sheetTableProps = useWorkspaceTableProps({
     activeSheetId,
     effectiveDisplayScale: surface.effectiveDisplayScale,
-    displayedRows: sheetViewModel.displayedRows,
+    displayedTableRows: sheetViewModel.displayedTableRows,
+    displayedRowWindow: sheetViewModel.displayedRowWindow,
     visibleColumns: sheetViewModel.visibleColumns,
     hiddenColumns: sheetViewModel.hiddenColumns,
     effectiveColumnWidths: sheetViewModel.effectiveColumnWidths,
@@ -220,6 +230,7 @@ export function useWorkspaceShellViewController({
     highlightedColumnPath: activeSheet.highlightedColumnPath,
     sheetScrollRef: interactionRefs.sheetScrollRef,
     handleSheetScroll: interactionRuntime.handleSheetScroll,
+    requestVisibleRowWindow: sheetViewModel.requestVisibleRowWindow,
     getColumnSortDirection: interactionRuntime.getColumnSortDirection,
     setHoveredColumn: interactionRefs.setHoveredColumn,
     toggleVisibleSelection: interactionRuntime.toggleVisibleSelection,

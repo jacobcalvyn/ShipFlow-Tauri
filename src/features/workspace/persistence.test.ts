@@ -1,9 +1,124 @@
-import { createDefaultWorkspaceState } from "./default-state";
-import { normalizePersistedWorkspaceState } from "./persistence";
+import {
+  DEFAULT_WORKSPACE_SHEET_ID,
+  createDefaultWorkspaceState,
+} from "./default-state";
+import type { TrackResponse } from "../../types";
+import {
+  normalizePersistedWorkspaceState,
+  persistWorkspaceStateSnapshot,
+} from "./persistence";
 
 const COD_TOTAL_COLUMN_PATH = "detail.billing_detail.cod_info.total_cod";
+const WORKSPACE_STATE_STORAGE_KEY = "shipflow-workspace-state";
+
+function createTrackResponse(shipmentId: string): TrackResponse {
+  return {
+    url: `https://example.test/track/${shipmentId}`,
+    detail: {
+      shipment_header: {
+        nomor_kiriman: shipmentId,
+      },
+      origin_detail: {},
+      package_detail: {},
+      billing_detail: {
+        cod_info: {
+          is_cod: false,
+        },
+      },
+      actors: {
+        pengirim: {},
+        penerima: {},
+      },
+      performance_detail: {},
+    },
+    status_akhir: {
+      status: "INVEHICLE",
+    },
+    pod: {
+      photo1_url: "https://example.test/photo-1.jpg",
+      photo2_url: "https://example.test/photo-2.jpg",
+      signature_url: "https://example.test/signature.jpg",
+    },
+    history: [],
+    history_summary: {
+      irregularity: [],
+      bagging_unbagging: [],
+      manifest_r7: [],
+      delivery_runsheet: [],
+    },
+  };
+}
 
 describe("workspace persistence", () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(WORKSPACE_STATE_STORAGE_KEY);
+  });
+
+  it("migrates the legacy primary sheet id to the Rust bootstrap sheet id", () => {
+    const workspace = createDefaultWorkspaceState();
+    const sheet = workspace.sheetsById[workspace.activeSheetId];
+    const meta = workspace.sheetMetaById[workspace.activeSheetId];
+
+    const normalized = normalizePersistedWorkspaceState({
+      ...workspace,
+      activeSheetId: "legacy-random-sheet",
+      sheetOrder: ["legacy-random-sheet"],
+      sheetMetaById: {
+        "legacy-random-sheet": {
+          ...meta,
+          name: "Legacy Local",
+        },
+      },
+      sheetsById: {
+        "legacy-random-sheet": {
+          ...sheet,
+          rows: [
+            {
+              ...sheet.rows[0],
+              key: "legacy-row",
+              trackingInput: "P2606020189412.30",
+            },
+          ],
+        },
+      },
+    });
+
+    expect(normalized.activeSheetId).toBe(DEFAULT_WORKSPACE_SHEET_ID);
+    expect(normalized.sheetOrder).toEqual([DEFAULT_WORKSPACE_SHEET_ID]);
+    expect(normalized.sheetMetaById[DEFAULT_WORKSPACE_SHEET_ID]?.name).toBe(
+      "Legacy Local"
+    );
+    expect(
+      normalized.sheetsById[DEFAULT_WORKSPACE_SHEET_ID].rows[0].trackingInput
+    ).toBe("P2606020189412.30");
+  });
+
+  it("can preserve document-owned sheet ids during document normalization", () => {
+    const workspace = createDefaultWorkspaceState();
+    const sheet = workspace.sheetsById[workspace.activeSheetId];
+    const meta = workspace.sheetMetaById[workspace.activeSheetId];
+
+    const normalized = normalizePersistedWorkspaceState(
+      {
+        ...workspace,
+        activeSheetId: "sheet-opened",
+        sheetOrder: ["sheet-opened"],
+        sheetMetaById: {
+          "sheet-opened": meta,
+        },
+        sheetsById: {
+          "sheet-opened": sheet,
+        },
+      },
+      {
+        migratePrimarySheetToDefault: false,
+      }
+    );
+
+    expect(normalized.activeSheetId).toBe("sheet-opened");
+    expect(normalized.sheetOrder).toEqual(["sheet-opened"]);
+  });
+
   it("migrates older persisted sheets without mode or analytics fields", () => {
     const workspace = createDefaultWorkspaceState();
     const sheetId = workspace.activeSheetId;
@@ -162,6 +277,51 @@ describe("workspace persistence", () => {
       metricAggregations: {},
       chartType: "bar",
     });
+  });
+
+  it("persists local workspace snapshots with inputs only", () => {
+    const workspace = createDefaultWorkspaceState();
+    const sheetId = workspace.activeSheetId;
+
+    const workspaceWithShipment = {
+      ...workspace,
+      sheetsById: {
+        ...workspace.sheetsById,
+        [sheetId]: {
+          ...workspace.sheetsById[sheetId],
+          rows: [
+            {
+              ...workspace.sheetsById[sheetId].rows[0],
+              key: "row-with-shipment",
+              trackingInput: "P2603310114291",
+              shipment: createTrackResponse("P2603310114291"),
+              stale: true,
+              dirty: true,
+            },
+            ...workspace.sheetsById[sheetId].rows.slice(1),
+          ],
+        },
+      },
+    };
+
+    persistWorkspaceStateSnapshot({
+      workspaceState: workspaceWithShipment,
+      documentMeta: {
+        path: "/tmp/current.shipflow",
+        isDirty: false,
+      },
+      windowLabel: "main",
+    });
+
+    const stored = window.localStorage.getItem(WORKSPACE_STATE_STORAGE_KEY);
+    expect(stored).not.toBeNull();
+
+    const parsed = JSON.parse(stored ?? "{}");
+    const storedRow = parsed.sheetsById[sheetId].rows[0];
+    expect(storedRow.trackingInput).toBe("P2603310114291");
+    expect(storedRow.shipment).toBeNull();
+    expect(storedRow.stale).toBe(false);
+    expect(storedRow.dirty).toBe(false);
   });
 
   it("repairs duplicate persisted sheet and row keys", () => {

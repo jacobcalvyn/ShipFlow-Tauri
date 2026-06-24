@@ -1,4 +1,7 @@
+#![recursion_limit = "256"]
+
 pub mod api_contract;
+pub mod contact_cache;
 pub mod http_api;
 pub mod jobs;
 pub mod lookup_cache;

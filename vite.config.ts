@@ -11,6 +11,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: "./src/test/setup.ts",
-    globals: true
+    globals: true,
+    maxWorkers: 2,
+    fileParallelism: false
   }
 });

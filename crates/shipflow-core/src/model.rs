@@ -140,6 +140,8 @@ pub struct TrackStatusAkhir {
     pub officer_name: Option<String>,
     pub officer_id: Option<String>,
     pub datetime: Option<String>,
+    pub date: Option<String>,
+    pub time: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -229,6 +231,8 @@ pub struct TrackResponse {
     pub pod: TrackPod,
     pub history: Vec<TrackHistoryEntry>,
     pub history_summary: HistorySummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact_enrichment: Option<ContactEnrichmentMetadata>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -290,6 +294,8 @@ pub type StatusAkhirParts = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
+    Option<String>,
 );
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -298,4 +304,28 @@ pub struct ContactDetail {
     pub telepon: Option<String>,
     pub alamat: Option<String>,
     pub kode_pos: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ContactEnrichment {
+    pub pengirim: ContactDetail,
+    pub penerima: ContactDetail,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactEnrichmentStatus {
+    CacheHit,
+    Fetched,
+    Missing,
+    Failed,
+    Skipped,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ContactEnrichmentMetadata {
+    pub source: String,
+    pub status: ContactEnrichmentStatus,
+    pub sender_phone_present: bool,
+    pub recipient_phone_present: bool,
 }

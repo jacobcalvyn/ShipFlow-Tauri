@@ -9,17 +9,20 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use shipflow_core::{
     model::{
-        BagResponse, LookupKind, ManifestResponse, TrackResponse, TrackingError, TrackingSource,
+        BagResponse, ContactEnrichment, ContactEnrichmentMetadata, ContactEnrichmentStatus,
+        LookupKind, ManifestResponse, TrackResponse, TrackingError, TrackingSource,
         TrackingSourceConfig,
     },
+    parser::parse_lacak_mitra_contact_html,
     upstream::{
-        normalize_and_validate_bag_id, normalize_and_validate_manifest_id,
-        normalize_and_validate_shipment_id, resolve_bag_request, resolve_manifest_request,
-        resolve_tracking_request,
+        build_lacak_mitra_tracking_url, fetch_lookup_response, normalize_and_validate_bag_id,
+        normalize_and_validate_manifest_id, normalize_and_validate_shipment_id,
+        resolve_bag_request, resolve_manifest_request, resolve_tracking_request,
     },
 };
 use tokio::sync::Notify;
 
+use crate::contact_cache::{ContactCacheEntryStatus, ContactCacheState};
 use crate::persistent_store::{persistent_lookup_skip_reason, PersistentLookupStore};
 
 const TRACK_CACHE_TTL_SECS: u64 = 30;
@@ -738,6 +741,7 @@ fn hash_string(value: &str) -> String {
 
 pub async fn resolve_tracking_request_cached(
     lookup_cache: &LookupCacheState,
+    contact_cache: &ContactCacheState,
     client: &reqwest::Client,
     source_config: &TrackingSourceConfig,
     shipment_id: &str,
@@ -745,21 +749,151 @@ pub async fn resolve_tracking_request_cached(
 ) -> Result<TrackResponse, TrackingError> {
     let normalized_shipment_id = normalize_and_validate_shipment_id(shipment_id)?;
     let source_fingerprint = source_fingerprint_for_lookup(source_config);
-    let client = client.clone();
+    let lookup_client = client.clone();
+    let enrich_client = client.clone();
     let tracking_source = source_config.clone();
     let lookup_id = normalized_shipment_id.clone();
 
-    lookup_cache
+    let result = lookup_cache
         .resolve_cached_lookup(
             LookupKind::Track,
-            normalized_shipment_id,
+            normalized_shipment_id.clone(),
             source_fingerprint,
             options,
             move || async move {
-                resolve_tracking_request(&client, &tracking_source, &lookup_id).await
+                resolve_tracking_request(&lookup_client, &tracking_source, &lookup_id).await
             },
         )
-        .await
+        .await?;
+
+    enrich_tracking_contacts(
+        contact_cache,
+        &enrich_client,
+        source_config,
+        &normalized_shipment_id,
+        result,
+    )
+    .await
+}
+
+async fn enrich_tracking_contacts(
+    contact_cache: &ContactCacheState,
+    client: &reqwest::Client,
+    source_config: &TrackingSourceConfig,
+    shipment_id: &str,
+    mut response: TrackResponse,
+) -> Result<TrackResponse, TrackingError> {
+    if source_config.tracking_source != TrackingSource::Default {
+        response.contact_enrichment = Some(contact_enrichment_metadata(
+            ContactEnrichmentStatus::Skipped,
+            &response,
+        ));
+        return Ok(response);
+    }
+
+    if contact_phone_present(&response.detail.actors.pengirim.telepon)
+        && contact_phone_present(&response.detail.actors.penerima.telepon)
+    {
+        response.contact_enrichment = Some(contact_enrichment_metadata(
+            ContactEnrichmentStatus::Skipped,
+            &response,
+        ));
+        return Ok(response);
+    }
+
+    if let Some(entry) = contact_cache.get(shipment_id) {
+        merge_contact_enrichment(&mut response, &entry.contact);
+        let status = match entry.status {
+            ContactCacheEntryStatus::Ok => ContactEnrichmentStatus::CacheHit,
+            ContactCacheEntryStatus::Missing => ContactEnrichmentStatus::Missing,
+        };
+        response.contact_enrichment = Some(contact_enrichment_metadata(status, &response));
+        eprintln!(
+            "[ShipFlowContactCache] cache_hit id={} status={:?} sender_phone_present={} recipient_phone_present={}",
+            shipment_id,
+            entry.status,
+            contact_phone_present(&response.detail.actors.pengirim.telepon),
+            contact_phone_present(&response.detail.actors.penerima.telepon)
+        );
+        return Ok(response);
+    }
+
+    let url = build_lacak_mitra_tracking_url(shipment_id);
+    let fetch_result = async {
+        let upstream_response = fetch_lookup_response(client, &url).await?;
+        if !upstream_response.status().is_success() {
+            return Err(TrackingError::Upstream(format!(
+                "Lacak Mitra contact endpoint returned HTTP {}.",
+                upstream_response.status()
+            )));
+        }
+        upstream_response.text().await.map_err(|error| {
+            TrackingError::Upstream(format!(
+                "Lacak Mitra contact response could not be read: {error}"
+            ))
+        })
+    }
+    .await;
+
+    match fetch_result {
+        Ok(html) => {
+            let contact = parse_lacak_mitra_contact_html(&html);
+            let entry = contact_cache.store(shipment_id, contact);
+            merge_contact_enrichment(&mut response, &entry.contact);
+            let status = match entry.status {
+                ContactCacheEntryStatus::Ok => ContactEnrichmentStatus::Fetched,
+                ContactCacheEntryStatus::Missing => ContactEnrichmentStatus::Missing,
+            };
+            response.contact_enrichment = Some(contact_enrichment_metadata(status, &response));
+            eprintln!(
+                "[ShipFlowContactCache] fetch_ok id={} status={:?} sender_phone_present={} recipient_phone_present={}",
+                shipment_id,
+                entry.status,
+                contact_phone_present(&response.detail.actors.pengirim.telepon),
+                contact_phone_present(&response.detail.actors.penerima.telepon)
+            );
+        }
+        Err(error) => {
+            response.contact_enrichment = Some(contact_enrichment_metadata(
+                ContactEnrichmentStatus::Failed,
+                &response,
+            ));
+            eprintln!(
+                "[ShipFlowContactCache] fetch_failed id={} error={:?}",
+                shipment_id, error
+            );
+        }
+    }
+
+    Ok(response)
+}
+
+fn merge_contact_enrichment(response: &mut TrackResponse, contact: &ContactEnrichment) {
+    if !contact_phone_present(&response.detail.actors.pengirim.telepon) {
+        response.detail.actors.pengirim.telepon = contact.pengirim.telepon.clone();
+    }
+    if !contact_phone_present(&response.detail.actors.penerima.telepon) {
+        response.detail.actors.penerima.telepon = contact.penerima.telepon.clone();
+    }
+}
+
+fn contact_enrichment_metadata(
+    status: ContactEnrichmentStatus,
+    response: &TrackResponse,
+) -> ContactEnrichmentMetadata {
+    ContactEnrichmentMetadata {
+        source: "lacak_mitra".into(),
+        status,
+        sender_phone_present: contact_phone_present(&response.detail.actors.pengirim.telepon),
+        recipient_phone_present: contact_phone_present(&response.detail.actors.penerima.telepon),
+    }
+}
+
+fn contact_phone_present(value: &Option<String>) -> bool {
+    value.as_deref().is_some_and(|value| {
+        let normalized = value.trim();
+        !normalized.is_empty() && normalized != "-"
+    })
 }
 
 pub async fn resolve_bag_request_cached(
@@ -825,6 +959,7 @@ mod tests {
     use shipflow_core::model::{
         BagResponse, LookupKind, TrackingError, TrackingSource, TrackingSourceConfig,
     };
+    use tokio::sync::Barrier;
 
     fn create_test_policy() -> LookupCachePolicy {
         LookupCachePolicy {
@@ -950,6 +1085,7 @@ mod tests {
                                 pod: shipflow_core::model::TrackPod::default(),
                                 history: Vec::new(),
                                 history_summary: shipflow_core::model::HistorySummary::default(),
+                                contact_enrichment: None,
                             })
                         }
                     },
@@ -976,6 +1112,7 @@ mod tests {
                                 pod: shipflow_core::model::TrackPod::default(),
                                 history: Vec::new(),
                                 history_summary: shipflow_core::model::HistorySummary::default(),
+                                contact_enrichment: None,
                             })
                         }
                     },
@@ -985,6 +1122,14 @@ mod tests {
 
             assert_eq!(fetch_count.load(Ordering::SeqCst), 2);
         });
+    }
+
+    #[test]
+    fn contact_phone_present_treats_dash_as_missing() {
+        assert!(!super::contact_phone_present(&None));
+        assert!(!super::contact_phone_present(&Some(String::new())));
+        assert!(!super::contact_phone_present(&Some("-".into())));
+        assert!(super::contact_phone_present(&Some("08111925400".into())));
     }
 
     #[test]
@@ -1181,10 +1326,12 @@ mod tests {
             });
             let stale_fetch_count = Arc::new(AtomicUsize::new(0));
             let fresh_fetch_count = Arc::new(AtomicUsize::new(0));
+            let stale_fetch_started = Arc::new(Barrier::new(2));
 
             let stale_task = tokio::spawn({
                 let cache = cache.clone();
                 let stale_fetch_count = Arc::clone(&stale_fetch_count);
+                let stale_fetch_started = Arc::clone(&stale_fetch_started);
                 async move {
                     cache
                         .resolve_cached_lookup(
@@ -1194,6 +1341,7 @@ mod tests {
                             LookupRequestOptions::default(),
                             move || async move {
                                 stale_fetch_count.fetch_add(1, Ordering::SeqCst);
+                                stale_fetch_started.wait().await;
                                 tokio::time::sleep(Duration::from_millis(25)).await;
                                 Ok(BagResponse {
                                     nomor_kantung: Some("PID-GEN-STALE".into()),
@@ -1205,7 +1353,7 @@ mod tests {
                 }
             });
 
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            stale_fetch_started.wait().await;
             cache.invalidate_all("test_generation_change");
 
             let fresh_result = cache

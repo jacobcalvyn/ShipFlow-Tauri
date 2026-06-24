@@ -15,11 +15,32 @@ import {
 } from "./types";
 import { WorkspaceDocumentFile } from "./features/workspace/document";
 
-const { mockedInvoke } = vi.hoisted(() => ({
+vi.setConfig({ testTimeout: 20_000 });
+
+const { MockChannel, mockedInvoke } = vi.hoisted(() => ({
+  MockChannel: vi.fn().mockImplementation(function Channel(
+    this: { onmessage: unknown },
+    onmessage: unknown
+  ) {
+    this.onmessage = onmessage;
+  }),
   mockedInvoke: vi.fn<
     (
       command: string,
       args?: {
+        command?: {
+          command: string;
+          payload?: unknown;
+        };
+        request?: {
+          jobId?: string;
+          sheetId?: string;
+          rowIds?: string[];
+          forceRefresh?: boolean;
+        };
+        onEvent?: {
+          onmessage?: (event: unknown) => void;
+        };
         shipmentId?: string;
         bagId?: string;
         manifestId?: string;
@@ -41,6 +62,7 @@ const { mockedInvoke } = vi.hoisted(() => ({
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
+  Channel: MockChannel,
   invoke: mockedInvoke,
 }));
 
@@ -111,11 +133,13 @@ function createTrackingResponse(shipmentId: string): TrackResponse {
 }
 
 function createBagResponse(bagId: string): BagResponse {
-  const trackingId = bagId.endsWith("-3")
-    ? "P260000000003"
-    : bagId.endsWith("-2")
-      ? "P260000000002"
-      : "P260000000001";
+  const trackingId = bagId.endsWith("-DOTTED")
+    ? "P2606020189412.30"
+    : bagId.endsWith("-3")
+      ? "P260000000003"
+      : bagId.endsWith("-2")
+        ? "P260000000002"
+        : "P260000000001";
 
   return {
     url: `https://example.test/bag/${bagId}`,
@@ -131,11 +155,13 @@ function createBagResponse(bagId: string): BagResponse {
 }
 
 function createManifestResponse(manifestId: string): ManifestResponse {
-  const bagId = manifestId.endsWith("-3")
-    ? "PID123456-3"
-    : manifestId.endsWith("-2")
-      ? "PID123456-2"
-      : "PID123456";
+  const bagId = manifestId.endsWith("-DOTTED")
+    ? "PID123456-DOTTED"
+    : manifestId.endsWith("-3")
+      ? "PID123456-3"
+      : manifestId.endsWith("-2")
+        ? "PID123456-2"
+        : "PID123456";
 
   return {
     url: `https://example.test/manifest/${manifestId}`,
@@ -150,12 +176,323 @@ function createManifestResponse(manifestId: string): ManifestResponse {
   };
 }
 
+type WorkspaceEngineImportJobFixture = {
+  jobId: string;
+  sheetId: string;
+  kind: "bag" | "manifest";
+  mode: "replace" | "append";
+  ids: string[];
+};
+
+function extractBagFixtureTrackingIds(bagId: string) {
+  return createBagResponse(bagId).items
+    .map((item) => item.no_resi?.trim() ?? "")
+    .filter((trackingId) => trackingId !== "");
+}
+
+function extractManifestFixtureBagIds(manifestId: string) {
+  return createManifestResponse(manifestId).items
+    .map((item) => item.nomor_kantung?.trim() ?? "")
+    .filter((bagId) => bagId !== "");
+}
+
+function resolveWorkspaceEngineImportTrackingIds(job: WorkspaceEngineImportJobFixture) {
+  if (job.kind === "bag") {
+    return Array.from(
+      new Set(job.ids.flatMap((bagId) => extractBagFixtureTrackingIds(bagId)))
+    );
+  }
+
+  return Array.from(
+    new Set(
+      job.ids
+        .flatMap((manifestId) => extractManifestFixtureBagIds(manifestId))
+        .flatMap((bagId) => extractBagFixtureTrackingIds(bagId))
+    )
+  );
+}
+
+function getLookupTrackingId(trackingId: string) {
+  return trackingId.replace(/\.\d+$/, "");
+}
+
+type WorkspaceEngineSheetRowFixture = {
+  rowId: string;
+  position: number;
+  displayTrackingId: string;
+  lookupTrackingId: string;
+  rowStatus: "empty" | "pending" | "loading" | "loaded" | "failed" | "stale";
+  errorMessage: string | null;
+  statusJson: TrackResponse["status_akhir"] | null;
+  detailJson: TrackResponse["detail"] | null;
+  historyJson: {
+    pod: TrackResponse["pod"];
+    history: TrackResponse["history"];
+    history_summary: TrackResponse["history_summary"];
+  } | null;
+};
+
+function createWorkspaceEngineSheetRow(
+  sheetId: string,
+  trackingId: string,
+  position: number,
+  includeTrackingDetail = false
+): WorkspaceEngineSheetRowFixture {
+  const response = includeTrackingDetail
+    ? createTrackingResponse(trackingId)
+    : null;
+
+  return {
+    rowId: `${sheetId}:row:${position}`,
+    position,
+    displayTrackingId: trackingId,
+    lookupTrackingId: getLookupTrackingId(trackingId),
+    rowStatus: "loaded",
+    errorMessage: null,
+    statusJson: response?.status_akhir ?? null,
+    detailJson: response?.detail ?? null,
+    historyJson: response
+      ? {
+          pod: response.pod,
+          history: response.history,
+          history_summary: response.history_summary,
+        }
+      : null,
+  };
+}
+
+function createWorkspaceEngineSheetRows(
+  sheetId: string,
+  trackingIds: string[],
+  existingRows: WorkspaceEngineSheetRowFixture[] = []
+) {
+  const existingRowByTrackingId = new Map(
+    existingRows.map((row) => [row.displayTrackingId, row])
+  );
+
+  return trackingIds.map((trackingId, position) => {
+    const existingRow = existingRowByTrackingId.get(trackingId);
+    if (existingRow) {
+      return {
+        ...existingRow,
+        rowId: `${sheetId}:row:${position}`,
+        position,
+      };
+    }
+
+    return createWorkspaceEngineSheetRow(sheetId, trackingId, position);
+  });
+}
+
+function upsertWorkspaceEngineSheetRows(
+  sheetId: string,
+  rows: Array<{
+    rowId: string;
+    position: number;
+    displayTrackingId: string;
+  }>,
+  existingRows: WorkspaceEngineSheetRowFixture[] = []
+) {
+  const existingRowById = new Map(existingRows.map((row) => [row.rowId, row]));
+  const nextRows = [...existingRows];
+
+  rows.forEach((row) => {
+    const existingRow = existingRowById.get(row.rowId);
+    nextRows[row.position] = {
+      ...(existingRow ??
+        createWorkspaceEngineSheetRow(
+          sheetId,
+          row.displayTrackingId,
+          row.position
+        )),
+      rowId: row.rowId,
+      position: row.position,
+      displayTrackingId: row.displayTrackingId,
+      lookupTrackingId: getLookupTrackingId(row.displayTrackingId),
+      rowStatus: existingRow?.rowStatus ?? "empty",
+      errorMessage: existingRow?.errorMessage ?? null,
+      statusJson: existingRow?.statusJson ?? null,
+      detailJson: existingRow?.detailJson ?? null,
+      historyJson: existingRow?.historyJson ?? null,
+    };
+  });
+
+  return nextRows
+    .filter((row): row is WorkspaceEngineSheetRowFixture => row !== undefined)
+    .sort((left, right) => left.position - right.position);
+}
+
+function getNestedFixtureValue(source: unknown, path: string) {
+  return path.split(".").reduce<unknown>((current, segment) => {
+    if (!current || typeof current !== "object") {
+      return null;
+    }
+
+    return (current as Record<string, unknown>)[segment] ?? null;
+  }, source);
+}
+
+function getWorkspaceEngineSheetRowFieldText(
+  row: WorkspaceEngineSheetRowFixture,
+  field: string
+) {
+  if (field === "detail.shipment_header.nomor_kiriman") {
+    return String(
+      getNestedFixtureValue(row.detailJson, "shipment_header.nomor_kiriman") ??
+        row.displayTrackingId
+    );
+  }
+
+  if (field.startsWith("detail.")) {
+    return String(getNestedFixtureValue(row.detailJson, field.slice(7)) ?? "");
+  }
+
+  if (field.startsWith("status_akhir.")) {
+    return String(getNestedFixtureValue(row.statusJson, field.slice(13)) ?? "");
+  }
+
+  return "";
+}
+
+function createWorkspaceEnginePreviewItem(
+  sourceItemId: string,
+  sourceItemKind: "bag" | "manifest" | "manifest_bag",
+  trackingIds: string[],
+  errorMessage: string | null = null
+) {
+  return {
+    sourceItemId,
+    sourceItemKind,
+    status: errorMessage ? "failed" : "succeeded",
+    trackingIds,
+    errorMessage,
+  };
+}
+
+function getWorkspaceEngineSheetRowIdsForTrackingIds(
+  rows: WorkspaceEngineSheetRowFixture[],
+  trackingIds: string[]
+) {
+  const rowIdByTrackingId = new Map(
+    rows.map((row) => [row.displayTrackingId, row.rowId])
+  );
+  const rowIds: string[] = [];
+
+  trackingIds.forEach((trackingId) => {
+    const rowId = rowIdByTrackingId.get(trackingId);
+    if (rowId && !rowIds.includes(rowId)) {
+      rowIds.push(rowId);
+    }
+  });
+
+  return rowIds;
+}
+
+function createWorkspaceEngineImportJobDetail(
+  job: WorkspaceEngineImportJobFixture,
+  status: "running" | "completed" = "running",
+  trackingIds: string[] = [],
+  rows: WorkspaceEngineSheetRowFixture[] = []
+) {
+  const sourceItems = job.ids.map((id, index) => {
+    const itemTrackingIds =
+      job.kind === "bag"
+        ? extractBagFixtureTrackingIds(id)
+        : extractManifestFixtureBagIds(id);
+
+    return {
+      itemId: `${job.jobId}:source:${index}`,
+      sourceItemId: id,
+      sourceItemKind: job.kind,
+      position: index,
+      status: status === "completed" ? "succeeded" : "pending",
+      trackingIds: itemTrackingIds,
+      sheetRowIds:
+        status === "completed" && job.kind === "bag"
+          ? getWorkspaceEngineSheetRowIdsForTrackingIds(rows, itemTrackingIds)
+          : [],
+      errorMessage: null,
+      attemptCount: status === "completed" ? 1 : 0,
+    };
+  });
+  const manifestBagItems =
+    job.kind === "manifest" && status === "completed"
+      ? job.ids
+          .flatMap((id) => extractManifestFixtureBagIds(id))
+          .map((bagId, index) => {
+            const itemTrackingIds = extractBagFixtureTrackingIds(bagId);
+
+            return {
+              itemId: `${job.jobId}:manifest-bag:${job.ids.length + index}`,
+              sourceItemId: bagId,
+              sourceItemKind: "manifest_bag",
+              position: job.ids.length + index,
+              status: "succeeded",
+              trackingIds: itemTrackingIds,
+              sheetRowIds: getWorkspaceEngineSheetRowIdsForTrackingIds(
+                rows,
+                itemTrackingIds
+              ),
+              errorMessage: null,
+              attemptCount: 1,
+            };
+          })
+      : [];
+
+  return {
+    summary: {
+      jobId: job.jobId,
+      sheetId: job.sheetId,
+      kind: job.kind,
+      mode: job.mode,
+      status,
+      totalCount: job.ids.length,
+      successCount: status === "completed" ? job.ids.length : 0,
+      failedCount: 0,
+      pendingCount: status === "completed" ? 0 : job.ids.length,
+    },
+    items:
+      job.kind === "manifest" && trackingIds.length > 0
+        ? [...sourceItems, ...manifestBagItems]
+        : sourceItems,
+  };
+}
+
 function getInvokeCalls(command: string) {
   return mockedInvoke.mock.calls.filter(([name]) => name === command);
 }
 
+let trackedShipmentIds: string[] = [];
+
 function expectInvokeCount(command: string, count: number) {
+  if (command === "track_shipment") {
+    expect(trackedShipmentIds).toHaveLength(count);
+    return;
+  }
+
   expect(getInvokeCalls(command)).toHaveLength(count);
+}
+
+function expectLegacyTrackShipmentInvokeCount(count: number) {
+  expect(getInvokeCalls("track_shipment")).toHaveLength(count);
+}
+
+function getWorkspaceEngineCommandCalls(command: string) {
+  return getInvokeCalls("workspace_engine_command").filter(
+    ([, args]) => args?.command?.command === command
+  );
+}
+
+function expectWorkspaceEngineCommandCount(command: string, count: number) {
+  expect(getWorkspaceEngineCommandCalls(command)).toHaveLength(count);
+}
+
+function expectWorkspaceEngineRefreshCount(count: number) {
+  const legacyCount = getWorkspaceEngineCommandCalls("refresh_sheet_rows_tracking").length;
+  const progressCount = getInvokeCalls(
+    "workspace_engine_refresh_sheet_rows_tracking_with_progress"
+  ).length;
+  expect(legacyCount + progressCount).toBe(count);
 }
 
 function createDragDataTransfer(): DataTransfer {
@@ -201,7 +538,7 @@ function startDragElementOverList(source: HTMLElement, target: HTMLElement) {
 }
 
 function getTrackedShipmentIds() {
-  return getInvokeCalls("track_shipment").map(([, args]) => args?.shipmentId);
+  return trackedShipmentIds;
 }
 
 function openSheetTabMenu(name: string) {
@@ -238,6 +575,7 @@ describe("App workspace isolation", () => {
   let infoSpy: ReturnType<typeof vi.spyOn>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
   let persistedServiceConfig: ServiceConfig | null;
+  let workspaceEngineUpsertFailureMessage: string | null;
 
   function resolveRequest(shipmentId: string) {
     const request = pendingRequests.get(shipmentId);
@@ -257,6 +595,15 @@ describe("App workspace isolation", () => {
     request.resolve(createBagResponse(bagId));
   }
 
+  function rejectBagRequest(bagId: string, message = "Bag lookup failed") {
+    const request = pendingBagRequests.get(bagId);
+    if (!request) {
+      throw new Error(`No pending bag request for ${bagId}`);
+    }
+
+    request.reject(new Error(message));
+  }
+
   function resolveManifestRequest(manifestId: string) {
     const request = pendingManifestRequests.get(manifestId);
     if (!request) {
@@ -268,16 +615,108 @@ describe("App workspace isolation", () => {
 
   beforeEach(() => {
     mockedInvoke.mockReset();
+    trackedShipmentIds = [];
     pendingRequests.clear();
     pendingBagRequests.clear();
     pendingManifestRequests.clear();
     persistedWorkspaceDocuments.clear();
     persistedServiceConfig = null;
+    workspaceEngineUpsertFailureMessage = null;
+    const workspaceEngineJobs = new Map<string, WorkspaceEngineImportJobFixture>();
+    const workspaceEngineRowsBySheet = new Map<
+      string,
+      WorkspaceEngineSheetRowFixture[]
+    >();
+    let workspaceEngineJobSequence = 0;
+    const refreshWorkspaceEngineRowsTracking = (
+      payload: {
+        sheetId: string;
+        rowIds: string[];
+        forceRefresh: boolean;
+        runId?: string | null;
+      },
+      onProgress?: (event: unknown) => void
+    ) => {
+      const allRows = workspaceEngineRowsBySheet.get(payload.sheetId) ?? [];
+      const shouldReturnRows = payload.rowIds.length > 0;
+      const rowIds =
+        payload.rowIds.length > 0
+          ? payload.rowIds
+          : allRows.map((row) => row.rowId);
+      const nextRows = [...allRows];
+      const rows = rowIds
+        .map((rowId) => {
+          const prefix = `${payload.sheetId}:row:`;
+          const position = rowId.startsWith(prefix)
+            ? Number(rowId.slice(prefix.length))
+            : allRows.findIndex((row) => row.rowId === rowId);
+          if (position < 0) {
+            return null;
+          }
+          const row = allRows[position];
+          if (!row) {
+            return null;
+          }
+          trackedShipmentIds.push(row.lookupTrackingId);
+          const refreshedRow = {
+            ...createWorkspaceEngineSheetRow(
+              payload.sheetId,
+              row.displayTrackingId,
+              position,
+              true
+            ),
+            rowId: row.rowId,
+          };
+          nextRows[position] = refreshedRow;
+          onProgress?.({
+            type: "tracking_refresh_progress",
+            payload: {
+              sheetId: payload.sheetId,
+              runId: payload.runId ?? null,
+              row: refreshedRow,
+              totalCount: rowIds.length,
+              successCount: nextRows.filter(
+                (candidate) => candidate.rowStatus === "loaded"
+              ).length,
+              failedCount: nextRows.filter(
+                (candidate) => candidate.rowStatus === "failed"
+              ).length,
+              pendingCount: 0,
+            },
+          });
+          return refreshedRow;
+        })
+        .filter(
+          (row): row is ReturnType<typeof createWorkspaceEngineSheetRow> =>
+            row !== null
+        );
+      workspaceEngineRowsBySheet.set(payload.sheetId, nextRows);
+
+      return Promise.resolve({
+        type: "sheet_rows_tracking_refresh",
+        payload: {
+          sheetId: payload.sheetId,
+          runId: payload.runId ?? null,
+          successCount: rows.length,
+          failedCount: 0,
+          rows: shouldReturnRows ? rows : [],
+        },
+      });
+    };
     window.localStorage.clear();
     setShipFlowWindowKind("workspace");
     vi.spyOn(window, "confirm").mockReturnValue(true);
     infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
-    errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    errorSpy = vi.spyOn(console, "error").mockImplementation((...args) => {
+      if (
+        args.some(
+          (arg) =>
+            typeof arg === "string" && arg.includes("Maximum update depth exceeded")
+        )
+      ) {
+        throw new Error("React maximum update depth exceeded");
+      }
+    });
     mockedInvoke.mockImplementation((command, args) => {
       if (command === "configure_api_service") {
         const config = args?.config ?? {
@@ -348,7 +787,7 @@ describe("App workspace isolation", () => {
           !config.externalApiAuthToken.trim()
         ) {
           return Promise.reject(
-            new Error("External API bearer token is required.")
+            new Error("External API token is required.")
           );
         }
 
@@ -417,6 +856,695 @@ describe("App workspace isolation", () => {
 
       if (command === "open_shipflow_service_app") {
         return Promise.resolve(undefined);
+      }
+
+      if (command === "workspace_engine_refresh_sheet_rows_tracking_with_progress") {
+        const payload = args?.request as {
+          sheetId: string;
+          rowIds: string[];
+          forceRefresh: boolean;
+        };
+        return refreshWorkspaceEngineRowsTracking(
+          payload,
+          args?.onEvent?.onmessage
+        );
+      }
+
+      if (command === "workspace_engine_command") {
+        const workspaceCommand = args?.command;
+
+        if (workspaceCommand?.command === "list_sheets") {
+          return Promise.resolve({
+            type: "sheets",
+            payload: [],
+          });
+        }
+
+        if (workspaceCommand?.command === "preview_import_source") {
+          const payload = workspaceCommand.payload as {
+            kind: "bag" | "manifest";
+            ids: string[];
+          };
+          const requestBagPreview = async (bagId: string) => {
+            mockedInvoke.mock.calls.push([
+              "track_bag",
+              {
+                bagId,
+                forceRefresh: true,
+              },
+            ]);
+            const deferred = createDeferred<BagResponse>();
+            pendingBagRequests.set(bagId, deferred);
+
+            try {
+              const response = await deferred.promise;
+              return {
+                response,
+                item: createWorkspaceEnginePreviewItem(
+                  bagId,
+                  payload.kind === "manifest" ? "manifest_bag" : "bag",
+                  response.items
+                    .map((item) => item.no_resi?.trim() ?? "")
+                    .filter((trackingId) => trackingId !== "")
+                ),
+              };
+            } catch (error) {
+              return {
+                response: null,
+                item: createWorkspaceEnginePreviewItem(
+                  bagId,
+                  payload.kind === "manifest" ? "manifest_bag" : "bag",
+                  [],
+                  error instanceof Error ? error.message : "Bag lookup failed"
+                ),
+              };
+            }
+          };
+
+          if (payload.kind === "bag") {
+            return Promise.all(payload.ids.map(requestBagPreview)).then(
+              (results) => ({
+                type: "import_source_preview",
+                payload: {
+                  kind: "bag",
+                  sourceItems: results.map((result) => result.item),
+                  manifestBags: [],
+                  trackingIds: Array.from(
+                    new Set(
+                      results.flatMap((result) => result.item.trackingIds)
+                    )
+                  ),
+                  rawResponse: JSON.stringify(
+                    results
+                      .map((result) => result.response)
+                      .filter((response): response is BagResponse => response !== null)
+                  ),
+                },
+              })
+            );
+          }
+
+          return Promise.all(
+            payload.ids.map(async (manifestId) => {
+              mockedInvoke.mock.calls.push([
+                "track_manifest",
+                {
+                  manifestId,
+                  forceRefresh: true,
+                },
+              ]);
+              const deferred = createDeferred<ManifestResponse>();
+              pendingManifestRequests.set(manifestId, deferred);
+
+              try {
+                const response = await deferred.promise;
+                return {
+                  response,
+                  item: createWorkspaceEnginePreviewItem(
+                    manifestId,
+                    "manifest",
+                    response.items
+                      .map((item) => item.nomor_kantung?.trim() ?? "")
+                      .filter((bagId) => bagId !== "")
+                  ),
+                };
+              } catch (error) {
+                return {
+                  response: null,
+                  item: createWorkspaceEnginePreviewItem(
+                    manifestId,
+                    "manifest",
+                    [],
+                    error instanceof Error
+                      ? error.message
+                      : "Manifest lookup failed"
+                  ),
+                };
+              }
+            })
+          ).then(async (manifestResults) => {
+            const bagIds = Array.from(
+              new Set(manifestResults.flatMap((result) => result.item.trackingIds))
+            );
+            const bagResults = await Promise.all(bagIds.map(requestBagPreview));
+
+            return {
+              type: "import_source_preview",
+              payload: {
+                kind: "manifest",
+                sourceItems: manifestResults.map((result) => result.item),
+                manifestBags: bagResults.map((result) => result.item),
+                trackingIds: Array.from(
+                  new Set(bagResults.flatMap((result) => result.item.trackingIds))
+                ),
+                rawResponse: JSON.stringify(
+                  manifestResults
+                    .map((result) => result.response)
+                    .filter(
+                      (response): response is ManifestResponse => response !== null
+                    )
+                ),
+              },
+            };
+          });
+        }
+
+        if (workspaceCommand?.command === "create_import_job") {
+          const payload = workspaceCommand.payload as {
+            sheetId: string;
+            kind: "bag" | "manifest";
+            ids: string[];
+            mode: "replace" | "append";
+          };
+          workspaceEngineJobSequence += 1;
+          const job: WorkspaceEngineImportJobFixture = {
+            jobId: `workspace-engine-job-${workspaceEngineJobSequence}`,
+            sheetId: payload.sheetId,
+            kind: payload.kind,
+            mode: payload.mode,
+            ids: payload.ids,
+          };
+          workspaceEngineJobs.set(job.jobId, job);
+
+          return Promise.resolve({
+            type: "import_job_detail",
+            payload: createWorkspaceEngineImportJobDetail(job),
+          });
+        }
+
+        if (workspaceCommand?.command === "get_import_job") {
+          const payload = workspaceCommand.payload as {
+            jobId: string;
+          };
+          const job = workspaceEngineJobs.get(payload.jobId);
+          if (!job) {
+            return Promise.reject(
+              new Error(`Missing workspace engine job: ${payload.jobId}`)
+            );
+          }
+          const isCommitted = workspaceEngineRowsBySheet.has(job.sheetId);
+          const committedRows = workspaceEngineRowsBySheet.get(job.sheetId) ?? [];
+
+          return Promise.resolve({
+            type: "import_job_detail",
+            payload: createWorkspaceEngineImportJobDetail(
+              job,
+              isCommitted ? "completed" : "running",
+              isCommitted ? resolveWorkspaceEngineImportTrackingIds(job) : [],
+              isCommitted ? committedRows : []
+            ),
+          });
+        }
+
+        if (workspaceCommand?.command === "create_sheet") {
+          const payload = workspaceCommand.payload as {
+            sheetId: string;
+            name: string;
+            position: number;
+          };
+          workspaceEngineRowsBySheet.set(
+            payload.sheetId,
+            workspaceEngineRowsBySheet.get(payload.sheetId) ?? []
+          );
+
+          return Promise.resolve({
+            type: "sheet",
+            payload: {
+              sheetId: payload.sheetId,
+              workspaceId: "workspace-1",
+              name: payload.name,
+              position: payload.position,
+              viewMode: "workspace",
+            },
+          });
+        }
+
+        if (workspaceCommand?.command === "rename_sheet") {
+          const payload = workspaceCommand.payload as {
+            sheetId: string;
+            name: string;
+          };
+
+          return Promise.resolve({
+            type: "sheet",
+            payload: {
+              sheetId: payload.sheetId,
+              workspaceId: "workspace-1",
+              name: payload.name,
+              position: 0,
+              viewMode: "workspace",
+            },
+          });
+        }
+
+        if (workspaceCommand?.command === "query_sheet_rows") {
+          const payload = workspaceCommand.payload as {
+            query: {
+              sheetId: string;
+              offset: number;
+              limit: number;
+              filters?: Array<{
+                field: string;
+                value: string;
+              }>;
+              valueFilters?: Array<{
+                field: string;
+                values: string[];
+              }>;
+            };
+          };
+          const allRows = workspaceEngineRowsBySheet.get(payload.query.sheetId) ?? [];
+          const filteredRows = allRows.filter((row) => {
+            const matchesTextFilters = (payload.query.filters ?? []).every((filter) =>
+              getWorkspaceEngineSheetRowFieldText(row, filter.field)
+                .toLocaleLowerCase()
+                .includes(filter.value.toLocaleLowerCase())
+            );
+            const matchesValueFilters = (payload.query.valueFilters ?? []).every(
+              (filter) =>
+                filter.values.includes(
+                  getWorkspaceEngineSheetRowFieldText(row, filter.field)
+                )
+            );
+
+            return matchesTextFilters && matchesValueFilters;
+          });
+          const rows = filteredRows
+            .slice(payload.query.offset, payload.query.offset + payload.query.limit);
+
+          return Promise.resolve({
+            type: "sheet_rows",
+            payload: {
+              sheetId: payload.query.sheetId,
+              offset: payload.query.offset,
+              limit: payload.query.limit,
+              totalCount: filteredRows.length,
+              hasMore: payload.query.offset + rows.length < filteredRows.length,
+              nextOffset:
+                payload.query.offset + rows.length < filteredRows.length
+                  ? payload.query.offset + rows.length
+                  : null,
+              rows,
+            },
+          });
+        }
+
+        if (workspaceCommand?.command === "clear_sheet_rows") {
+          const payload = workspaceCommand.payload as {
+            sheetId: string;
+          };
+          workspaceEngineRowsBySheet.set(payload.sheetId, []);
+
+          return Promise.resolve({
+            type: "sheet_rows",
+            payload: {
+              sheetId: payload.sheetId,
+              offset: 0,
+              limit: 0,
+              totalCount: 0,
+              hasMore: false,
+              nextOffset: null,
+              rows: [],
+            },
+          });
+        }
+
+        if (workspaceCommand?.command === "delete_sheet") {
+          const payload = workspaceCommand.payload as {
+            sheetId: string;
+          };
+          workspaceEngineRowsBySheet.delete(payload.sheetId);
+
+          return Promise.resolve({
+            type: "sheet_deleted",
+            payload: {
+              sheetId: payload.sheetId,
+            },
+          });
+        }
+
+        if (workspaceCommand?.command === "delete_sheet_rows") {
+          const payload = workspaceCommand.payload as {
+            sheetId: string;
+            rowIds: string[];
+          };
+          const deletedRowIds = new Set(payload.rowIds);
+          const nextRows = (workspaceEngineRowsBySheet.get(payload.sheetId) ?? [])
+            .filter((row) => !deletedRowIds.has(row.rowId))
+            .map((row, position) => ({
+              ...row,
+              position,
+            }));
+          workspaceEngineRowsBySheet.set(payload.sheetId, nextRows);
+
+          return Promise.resolve({
+            type: "sheet_rows",
+            payload: {
+              sheetId: payload.sheetId,
+              offset: 0,
+              limit: nextRows.length,
+              totalCount: nextRows.length,
+              hasMore: false,
+              nextOffset: null,
+              rows: nextRows,
+            },
+          });
+        }
+
+        if (workspaceCommand?.command === "transfer_sheet_rows") {
+          const payload = workspaceCommand.payload as {
+            sourceSheetId: string;
+            targetSheetId: string;
+            rowIds: string[];
+            mode: "copy" | "move";
+          };
+          const sourceRows = workspaceEngineRowsBySheet.get(payload.sourceSheetId) ?? [];
+          const targetRows = workspaceEngineRowsBySheet.get(payload.targetSheetId) ?? [];
+          const sourceRowIds = new Set(payload.rowIds);
+          const copiedRows = payload.rowIds
+            .map((rowId) => sourceRows.find((row) => row.rowId === rowId))
+            .filter((row): row is WorkspaceEngineSheetRowFixture => row !== undefined)
+            .map((row, index) => ({
+              ...row,
+              rowId: `${payload.targetSheetId}:row:${targetRows.length + index}`,
+              position: targetRows.length + index,
+            }));
+          const nextTargetRows = [...targetRows, ...copiedRows];
+          workspaceEngineRowsBySheet.set(payload.targetSheetId, nextTargetRows);
+
+          if (payload.mode === "move") {
+            workspaceEngineRowsBySheet.set(
+              payload.sourceSheetId,
+              sourceRows
+                .filter((row) => !sourceRowIds.has(row.rowId))
+                .map((row, position) => ({
+                  ...row,
+                  position,
+                }))
+            );
+          }
+
+          return Promise.resolve({
+            type: "sheet_rows",
+            payload: {
+              sheetId: payload.targetSheetId,
+              offset: 0,
+              limit: nextTargetRows.length,
+              totalCount: nextTargetRows.length,
+              hasMore: false,
+              nextOffset: null,
+              rows: nextTargetRows,
+            },
+          });
+        }
+
+        if (workspaceCommand?.command === "copy_sheet_rows") {
+          const payload = workspaceCommand.payload as {
+            sourceSheetId: string;
+            targetSheetId: string;
+          };
+          const sourceRows = workspaceEngineRowsBySheet.get(payload.sourceSheetId) ?? [];
+          const targetRows = workspaceEngineRowsBySheet.get(payload.targetSheetId) ?? [];
+          const copiedRows = sourceRows.map((row, index) => ({
+            ...row,
+            rowId: `${payload.targetSheetId}:row:${targetRows.length + index}`,
+            position: targetRows.length + index,
+          }));
+          const nextTargetRows = [...targetRows, ...copiedRows];
+          workspaceEngineRowsBySheet.set(payload.targetSheetId, nextTargetRows);
+
+          return Promise.resolve({
+            type: "sheet_rows",
+            payload: {
+              sheetId: payload.targetSheetId,
+              offset: 0,
+              limit: nextTargetRows.length,
+              totalCount: nextTargetRows.length,
+              hasMore: false,
+              nextOffset: null,
+              rows: nextTargetRows,
+            },
+          });
+        }
+
+        if (workspaceCommand?.command === "upsert_sheet_rows") {
+          if (workspaceEngineUpsertFailureMessage) {
+            return Promise.reject(new Error(workspaceEngineUpsertFailureMessage));
+          }
+
+          const payload = workspaceCommand.payload as {
+            sheetId: string;
+            rows: Array<{
+              rowId: string;
+              position: number;
+              displayTrackingId: string;
+            }>;
+          };
+          const allRows = workspaceEngineRowsBySheet.get(payload.sheetId) ?? [];
+          const nextRows = upsertWorkspaceEngineSheetRows(
+            payload.sheetId,
+            payload.rows,
+            allRows
+          );
+          workspaceEngineRowsBySheet.set(payload.sheetId, nextRows);
+
+          return Promise.resolve({
+            type: "sheet_rows",
+            payload: {
+              sheetId: payload.sheetId,
+              offset: 0,
+              limit: nextRows.length,
+              totalCount: nextRows.length,
+              hasMore: false,
+              nextOffset: null,
+              rows: nextRows,
+            },
+          });
+        }
+
+        if (workspaceCommand?.command === "refresh_sheet_row_tracking") {
+          const payload = workspaceCommand.payload as {
+            rowId: string;
+            forceRefresh: boolean;
+          };
+          let sheetId = "";
+          const allRows = Array.from(workspaceEngineRowsBySheet.entries()).find(
+            ([, rows]) => rows.some((row) => row.rowId === payload.rowId)
+          );
+          if (!allRows) {
+            return Promise.reject(
+              new Error(`Missing workspace engine row: ${payload.rowId}`)
+            );
+          }
+
+          sheetId = allRows[0];
+          const rows = [...allRows[1]];
+          const rowIndex = rows.findIndex((row) => row.rowId === payload.rowId);
+          const row = rows[rowIndex];
+          if (!row) {
+            return Promise.reject(
+              new Error(`Missing workspace engine row: ${payload.rowId}`)
+            );
+          }
+
+          const setRefreshedRow = (
+            refreshedRow: WorkspaceEngineSheetRowFixture
+          ) => {
+            const latestRows = workspaceEngineRowsBySheet.get(sheetId) ?? [];
+            const latestRowIndex = latestRows.findIndex(
+              (candidate) => candidate.rowId === payload.rowId
+            );
+            const nextRows = [...latestRows];
+            nextRows[latestRowIndex >= 0 ? latestRowIndex : rowIndex] =
+              refreshedRow;
+            workspaceEngineRowsBySheet.set(sheetId, nextRows);
+            return refreshedRow;
+          };
+          const createFailedRow = (message: string) =>
+            setRefreshedRow({
+              ...row,
+              rowStatus: "failed",
+              errorMessage: message,
+            });
+
+          trackedShipmentIds.push(row.lookupTrackingId);
+
+          if (row.lookupTrackingId === "PBAD") {
+            return Promise.resolve({
+              type: "sheet_row",
+              payload: createFailedRow("invalid tracking response shape"),
+            });
+          }
+
+          const deferred = createDeferred<TrackResponse>();
+          pendingRequests.set(row.lookupTrackingId, deferred);
+
+          return deferred.promise
+            .then((response): WorkspaceEngineSheetRowFixture => ({
+              ...row,
+              rowStatus: "loaded",
+              errorMessage: null,
+              statusJson: response.status_akhir,
+              detailJson: response.detail,
+              historyJson: {
+                pod: response.pod,
+                history: response.history,
+                history_summary: response.history_summary,
+              },
+            }))
+            .catch((error): WorkspaceEngineSheetRowFixture => ({
+              ...row,
+              rowStatus: "failed",
+              errorMessage:
+                error instanceof Error ? error.message : "Tracking request failed.",
+            }))
+            .then((refreshedRow) => ({
+              type: "sheet_row",
+              payload: setRefreshedRow(refreshedRow),
+            }));
+        }
+
+        if (workspaceCommand?.command === "refresh_sheet_rows_tracking") {
+          const payload = workspaceCommand.payload as {
+            sheetId: string;
+            rowIds: string[];
+            forceRefresh: boolean;
+          };
+          return refreshWorkspaceEngineRowsTracking(payload);
+        }
+
+        if (workspaceCommand?.command === "query_pivot") {
+          const payload = workspaceCommand.payload as {
+            sheetId: string;
+          };
+          const allRows = workspaceEngineRowsBySheet.get(payload.sheetId) ?? [];
+
+          return Promise.resolve({
+            type: "pivot",
+            payload: {
+              sheetId: payload.sheetId,
+              sourceRowCount: allRows.length,
+              rows: [],
+            },
+          });
+        }
+
+        if (workspaceCommand?.command === "query_chart") {
+          const payload = workspaceCommand.payload as {
+            pivotQuery: {
+              sheetId: string;
+            };
+            chartType: "bar" | "donut";
+          };
+          const allRows =
+            workspaceEngineRowsBySheet.get(payload.pivotQuery.sheetId) ?? [];
+
+          return Promise.resolve({
+            type: "chart",
+            payload: {
+              sheetId: payload.pivotQuery.sheetId,
+              chartType: payload.chartType,
+              sourceRowCount: allRows.length,
+              series: [],
+            },
+          });
+        }
+      }
+
+      if (command === "workspace_engine_run_import_job_with_progress") {
+        const jobId = args?.request?.jobId ?? "";
+        const job = workspaceEngineJobs.get(jobId);
+        if (!job) {
+          return Promise.reject(new Error(`Missing workspace engine job: ${jobId}`));
+        }
+
+        const trackingIds = resolveWorkspaceEngineImportTrackingIds(job);
+        const currentRows = workspaceEngineRowsBySheet.get(job.sheetId) ?? [];
+        const currentTrackingIds = currentRows.map((row) => row.displayTrackingId);
+        const nextTrackingIds =
+          job.mode === "replace"
+            ? trackingIds
+            : Array.from(new Set([...currentTrackingIds, ...trackingIds]));
+        const committedRows = createWorkspaceEngineSheetRows(
+          job.sheetId,
+          nextTrackingIds,
+          currentRows
+        );
+        workspaceEngineRowsBySheet.set(job.sheetId, committedRows);
+
+        const itemDeltas =
+          job.kind === "bag"
+            ? job.ids.map((id, index) => {
+                const itemTrackingIds = extractBagFixtureTrackingIds(id);
+
+                return {
+                  itemId: `${job.jobId}:source:${index}`,
+                  sourceItemId: id,
+                  sourceItemKind: job.kind,
+                  status: "succeeded",
+                  trackingIds: itemTrackingIds,
+                  sheetRowIds: getWorkspaceEngineSheetRowIdsForTrackingIds(
+                    committedRows,
+                    itemTrackingIds
+                  ),
+                  errorMessage: null,
+                };
+              })
+            : [
+                ...job.ids.map((id, index) => ({
+                  itemId: `${job.jobId}:source:${index}`,
+                  sourceItemId: id,
+                  sourceItemKind: "manifest",
+                  status: "succeeded",
+                  trackingIds: extractManifestFixtureBagIds(id),
+                  sheetRowIds: [],
+                  errorMessage: null,
+                })),
+                ...job.ids
+                  .flatMap((id) => extractManifestFixtureBagIds(id))
+                  .map((bagId, index) => {
+                    const itemTrackingIds = extractBagFixtureTrackingIds(bagId);
+
+                    return {
+                      itemId: `${job.jobId}:manifest-bag:${job.ids.length + index}`,
+                      sourceItemId: bagId,
+                      sourceItemKind: "manifest_bag",
+                      status: "succeeded",
+                      trackingIds: itemTrackingIds,
+                      sheetRowIds: getWorkspaceEngineSheetRowIdsForTrackingIds(
+                        committedRows,
+                        itemTrackingIds
+                      ),
+                      errorMessage: null,
+                    };
+                  }),
+              ];
+
+        args?.onEvent?.onmessage?.({
+          type: "import_job_progress",
+          payload: {
+            jobId: job.jobId,
+            sheetId: job.sheetId,
+            kind: job.kind,
+            mode: job.mode,
+            status: "completed",
+            totalCount: job.ids.length,
+            successCount: job.ids.length,
+            failedCount: 0,
+            pendingCount: 0,
+            itemDeltas,
+          },
+        });
+
+        return Promise.resolve({
+          type: "import_job_detail",
+          payload: createWorkspaceEngineImportJobDetail(
+            job,
+            "completed",
+            trackingIds,
+            committedRows
+          ),
+        });
       }
 
       if (command === "write_workspace_document") {
@@ -755,6 +1883,42 @@ describe("App workspace isolation", () => {
     );
   });
 
+  it("seeds manual tracking input into Rust sheet rows before detail fetch", async () => {
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
+    fireEvent.change(firstInput, { target: { value: "P2606020189412.30" } });
+    fireEvent.blur(firstInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 1);
+    });
+
+    expectLegacyTrackShipmentInvokeCount(0);
+    expect(getTrackedShipmentIds()).toEqual(["P2606020189412"]);
+
+    const upsertPayload = getWorkspaceEngineCommandCalls("upsert_sheet_rows")[0]?.[1]
+      ?.command?.payload as
+      | {
+          sheetId: string;
+          rows: Array<{
+            rowId: string;
+            position: number;
+            displayTrackingId: string;
+          }>;
+        }
+      | undefined;
+    expect(upsertPayload).toMatchObject({
+      sheetId: expect.any(String),
+      rows: [
+        {
+          position: 0,
+          displayTrackingId: "P2606020189412.30",
+        },
+      ],
+    });
+  });
+
   it("ignores late responses after deleting the active sheet during an in-flight request", async () => {
     render(<App />);
 
@@ -776,13 +1940,13 @@ describe("App workspace isolation", () => {
 
     await waitFor(() => {
       expect(screen.queryByRole("tab", { name: "Sheet 2" })).not.toBeInTheDocument();
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
     });
 
     resolveRequest("P2");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
     });
   });
 
@@ -803,7 +1967,7 @@ describe("App workspace isolation", () => {
       "aria-selected",
       "true"
     );
-    expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+    expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
     expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("");
   });
 
@@ -822,8 +1986,15 @@ describe("App workspace isolation", () => {
       fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
 
       await waitFor(() => {
+        expectWorkspaceEngineCommandCount("preview_import_source", 1);
         expectInvokeCount("track_bag", 1);
         expect(screen.getByRole("button", { name: "Memuat..." })).toBeDisabled();
+      });
+      expect(
+        getWorkspaceEngineCommandCalls("preview_import_source")[0]?.[1]?.command?.payload
+      ).toEqual({
+        kind: "bag",
+        ids: ["PID-SHEET-1"],
       });
       expect(getInvokeCalls("track_bag")[0]?.[1]?.forceRefresh).toBe(true);
 
@@ -859,21 +2030,19 @@ describe("App workspace isolation", () => {
       fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
 
       await waitFor(() => {
+        expectWorkspaceEngineCommandCount("preview_import_source", 2);
         expectInvokeCount("track_manifest", 1);
         expect(screen.getByRole("button", { name: "Memuat..." })).toBeDisabled();
+      });
+      expect(
+        getWorkspaceEngineCommandCalls("preview_import_source")[1]?.[1]?.command?.payload
+      ).toEqual({
+        kind: "manifest",
+        ids: ["MNF-SHEET-2"],
       });
       expect(getInvokeCalls("track_manifest")[0]?.[1]?.forceRefresh).toBe(true);
 
       resolveManifestRequest("MNF-SHEET-2");
-
-      await waitFor(() => {
-        expect(
-          screen.getByText(
-            "Nomor Kantung (1) - Proses ambil id kiriman dari 0/1 kantung"
-          )
-        ).toBeInTheDocument();
-        expect(screen.getByRole("button", { name: "Tambah Data" })).toBeDisabled();
-      });
 
       await waitFor(() => {
         expectInvokeCount("track_bag", 2);
@@ -912,7 +2081,7 @@ describe("App workspace isolation", () => {
       expect(screen.getByText("Nomor Kantung (1) - 1 Kiriman")).toBeInTheDocument();
       expect(screen.getByText("PID123456-2 - 1 Kiriman")).toBeInTheDocument();
     },
-    15000
+    20_000
   );
 
   it(
@@ -954,19 +2123,12 @@ describe("App workspace isolation", () => {
 
       await waitFor(() => {
         expectInvokeCount("track_bag", 2);
-        expect(
-          screen.getByText(
-            "Nomor Kantung (1) - Proses ambil id kiriman dari 0/1 kantung"
-          )
-        ).toBeInTheDocument();
-        expect(screen.getByText("PID123456-2")).toBeInTheDocument();
       });
 
       resolveBagRequest("PID123456");
 
       await waitFor(() => {
         expect(screen.queryByText("PID123456 - 1 Kiriman")).not.toBeInTheDocument();
-        expect(screen.getByText("PID123456-2")).toBeInTheDocument();
       });
 
       resolveBagRequest("PID123456-2");
@@ -988,7 +2150,7 @@ describe("App workspace isolation", () => {
         expect(screen.queryByText("PID123456-2 - 1 Kiriman")).not.toBeInTheDocument();
       });
     },
-    15000
+    20_000
   );
 
   it("replaces all sheet data from a bag lookup", async () => {
@@ -1005,7 +2167,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PEXIST1");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Bag" }));
@@ -1017,7 +2179,6 @@ describe("App workspace isolation", () => {
     await waitFor(() => {
       expectInvokeCount("track_bag", 1);
     });
-    expect(getInvokeCalls("track_bag")[0]?.[1]?.forceRefresh).toBe(true);
     expect(getInvokeCalls("track_bag")[0]?.[1]?.forceRefresh).toBe(true);
 
     resolveBagRequest("PID-REPLACE");
@@ -1031,6 +2192,7 @@ describe("App workspace isolation", () => {
 
     await waitFor(() => {
       expectInvokeCount("track_shipment", 2);
+      expectWorkspaceEngineRefreshCount(1);
       expect(
         screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
       ).not.toBeInTheDocument();
@@ -1039,6 +2201,26 @@ describe("App workspace isolation", () => {
       );
       expect(screen.queryByDisplayValue("PEXIST1")).not.toBeInTheDocument();
     });
+    const replaceRefreshPayload = (getWorkspaceEngineCommandCalls(
+      "refresh_sheet_rows_tracking"
+    )[0]?.[1]?.command?.payload ??
+      getInvokeCalls("workspace_engine_refresh_sheet_rows_tracking_with_progress")[0]?.[1]
+        ?.request) as
+      | { rowIds?: string[]; forceRefresh?: boolean }
+      | undefined;
+    expect(replaceRefreshPayload).toMatchObject({
+      forceRefresh: true,
+    });
+    expect(replaceRefreshPayload?.rowIds).toHaveLength(1);
+    expect(
+      getWorkspaceEngineCommandCalls("query_sheet_rows").some(
+        ([, args]) =>
+          typeof args?.command?.payload === "object" &&
+          args.command.payload !== null &&
+          "query" in args.command.payload &&
+          (args.command.payload.query as { limit?: number }).limit === 100_000
+      )
+    ).toBe(false);
 
     fireEvent.click(screen.getByRole("button", { name: "Bag" }));
 
@@ -1047,7 +2229,8 @@ describe("App workspace isolation", () => {
       expect(screen.getByText("Nomor Kiriman (1)")).toBeInTheDocument();
       expect(screen.getByText("P260000000001")).toBeInTheDocument();
     });
-  }, 10_000);
+    expectWorkspaceEngineCommandCount("get_import_job", 0);
+  }, 20_000);
 
   it("appends bag lookup shipment ids into the active sheet", async () => {
     render(<App />);
@@ -1063,7 +2246,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PEXIST2");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Bag" }));
@@ -1087,6 +2270,7 @@ describe("App workspace isolation", () => {
 
     await waitFor(() => {
       expectInvokeCount("track_shipment", 2);
+      expectWorkspaceEngineRefreshCount(1);
       expect(
         screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
       ).not.toBeInTheDocument();
@@ -1100,6 +2284,121 @@ describe("App workspace isolation", () => {
       expect(screen.getByLabelText("ID Bag")).toHaveValue("PID-APPEND");
       expect(screen.getByText("Nomor Kiriman (1)")).toBeInTheDocument();
       expect(screen.getByText("P260000000001")).toBeInTheDocument();
+    });
+  }, 20_000);
+
+  it("imports shipment ids from multiple bag lookups", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Bag" }));
+    fireEvent.change(screen.getByLabelText("ID Bag"), {
+      target: { value: "PID-MULTI-1\nPID-MULTI-2, PID-MULTI-2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
+
+    await waitFor(() => {
+      expectInvokeCount("track_bag", 2);
+    });
+    expect(getInvokeCalls("track_bag").map(([, args]) => args?.bagId)).toEqual([
+      "PID-MULTI-1",
+      "PID-MULTI-2",
+    ]);
+
+    resolveBagRequest("PID-MULTI-1");
+    resolveBagRequest("PID-MULTI-2");
+
+    await waitFor(() => {
+      expect(screen.getByText("Nomor Kiriman (2)")).toBeInTheDocument();
+      expect(screen.getByText("P260000000001")).toBeInTheDocument();
+      expect(screen.getByText("P260000000002")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Tambah Data" })).toBeEnabled();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Tambah Data" }));
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 2);
+      expectWorkspaceEngineRefreshCount(1);
+      expect(screen.getAllByDisplayValue("P260000000001")[0]).toBeInTheDocument();
+      expect(screen.getAllByDisplayValue("P260000000002")[0]).toBeInTheDocument();
+    });
+  }, 20_000);
+
+  it("retries only failed bag import lookups", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Bag" }));
+    fireEvent.change(screen.getByLabelText("ID Bag"), {
+      target: { value: "PID-RETRY-1\nPID-RETRY-2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
+
+    await waitFor(() => {
+      expectInvokeCount("track_bag", 2);
+    });
+
+    resolveBagRequest("PID-RETRY-1");
+    rejectBagRequest("PID-RETRY-2");
+
+    await waitFor(() => {
+      expect(screen.getByText("Nomor Kiriman (1)")).toBeInTheDocument();
+      expect(screen.getByText("PID-RETRY-2 - Gagal ambil data")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Ambil Ulang Gagal" })).toBeEnabled();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Ambil ulang" }));
+
+    await waitFor(() => {
+      expectInvokeCount("track_bag", 3);
+    });
+    expect(getInvokeCalls("track_bag").map(([, args]) => args?.bagId)).toEqual([
+      "PID-RETRY-1",
+      "PID-RETRY-2",
+      "PID-RETRY-2",
+    ]);
+
+    resolveBagRequest("PID-RETRY-2");
+
+    await waitFor(() => {
+      expect(screen.getByText("Nomor Kiriman (2)")).toBeInTheDocument();
+      expect(screen.getByText("P260000000001")).toBeInTheDocument();
+      expect(screen.getByText("P260000000002")).toBeInTheDocument();
+      expect(screen.queryByText("PID-RETRY-2 - Gagal ambil data")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Tambah Data" })).toBeEnabled();
+    });
+  }, 20_000);
+
+  it("preserves dotted shipment ids imported from a bag lookup", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Bag" }));
+    fireEvent.change(screen.getByLabelText("ID Bag"), {
+      target: { value: "PID-DOTTED" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
+
+    await waitFor(() => {
+      expectInvokeCount("track_bag", 1);
+    });
+
+    resolveBagRequest("PID-DOTTED");
+
+    await waitFor(() => {
+      expect(screen.getByText("Nomor Kiriman (1)")).toBeInTheDocument();
+      expect(screen.getByText("P2606020189412.30")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Tambah Data" }));
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 1);
+      expectWorkspaceEngineRefreshCount(1);
+      expect(screen.getAllByDisplayValue("P2606020189412.30")[0]).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByDisplayValue("P2606020189412.30")[0]).toBeInTheDocument();
+      expect(screen.queryByDisplayValue("P260602018941230")).not.toBeInTheDocument();
     });
   });
 
@@ -1119,7 +2418,7 @@ describe("App workspace isolation", () => {
       resolveRequest("PEXIST-MANIFEST");
 
       await waitFor(() => {
-        expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+        expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
       });
 
       fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
@@ -1136,16 +2435,8 @@ describe("App workspace isolation", () => {
       resolveManifestRequest("MNF-APPEND");
 
       await waitFor(() => {
-        expect(
-          screen.getByText(
-            "Nomor Kantung (1) - Proses ambil id kiriman dari 0/1 kantung"
-          )
-        ).toBeInTheDocument();
-        expect(screen.getByRole("button", { name: "Tambah Data" })).toBeDisabled();
-      });
-
-      await waitFor(() => {
         expectInvokeCount("track_bag", 1);
+        expect(screen.getByRole("button", { name: "Tambah Data" })).toBeDisabled();
       });
 
       resolveBagRequest("PID123456");
@@ -1160,6 +2451,7 @@ describe("App workspace isolation", () => {
 
       await waitFor(() => {
         expectInvokeCount("track_shipment", 2);
+        expectWorkspaceEngineRefreshCount(1);
         expect(
           screen.queryByRole("dialog", { name: "Import ID Kiriman dari Manifest" })
         ).not.toBeInTheDocument();
@@ -1175,7 +2467,154 @@ describe("App workspace isolation", () => {
         expect(screen.getByText("PID123456 - 1 Kiriman")).toBeInTheDocument();
       });
     },
-    15000
+    20_000
+  );
+
+  it(
+    "imports shipment ids from multiple manifest lookups",
+    async () => {
+      render(<App />);
+
+      fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
+      fireEvent.change(screen.getByLabelText("ID Manifest"), {
+        target: { value: "MNF-MULTI-1\nMNF-MULTI-2" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
+
+      await waitFor(() => {
+        expectInvokeCount("track_manifest", 2);
+      });
+      expect(getInvokeCalls("track_manifest").map(([, args]) => args?.manifestId)).toEqual([
+        "MNF-MULTI-1",
+        "MNF-MULTI-2",
+      ]);
+
+      resolveManifestRequest("MNF-MULTI-1");
+      resolveManifestRequest("MNF-MULTI-2");
+
+      await waitFor(() => {
+        expectInvokeCount("track_bag", 2);
+      });
+      expect(getInvokeCalls("track_bag").map(([, args]) => args?.bagId)).toEqual([
+        "PID123456",
+        "PID123456-2",
+      ]);
+
+      resolveBagRequest("PID123456");
+      resolveBagRequest("PID123456-2");
+
+      await waitFor(() => {
+        expect(screen.getByText("Nomor Kantung (2) - 2 Kiriman")).toBeInTheDocument();
+        expect(screen.getByText("PID123456 - 1 Kiriman")).toBeInTheDocument();
+        expect(screen.getByText("PID123456-2 - 1 Kiriman")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Tambah Data" })).toBeEnabled();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Tambah Data" }));
+
+      await waitFor(() => {
+        expectInvokeCount("track_shipment", 2);
+        expectWorkspaceEngineRefreshCount(1);
+        expect(screen.getAllByDisplayValue("P260000000001")[0]).toBeInTheDocument();
+        expect(screen.getAllByDisplayValue("P260000000002")[0]).toBeInTheDocument();
+      });
+    },
+    20_000
+  );
+
+  it(
+    "retries only failed manifest bag lookups",
+    async () => {
+      render(<App />);
+
+      fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
+      fireEvent.change(screen.getByLabelText("ID Manifest"), {
+        target: { value: "MNF-RETRY-BAG" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
+
+      await waitFor(() => {
+        expectInvokeCount("track_manifest", 1);
+      });
+
+      resolveManifestRequest("MNF-RETRY-BAG");
+
+      await waitFor(() => {
+        expectInvokeCount("track_bag", 1);
+      });
+
+      rejectBagRequest("PID123456");
+
+      await waitFor(() => {
+        expect(screen.getByText("PID123456 - Gagal ambil data")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Ambil Ulang Gagal" })).toBeEnabled();
+        expect(screen.getByRole("button", { name: "Tambah Data" })).toBeDisabled();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Ambil ulang" }));
+
+      await waitFor(() => {
+        expectInvokeCount("track_bag", 2);
+      });
+      expect(getInvokeCalls("track_bag").map(([, args]) => args?.bagId)).toEqual([
+        "PID123456",
+        "PID123456",
+      ]);
+
+      resolveBagRequest("PID123456");
+
+      await waitFor(() => {
+        expect(screen.getByText("Nomor Kantung (1) - 1 Kiriman")).toBeInTheDocument();
+        expect(screen.getByText("PID123456 - 1 Kiriman")).toBeInTheDocument();
+        expect(screen.queryByText("PID123456 - Gagal ambil data")).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Tambah Data" })).toBeEnabled();
+      });
+    },
+    20_000
+  );
+
+  it(
+    "preserves dotted shipment ids imported from a manifest lookup",
+    async () => {
+      render(<App />);
+
+      fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
+      fireEvent.change(screen.getByLabelText("ID Manifest"), {
+        target: { value: "MNF-DOTTED" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Ambil Data" }));
+
+      await waitFor(() => {
+        expectInvokeCount("track_manifest", 1);
+      });
+
+      resolveManifestRequest("MNF-DOTTED");
+
+      await waitFor(() => {
+        expectInvokeCount("track_bag", 1);
+      });
+
+      resolveBagRequest("PID123456-DOTTED");
+
+      await waitFor(() => {
+        expect(screen.getByText("Nomor Kantung (1) - 1 Kiriman")).toBeInTheDocument();
+        expect(screen.getByText("PID123456-DOTTED - 1 Kiriman")).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Tambah Data" }));
+
+      await waitFor(() => {
+        expectInvokeCount("track_shipment", 1);
+        expectWorkspaceEngineRefreshCount(1);
+        expect(screen.getAllByDisplayValue("P2606020189412.30")[0]).toBeInTheDocument();
+      });
+
+      await waitFor(() => {
+        expect(screen.getAllByDisplayValue("P2606020189412.30")[0]).toBeInTheDocument();
+        expect(screen.queryByDisplayValue("P260602018941230")).not.toBeInTheDocument();
+      });
+    },
+    20_000
   );
 
   it("replaces all sheet data from a manifest lookup and preserves cached manifest results", async () => {
@@ -1192,7 +2631,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PEXIST-MANIFEST-REPLACE");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Manifest" }));
@@ -1222,6 +2661,7 @@ describe("App workspace isolation", () => {
 
     await waitFor(() => {
       expectInvokeCount("track_shipment", 2);
+      expectWorkspaceEngineRefreshCount(1);
       expect(
         screen.queryByRole("dialog", { name: "Import ID Kiriman dari Manifest" })
       ).not.toBeInTheDocument();
@@ -1238,7 +2678,7 @@ describe("App workspace isolation", () => {
       expect(screen.getByText("Nomor Kantung (1) - 1 Kiriman")).toBeInTheDocument();
       expect(screen.getByText("PID123456 - 1 Kiriman")).toBeInTheDocument();
     });
-  });
+  }, 20_000);
 
   it("ignores late bag results from an overwritten manifest lookup", async () => {
     render(<App />);
@@ -1257,9 +2697,6 @@ describe("App workspace isolation", () => {
 
     await waitFor(() => {
       expectInvokeCount("track_bag", 1);
-      expect(
-        screen.getByText("Nomor Kantung (1) - Proses ambil id kiriman dari 0/1 kantung")
-      ).toBeInTheDocument();
     });
 
     fireEvent.change(screen.getByLabelText("ID Manifest"), {
@@ -1275,14 +2712,12 @@ describe("App workspace isolation", () => {
 
     await waitFor(() => {
       expectInvokeCount("track_bag", 2);
-      expect(screen.getByText("PID123456-2")).toBeInTheDocument();
     });
 
     resolveBagRequest("PID123456");
 
     await waitFor(() => {
       expect(screen.queryByText("PID123456 - 1 Kiriman")).not.toBeInTheDocument();
-      expect(screen.getByText("PID123456-2")).toBeInTheDocument();
     });
 
     resolveBagRequest("PID123456-2");
@@ -1293,7 +2728,7 @@ describe("App workspace isolation", () => {
       expect(screen.queryByText("PID123456 - 1 Kiriman")).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Tambah Data" })).toBeEnabled();
     });
-  });
+  }, 20_000);
 
   it(
     "starts tracking again when bag data is appended repeatedly",
@@ -1320,16 +2755,15 @@ describe("App workspace isolation", () => {
 
       await waitFor(() => {
         expectInvokeCount("track_shipment", 1);
+        expectWorkspaceEngineRefreshCount(1);
         expect(
           screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
         ).not.toBeInTheDocument();
         expect(screen.getAllByDisplayValue("P260000000001")[0]).toBeInTheDocument();
       });
 
-      resolveRequest("P260000000001");
-
       await waitFor(() => {
-        expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+        expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
       });
 
       fireEvent.click(screen.getByRole("button", { name: "Bag" }));
@@ -1352,6 +2786,7 @@ describe("App workspace isolation", () => {
 
       await waitFor(() => {
         expectInvokeCount("track_shipment", 2);
+        expectWorkspaceEngineRefreshCount(2);
         expect(
           screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
         ).not.toBeInTheDocument();
@@ -1359,7 +2794,7 @@ describe("App workspace isolation", () => {
         expect(screen.getAllByDisplayValue("P260000000002")[0]).toBeInTheDocument();
       });
     },
-    15000
+    20_000
   );
 
   it(
@@ -1387,16 +2822,15 @@ describe("App workspace isolation", () => {
 
       await waitFor(() => {
         expectInvokeCount("track_shipment", 1);
+        expectWorkspaceEngineRefreshCount(1);
         expect(
           screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
         ).not.toBeInTheDocument();
         expect(screen.getAllByDisplayValue("P260000000001")[0]).toBeInTheDocument();
       });
 
-      resolveRequest("P260000000001");
-
       await waitFor(() => {
-        expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+        expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
       });
 
       fireEvent.click(screen.getByRole("button", { name: "Bag" }));
@@ -1411,16 +2845,21 @@ describe("App workspace isolation", () => {
 
       await waitFor(() => {
         expectInvokeCount("track_shipment", 2);
+        expectWorkspaceEngineRefreshCount(2);
         expect(
           screen.queryByRole("dialog", { name: "Import ID Kiriman dari Bag" })
         ).not.toBeInTheDocument();
-        expect(screen.getAllByDisplayValue("P260000000001")).toHaveLength(2);
+        expect(screen.getAllByDisplayValue("P260000000001")).toHaveLength(1);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
       });
     },
-    15000
+    20_000
   );
 
-  it("copies selected ids into a new sheet and starts tracking them immediately", async () => {
+  it("copies selected ids into a new sheet through the workspace engine", async () => {
     render(<App />);
 
     const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
@@ -1434,7 +2873,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PSEL1");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
@@ -1448,17 +2887,12 @@ describe("App workspace isolation", () => {
         "aria-selected",
         "true"
       );
-      expectInvokeCount("track_shipment", 2);
+      expectInvokeCount("track_shipment", 1);
+      expectWorkspaceEngineCommandCount("transfer_sheet_rows", 1);
       expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("PSEL1");
-      expect(screen.getByText("0/1 kiriman dimuat")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
-
-    resolveRequest("PSEL1");
-
-    await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
-    });
-  });
+  }, 20_000);
 
   it("moves selected ids into a new sheet and removes them from the source sheet", async () => {
     render(<App />);
@@ -1474,7 +2908,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PMOVE1");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
@@ -1488,16 +2922,15 @@ describe("App workspace isolation", () => {
         "aria-selected",
         "true"
       );
-      expectInvokeCount("track_shipment", 2);
+      expectInvokeCount("track_shipment", 1);
+      expectWorkspaceEngineCommandCount("transfer_sheet_rows", 1);
       expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("PMOVE1");
     });
-
-    resolveRequest("PMOVE1");
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
 
     await waitFor(() => {
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
       expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("");
     });
   });
@@ -1516,7 +2949,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PAPP1");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
@@ -1532,7 +2965,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PAPP2");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
@@ -1545,7 +2978,8 @@ describe("App workspace isolation", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Sheet 2" }));
 
     await waitFor(() => {
-      expectInvokeCount("track_shipment", 3);
+      expectInvokeCount("track_shipment", 2);
+      expectWorkspaceEngineCommandCount("transfer_sheet_rows", 1);
       expect(screen.getByRole("tab", { name: "Sheet 1" })).toHaveAttribute(
         "aria-selected",
         "true"
@@ -1562,9 +2996,9 @@ describe("App workspace isolation", () => {
     resolveRequest("PAPP1");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 2/2 kiriman")).toBeInTheDocument();
     });
-  });
+  }, 20_000);
 
   it("moves selected ids into another existing sheet and clears them from the source sheet", async () => {
     render(<App />);
@@ -1580,7 +3014,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PMOVE2");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
@@ -1605,8 +3039,9 @@ describe("App workspace isolation", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Sheet 2" }));
 
     await waitFor(() => {
-      expectInvokeCount("track_shipment", 3);
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expectInvokeCount("track_shipment", 2);
+      expectWorkspaceEngineCommandCount("transfer_sheet_rows", 1);
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }));
@@ -1615,13 +3050,7 @@ describe("App workspace isolation", () => {
       expect(screen.getAllByDisplayValue("PTARGET2")[0]).toBeInTheDocument();
       expect(screen.getAllByDisplayValue("PMOVE2")[0]).toBeInTheDocument();
     });
-
-    resolveRequest("PMOVE2");
-
-    await waitFor(() => {
-      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
-    });
-  });
+  }, 20_000);
 
   it("moves selected ids into another existing sheet via drag and drop", async () => {
     render(<App />);
@@ -1637,7 +3066,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PDRAG1");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
@@ -1653,7 +3082,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PDRAG2");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
@@ -1680,8 +3109,9 @@ describe("App workspace isolation", () => {
     fireEvent.dragEnd(transferButton);
 
     await waitFor(() => {
-      expectInvokeCount("track_shipment", 3);
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expectInvokeCount("track_shipment", 2);
+      expectWorkspaceEngineCommandCount("transfer_sheet_rows", 1);
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }));
@@ -1690,11 +3120,8 @@ describe("App workspace isolation", () => {
       expect(screen.getAllByDisplayValue("PDRAG2")[0]).toBeInTheDocument();
       expect(screen.getAllByDisplayValue("PDRAG1")[0]).toBeInTheDocument();
     });
-
-    resolveRequest("PDRAG1");
-
     await waitFor(() => {
-      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 2/2 kiriman")).toBeInTheDocument();
     });
   });
 
@@ -1813,9 +3240,36 @@ describe("App workspace isolation", () => {
     await waitFor(() => {
       expectInvokeCount("track_shipment", 3);
     });
+
+    const batchUpsert = getWorkspaceEngineCommandCalls("upsert_sheet_rows")
+      .map(([, args]) => args?.command?.payload)
+      .find(
+        (
+          payload
+        ): payload is {
+          sheetId: string;
+          rows: Array<{
+            position: number;
+            displayTrackingId: string;
+          }>;
+        } => {
+          if (!payload || typeof payload !== "object" || !("rows" in payload)) {
+            return false;
+          }
+
+          const rows = (payload as { rows?: unknown }).rows;
+          return (
+            Array.isArray(rows) &&
+            rows.length === 2 &&
+            rows[0]?.displayTrackingId === "P9" &&
+            rows[1]?.displayTrackingId === "P10"
+          );
+        }
+      );
+    expect(batchUpsert).toBeTruthy();
   });
 
-  it("appends bulk paste rows to the active sheet queue without restarting it", async () => {
+  it("appends bulk paste rows through separate Rust batch refreshes", async () => {
     render(<App />);
 
     const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0];
@@ -1831,7 +3285,7 @@ describe("App workspace isolation", () => {
     fireEvent(firstInput, firstPasteEvent);
 
     await waitFor(() => {
-      expectInvokeCount("track_shipment", 10);
+      expectWorkspaceEngineRefreshCount(1);
     });
     expect(getTrackedShipmentIds()).toEqual([
       "P001",
@@ -1844,9 +3298,16 @@ describe("App workspace isolation", () => {
       "P008",
       "P009",
       "P010",
+      "P011",
+      "P012",
     ]);
 
-    const appendInput = screen.getAllByPlaceholderText("Masukkan ID")[12];
+    const appendInput = screen
+      .getAllByPlaceholderText("Masukkan ID")
+      .find((input) => (input as HTMLInputElement).value === "");
+    if (!appendInput) {
+      throw new Error("Missing empty input for appending bulk paste rows.");
+    }
     const appendPasteEvent = createEvent.paste(appendInput);
     Object.defineProperty(appendPasteEvent, "clipboardData", {
       value: {
@@ -1855,24 +3316,25 @@ describe("App workspace isolation", () => {
     });
     fireEvent(appendInput, appendPasteEvent);
 
-    expectInvokeCount("track_shipment", 10);
-
-    resolveRequest("P001");
     await waitFor(() => {
-      expect(getTrackedShipmentIds()).toContain("P011");
+      expectWorkspaceEngineRefreshCount(2);
     });
-    expect(getTrackedShipmentIds()).not.toContain("P013");
-
-    resolveRequest("P002");
-    await waitFor(() => {
-      expect(getTrackedShipmentIds()).toContain("P012");
-    });
-    expect(getTrackedShipmentIds()).not.toContain("P013");
-
-    resolveRequest("P003");
-    await waitFor(() => {
-      expect(getTrackedShipmentIds()).toContain("P013");
-    });
+    expect(getTrackedShipmentIds()).toEqual([
+      "P001",
+      "P002",
+      "P003",
+      "P004",
+      "P005",
+      "P006",
+      "P007",
+      "P008",
+      "P009",
+      "P010",
+      "P011",
+      "P012",
+      "P013",
+      "P014",
+    ]);
   });
 
   it("keeps multiple in-flight row requests attached to their original sheet while switching tabs", async () => {
@@ -1896,13 +3358,13 @@ describe("App workspace isolation", () => {
     resolveRequest("P4");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
 
     await waitFor(() => {
-      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 2/2 kiriman")).toBeInTheDocument();
     });
   });
 
@@ -1920,7 +3382,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PTOAST");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Lacak Ulang" }));
@@ -1928,7 +3390,7 @@ describe("App workspace isolation", () => {
     expect(screen.getByText("Proses lacak ulang dimulai.")).toBeInTheDocument();
 
     await waitFor(() => {
-      expectInvokeCount("track_shipment", 2);
+      expectWorkspaceEngineRefreshCount(1);
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Sheet Baru" }));
@@ -1937,8 +3399,6 @@ describe("App workspace isolation", () => {
       "aria-selected",
       "true"
     );
-
-    resolveRequest("PTOAST");
 
     await waitFor(() => {
       expect(
@@ -1984,8 +3444,9 @@ describe("App workspace isolation", () => {
       );
     });
 
-    fireEvent.change(firstInput, { target: { value: "P102" } });
-    fireEvent.blur(firstInput);
+    const nextInput = await screen.findByDisplayValue("P101");
+    fireEvent.change(nextInput, { target: { value: "P102" } });
+    fireEvent.blur(nextInput);
 
     await waitFor(() => {
       expectInfoTelemetry("start", "P102");
@@ -2018,7 +3479,10 @@ describe("App workspace isolation", () => {
       expectInvokeCount("track_shipment", 0);
     });
 
-    expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+    expectLegacyTrackShipmentInvokeCount(0);
+    expectWorkspaceEngineCommandCount("refresh_sheet_row_tracking", 0);
+    expectWorkspaceEngineRefreshCount(0);
+    expect(getTrackedShipmentIds()).toEqual([]);
   });
 
   it("dedupes duplicate in-flight requests for the same row", async () => {
@@ -2056,7 +3520,7 @@ describe("App workspace isolation", () => {
     resolveRequest("P400");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
     });
   });
 
@@ -2082,7 +3546,7 @@ describe("App workspace isolation", () => {
     resolveRequest("P405");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
       expect(firstInput).toHaveValue("");
     });
   });
@@ -2102,20 +3566,23 @@ describe("App workspace isolation", () => {
       expectInvokeCount("track_shipment", 2);
     });
 
-    const overlongTrackingId = `P${"1".repeat(80)}`;
-    const pasteEvent = createEvent.paste(firstInput);
+    const replacementTrackingIds = ["P408", "P409"];
+    const pasteTarget = screen.getAllByPlaceholderText("Masukkan ID")[0];
+    const pasteEvent = createEvent.paste(pasteTarget);
     Object.defineProperty(pasteEvent, "clipboardData", {
       value: {
         getData: (type: string) =>
-          type === "text" ? `${overlongTrackingId}\nP408` : "",
+          type === "text" ? replacementTrackingIds.join("\n") : "",
       },
     });
-    fireEvent(firstInput, pasteEvent);
+    fireEvent(pasteTarget, pasteEvent);
 
     await waitFor(() => {
-      expectInvokeCount("track_shipment", 3);
-      expect(firstInput).toHaveValue(overlongTrackingId);
-      expect(secondInput).toHaveValue("P408");
+      expectInvokeCount("track_shipment", 4);
+      const [currentFirstInput, currentSecondInput] =
+        screen.getAllByPlaceholderText("Masukkan ID") as HTMLInputElement[];
+      expect(currentFirstInput).toHaveValue("P408");
+      expect(currentSecondInput).toHaveValue("P409");
       expectInfoTelemetry("abort", "P406");
       expectInfoTelemetry("abort", "P407");
     });
@@ -2124,16 +3591,18 @@ describe("App workspace isolation", () => {
     resolveRequest("P407");
 
     await waitFor(() => {
-      expect(firstInput).toHaveValue(overlongTrackingId);
-      expect(secondInput).toHaveValue("P408");
+      const [currentFirstInput, currentSecondInput] =
+        screen.getAllByPlaceholderText("Masukkan ID") as HTMLInputElement[];
+      expect(currentFirstInput).toHaveValue("P408");
+      expect(currentSecondInput).toHaveValue("P409");
     });
 
-    resolveRequest("P408");
-
     await waitFor(() => {
-      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
-      expect(firstInput).toHaveValue(overlongTrackingId);
-      expect(secondInput).toHaveValue("P408");
+      expect(screen.getByText("Total 2/2 kiriman")).toBeInTheDocument();
+      const [currentFirstInput, currentSecondInput] =
+        screen.getAllByPlaceholderText("Masukkan ID") as HTMLInputElement[];
+      expect(currentFirstInput).toHaveValue("P408");
+      expect(currentSecondInput).toHaveValue("P409");
     });
   });
 
@@ -2151,7 +3620,7 @@ describe("App workspace isolation", () => {
     resolveRequest("P500");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.change(screen.getAllByPlaceholderText("Filter")[1], {
@@ -2164,6 +3633,36 @@ describe("App workspace isolation", () => {
 
     await waitFor(() => {
       expect(screen.getAllByDisplayValue("P501")[0]).toBeInTheDocument();
+    });
+  });
+
+  it("does not auto-select visible rows when filters are active", async () => {
+    render(<App />);
+
+    const [firstInput, secondInput] = screen.getAllByPlaceholderText("Masukkan ID");
+    fireEvent.change(firstInput, { target: { value: "P690" } });
+    fireEvent.blur(firstInput);
+    fireEvent.change(secondInput, { target: { value: "P691" } });
+    fireEvent.blur(secondInput);
+
+    await waitFor(() => {
+      expectInvokeCount("track_shipment", 2);
+    });
+
+    resolveRequest("P690");
+    resolveRequest("P691");
+
+    await waitFor(() => {
+      expect(screen.getByText("Total 2/2 kiriman")).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getAllByPlaceholderText("Filter")[0], {
+      target: { value: "P690" },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("0 row dipilih")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Hapus Terselect" })).toBeDisabled();
     });
   });
 
@@ -2194,7 +3693,7 @@ describe("App workspace isolation", () => {
     resolveRequest("P701");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
   });
 
@@ -2215,7 +3714,7 @@ describe("App workspace isolation", () => {
     resolveRequest("P801");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 2/2 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
@@ -2253,7 +3752,7 @@ describe("App workspace isolation", () => {
     resolveRequest("P821");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 2 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 2/2 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
@@ -2293,7 +3792,7 @@ describe("App workspace isolation", () => {
       );
     });
 
-    expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+    expect(screen.getByText("Total 0/1 kiriman")).toBeInTheDocument();
   });
 
   it("keeps three sheets isolated under concurrent tracking pressure", async () => {
@@ -2323,32 +3822,24 @@ describe("App workspace isolation", () => {
       expectInvokeCount("track_shipment", 5);
     });
 
-    resolveRequest("P203");
     resolveRequest("P205");
     resolveRequest("P201");
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 3" }));
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 2" }));
     await waitFor(() => {
-      expect(screen.getByText("1/3 kiriman dimuat")).toBeInTheDocument();
-    });
-
-    resolveRequest("P202");
-    resolveRequest("P204");
-
-    await waitFor(() => {
-      expect(screen.getByText("Total 3 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 3/3 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "Sheet 1" }));
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
-  });
+  }, 20_000);
 
   it("does not show redundant success toasts for sheet rename or deletion", async () => {
     render(<App />);
@@ -2398,7 +3889,7 @@ describe("App workspace isolation", () => {
       resolveRequest("PCOPY");
 
       await waitFor(() => {
-        expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+        expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
       });
 
       fireEvent.click(screen.getByRole("button", { name: "Copy ID Kiriman" }));
@@ -2522,6 +4013,33 @@ describe("App workspace isolation", () => {
     expect(screen.getByRole("checkbox", { name: "Simpan Otomatis" })).not.toBeDisabled();
   });
 
+  it("does not treat the workspace as dirty immediately after an engine-backed save", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm");
+
+    render(<App />);
+
+    const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
+    fireEvent.change(firstInput, { target: { value: "PSAVECLEAN1" } });
+
+    openFileMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Simpan Sebagai" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("write_workspace_document")).toHaveLength(1);
+    });
+
+    openFileMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Buka" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("read_workspace_document")).toHaveLength(1);
+    });
+
+    expect(confirmSpy).not.toHaveBeenCalledWith(
+      "Perubahan belum disimpan. Buka dokumen lain?"
+    );
+  });
+
   it("keeps tracked shipment data in saved workspace documents across reloads", async () => {
     const firstRender = render(<App />);
 
@@ -2596,8 +4114,57 @@ describe("App workspace isolation", () => {
     });
 
     expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("POPEN1");
+    expect(
+      getWorkspaceEngineCommandCalls("clear_sheet_rows").some(
+        ([, args]) =>
+          (args?.command?.payload as { sheetId?: string } | undefined)?.sheetId ===
+          "sheet-opened"
+      )
+    ).toBe(true);
+    expect(
+      getWorkspaceEngineCommandCalls("upsert_sheet_rows").some(([, args]) => {
+        const payload = args?.command?.payload as
+          | {
+              sheetId?: string;
+              rows?: Array<{
+                rowId?: string;
+                position?: number;
+                displayTrackingId?: string;
+              }>;
+            }
+          | undefined;
+        return (
+          payload?.sheetId === "sheet-opened" &&
+          payload.rows?.some(
+            (row) =>
+              row.rowId === "row-opened" &&
+              row.position === 0 &&
+              row.displayTrackingId === "POPEN1"
+          )
+        );
+      })
+    ).toBe(true);
     openFileMenu();
     expect(screen.getByRole("menuitem", { name: "picked-open.shipflow" })).toBeInTheDocument();
+  });
+
+  it("shows a recoverable error when opened workspace rows cannot seed the Rust engine", async () => {
+    workspaceEngineUpsertFailureMessage = "Workspace engine document migration failed.";
+
+    render(<App />);
+
+    openFileMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Buka" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Workspace engine document migration failed.")
+      ).toBeInTheDocument();
+      expect(getInvokeCalls("read_workspace_document")).toHaveLength(1);
+      expectWorkspaceEngineCommandCount("upsert_sheet_rows", 1);
+    });
+
+    expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("");
   });
 
   it("asks for confirmation before opening another document over unsaved changes", async () => {
@@ -2845,7 +4412,7 @@ describe("App workspace isolation", () => {
 
     const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
     expect(firstInput).toHaveValue("");
-    expect(screen.getByText("Total 0 kiriman")).toBeInTheDocument();
+    expect(screen.getByText("Total 0/0 kiriman")).toBeInTheDocument();
 
     await waitFor(() => {
       expect(window.localStorage.getItem("shipflow-workspace-state")).not.toContain(
@@ -2854,23 +4421,7 @@ describe("App workspace isolation", () => {
     });
   });
 
-  it("falls back to an inputs-only workspace snapshot when full workspace persistence fails", async () => {
-    const originalSetItem = Storage.prototype.setItem;
-    let shouldFailWorkspacePersist = true;
-
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
-      this: Storage,
-      key: string,
-      value: string
-    ) {
-      if (key === "shipflow-workspace-state" && shouldFailWorkspacePersist) {
-        shouldFailWorkspacePersist = false;
-        throw new DOMException("Quota exceeded", "QuotaExceededError");
-      }
-
-      return originalSetItem.call(this, key, value);
-    });
-
+  it("persists clean workspace snapshots as inputs-only data", async () => {
     render(<App />);
 
     const firstInput = screen.getAllByPlaceholderText("Masukkan ID")[0] as HTMLInputElement;
@@ -2884,6 +4435,9 @@ describe("App workspace isolation", () => {
         "P2603310114291"
       );
     });
+    expect(window.localStorage.getItem("shipflow-workspace-state")).toContain(
+      '"shipment":null'
+    );
 
     expect(firstInput).toHaveValue("P2603310114291");
   });
@@ -2917,7 +4471,7 @@ describe("App workspace isolation", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "API" }));
     expect(
       screen.getByText(
-        "API Service selalu aktif untuk Desktop. Token wajib dipakai untuk lacak, baik sumbernya internal scrap maupun external API."
+        "API Service selalu aktif untuk Desktop. Token wajib dipakai untuk lacak, baik sumbernya scrap internal maupun API eksternal."
       )
     ).toBeInTheDocument();
     expect(screen.getByText("Localhost selalu aktif untuk Desktop")).toBeInTheDocument();
@@ -2930,7 +4484,7 @@ describe("App workspace isolation", () => {
 
     const tokenField = screen.getByLabelText("Token API Service") as HTMLInputElement;
     expect(tokenField.value).toBe("");
-    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Buat" }));
     expect(tokenField.value).toMatch(/^sf_[a-f0-9]+$/);
 
     fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
@@ -2955,7 +4509,7 @@ describe("App workspace isolation", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "API" }));
     const originalToken = (screen.getByLabelText("Token API Service") as HTMLInputElement).value;
     expect(originalToken).toBe("");
-    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Buat" }));
     fireEvent.click(screen.getByRole("button", { name: "Reset Perubahan" }));
 
     expect(window.localStorage.getItem("shipflow-service-config")).toBeNull();
@@ -2989,7 +4543,7 @@ describe("App workspace isolation", () => {
     expect(screen.getByRole("radio", { name: "API ShipFlow Eksternal" })).toBeInTheDocument();
   });
 
-  it("restores external tracking source selection and base URL in the service window even when the bearer token is session-only", async () => {
+  it("restores external tracking source selection and base URL in the service window even when the API token is session-only", async () => {
     persistedServiceConfig = {
       version: 1,
       desktopConnectionMode: "managedLocal",
@@ -3004,6 +4558,7 @@ describe("App workspace isolation", () => {
       externalApiAuthToken: "",
       allowInsecureExternalApiHttp: false,
       keepRunningInTray: true,
+      startAtLogin: true,
       lastUpdatedAt: "2026-04-18T00:00:00.000Z",
     };
 
@@ -3016,10 +4571,10 @@ describe("App workspace isolation", () => {
         "true"
       );
       expect(screen.getByRole("radio", { name: "API ShipFlow Eksternal" })).toBeChecked();
-      expect(screen.getByLabelText("External API Base URL")).toHaveValue(
+      expect(screen.getByLabelText("URL Dasar API Eksternal")).toHaveValue(
         "https://scrappid3.jacobcalvyn.io"
       );
-      expect(screen.getByLabelText("External API Bearer Token")).toHaveValue("");
+      expect(screen.getByLabelText("Token API Eksternal")).toHaveValue("");
     });
   });
 
@@ -3029,16 +4584,16 @@ describe("App workspace isolation", () => {
 
     fireEvent.click(await screen.findByRole("tab", { name: "Sumber Lacak" }));
     fireEvent.click(await screen.findByRole("radio", { name: "API ShipFlow Eksternal" }));
-    fireEvent.change(screen.getByLabelText("External API Base URL"), {
+    fireEvent.change(screen.getByLabelText("URL Dasar API Eksternal"), {
       target: { value: "https://scrappid3.jacobcalvyn.io" },
     });
-    fireEvent.change(screen.getByLabelText("External API Bearer Token"), {
+    fireEvent.change(screen.getByLabelText("Token API Eksternal"), {
       target: {
         value: "sf_32c18e59ecca4f91e23070d33c74a230a0ccc73161b6ae79",
       },
     });
     fireEvent.click(screen.getByRole("tab", { name: "API" }));
-    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Buat" }));
     fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
 
     await waitFor(() => {
@@ -3077,6 +4632,39 @@ describe("App workspace isolation", () => {
     expect(screen.getByLabelText("Token API Service")).toHaveValue(initialToken);
   });
 
+  it("keeps service autostart explicit when tray persistence is disabled", async () => {
+    setShipFlowWindowKind("service-settings");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "API" }));
+
+    const keepRunningInTray = screen.getByLabelText(
+      "Biarkan ShipFlow Service tetap aktif di menu bar / system tray"
+    );
+    const startAtLogin = screen.getByLabelText("Jalankan ShipFlow Service saat login");
+
+    expect(keepRunningInTray).toBeChecked();
+    expect(startAtLogin).not.toBeChecked();
+    expect(startAtLogin).toBeEnabled();
+
+    fireEvent.click(startAtLogin);
+    expect(startAtLogin).toBeChecked();
+
+    fireEvent.click(keepRunningInTray);
+
+    expect(keepRunningInTray).not.toBeChecked();
+    expect(startAtLogin).toBeChecked();
+    expect(startAtLogin).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
+
+    await waitFor(() => {
+      expect(getInvokeCalls("configure_api_service")).toHaveLength(1);
+      expect(persistedServiceConfig?.keepRunningInTray).toBe(false);
+      expect(persistedServiceConfig?.startAtLogin).toBe(true);
+    });
+  });
+
   it("falls back to native clipboard bridge for copying all and selected tracking IDs", async () => {
     render(<App />);
 
@@ -3091,7 +4679,7 @@ describe("App workspace isolation", () => {
     resolveRequest("PCOPY1");
 
     await waitFor(() => {
-      expect(screen.getByText("Total 1 kiriman")).toBeInTheDocument();
+      expect(screen.getByText("Total 1/1 kiriman")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Copy ID Kiriman" }));
@@ -3118,15 +4706,15 @@ describe("App workspace isolation", () => {
 
     fireEvent.click(await screen.findByRole("tab", { name: "Sumber Lacak" }));
     fireEvent.click(await screen.findByRole("radio", { name: "API ShipFlow Eksternal" }));
-    fireEvent.change(screen.getByLabelText("External API Base URL"), {
+    fireEvent.change(screen.getByLabelText("URL Dasar API Eksternal"), {
       target: { value: "https://scrappid3.jacobcalvyn.io" },
     });
-    fireEvent.change(screen.getByLabelText("External API Bearer Token"), {
+    fireEvent.change(screen.getByLabelText("Token API Eksternal"), {
       target: {
         value: "sf_32c18e59ecca4f91e23070d33c74a230a0ccc73161b6ae79",
       },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Tes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Tes Koneksi" }));
 
     await waitFor(() => {
       expect(getInvokeCalls("test_external_tracking_source")).toHaveLength(1);

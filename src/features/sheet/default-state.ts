@@ -24,6 +24,7 @@ export function createDefaultSheetState(): SheetState {
     },
     selectedRowKeys: [],
     selectionFollowsVisibleRows: false,
+    activeTrackingRunId: null,
     columnWidths: getInitialColumnWidths(),
     hiddenColumnPaths: loadStoredStringArray(HIDDEN_COLUMNS_STORAGE_KEY, []),
     pinnedColumnPaths: loadStoredStringArray(
@@ -44,7 +45,9 @@ export function createDefaultSheetState(): SheetState {
         rawResponse: "",
         error: "",
         trackingIds: [],
+        jobId: null,
         requestKey: null,
+        sourceItemStates: [],
         manifestBagStates: [],
       },
       manifest: {
@@ -52,7 +55,9 @@ export function createDefaultSheetState(): SheetState {
         rawResponse: "",
         error: "",
         trackingIds: [],
+        jobId: null,
         requestKey: null,
+        sourceItemStates: [],
         manifestBagStates: [],
       },
     },
