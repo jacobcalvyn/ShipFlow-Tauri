@@ -164,7 +164,17 @@ jobs:
         run: npm run build
 
       - name: Run Rust tests
+        if: runner.os != 'Windows'
         run: cargo test --workspace --all-targets
 
+      - name: Run Rust native runtime tests
+        if: runner.os == 'Windows'
+        run: cargo test -p shipflow-core -p shipflow-service-runtime -p shipflow-tauri-runtime -p shipflow-service --all-targets
+
       - name: Run Rust clippy
+        if: runner.os != 'Windows'
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run Rust native runtime clippy
+        if: runner.os == 'Windows'
+        run: cargo clippy -p shipflow-core -p shipflow-service-runtime -p shipflow-tauri-runtime -p shipflow-service --all-targets -- -D warnings
