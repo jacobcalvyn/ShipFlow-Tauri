@@ -1,13 +1,13 @@
 use axum::{
     extract::{Path, State},
     http::{header::AUTHORIZATION, HeaderMap, StatusCode},
-    routing::{get, post},
+    routing::get,
     Json, Router,
 };
 use reqwest::Client;
 #[cfg(test)]
 use reqwest::RequestBuilder;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use shipflow_core::{
     model::{
@@ -17,18 +17,15 @@ use shipflow_core::{
     upstream::resolve_tracking_html_request,
 };
 use std::{
-    collections::VecDeque,
+    sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::task::JoinSet;
+use tokio::sync::Semaphore;
 
 use crate::api_contract::{
     envelope, error_response_v1, generate_request_id, REQUEST_ID_HEADER_NAME,
 };
 use crate::contact_cache::ContactCacheState;
-use crate::jobs::{
-    BatchJobRegistry, BatchTrackJobStart, MAX_BATCH_SHIPMENT_IDS, MAX_BATCH_SHIPMENT_ID_LENGTH,
-};
 use crate::lookup_cache::{
     resolve_bag_request_cached, resolve_manifest_request_cached, resolve_tracking_request_cached,
     LookupCacheState, LookupRequestOptions,
@@ -47,11 +44,10 @@ const TRACK_SCHEMA_VERSION: &str = "shipflow.tracking.detail.v1";
 const TRACK_HTML_SCHEMA_VERSION: &str = "shipflow.tracking.html.v1";
 const BAG_SCHEMA_VERSION: &str = "shipflow.tracking.bag.v1";
 const MANIFEST_SCHEMA_VERSION: &str = "shipflow.tracking.manifest.v1";
-const JOB_SCHEMA_VERSION: &str = "shipflow.service.job.v1";
 const SERVICE_UPSTREAM_CONNECT_TIMEOUT_SECS: u64 = 10;
 const SERVICE_UPSTREAM_READ_TIMEOUT_SECS: u64 = 60;
 const SERVICE_UPSTREAM_REQUEST_TIMEOUT_SECS: u64 = 90;
-const MAX_CONCURRENT_BATCH_TRACK_LOOKUPS: usize = 5;
+const MAX_CONCURRENT_TRACK_LOOKUPS: usize = 15;
 
 #[derive(Clone)]
 pub struct HttpApiState {
@@ -63,7 +59,7 @@ pub struct HttpApiState {
     pub tracking_source: shipflow_core::model::TrackingSourceConfig,
     pub lookup_cache: LookupCacheState,
     pub contact_cache: ContactCacheState,
-    pub job_registry: BatchJobRegistry,
+    pub track_lookup_limiter: Arc<Semaphore>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,13 +80,6 @@ struct CapabilitiesResponse {
     auth: &'static str,
     force_refresh_header: &'static str,
     routes: Vec<&'static str>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BatchTrackRequest {
-    shipment_ids: Vec<String>,
-    force_refresh: Option<bool>,
 }
 
 pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), String> {
@@ -126,7 +115,7 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
         lookup_cache: LookupCacheState::default()
             .with_persistent_store(PersistentLookupStore::open_default()),
         contact_cache: ContactCacheState::default(),
-        job_registry: BatchJobRegistry::default(),
+        track_lookup_limiter: Arc::new(Semaphore::new(MAX_CONCURRENT_TRACK_LOOKUPS)),
     };
     let router = build_router(app_state);
 
@@ -144,10 +133,6 @@ fn build_router(app_state: HttpApiState) -> Router {
         .route("/v1/track/:shipment_id", get(v1_track_handler))
         .route("/v1/bag/:bag_id", get(v1_bag_handler))
         .route("/v1/manifest/:manifest_id", get(v1_manifest_handler))
-        .route("/v1/jobs/track-batch", post(v1_start_track_batch_job))
-        .route("/v1/jobs/:job_id", get(v1_get_job_status))
-        .route("/v1/jobs/:job_id/result", get(v1_get_job_result))
-        .route("/v1/jobs/:job_id/cancel", post(v1_cancel_job))
         .with_state(app_state)
 }
 
@@ -208,10 +193,6 @@ async fn v1_capabilities_handler(
                 "GET /v1/track/:shipment_id/html",
                 "GET /v1/bag/:bag_id",
                 "GET /v1/manifest/:manifest_id",
-                "POST /v1/jobs/track-batch",
-                "GET /v1/jobs/:job_id",
-                "GET /v1/jobs/:job_id/result",
-                "POST /v1/jobs/:job_id/cancel",
             ],
         },
     ))
@@ -258,6 +239,32 @@ async fn v1_track_handler(
     let response_request_id = request_id.clone();
     let request_options = read_lookup_request_options(&headers);
     let normalized_id = shipment_id.trim().to_string();
+    let queued_for_permit = state.track_lookup_limiter.available_permits() == 0;
+    let permit_started_at = Instant::now();
+    let _track_lookup_permit = state
+        .track_lookup_limiter
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| {
+            error_response_v1(
+                StatusCode::SERVICE_UNAVAILABLE,
+                TRACK_SCHEMA_VERSION,
+                request_id.clone(),
+                "Tracking lookup limiter is unavailable.",
+            )
+        })?;
+    let permit_wait_ms = permit_started_at.elapsed().as_millis();
+    if queued_for_permit || permit_wait_ms > 0 {
+        eprintln!(
+            "[ShipFlowBackpressure] service_track_permit id={} requestId={} queued={} waitMs={} limit={}",
+            normalized_id,
+            request_id,
+            queued_for_permit,
+            permit_wait_ms,
+            MAX_CONCURRENT_TRACK_LOOKUPS
+        );
+    }
 
     let result = resolve_tracking_request_cached(
         &state.lookup_cache,
@@ -383,268 +390,6 @@ async fn v1_manifest_handler(
     .map_err(|error| map_tracking_error_v1(error, MANIFEST_SCHEMA_VERSION, request_id))
 }
 
-async fn v1_start_track_batch_job(
-    State(state): State<HttpApiState>,
-    headers: HeaderMap,
-    Json(payload): Json<BatchTrackRequest>,
-) -> Result<
-    Json<crate::api_contract::ApiEnvelope<BatchTrackJobStart>>,
-    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
-> {
-    let request_id = authorize_request_id(&headers);
-    authorize_request_message(&headers, &state.auth_token).map_err(|message| {
-        error_response_v1(
-            StatusCode::UNAUTHORIZED,
-            JOB_SCHEMA_VERSION,
-            request_id.clone(),
-            &message,
-        )
-    })?;
-    let shipment_ids = payload
-        .shipment_ids
-        .into_iter()
-        .map(|id| id.trim().to_string())
-        .filter(|id| !id.is_empty())
-        .collect::<Vec<_>>();
-
-    if shipment_ids.is_empty() {
-        return Err(error_response_v1(
-            StatusCode::BAD_REQUEST,
-            JOB_SCHEMA_VERSION,
-            request_id,
-            "At least one shipment ID is required.",
-        ));
-    }
-    if shipment_ids.len() > MAX_BATCH_SHIPMENT_IDS {
-        return Err(error_response_v1(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            JOB_SCHEMA_VERSION,
-            request_id,
-            &format!("At most {MAX_BATCH_SHIPMENT_IDS} shipment IDs are allowed per batch job."),
-        ));
-    }
-    if shipment_ids
-        .iter()
-        .any(|shipment_id| shipment_id.len() > MAX_BATCH_SHIPMENT_ID_LENGTH)
-    {
-        return Err(error_response_v1(
-            StatusCode::BAD_REQUEST,
-            JOB_SCHEMA_VERSION,
-            request_id,
-            &format!("Shipment IDs must be {MAX_BATCH_SHIPMENT_ID_LENGTH} characters or fewer."),
-        ));
-    }
-
-    let mut deduped_shipment_ids = Vec::with_capacity(shipment_ids.len());
-    for shipment_id in shipment_ids {
-        if !deduped_shipment_ids.contains(&shipment_id) {
-            deduped_shipment_ids.push(shipment_id);
-        }
-    }
-
-    let job = state
-        .job_registry
-        .create_track_job(deduped_shipment_ids.len())
-        .map_err(|message| {
-            error_response_v1(
-                StatusCode::TOO_MANY_REQUESTS,
-                JOB_SCHEMA_VERSION,
-                request_id.clone(),
-                &message,
-            )
-        })?;
-    let job_id = job.job_id.clone();
-    let state_for_job = state.clone();
-    let force_refresh = payload.force_refresh.unwrap_or(false);
-
-    tokio::spawn(async move {
-        run_track_batch_job(state_for_job, job_id, deduped_shipment_ids, force_refresh).await;
-    });
-
-    Ok(envelope(JOB_SCHEMA_VERSION, request_id, job))
-}
-
-async fn v1_get_job_status(
-    State(state): State<HttpApiState>,
-    headers: HeaderMap,
-    Path(job_id): Path<String>,
-) -> Result<
-    Json<crate::api_contract::ApiEnvelope<crate::jobs::BatchJobSnapshot>>,
-    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
-> {
-    let request_id = authorize_request_id(&headers);
-    authorize_request_message(&headers, &state.auth_token).map_err(|message| {
-        error_response_v1(
-            StatusCode::UNAUTHORIZED,
-            JOB_SCHEMA_VERSION,
-            request_id.clone(),
-            &message,
-        )
-    })?;
-
-    state
-        .job_registry
-        .status(job_id.trim())
-        .map(|status| envelope(JOB_SCHEMA_VERSION, request_id.clone(), status))
-        .ok_or_else(|| {
-            error_response_v1(
-                StatusCode::NOT_FOUND,
-                JOB_SCHEMA_VERSION,
-                request_id,
-                "Job was not found.",
-            )
-        })
-}
-
-async fn v1_get_job_result(
-    State(state): State<HttpApiState>,
-    headers: HeaderMap,
-    Path(job_id): Path<String>,
-) -> Result<
-    Json<crate::api_contract::ApiEnvelope<crate::jobs::BatchJobResultSnapshot>>,
-    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
-> {
-    let request_id = authorize_request_id(&headers);
-    authorize_request_message(&headers, &state.auth_token).map_err(|message| {
-        error_response_v1(
-            StatusCode::UNAUTHORIZED,
-            JOB_SCHEMA_VERSION,
-            request_id.clone(),
-            &message,
-        )
-    })?;
-
-    state
-        .job_registry
-        .result(job_id.trim())
-        .map(|result| envelope(JOB_SCHEMA_VERSION, request_id.clone(), result))
-        .ok_or_else(|| {
-            error_response_v1(
-                StatusCode::NOT_FOUND,
-                JOB_SCHEMA_VERSION,
-                request_id,
-                "Job was not found.",
-            )
-        })
-}
-
-async fn v1_cancel_job(
-    State(state): State<HttpApiState>,
-    headers: HeaderMap,
-    Path(job_id): Path<String>,
-) -> Result<
-    Json<crate::api_contract::ApiEnvelope<crate::jobs::BatchJobSnapshot>>,
-    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
-> {
-    let request_id = authorize_request_id(&headers);
-    authorize_request_message(&headers, &state.auth_token).map_err(|message| {
-        error_response_v1(
-            StatusCode::UNAUTHORIZED,
-            JOB_SCHEMA_VERSION,
-            request_id.clone(),
-            &message,
-        )
-    })?;
-
-    state
-        .job_registry
-        .request_cancel(job_id.trim())
-        .map(|status| envelope(JOB_SCHEMA_VERSION, request_id.clone(), status))
-        .ok_or_else(|| {
-            error_response_v1(
-                StatusCode::NOT_FOUND,
-                JOB_SCHEMA_VERSION,
-                request_id,
-                "Job was not found.",
-            )
-        })
-}
-
-async fn run_track_batch_job(
-    state: HttpApiState,
-    job_id: String,
-    shipment_ids: Vec<String>,
-    force_refresh: bool,
-) {
-    state.job_registry.mark_running(&job_id);
-
-    if try_run_external_api_batch_job(&state, &job_id, &shipment_ids, force_refresh).await {
-        return;
-    }
-
-    let mut queue = VecDeque::from(shipment_ids);
-    let mut tasks = JoinSet::new();
-
-    loop {
-        while tasks.len() < MAX_CONCURRENT_BATCH_TRACK_LOOKUPS && !queue.is_empty() {
-            if state.job_registry.is_cancel_requested(&job_id) {
-                break;
-            }
-
-            let Some(shipment_id) = queue.pop_front() else {
-                break;
-            };
-            let state_for_lookup = state.clone();
-            tasks.spawn(async move {
-                let result = resolve_tracking_request_cached(
-                    &state_for_lookup.lookup_cache,
-                    &state_for_lookup.contact_cache,
-                    &state_for_lookup.client,
-                    &state_for_lookup.tracking_source,
-                    shipment_id.trim(),
-                    LookupRequestOptions { force_refresh },
-                )
-                .await;
-                (shipment_id, result)
-            });
-        }
-
-        if state.job_registry.is_cancel_requested(&job_id) {
-            while let Some(shipment_id) = queue.pop_front() {
-                state.job_registry.push_cancelled(&job_id, shipment_id);
-            }
-        }
-
-        if tasks.is_empty() {
-            break;
-        }
-
-        match tasks.join_next().await {
-            Some(Ok((shipment_id, Ok(payload)))) => {
-                state
-                    .job_registry
-                    .push_success(&job_id, shipment_id, payload);
-            }
-            Some(Ok((shipment_id, Err(error)))) => {
-                state
-                    .job_registry
-                    .push_error(&job_id, shipment_id, tracking_error_message(error));
-            }
-            Some(Err(error)) => {
-                tasks.abort_all();
-                state
-                    .job_registry
-                    .fail(&job_id, format!("Batch worker failed: {error}"));
-                return;
-            }
-            None => break,
-        }
-    }
-
-    state.job_registry.finish(&job_id);
-}
-
-async fn try_run_external_api_batch_job(
-    _state: &HttpApiState,
-    _job_id: &str,
-    _shipment_ids: &[String],
-    _force_refresh: bool,
-) -> bool {
-    // Keep batch execution local so ShipFlow can stream per-item progress with the
-    // local concurrency window instead of waiting for a remote batch job to finish.
-    false
-}
-
 #[cfg(test)]
 fn external_api_request(request: RequestBuilder, api_token: &str) -> RequestBuilder {
     request
@@ -751,14 +496,6 @@ fn status_response(state: &HttpApiState) -> StatusResponse {
     }
 }
 
-fn tracking_error_message(error: TrackingError) -> String {
-    match error {
-        TrackingError::BadRequest(message)
-        | TrackingError::NotFound(message)
-        | TrackingError::Upstream(message) => message,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use axum::{
@@ -770,15 +507,18 @@ mod tests {
 
     use super::{
         authorize_request_message, build_router, external_api_request, read_lookup_request_options,
-        HttpApiState,
+        HttpApiState, MAX_CONCURRENT_TRACK_LOOKUPS,
     };
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+
     use crate::{
-        contact_cache::ContactCacheState, jobs::BatchJobRegistry, lookup_cache::LookupCacheState,
+        contact_cache::ContactCacheState, lookup_cache::LookupCacheState,
         model::ServiceRuntimeMode, FORCE_REFRESH_HEADER_NAME,
     };
 
     #[test]
-    fn external_api_batch_requests_include_bearer_and_x_api_token_headers() {
+    fn external_api_requests_include_bearer_and_x_api_token_headers() {
         let request = external_api_request(
             reqwest::Client::new().get("https://shipflow.example.test/v1/status"),
             "sf_external_token",
@@ -830,7 +570,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_routes_are_not_served() {
+    async fn unsupported_routes_are_not_served() {
         let router = build_router(test_state());
 
         for uri in [
@@ -839,6 +579,10 @@ mod tests {
             "/track/P2603310114291",
             "/bag/PID1",
             "/manifest/MAN1",
+            "/v1/jobs/track-batch",
+            "/v1/jobs/job_123",
+            "/v1/jobs/job_123/result",
+            "/v1/jobs/job_123/cancel",
         ] {
             let response = router
                 .clone()
@@ -929,6 +673,9 @@ mod tests {
         assert!(routes
             .iter()
             .any(|route| route == "GET /v1/track/:shipment_id/html"));
+        assert!(!routes.iter().any(|route| route
+            .as_str()
+            .is_some_and(|route| route.contains("/v1/jobs"))));
     }
 
     #[tokio::test]
@@ -969,7 +716,7 @@ mod tests {
             tracking_source: TrackingSourceConfig::default(),
             lookup_cache: LookupCacheState::default(),
             contact_cache: ContactCacheState::default(),
-            job_registry: BatchJobRegistry::default(),
+            track_lookup_limiter: Arc::new(Semaphore::new(MAX_CONCURRENT_TRACK_LOOKUPS)),
         }
     }
 

@@ -1,10 +1,7 @@
 use serde_json::{json, Value};
+use shipflow_core::upstream::MAX_LOOKUP_ID_LENGTH;
 
-use crate::{
-    api_contract::REQUEST_ID_HEADER_NAME,
-    jobs::{MAX_BATCH_SHIPMENT_IDS, MAX_BATCH_SHIPMENT_ID_LENGTH},
-    FORCE_REFRESH_HEADER_NAME,
-};
+use crate::{api_contract::REQUEST_ID_HEADER_NAME, FORCE_REFRESH_HEADER_NAME};
 
 pub const OPENAPI_SCHEMA_VERSION: &str = "shipflow.service.openapi.v1";
 
@@ -231,149 +228,6 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                         "502": { "$ref": "#/components/responses/BadGateway" }
                     }
                 }
-            },
-            "/v1/jobs/track-batch": {
-                "post": {
-                    "summary": "Start a background batch tracking job",
-                    "operationId": "startTrackBatchJob",
-                    "tags": ["Batch Jobs"],
-                    "parameters": [{ "$ref": "#/components/parameters/RequestId" }],
-                    "requestBody": {
-                        "required": true,
-                        "content": {
-                            "application/json": {
-                                "schema": { "$ref": "#/components/schemas/BatchTrackRequest" }
-                            }
-                        }
-                    },
-                    "responses": {
-                        "200": {
-                            "description": "Queued batch job",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "allOf": [
-                                            { "$ref": "#/components/schemas/EnvelopeBase" },
-                                            {
-                                                "type": "object",
-                                                "required": ["data"],
-                                                "properties": {
-                                                    "data": { "$ref": "#/components/schemas/BatchTrackJobStart" }
-                                                }
-                                            }
-                                        ]
-                                    }
-                                }
-                            }
-                        },
-                        "400": { "$ref": "#/components/responses/BadRequest" },
-                        "401": { "$ref": "#/components/responses/Unauthorized" },
-                        "413": { "$ref": "#/components/responses/PayloadTooLarge" },
-                        "429": { "$ref": "#/components/responses/TooManyRequests" }
-                    }
-                }
-            },
-            "/v1/jobs/{jobId}": {
-                "get": {
-                    "summary": "Read batch job status",
-                    "operationId": "getBatchJobStatus",
-                    "tags": ["Batch Jobs"],
-                    "parameters": [
-                        { "$ref": "#/components/parameters/JobId" },
-                        { "$ref": "#/components/parameters/RequestId" }
-                    ],
-                    "responses": {
-                        "200": {
-                            "description": "Batch job status",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "allOf": [
-                                            { "$ref": "#/components/schemas/EnvelopeBase" },
-                                            {
-                                                "type": "object",
-                                                "required": ["data"],
-                                                "properties": {
-                                                    "data": { "$ref": "#/components/schemas/BatchJobSnapshot" }
-                                                }
-                                            }
-                                        ]
-                                    }
-                                }
-                            }
-                        },
-                        "401": { "$ref": "#/components/responses/Unauthorized" },
-                        "404": { "$ref": "#/components/responses/NotFound" }
-                    }
-                }
-            },
-            "/v1/jobs/{jobId}/result": {
-                "get": {
-                    "summary": "Read batch job results",
-                    "operationId": "getBatchJobResult",
-                    "tags": ["Batch Jobs"],
-                    "parameters": [
-                        { "$ref": "#/components/parameters/JobId" },
-                        { "$ref": "#/components/parameters/RequestId" }
-                    ],
-                    "responses": {
-                        "200": {
-                            "description": "Batch job result",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "allOf": [
-                                            { "$ref": "#/components/schemas/EnvelopeBase" },
-                                            {
-                                                "type": "object",
-                                                "required": ["data"],
-                                                "properties": {
-                                                    "data": { "$ref": "#/components/schemas/BatchJobResultSnapshot" }
-                                                }
-                                            }
-                                        ]
-                                    }
-                                }
-                            }
-                        },
-                        "401": { "$ref": "#/components/responses/Unauthorized" },
-                        "404": { "$ref": "#/components/responses/NotFound" }
-                    }
-                }
-            },
-            "/v1/jobs/{jobId}/cancel": {
-                "post": {
-                    "summary": "Cancel a running batch job",
-                    "operationId": "cancelBatchJob",
-                    "tags": ["Batch Jobs"],
-                    "parameters": [
-                        { "$ref": "#/components/parameters/JobId" },
-                        { "$ref": "#/components/parameters/RequestId" }
-                    ],
-                    "responses": {
-                        "200": {
-                            "description": "Batch job status after cancellation request",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "allOf": [
-                                            { "$ref": "#/components/schemas/EnvelopeBase" },
-                                            {
-                                                "type": "object",
-                                                "required": ["data"],
-                                                "properties": {
-                                                    "data": { "$ref": "#/components/schemas/BatchJobSnapshot" }
-                                                }
-                                            }
-                                        ]
-                                    }
-                                }
-                            }
-                        },
-                        "401": { "$ref": "#/components/responses/Unauthorized" },
-                        "404": { "$ref": "#/components/responses/NotFound" }
-                    }
-                }
             }
         },
         "components": {
@@ -403,25 +257,19 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                     "name": "shipmentId",
                     "in": "path",
                     "required": true,
-                    "schema": { "type": "string", "maxLength": MAX_BATCH_SHIPMENT_ID_LENGTH }
+                    "schema": { "type": "string", "maxLength": MAX_LOOKUP_ID_LENGTH }
                 },
                 "BagId": {
                     "name": "bagId",
                     "in": "path",
                     "required": true,
-                    "schema": { "type": "string", "maxLength": MAX_BATCH_SHIPMENT_ID_LENGTH }
+                    "schema": { "type": "string", "maxLength": MAX_LOOKUP_ID_LENGTH }
                 },
                 "ManifestId": {
                     "name": "manifestId",
                     "in": "path",
                     "required": true,
-                    "schema": { "type": "string", "maxLength": MAX_BATCH_SHIPMENT_ID_LENGTH }
-                },
-                "JobId": {
-                    "name": "jobId",
-                    "in": "path",
-                    "required": true,
-                    "schema": { "type": "string" }
+                    "schema": { "type": "string", "maxLength": MAX_LOOKUP_ID_LENGTH }
                 }
             },
             "responses": {
@@ -442,11 +290,7 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                     "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
                 },
                 "PayloadTooLarge": {
-                    "description": "Batch request is too large",
-                    "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
-                },
-                "TooManyRequests": {
-                    "description": "Too many active batch jobs",
+                    "description": "Request payload is too large",
                     "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
                 }
             },
@@ -626,91 +470,6 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                         "lokasi_akhir": { "type": ["string", "null"] },
                         "tanggal": { "type": ["string", "null"] }
                     }
-                },
-                "BatchTrackRequest": {
-                    "type": "object",
-                    "required": ["shipmentIds"],
-                    "properties": {
-                        "shipmentIds": {
-                            "type": "array",
-                            "minItems": 1,
-                            "maxItems": MAX_BATCH_SHIPMENT_IDS,
-                            "items": {
-                                "type": "string",
-                                "maxLength": MAX_BATCH_SHIPMENT_ID_LENGTH
-                            }
-                        },
-                        "forceRefresh": { "type": "boolean", "default": false }
-                    }
-                },
-                "BatchTrackJobStart": {
-                    "type": "object",
-                    "required": ["jobId", "status", "statusEndpoint", "resultEndpoint"],
-                    "properties": {
-                        "jobId": { "type": "string" },
-                        "status": { "$ref": "#/components/schemas/BatchJobStatus" },
-                        "statusEndpoint": { "type": "string" },
-                        "resultEndpoint": { "type": "string" }
-                    }
-                },
-                "BatchJobSnapshot": {
-                    "type": "object",
-                    "required": [
-                        "jobId",
-                        "status",
-                        "total",
-                        "completed",
-                        "failed",
-                        "cancelRequested",
-                        "errorMessage",
-                        "createdAt",
-                        "updatedAt"
-                    ],
-                    "properties": {
-                        "jobId": { "type": "string" },
-                        "status": { "$ref": "#/components/schemas/BatchJobStatus" },
-                        "total": { "type": "integer", "minimum": 0 },
-                        "completed": { "type": "integer", "minimum": 0 },
-                        "failed": { "type": "integer", "minimum": 0 },
-                        "cancelRequested": { "type": "boolean" },
-                        "errorMessage": { "type": ["string", "null"] },
-                        "createdAt": { "type": "string", "format": "date-time" },
-                        "updatedAt": { "type": "string", "format": "date-time" }
-                    }
-                },
-                "BatchJobResultSnapshot": {
-                    "allOf": [
-                        { "$ref": "#/components/schemas/BatchJobSnapshot" },
-                        {
-                            "type": "object",
-                            "required": ["results"],
-                            "properties": {
-                                "results": {
-                                    "type": "array",
-                                    "items": { "$ref": "#/components/schemas/BatchTrackJobItemResult" }
-                                }
-                            }
-                        }
-                    ]
-                },
-                "BatchTrackJobItemResult": {
-                    "type": "object",
-                    "required": ["id", "status", "data", "error"],
-                    "properties": {
-                        "id": { "type": "string" },
-                        "status": { "type": "string", "enum": ["success", "error", "cancelled"] },
-                        "data": {
-                            "anyOf": [
-                                { "$ref": "#/components/schemas/TrackResponse" },
-                                { "type": "null" }
-                            ]
-                        },
-                        "error": { "type": ["string", "null"] }
-                    }
-                },
-                "BatchJobStatus": {
-                    "type": "string",
-                    "enum": ["queued", "running", "completed", "cancelled", "failed"]
                 }
             }
         }
@@ -806,6 +565,8 @@ mod tests {
             "bearer"
         );
         assert!(document["paths"]["/v1/openapi.json"]["get"].is_object());
+        assert!(document["paths"]["/v1/track/{shipmentId}"]["get"].is_object());
+        assert!(!document["paths"]["/v1/jobs/track-batch"]["post"].is_object());
     }
 
     #[test]
@@ -829,6 +590,7 @@ mod tests {
         }
 
         assert!(paths.keys().all(|path| path.starts_with("/v1/")));
+        assert!(paths.keys().all(|path| !path.starts_with("/v1/jobs")));
     }
 
     #[test]

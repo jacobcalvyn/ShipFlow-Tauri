@@ -244,6 +244,30 @@ function canUseLocalCompletedRow(
   );
 }
 
+function canUseLocalRuntimeRow(legacyRow: SheetRow | undefined): boolean {
+  return Boolean(legacyRow?.runtimeTrackingRunId);
+}
+
+function createTableRowFromLocalRuntimeRow(
+  projection: SheetRowProjection,
+  legacyRow: SheetRow,
+  previousRowsByIdentity: Map<string, SheetTableRow>
+) {
+  const tableRow = {
+    ...createSheetTableRowFromSheetRow(legacyRow),
+    engineRowId: projection.rowId,
+    position: projection.position,
+  };
+  return withStableTableRowReference(
+    tableRow,
+    previousRowsByIdentity,
+    createSheetRowRenderSignature(legacyRow, {
+      engineRowId: projection.rowId,
+      position: projection.position,
+    })
+  );
+}
+
 function mergeLocalRuntimeState(
   row: SheetRow,
   legacyRow: SheetRow | undefined
@@ -339,6 +363,14 @@ export function createSheetTableRowsFromRustWindow(
     const legacyRow =
       legacyRowByProjectionKey ??
       legacyRowByTrackingId.get(projection.displayTrackingId);
+    if (legacyRow && canUseLocalRuntimeRow(legacyRow)) {
+      return createTableRowFromLocalRuntimeRow(
+        projection,
+        legacyRow,
+        previousRowsByIdentity
+      );
+    }
+
     const localCompletedRow =
       legacyRow && canUseLocalCompletedRow(projection, legacyRow)
         ? legacyRow

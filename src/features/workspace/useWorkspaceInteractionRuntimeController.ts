@@ -1017,9 +1017,11 @@ export function useWorkspaceInteractionRuntimeController({
                 : getImportJobSheetRowIds(completed.payload);
             if (refreshRowIds.length > 0) {
               const trackingRunId = createImportTrackingRunId(targetSheetId, `${kind}-retry`);
-              updateSheet(targetSheetId, (current) =>
-                startTrackingRunInSheet(current, trackingRunId)
-              );
+              flushSync(() => {
+                updateSheet(targetSheetId, (current) =>
+                  startTrackingRunInSheet(current, trackingRunId)
+                );
+              });
               try {
                 const refreshResult = await refreshSheetRowsTrackingWithProgress(
                   {
@@ -1580,9 +1582,11 @@ export function useWorkspaceInteractionRuntimeController({
 
         if (rowIdsToRefresh.length > 0) {
           const trackingRunId = createImportTrackingRunId(activeSheetId, `${kind}-commit`);
-          updateSheet(activeSheetId, (current) =>
-            startTrackingRunInSheet(current, trackingRunId)
-          );
+          flushSync(() => {
+            updateSheet(activeSheetId, (current) =>
+              startTrackingRunInSheet(current, trackingRunId)
+            );
+          });
           try {
             const refreshResult = await refreshSheetRowsTrackingWithProgress(
               {

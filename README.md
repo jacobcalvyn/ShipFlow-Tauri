@@ -98,10 +98,6 @@ Current service API routes:
 - `GET /v1/track/:shipment_id/html`
 - `GET /v1/bag/:bag_id`
 - `GET /v1/manifest/:manifest_id`
-- `POST /v1/jobs/track-batch`
-- `GET /v1/jobs/:job_id`
-- `GET /v1/jobs/:job_id/result`
-- `POST /v1/jobs/:job_id/cancel`
 
 The full service API contract is documented in [docs/service-api-v1.md](./docs/service-api-v1.md).
 
@@ -153,18 +149,17 @@ Auth: Bearer <ShipFlow Service Token>
 
 Use the OpenAPI document as the source of truth for generated clients or agent tool schemas. A `401` response means the route exists but the bearer token is missing or invalid. A `404` response usually means the request is reaching an older service binary or the wrong port.
 
-## Background Batch Jobs
+## Direct Tracking Backpressure
 
-Bulk tracking can be delegated to `ShipFlow Service` through `/v1/jobs/track-batch`.
+Bulk tracking clients should use direct `GET /v1/track/:shipment_id` calls.
 
-The job API returns a `jobId`, status endpoint, and result endpoint. A running job can be cancelled through `POST /v1/jobs/:job_id/cancel`. This is the backend foundation for heavier bulk tracking flows without making the Desktop command layer block on every row.
+ShipFlow Service protects the direct lookup path with a 15-permit concurrency gate, so multiple clients can share parallel tracking without creating unbounded upstream scraping pressure.
 
-Batch job guardrails:
+Direct lookup guardrails:
 
-- up to `1,000` shipment IDs per job
-- shipment IDs are trimmed, empty IDs are ignored, and duplicates are collapsed
-- individual shipment IDs must be `128` characters or fewer
-- completed job records are retained for a bounded service-runtime window and cleaned up automatically
+- at most 15 active `/v1/track/:shipment_id` lookups run through the Service backpressure gate
+- additional direct tracking requests wait for the next permit instead of creating extra upstream pressure
+- lookup cache and in-flight request coalescing still apply inside the Service runtime
 
 ## JSON Shape
 
@@ -496,7 +491,6 @@ The main table currently focuses on:
 - [crates/shipflow-workspace-engine](./crates/shipflow-workspace-engine): Rust-owned workspace engine for the big-bang cutover target, including durable sheet data, import jobs, paged sheet-row window queries, Bag/Manifest preview lookups, failed-only retry contracts, dotted-ID tracking refresh, content-addressed raw response blobs, and embedded DuckDB analytics query contracts
 - [crates/shipflow-service-runtime](./crates/shipflow-service-runtime): shared ShipFlow Service HTTP API and lookup cache runtime
 - [crates/shipflow-service-runtime/src/api_contract.rs](./crates/shipflow-service-runtime/src/api_contract.rs): versioned API envelope and error contract
-- [crates/shipflow-service-runtime/src/jobs.rs](./crates/shipflow-service-runtime/src/jobs.rs): background batch job registry for Service API jobs
 - [crates/shipflow-service-runtime/src/persistent_store.rs](./crates/shipflow-service-runtime/src/persistent_store.rs): persistent lookup payload store
 - [crates/shipflow-tauri-runtime/src/tracking/mod.rs](./crates/shipflow-tauri-runtime/src/tracking/mod.rs): shared tracking facade used by Tauri command handlers
 - [src-tauri/src/fixtures](./src-tauri/src/fixtures): parser fixtures used by Rust tests

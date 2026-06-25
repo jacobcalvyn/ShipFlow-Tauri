@@ -500,6 +500,10 @@ where
                         }
                     }
 
+                    for event in terminal_events {
+                        on_progress(event);
+                    }
+
                     if next_lookup_to_activate < rows_by_lookup_id.len() {
                         let activating_lookup_id =
                             rows_by_lookup_id[next_lookup_to_activate].0.clone();
@@ -524,10 +528,6 @@ where
                             sheet_id, activating_lookup_id, next_lookup_to_activate
                         );
                         next_lookup_to_activate += 1;
-                    }
-
-                    for event in terminal_events {
-                        on_progress(event);
                     }
 
                     true
@@ -1026,8 +1026,8 @@ mod tests {
         assert_eq!(
             events.iter().skip(6).take(2).cloned().collect::<Vec<_>>(),
             vec![
-                ("P6".to_string(), SheetRowStatus::Loading),
                 ("P1".to_string(), SheetRowStatus::Loaded),
+                ("P6".to_string(), SheetRowStatus::Loading),
             ]
         );
     }

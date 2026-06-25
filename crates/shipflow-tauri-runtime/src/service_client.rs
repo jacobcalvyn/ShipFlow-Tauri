@@ -4,29 +4,17 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::service::{ApiServiceConfig, SERVICE_STATUS_PRODUCT};
 use crate::tracking;
 use crate::tracking::model::{BagResponse, ManifestResponse, TrackResponse};
-use shipflow_service_runtime::jobs::{
-    BatchJobResultSnapshot, BatchJobStatus, BatchTrackJobItemResult, BatchTrackJobStart,
-};
-
-pub use shipflow_service_runtime::jobs::BatchJobItemStatus;
 pub use shipflow_service_runtime::FORCE_REFRESH_HEADER_NAME;
 
 const SERVICE_STATUS_VERIFICATION_TTL: Duration = Duration::from_secs(10);
 
 static SERVICE_STATUS_VERIFICATION_CACHE: OnceLock<Mutex<HashMap<String, Instant>>> =
     OnceLock::new();
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ServiceBatchTrackRequest {
-    shipment_ids: Vec<String>,
-    force_refresh: bool,
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,23 +94,6 @@ fn build_service_v1_endpoint(base_url: &str, endpoint: &str) -> Result<String, S
     Ok(url.into())
 }
 
-fn build_service_relative_endpoint(base_url: &str, endpoint: &str) -> Result<String, String> {
-    let mut url = reqwest::Url::parse(base_url)
-        .map_err(|error| format!("ShipFlow Service URL is invalid: {error}"))?;
-    {
-        let mut segments = url
-            .path_segments_mut()
-            .map_err(|_| "ShipFlow Service URL cannot be used as an HTTP base URL.".to_string())?;
-        segments.clear();
-        for segment in endpoint.trim_start_matches('/').split('/') {
-            if !segment.is_empty() {
-                segments.push(segment);
-            }
-        }
-    }
-    Ok(url.into())
-}
-
 pub async fn track_shipment_via_service(
     client: &reqwest::Client,
     config: &ApiServiceConfig,
@@ -164,205 +135,6 @@ pub async fn track_manifest_via_service(
         force_refresh,
     )
     .await
-}
-
-pub async fn track_shipments_batch_via_service(
-    client: &reqwest::Client,
-    config: &ApiServiceConfig,
-    shipment_ids: Vec<String>,
-    force_refresh: bool,
-) -> Result<Vec<BatchTrackJobItemResult>, tracking::model::TrackingError> {
-    track_shipments_batch_via_service_with_progress(
-        client,
-        config,
-        shipment_ids,
-        force_refresh,
-        |_| {},
-    )
-    .await
-}
-
-pub async fn track_shipments_batch_via_service_with_progress<F>(
-    client: &reqwest::Client,
-    config: &ApiServiceConfig,
-    shipment_ids: Vec<String>,
-    force_refresh: bool,
-    mut on_result: F,
-) -> Result<Vec<BatchTrackJobItemResult>, tracking::model::TrackingError>
-where
-    F: FnMut(BatchTrackJobItemResult) + Send,
-{
-    let auth_token = config.service_client_auth_token();
-    if auth_token.is_empty() {
-        return Err(tracking::model::TrackingError::BadRequest(
-            "ShipFlow Service token is required.".into(),
-        ));
-    }
-
-    if shipment_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    if should_verify_service_before_lookup(config) {
-        verify_api_service_connection_cached(client, config)
-            .await
-            .map_err(tracking::model::TrackingError::Upstream)?;
-    }
-
-    let base_url = config.service_client_base_url();
-    let start_endpoint = build_service_v1_endpoint(&base_url, "v1/jobs/track-batch")
-        .map_err(tracking::model::TrackingError::Upstream)?;
-    let response = client
-        .post(start_endpoint)
-        .bearer_auth(auth_token)
-        .header("content-type", "application/json")
-        .body(
-            serde_json::to_string(&ServiceBatchTrackRequest {
-                shipment_ids,
-                force_refresh,
-            })
-            .map_err(|error| {
-                tracking::model::TrackingError::Upstream(format!(
-                    "Unable to serialize ShipFlow Service batch request: {error}"
-                ))
-            })?,
-        )
-        .send()
-        .await
-        .map_err(|error| {
-            tracking::model::TrackingError::Upstream(format!(
-                "Unable to reach ShipFlow Service batch endpoint: {error}"
-            ))
-        })?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let raw_body = response.text().await.ok();
-        return Err(tracking::model::TrackingError::Upstream(
-            extract_service_error_message(status, raw_body.as_deref()),
-        ));
-    }
-
-    let raw_body = response.text().await.map_err(|error| {
-        tracking::model::TrackingError::Upstream(format!(
-            "Unable to read ShipFlow Service batch start response: {error}"
-        ))
-    })?;
-    let start = serde_json::from_str::<ServiceApiEnvelope<BatchTrackJobStart>>(&raw_body)
-        .map_err(|error| {
-            tracking::model::TrackingError::Upstream(format!(
-                "ShipFlow Service returned an invalid batch start response: {error}"
-            ))
-        })?
-        .data;
-
-    poll_service_batch_result(client, config, &start, |result| {
-        on_result(result);
-    })
-    .await
-}
-
-async fn poll_service_batch_result<F>(
-    client: &reqwest::Client,
-    config: &ApiServiceConfig,
-    start: &BatchTrackJobStart,
-    mut on_result: F,
-) -> Result<Vec<BatchTrackJobItemResult>, tracking::model::TrackingError>
-where
-    F: FnMut(BatchTrackJobItemResult) + Send,
-{
-    let auth_token = config.service_client_auth_token();
-    let base_url = config.service_client_base_url();
-    let status_endpoint = build_service_relative_endpoint(&base_url, &start.status_endpoint)
-        .map_err(tracking::model::TrackingError::Upstream)?;
-    let result_endpoint = build_service_relative_endpoint(&base_url, &start.result_endpoint)
-        .map_err(tracking::model::TrackingError::Upstream)?;
-    let mut emitted_result_count = 0_usize;
-
-    for _ in 0..600 {
-        let response = client
-            .get(status_endpoint.clone())
-            .bearer_auth(auth_token)
-            .send()
-            .await
-            .map_err(|error| {
-                tracking::model::TrackingError::Upstream(format!(
-                    "Unable to read ShipFlow Service batch status: {error}"
-                ))
-            })?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let raw_body = response.text().await.ok();
-            return Err(tracking::model::TrackingError::Upstream(
-                extract_service_error_message(status, raw_body.as_deref()),
-            ));
-        }
-
-        let raw_body = response.text().await.map_err(|error| {
-            tracking::model::TrackingError::Upstream(format!(
-                "Unable to read ShipFlow Service batch status response: {error}"
-            ))
-        })?;
-        let status = serde_json::from_str::<
-            ServiceApiEnvelope<shipflow_service_runtime::jobs::BatchJobSnapshot>,
-        >(&raw_body)
-        .map_err(|error| {
-            tracking::model::TrackingError::Upstream(format!(
-                "ShipFlow Service returned an invalid batch status response: {error}"
-            ))
-        })?
-        .data;
-
-        let response = client
-            .get(result_endpoint.clone())
-            .bearer_auth(auth_token)
-            .send()
-            .await
-            .map_err(|error| {
-                tracking::model::TrackingError::Upstream(format!(
-                    "Unable to read ShipFlow Service batch result: {error}"
-                ))
-            })?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let raw_body = response.text().await.ok();
-            return Err(tracking::model::TrackingError::Upstream(
-                extract_service_error_message(status, raw_body.as_deref()),
-            ));
-        }
-
-        let raw_body = response.text().await.map_err(|error| {
-            tracking::model::TrackingError::Upstream(format!(
-                "Unable to read ShipFlow Service batch result response: {error}"
-            ))
-        })?;
-        let result = serde_json::from_str::<ServiceApiEnvelope<BatchJobResultSnapshot>>(&raw_body)
-            .map_err(|error| {
-                tracking::model::TrackingError::Upstream(format!(
-                    "ShipFlow Service returned an invalid batch result response: {error}"
-                ))
-            })?
-            .data;
-        for result in result.results.iter().skip(emitted_result_count) {
-            on_result(result.clone());
-        }
-        emitted_result_count = result.results.len();
-
-        if matches!(
-            status.status,
-            BatchJobStatus::Completed | BatchJobStatus::Cancelled | BatchJobStatus::Failed
-        ) {
-            return Ok(result.results);
-        }
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-
-    Err(tracking::model::TrackingError::Upstream(
-        "ShipFlow Service batch job timed out.".into(),
-    ))
 }
 
 async fn fetch_lookup_via_service<T: DeserializeOwned>(

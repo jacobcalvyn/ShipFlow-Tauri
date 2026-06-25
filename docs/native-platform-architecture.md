@@ -90,7 +90,6 @@ Suggested endpoint families:
 - `GET /v1/capabilities`
 - `GET /v1/openapi.json`
 - `GET /v1/track/:shipment_id`
-- `POST /v1/jobs/track-batch`
 - `POST /pod/resolve`
 
 ## Migration Structure

@@ -108,6 +108,45 @@ describe("sheet table row view", () => {
     ]);
   });
 
+  it("builds shipment data from stringified Rust projection JSON", () => {
+    const window: SheetRowWindow = {
+      sheetId: "sheet-1",
+      offset: 0,
+      limit: 1,
+      totalCount: 1,
+      hasMore: false,
+      nextOffset: null,
+      rows: [
+        {
+          ...createProjection("rust-row-1", "P100", "loaded", 0),
+          statusJson: JSON.stringify({ status: "DELIVERED" }),
+          detailJson: JSON.stringify({
+            shipment_header: { nomor_kiriman: "P100" },
+          }),
+          historyJson: JSON.stringify({
+            history: [],
+            history_summary: {
+              irregularity: [],
+              bagging_unbagging: [],
+              manifest_r7: [],
+              delivery_runsheet: [],
+            },
+          }),
+        },
+      ],
+    };
+
+    const rows = createSheetTableRowsFromRustWindow(window, []);
+
+    expect(rows[0]).toMatchObject({
+      engineRowId: "rust-row-1",
+      trackingInput: "P100",
+      status: "Ready",
+    });
+    expect(rows[0].shipment?.detail.shipment_header.nomor_kiriman).toBe("P100");
+    expect(rows[0].shipment?.status_akhir.status).toBe("DELIVERED");
+  });
+
   it("keeps local draft input visible while the Rust row window is stale", () => {
     const legacyRows = createEmptyRows(1);
     legacyRows[0] = {
@@ -426,6 +465,76 @@ describe("sheet table row view", () => {
       error: "",
     });
     expect(rows[0].shipment).toBeNull();
+  });
+
+  it("uses locally completed active-run progress over a stale pending Rust projection", () => {
+    const legacyRows = createEmptyRows(1);
+    legacyRows[0] = {
+      ...legacyRows[0],
+      key: "legacy-visible-key",
+      trackingInput: "P104",
+      shipment: createShipment("P104"),
+      runtimeTrackingRunId: "run-1",
+    };
+    const window: SheetRowWindow = {
+      sheetId: "sheet-1",
+      offset: 0,
+      limit: 1,
+      totalCount: 1,
+      hasMore: false,
+      nextOffset: null,
+      rows: [createProjection("rust-row-1", "P104", "pending", 0)],
+    };
+
+    const rows = createSheetTableRowsFromRustWindow(window, legacyRows);
+
+    expect(rows[0]).toMatchObject({
+      key: "legacy-visible-key",
+      engineRowId: "rust-row-1",
+      trackingInput: "P104",
+      status: "Ready",
+      loading: false,
+      queued: false,
+      error: "",
+    });
+    expect(rows[0].shipment?.status_akhir.status).toBe("DELIVERED");
+  });
+
+  it("uses active-run queued progress over a stale failed Rust projection", () => {
+    const legacyRows = createEmptyRows(1);
+    legacyRows[0] = {
+      ...legacyRows[0],
+      key: "legacy-visible-key",
+      trackingInput: "P104",
+      queued: true,
+      runtimeTrackingRunId: "run-1",
+    };
+    const window: SheetRowWindow = {
+      sheetId: "sheet-1",
+      offset: 0,
+      limit: 1,
+      totalCount: 1,
+      hasMore: false,
+      nextOffset: null,
+      rows: [
+        {
+          ...createProjection("rust-row-1", "P104", "failed", 0),
+          errorMessage: "previous failure",
+        },
+      ],
+    };
+
+    const rows = createSheetTableRowsFromRustWindow(window, legacyRows);
+
+    expect(rows[0]).toMatchObject({
+      key: "legacy-visible-key",
+      engineRowId: "rust-row-1",
+      trackingInput: "P104",
+      status: "Pending",
+      loading: false,
+      queued: true,
+      error: "",
+    });
   });
 
   it("keeps a locally completed row over an empty Rust projection during tracking progress", () => {

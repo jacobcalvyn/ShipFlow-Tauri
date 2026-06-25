@@ -1,6 +1,6 @@
 # ShipFlow Service API v1
 
-ShipFlow Service exposes an authenticated local or LAN HTTP API for ShipFlow Desktop and optional internal clients. Desktop is only a client of the service: source selection, external API credentials, bearer-token ownership, lookup cache, persistent lookup store, and batch job execution all belong to ShipFlow Service.
+ShipFlow Service exposes an authenticated local or LAN HTTP API for ShipFlow Desktop and optional internal clients. Desktop is only a client of the service: source selection, external API credentials, bearer-token ownership, lookup cache, persistent lookup store, and direct lookup backpressure all belong to ShipFlow Service.
 
 New integrations should use the versioned `/v1` contract. Unversioned legacy routes are not served.
 
@@ -199,11 +199,7 @@ Example response:
       "GET /v1/track/:shipment_id",
       "GET /v1/track/:shipment_id/html",
       "GET /v1/bag/:bag_id",
-      "GET /v1/manifest/:manifest_id",
-      "POST /v1/jobs/track-batch",
-      "GET /v1/jobs/:job_id",
-      "GET /v1/jobs/:job_id/result",
-      "POST /v1/jobs/:job_id/cancel"
+      "GET /v1/manifest/:manifest_id"
     ]
   },
   "warnings": []
@@ -279,115 +275,11 @@ curl \
   "http://127.0.0.1:18422/v1/track/P2603310114291"
 ```
 
-## Batch Tracking Jobs
+## Direct Tracking Backpressure
 
-Batch jobs are an authenticated `/v1` API for service-side background tracking. They are useful when a client wants to submit many shipment IDs and poll progress instead of blocking on one request per row.
+Bulk tracking is intentionally driven through bounded direct `GET /v1/track/:shipment_id` requests. ShipFlow Service applies a 15-permit concurrency gate on the direct tracking route, so concurrent clients can share parallel tracking without creating unbounded upstream scraping pressure.
 
-Start a batch tracking job:
-
-```http
-POST /v1/jobs/track-batch
-Content-Type: application/json
-
-{
-  "shipmentIds": ["P2603310114291", "P2603310114292"],
-  "forceRefresh": false
-}
-```
-
-`shipmentIds` are trimmed, empty IDs are ignored, and duplicates are collapsed before the job starts. The service returns `400 Bad Request` if no valid ID remains, `413 Payload Too Large` if more than 1,000 IDs are submitted, and `400 Bad Request` if an ID is longer than 128 characters. Completed job records are retained for a short service-runtime window and may be removed after polling; clients should fetch results when a job reaches a terminal status.
-
-Start response:
-
-```json
-{
-  "meta": {
-    "apiVersion": "v1",
-    "schemaVersion": "shipflow.service.job.v1",
-    "requestId": "sf_req_...",
-    "generatedAt": "2026-05-04T00:00:00.123Z"
-  },
-  "data": {
-    "jobId": "job_1777850000123_0",
-    "status": "queued",
-    "statusEndpoint": "/v1/jobs/job_1777850000123_0",
-    "resultEndpoint": "/v1/jobs/job_1777850000123_0/result"
-  },
-  "warnings": []
-}
-```
-
-Read job status:
-
-```http
-GET /v1/jobs/:job_id
-```
-
-Status response data:
-
-```json
-{
-  "jobId": "job_1777850000123_0",
-  "status": "running",
-  "total": 2,
-  "completed": 1,
-  "failed": 0,
-  "cancelRequested": false,
-  "errorMessage": null,
-  "createdAt": "2026-05-04T00:00:00.123Z",
-  "updatedAt": "2026-05-04T00:00:01.456Z"
-}
-```
-
-Read job result:
-
-```http
-GET /v1/jobs/:job_id/result
-```
-
-Result response data:
-
-```json
-{
-  "jobId": "job_1777850000123_0",
-  "status": "completed",
-  "total": 2,
-  "completed": 2,
-  "failed": 1,
-  "cancelRequested": false,
-  "errorMessage": null,
-  "createdAt": "2026-05-04T00:00:00.123Z",
-  "updatedAt": "2026-05-04T00:00:02.789Z",
-  "results": [
-    {
-      "id": "P2603310114291",
-      "status": "success",
-      "data": {},
-      "error": null
-    },
-    {
-      "id": "P2603310114292",
-      "status": "error",
-      "data": null,
-      "error": "Shipment was not found."
-    }
-  ]
-}
-```
-
-Request cancellation:
-
-```http
-POST /v1/jobs/:job_id/cancel
-```
-
-Job status values:
-
-- `queued`
-- `running`
-- `completed`
-- `cancelled`
-- `failed`
+Additional direct tracking requests wait for the next Service permit. Runtime logs include `[ShipFlowBackpressure]` when a request had to wait for a direct tracking permit.
 
 Job item status values:
 
@@ -432,12 +324,6 @@ For one-by-one tracking requests:
 - The external `/v1/track/:shipment_id` route is authoritative when the configured external base URL includes `/v1` or `/v1/openapi.json`.
 - In that explicit `/v1` mode, a `404` response is returned as the lookup result instead of trying an extra legacy `/track/:shipment_id` fallback.
 - If an external API request is still pending after a short delay, Service starts one duplicate hedged request and uses whichever identical request finishes first. This reduces random tail-latency spikes from a single slow socket or upstream worker.
-
-For batch tracking jobs:
-
-- Service can delegate to an external `/v1/jobs/track-batch` endpoint when that endpoint exists.
-- If the external batch endpoint is unavailable, Service falls back to capped parallel one-by-one lookups.
-- Job status/result APIs stay local to ShipFlow Service, so Desktop and LAN clients do not need to know which upstream strategy was used.
 
 ## Runtime Performance Logs
 
@@ -484,4 +370,4 @@ ShipFlow Service:
 - owns the Service API token
 - owns internal scraper and external API access
 - owns lookup cache and persistent lookup store
-- owns Service API v1 batch jobs
+- owns direct lookup concurrency and backpressure

@@ -567,9 +567,8 @@ Current branch status:
   Rust projections. The old frontend `track_shipment` bridge is no longer the
   manual or bulk-paste row refresh path, and the frontend command module no
   longer exports direct `trackShipment`/`trackBag`/`trackManifest` wrappers.
-  The Desktop Tauri invoke handler also no longer registers direct
-  `track_shipment`, `track_shipments_batch`, `track_bag`, or `track_manifest`
-  commands; renderer tracking/import lookups must go through
+  The Desktop Tauri invoke handler also no longer registers direct tracking or
+  import lookup commands; renderer tracking/import lookups must go through
   `workspace_engine_command`.
   When a visible table row is backed by a Rust projection, input change, blur,
   paste, clear, and refresh commands pass the projection `engineRowId` to Rust

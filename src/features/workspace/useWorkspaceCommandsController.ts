@@ -1,4 +1,5 @@
 import { Dispatch, MutableRefObject, SetStateAction, useCallback, useEffect } from "react";
+import { flushSync } from "react-dom";
 import { exportWorkspaceCsv } from "../../backend/commands";
 import { COLUMNS } from "../sheet/columns";
 import {
@@ -372,9 +373,11 @@ export function useWorkspaceCommandsController({
         tone: "info",
         message: "Proses lacak ulang dimulai.",
       });
-      updateSheetById(targetSheetId, (current) =>
-        startTrackingRunInSheet(current, trackingRunId)
-      );
+      flushSync(() => {
+        updateSheetById(targetSheetId, (current) =>
+          startTrackingRunInSheet(current, trackingRunId)
+        );
+      });
 
       void refreshSheetRowsTrackingWithProgress(
         {
@@ -627,9 +630,11 @@ export function useWorkspaceCommandsController({
     if (rustExportRowsQuery) {
       const trackingRunId = createWorkspaceTrackingRunId(targetSheetId, "retrack");
       const isScopedRustQuery = hasScopedRustRowQuery(rustExportRowsQuery);
-      updateSheetById(targetSheetId, (current) =>
-        startTrackingRunInSheet(current, trackingRunId)
-      );
+      flushSync(() => {
+        updateSheetById(targetSheetId, (current) =>
+          startTrackingRunInSheet(current, trackingRunId)
+        );
+      });
       void Promise.resolve(
         isScopedRustQuery ? collectRustRefreshRowIds(rustExportRowsQuery) : []
       )
