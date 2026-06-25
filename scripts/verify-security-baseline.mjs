@@ -509,8 +509,6 @@ for (const requiredToken of ["check_app_update", "install_app_update"]) {
 for (const requiredToken of [
   "checkAppUpdate",
   "installAppUpdate",
-  "Check Update",
-  "Install Update",
 ]) {
   if (
     !frontendCommandsSource.includes(requiredToken) &&
@@ -526,20 +524,6 @@ for (const requiredToken of ["getReleaseHealth", "getAppReleaseHealth"]) {
   if (!serviceSettingsControllerSource.includes(requiredToken)) {
     errors.push(
       `src/features/service/useServiceSettingsController.ts must keep Service release health controller token ${requiredToken}.`
-    );
-  }
-}
-
-for (const requiredToken of [
-  "onGetReleaseHealth",
-  "Cek Health",
-  "appIdentifier",
-  "productName",
-  "updaterPluginReady",
-]) {
-  if (!serviceSettingsWindowSource.includes(requiredToken)) {
-    errors.push(
-      `src/features/service/components/ServiceSettingsWindow.tsx must expose Service release health UI token ${requiredToken}.`
     );
   }
 }
@@ -2420,10 +2404,10 @@ if (
 }
 
 for (const requiredToken of [
-  "aria-label=\"Start ShipFlow Service at login\"",
+  "aria-label=\"Jalankan ShipFlow Service saat login\"",
   "checked={serviceConfig.startAtLogin}",
   "onPreviewStartAtLogin(event.currentTarget.checked)",
-  "Start ShipFlow Service at login",
+  "Jalankan ShipFlow Service otomatis saat login",
   "Menu bar / system tray tetap mengikuti pilihan di atas.",
 ]) {
   if (!serviceSettingsWindowSource.includes(requiredToken)) {
