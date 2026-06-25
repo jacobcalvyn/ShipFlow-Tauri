@@ -1,9 +1,11 @@
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_os = "macos")]
+use shipflow_tauri_runtime::app_runtime::focus_desktop_main_window_runtime;
 use shipflow_tauri_runtime::app_runtime::{
     build_desktop_single_instance_plugin, build_main_webview_navigation_guard_plugin,
-    build_tracking_client, desktop_setup, focus_desktop_main_window_runtime,
-    handle_desktop_window_event, maybe_install_signed_updater_plugin, DesktopTrayAvailabilityState,
+    build_tracking_client, desktop_setup, handle_desktop_window_event,
+    maybe_install_signed_updater_plugin, DesktopTrayAvailabilityState,
 };
 use shipflow_tauri_runtime::lookup_runtime::LookupCacheState;
 use shipflow_tauri_runtime::runtime_log::log_runtime_event;
