@@ -144,4 +144,10 @@ if (-not (Test-Path $libPath)) {
   Write-DuckDbImportLibrary -DllPath $dllPath -LibPath $libPath -Machine $machine
 }
 
+$releaseDir = Join-Path $targetRoot "release"
+$runtimeDllPath = Join-Path $releaseDir "duckdb.dll"
+New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+Copy-Item -Path $dllPath -Destination $runtimeDllPath -Force
+
 Write-Host "Prepared DuckDB SDK at $downloadDir"
+Write-Host "Staged DuckDB runtime DLL at $runtimeDllPath"
