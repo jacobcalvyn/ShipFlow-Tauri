@@ -67,6 +67,11 @@ jobs:
         if: ${{ matrix.platform == 'windows' }}
         run: choco install nsis -y --no-progress
 
+      - name: Prepare Windows DuckDB SDK
+        if: ${{ matrix.platform == 'windows' && matrix.target == 'desktop' }}
+        shell: pwsh
+        run: ./scripts/windows/prepare-duckdb-download.ps1
+
       - name: Validate macOS signing secrets
         if: ${{ matrix.platform == 'macos' }}
         shell: bash

@@ -853,6 +853,8 @@ for (const requiredToken of [
   "WINDOWS_CERTIFICATE",
   "WINDOWS_CERTIFICATE_PASSWORD",
   "DUCKDB_DOWNLOAD_LIB: ${{ matrix.platform == 'windows' && matrix.target == 'desktop' && '1' || '' }}",
+  "Prepare Windows DuckDB SDK",
+  "scripts/windows/prepare-duckdb-download.ps1",
   "scripts/build-updater-artifacts.mjs",
   "scripts/generate-release-evidence.mjs",
   "scripts/verify-release-evidence.mjs",
@@ -1346,6 +1348,8 @@ for (const [
 
 for (const requiredToken of [
   'DUCKDB_DOWNLOAD_LIB: "1"',
+  "Prepare Windows DuckDB SDK",
+  "scripts/windows/prepare-duckdb-download.ps1",
   "Run Windows native runtime Rust tests",
   "Run Windows native runtime Rust clippy",
   "cargo test -p shipflow-core -p shipflow-service-runtime -p shipflow-tauri-runtime -p shipflow-service --all-targets",

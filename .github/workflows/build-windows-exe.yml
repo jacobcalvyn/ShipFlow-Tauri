@@ -44,6 +44,10 @@ jobs:
         with:
           workspaces: . -> target
 
+      - name: Prepare Windows DuckDB SDK
+        shell: pwsh
+        run: ./scripts/windows/prepare-duckdb-download.ps1
+
       - name: Install frontend dependencies
         run: npm ci
 

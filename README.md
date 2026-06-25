@@ -149,16 +149,16 @@ Auth: Bearer <ShipFlow Service Token>
 
 Use the OpenAPI document as the source of truth for generated clients or agent tool schemas. A `401` response means the route exists but the bearer token is missing or invalid. A `404` response usually means the request is reaching an older service binary or the wrong port.
 
-## Direct Tracking Backpressure
+## Upstream Lookup Backpressure
 
 Bulk tracking clients should use direct `GET /v1/track/:shipment_id` calls.
 
-ShipFlow Service protects the direct lookup path with a 15-permit concurrency gate, so multiple clients can share parallel tracking without creating unbounded upstream scraping pressure.
+ShipFlow Service protects every upstream lookup path with a shared 15-permit concurrency gate, so multiple clients can share parallel tracking without creating unbounded upstream scraping pressure. The gate covers direct tracking, raw tracking HTML, bag lookup, and manifest lookup.
 
-Direct lookup guardrails:
+Upstream lookup guardrails:
 
-- at most 15 active `/v1/track/:shipment_id` lookups run through the Service backpressure gate
-- additional direct tracking requests wait for the next permit instead of creating extra upstream pressure
+- at most 15 active upstream lookups run through the Service backpressure gate
+- additional direct tracking, HTML, bag, and manifest requests wait for the next permit instead of creating extra upstream pressure
 - lookup cache and in-flight request coalescing still apply inside the Service runtime
 
 ## JSON Shape
