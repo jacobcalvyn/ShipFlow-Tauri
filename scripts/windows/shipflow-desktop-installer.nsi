@@ -72,6 +72,9 @@ Section "Install"
 
   SetOutPath "$INSTDIR"
   File "/oname=shipflow3-tauri.exe" "${SOURCE_EXE}"
+  !ifdef DUCKDB_DLL
+    File "/oname=duckdb.dll" "${DUCKDB_DLL}"
+  !endif
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
   CreateDirectory "$SMPROGRAMS\ShipFlow"
@@ -105,6 +108,7 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\ShipFlow"
 
   Delete "$INSTDIR\shipflow3-tauri.exe"
+  Delete "$INSTDIR\duckdb.dll"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 

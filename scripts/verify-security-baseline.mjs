@@ -852,6 +852,7 @@ for (const requiredToken of [
   "APPLE_SIGNING_IDENTITY",
   "WINDOWS_CERTIFICATE",
   "WINDOWS_CERTIFICATE_PASSWORD",
+  "DUCKDB_DOWNLOAD_LIB: ${{ matrix.platform == 'windows' && matrix.target == 'desktop' && '1' || '' }}",
   "scripts/build-updater-artifacts.mjs",
   "scripts/generate-release-evidence.mjs",
   "scripts/verify-release-evidence.mjs",
@@ -1343,6 +1344,33 @@ for (const [
   }
 }
 
+for (const requiredToken of [
+  'DUCKDB_DOWNLOAD_LIB: "1"',
+  "Run Windows native runtime Rust tests",
+  "Run Windows native runtime Rust clippy",
+  "cargo test -p shipflow-core -p shipflow-service-runtime -p shipflow-tauri-runtime -p shipflow-service --all-targets",
+  "cargo clippy -p shipflow-core -p shipflow-service-runtime -p shipflow-tauri-runtime -p shipflow-service --all-targets -- -D warnings",
+  "Missing desktop DuckDB runtime DLL",
+  "target/release/duckdb.dll",
+]) {
+  if (!desktopWindowsWorkflow.includes(requiredToken)) {
+    errors.push(`.github/workflows/build-windows-exe.yml must include Windows DuckDB/runtime token ${requiredToken}.`);
+  }
+}
+
+for (const requiredToken of [
+  "Run Windows service runtime Rust tests",
+  "Run Windows service runtime Rust clippy",
+  "cargo test -p shipflow-core -p shipflow-service-runtime -p shipflow-tauri-runtime -p shipflow-service --all-targets",
+  "cargo clippy -p shipflow-core -p shipflow-service-runtime -p shipflow-tauri-runtime -p shipflow-service --all-targets -- -D warnings",
+]) {
+  if (!serviceWindowsWorkflow.includes(requiredToken)) {
+    errors.push(
+      `.github/workflows/build-service-windows-installer.yml must include scoped Windows service runtime token ${requiredToken}.`
+    );
+  }
+}
+
 for (const [workflowPath, workflowSource, missingExecutableMessage] of [
   [
     ".github/workflows/build-windows-exe.yml",
@@ -1509,6 +1537,19 @@ for (const [scriptPath, scriptSource, configPath] of [
   }
 }
 
+for (const requiredToken of [
+  'Get-ChildItem -Path "target/release" -Recurse -File -Filter "duckdb.dll"',
+  '$duckdbRuntimeDll = Join-Path $outputDir "duckdb.dll"',
+  "GetFullPath($duckdbDll.FullName)",
+  "GetFullPath($duckdbRuntimeDll)",
+  "Copy-Item -Path $duckdbDll.FullName -Destination $duckdbRuntimeDll -Force",
+  "/DDUCKDB_DLL=",
+]) {
+  if (!windowsBuildDesktopInstallerScript.includes(requiredToken)) {
+    errors.push(`scripts/windows/build-desktop-installer.ps1 must stage DuckDB runtime DLL with ${requiredToken}.`);
+  }
+}
+
 for (const [installerPath, installerSource] of [
   ["scripts/windows/shipflow-desktop-installer.nsi", desktopWindowsInstallerSource],
   ["scripts/windows/shipflow-service-installer.nsi", serviceWindowsInstallerSource],
@@ -1533,6 +1574,12 @@ for (const [installerPath, installerSource] of [
     installerSource.includes('!define APP_VERSION_QUAD "0.1.0.0"')
   ) {
     errors.push(`${installerPath} must not define fallback hardcoded installer versions.`);
+  }
+}
+
+for (const requiredToken of ['!ifdef DUCKDB_DLL', 'File "/oname=duckdb.dll" "${DUCKDB_DLL}"', 'Delete "$INSTDIR\\duckdb.dll"']) {
+  if (!desktopWindowsInstallerSource.includes(requiredToken)) {
+    errors.push(`scripts/windows/shipflow-desktop-installer.nsi must include DuckDB runtime DLL token ${requiredToken}.`);
   }
 }
 

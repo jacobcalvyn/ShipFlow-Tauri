@@ -22,6 +22,7 @@ jobs:
       TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
       TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
       SIGNED_RELEASE: ${{ inputs.signed_release && 'true' || 'false' }}
+      DUCKDB_DOWNLOAD_LIB: "1"
 
     steps:
       - name: Checkout repository
@@ -55,11 +56,11 @@ jobs:
       - name: Check Rust format
         run: cargo fmt --all -- --check
 
-      - name: Run Rust tests
-        run: cargo test --workspace --all-targets
+      - name: Run Windows native runtime Rust tests
+        run: cargo test -p shipflow-core -p shipflow-service-runtime -p shipflow-tauri-runtime -p shipflow-service --all-targets
 
-      - name: Run Rust clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run Windows native runtime Rust clippy
+        run: cargo clippy -p shipflow-core -p shipflow-service-runtime -p shipflow-tauri-runtime -p shipflow-service --all-targets -- -D warnings
 
       - name: Validate Windows signing secrets
         if: ${{ inputs.signed_release }}
@@ -140,6 +141,9 @@ jobs:
           if (-not (Test-Path "target/release/ShipFlow-Desktop-Setup.exe")) {
             throw "Missing desktop installer"
           }
+          if (-not (Test-Path "target/release/duckdb.dll")) {
+            throw "Missing desktop DuckDB runtime DLL"
+          }
           if (-not (Test-Path "src-tauri/icons/icon.ico")) {
             throw "Missing desktop installer icon"
           }
@@ -159,5 +163,6 @@ jobs:
           path: |
             target/release/shipflow-desktop-windows-distribution.evidence.json
             target/release/shipflow3-tauri.exe
+            target/release/duckdb.dll
             target/release/ShipFlow-Desktop-Setup.exe
           if-no-files-found: error

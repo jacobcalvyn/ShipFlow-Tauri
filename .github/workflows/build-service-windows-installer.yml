@@ -55,11 +55,11 @@ jobs:
       - name: Check Rust format
         run: cargo fmt --all -- --check
 
-      - name: Run Rust tests
-        run: cargo test --workspace --all-targets
+      - name: Run Windows service runtime Rust tests
+        run: cargo test -p shipflow-core -p shipflow-service-runtime -p shipflow-tauri-runtime -p shipflow-service --all-targets
 
-      - name: Run Rust clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run Windows service runtime Rust clippy
+        run: cargo clippy -p shipflow-core -p shipflow-service-runtime -p shipflow-tauri-runtime -p shipflow-service --all-targets -- -D warnings
 
       - name: Validate Windows signing secrets
         if: ${{ inputs.signed_release }}

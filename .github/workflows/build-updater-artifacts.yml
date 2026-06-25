@@ -38,6 +38,7 @@ jobs:
       APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
       WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
       WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      DUCKDB_DOWNLOAD_LIB: ${{ matrix.platform == 'windows' && matrix.target == 'desktop' && '1' || '' }}
 
     steps:
       - name: Checkout repository
