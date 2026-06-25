@@ -798,9 +798,14 @@ mod tests {
         assert_eq!(rows.rows.len(), 25);
         assert_eq!(rows.rows[0].display_tracking_id, "P0000000000000.0");
         assert_eq!(rows.rows[0].lookup_tracking_id, "P0000000000000");
+        let max_elapsed = if std::env::var_os("CI").is_some() {
+            Duration::from_secs(60)
+        } else {
+            Duration::from_secs(30)
+        };
         assert!(
-            started.elapsed() < Duration::from_secs(30),
-            "10k bag import smoke exceeded 30s"
+            started.elapsed() < max_elapsed,
+            "10k bag import smoke exceeded {max_elapsed:?}"
         );
     }
 

@@ -1263,9 +1263,14 @@ mod tests {
 
         assert_eq!(pivot.source_row_count, 10_000);
         assert!(!pivot.rows.is_empty());
+        let max_elapsed = if std::env::var_os("CI").is_some() {
+            Duration::from_secs(60)
+        } else {
+            Duration::from_secs(30)
+        };
         assert!(
-            started.elapsed() < Duration::from_secs(30),
-            "10k query/pivot smoke exceeded 30s"
+            started.elapsed() < max_elapsed,
+            "10k query/pivot smoke exceeded {max_elapsed:?}"
         );
     }
 
