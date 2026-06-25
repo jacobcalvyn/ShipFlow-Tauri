@@ -100,7 +100,7 @@ function relativePath(filePath) {
 }
 
 function readText(filePath) {
-  return fs.readFileSync(filePath, "utf8");
+  return fs.readFileSync(filePath, "utf8").replace(/\r\n?/g, "\n");
 }
 
 function requireTokenOrder(source, firstToken, secondToken, message) {
