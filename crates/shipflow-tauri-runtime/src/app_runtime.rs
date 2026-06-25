@@ -291,11 +291,11 @@ fn request_native_window_attention<R: Runtime>(window: &WebviewWindow<R>, label:
 }
 
 fn focus_service_settings_window_runtime<R: Runtime>(
-    app: &AppHandle<R>,
+    _app: &AppHandle<R>,
     window: &WebviewWindow<R>,
 ) {
     #[cfg(target_os = "macos")]
-    if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
+    if let Err(error) = _app.set_activation_policy(tauri::ActivationPolicy::Regular) {
         log_runtime_event(
             "ERROR",
             format!("[ShipFlowService] failed to activate regular app policy: {error}"),

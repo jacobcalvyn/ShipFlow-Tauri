@@ -339,6 +339,7 @@ fn should_auto_start_enabled_api_runtime(
 }
 
 pub fn run_service_tray_app() -> Result<bool, String> {
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut event_loop = EventLoopBuilder::<ServiceTrayUserEvent>::with_user_event().build();
     #[cfg(target_os = "macos")]
     {

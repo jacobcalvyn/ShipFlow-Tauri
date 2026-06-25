@@ -142,7 +142,7 @@ fn claim_windows_named_mutex(
 pub(super) fn claim_desktop_ui_single_instance() -> Result<bool, String> {
     #[cfg(target_os = "windows")]
     {
-        return claim_windows_named_mutex(&DESKTOP_UI_MUTEX_GUARD, DESKTOP_UI_MUTEX_NAME);
+        claim_windows_named_mutex(&DESKTOP_UI_MUTEX_GUARD, DESKTOP_UI_MUTEX_NAME)
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -154,10 +154,10 @@ pub(super) fn claim_desktop_ui_single_instance() -> Result<bool, String> {
 pub(super) fn claim_service_settings_ui_single_instance() -> Result<bool, String> {
     #[cfg(target_os = "windows")]
     {
-        return claim_windows_named_mutex(
+        claim_windows_named_mutex(
             &SERVICE_SETTINGS_UI_MUTEX_GUARD,
             SERVICE_SETTINGS_UI_MUTEX_NAME,
-        );
+        )
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -169,7 +169,7 @@ pub(super) fn claim_service_settings_ui_single_instance() -> Result<bool, String
 pub(super) fn claim_service_tray_ui_single_instance() -> Result<bool, String> {
     #[cfg(target_os = "windows")]
     {
-        return claim_windows_named_mutex(&SERVICE_TRAY_UI_MUTEX_GUARD, SERVICE_TRAY_UI_MUTEX_NAME);
+        claim_windows_named_mutex(&SERVICE_TRAY_UI_MUTEX_GUARD, SERVICE_TRAY_UI_MUTEX_NAME)
     }
 
     #[cfg(not(target_os = "windows"))]

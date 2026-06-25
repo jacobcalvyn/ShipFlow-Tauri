@@ -304,7 +304,7 @@ pub fn run_service_settings_with_context(mut context: tauri::Context<tauri::Wry>
     app.run(handle_service_settings_run_event);
 }
 
-fn handle_service_settings_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
+fn handle_service_settings_run_event(_app: &tauri::AppHandle, event: tauri::RunEvent) {
     match event {
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
             service::stop_service_process();
@@ -313,7 +313,7 @@ fn handle_service_settings_run_event(app: &tauri::AppHandle, event: tauri::RunEv
         }
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => {
-            if let Err(error) = open_service_settings_window_runtime(app) {
+            if let Err(error) = open_service_settings_window_runtime(_app) {
                 log_runtime_event(
                     "ERROR",
                     format!("[ShipFlowService] failed to reopen service settings window: {error}"),
