@@ -19,6 +19,8 @@ Audit the current `Desktop / Service / Core` split after the large refactor and 
   - `state_store`
   - `process_runtime`
   - `tray_runtime`
+- Service upstream lookup concurrency and queue limits are isolated in `upstream_backpressure`, keeping route handlers focused on HTTP/auth/envelope behavior.
+- Workspace Rust row-window cache and value-filter adapter helpers are isolated in `rust-sheet-view-model-state`, reducing the `useWorkspaceSheetViewModel` helper surface.
 
 ## Remaining Coupling
 
@@ -98,3 +100,4 @@ The refactor is successful. The remaining work is no longer emergency decomposit
 1. shrinking high-fanout UI contracts
 2. reducing custom HTML shell surfaces
 3. preventing style-system drift back toward a web dashboard
+4. continuing to extract stable engine/view-model adapters out of React controller hooks

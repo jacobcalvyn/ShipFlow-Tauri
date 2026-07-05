@@ -34,6 +34,37 @@ function ConvertTo-DuckDbVersion {
   return "$major.$minor.$patch"
 }
 
+function Get-DuckDbArchiveSha256 {
+  param(
+    [string]$DuckDbVersion,
+    [string]$ArchiveName
+  )
+
+  $knownSha256 = @{
+    "1.5.3|libduckdb-windows-amd64.zip" = "11842aca19ec7a415ffbb732ec4818a1562111fb4151fd59d1b3a40b551db26e"
+    "1.5.3|libduckdb-windows-arm64.zip" = "e3edbaffc815e87918c0c0450996b48e0c61627e92682dab9ed9742649ce5586"
+  }
+
+  $key = "$DuckDbVersion|$ArchiveName"
+  if (-not $knownSha256.ContainsKey($key)) {
+    throw "Missing pinned DuckDB archive SHA256 for $key. Update scripts/windows/prepare-duckdb-download.ps1 before changing DuckDB versions."
+  }
+
+  return $knownSha256[$key]
+}
+
+function Assert-FileSha256 {
+  param(
+    [string]$Path,
+    [string]$ExpectedSha256
+  )
+
+  $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLowerInvariant()
+  if ($actualSha256 -ne $ExpectedSha256.ToLowerInvariant()) {
+    throw "DuckDB archive checksum mismatch for $Path. Expected $ExpectedSha256, got $actualSha256."
+  }
+}
+
 function Resolve-VCTool {
   param([string]$ToolName)
 
@@ -114,6 +145,7 @@ switch ($Target) {
   }
 }
 
+$expectedArchiveSha256 = Get-DuckDbArchiveSha256 -DuckDbVersion $duckDbVersion -ArchiveName $archiveName
 $targetRoot = Join-Path (Get-Location) "target"
 New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null
 $targetRoot = (Resolve-Path $targetRoot).Path
@@ -125,12 +157,14 @@ $libPath = Join-Path $downloadDir "duckdb.lib"
 
 New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
 
-if (-not (Test-Path $dllPath) -or -not (Test-Path $headerPath)) {
+if (-not (Test-Path $archivePath)) {
   $url = "https://github.com/duckdb/duckdb/releases/download/v$duckDbVersion/$archiveName"
   Write-Host "Downloading DuckDB $duckDbVersion for $Target from $url"
   Invoke-WebRequest -Uri $url -OutFile $archivePath
-  Expand-Archive -Path $archivePath -DestinationPath $downloadDir -Force
 }
+
+Assert-FileSha256 -Path $archivePath -ExpectedSha256 $expectedArchiveSha256
+Expand-Archive -Path $archivePath -DestinationPath $downloadDir -Force
 
 if (-not (Test-Path $dllPath)) {
   throw "Missing DuckDB runtime DLL at $dllPath."

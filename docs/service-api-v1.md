@@ -111,7 +111,7 @@ Error responses use the same metadata shape and put the user-facing failure mess
 {
   "meta": {
     "apiVersion": "v1",
-    "schemaVersion": "shipflow.service.job.v1",
+    "schemaVersion": "shipflow.service.error.v1",
     "requestId": "sf_req_client_001",
     "generatedAt": "2026-05-04T00:00:00.123Z"
   },
@@ -125,9 +125,9 @@ Error responses use the same metadata shape and put the user-facing failure mess
 Common status codes:
 
 - `200 OK`: request succeeded
-- `400 Bad Request`: invalid lookup or job input
+- `400 Bad Request`: invalid lookup input
 - `401 Unauthorized`: missing or invalid bearer token
-- `404 Not Found`: lookup target or job id was not found
+- `404 Not Found`: lookup target was not found
 - `502 Bad Gateway`: upstream tracking source failed
 
 ## Status
@@ -280,14 +280,6 @@ curl \
 Bulk tracking is intentionally driven through bounded direct `GET /v1/track/:shipment_id` requests. ShipFlow Service applies a shared 15-permit concurrency gate to every Service route that can perform upstream scraping: direct tracking, raw tracking HTML, bag lookup, and manifest lookup.
 
 Additional upstream lookup requests wait for the next Service permit instead of creating extra upstream pressure. Runtime logs include `[ShipFlowBackpressure]` when a request had to wait for an upstream lookup permit.
-
-Job item status values:
-
-- `success`
-- `error`
-- `cancelled`
-
-Job records are stored in memory for the running service process. Successful lookup payloads may still be available through the lookup cache or persistent lookup store after a service restart, but job history itself is not a durable audit log.
 
 ## Cache And Persistence
 

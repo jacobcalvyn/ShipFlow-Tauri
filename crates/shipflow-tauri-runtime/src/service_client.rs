@@ -55,6 +55,10 @@ fn build_service_status_endpoint(base_url: &str) -> Result<String, String> {
     build_service_v1_endpoint(base_url, "v1/status")
 }
 
+fn build_service_auth_check_endpoint(base_url: &str) -> Result<String, String> {
+    build_service_v1_endpoint(base_url, "v1/auth/check")
+}
+
 fn build_service_lookup_endpoint(
     base_url: &str,
     route: &str,
@@ -277,10 +281,9 @@ async fn verify_api_service_connection(
     }
 
     let base_url = config.service_client_base_url();
-    let endpoint = build_service_status_endpoint(&base_url)?;
+    let status_endpoint = build_service_status_endpoint(&base_url)?;
     let response = client
-        .get(endpoint)
-        .bearer_auth(auth_token)
+        .get(status_endpoint)
         .send()
         .await
         .map_err(|error| format!("Unable to reach ShipFlow Service: {error}"))?;
@@ -296,6 +299,25 @@ async fn verify_api_service_connection(
     }
 
     verify_service_status_payload(&raw_body)?;
+
+    let auth_check_endpoint = build_service_auth_check_endpoint(&base_url)?;
+    let auth_check_response = client
+        .get(auth_check_endpoint)
+        .bearer_auth(auth_token)
+        .send()
+        .await
+        .map_err(|error| format!("Unable to verify ShipFlow Service token: {error}"))?;
+    let auth_check_status = auth_check_response.status();
+    let auth_check_body = auth_check_response
+        .text()
+        .await
+        .map_err(|error| format!("Unable to read ShipFlow Service auth check response: {error}"))?;
+    if !auth_check_status.is_success() {
+        return Err(extract_service_error_message(
+            auth_check_status,
+            Some(&auth_check_body),
+        ));
+    }
 
     Ok(())
 }
@@ -370,7 +392,11 @@ fn verify_service_status_payload(raw_body: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use axum::{extract::State, http::HeaderMap, routing::get, Json, Router};
     use reqwest::StatusCode;
+    use serde_json::json;
 
     use crate::{
         service::{ApiServiceConfig, ApiServiceMode, DesktopServiceConnectionMode},
@@ -378,10 +404,17 @@ mod tests {
     };
 
     use super::{
-        build_service_lookup_endpoint, build_service_status_endpoint,
-        extract_service_error_message, should_verify_service_before_lookup,
+        build_service_auth_check_endpoint, build_service_lookup_endpoint,
+        build_service_status_endpoint, extract_service_error_message,
+        should_verify_service_before_lookup, verify_api_service_connection,
         verify_service_status_payload,
     };
+
+    #[derive(Clone, Default)]
+    struct HeaderCapture {
+        status_authorization: Arc<Mutex<Option<String>>>,
+        auth_check_authorization: Arc<Mutex<Option<String>>>,
+    }
 
     fn sample_custom_service_config(base_url: String) -> ApiServiceConfig {
         ApiServiceConfig {
@@ -438,6 +471,82 @@ mod tests {
             .expect("status endpoint should build");
 
         assert_eq!(endpoint, "http://127.0.0.1:18423/api/v1/status");
+    }
+
+    #[test]
+    fn builds_auth_check_endpoint_from_custom_base_url() {
+        let endpoint = build_service_auth_check_endpoint("http://127.0.0.1:18423/api")
+            .expect("auth check endpoint should build");
+
+        assert_eq!(endpoint, "http://127.0.0.1:18423/api/v1/auth/check");
+    }
+
+    #[tokio::test]
+    async fn verifies_status_identity_before_sending_service_token() {
+        let capture = HeaderCapture::default();
+        let app = Router::new()
+            .route(
+                "/v1/status",
+                get({
+                    let capture = capture.clone();
+                    move |headers: HeaderMap| async move {
+                        let authorization = headers
+                            .get("authorization")
+                            .and_then(|value| value.to_str().ok())
+                            .map(ToOwned::to_owned);
+                        *capture.status_authorization.lock().unwrap() = authorization;
+                        Json(json!({
+                            "data": {
+                                "service": "running",
+                                "product": "shipflow-service",
+                                "mode": "local",
+                                "bindAddress": "127.0.0.1",
+                                "port": 18422
+                            }
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/v1/auth/check",
+                get(
+                    move |State(capture): State<HeaderCapture>, headers: HeaderMap| async move {
+                        let authorization = headers
+                            .get("authorization")
+                            .and_then(|value| value.to_str().ok())
+                            .map(ToOwned::to_owned);
+                        *capture.auth_check_authorization.lock().unwrap() = authorization;
+                        Json(json!({
+                            "data": {
+                                "product": "shipflow-service",
+                                "auth": "bearer",
+                                "status": "ok"
+                            }
+                        }))
+                    },
+                ),
+            )
+            .with_state(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener should bind");
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("test server should serve");
+        });
+
+        let config = sample_custom_service_config(base_url);
+        verify_api_service_connection(&reqwest::Client::new(), &config)
+            .await
+            .expect("service verification should pass");
+
+        assert_eq!(*capture.status_authorization.lock().unwrap(), None);
+        assert_eq!(
+            capture.auth_check_authorization.lock().unwrap().as_deref(),
+            Some("Bearer sf_custom_service_token")
+        );
     }
 
     #[test]

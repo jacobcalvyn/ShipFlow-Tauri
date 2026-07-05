@@ -110,6 +110,25 @@ impl WorkspaceDocumentRegistryState {
             .expect("workspace document registry lock poisoned")
             .remove(window_label);
     }
+
+    pub fn ensure_window_claims_path(
+        &self,
+        window_label: &str,
+        path: &str,
+    ) -> Result<String, String> {
+        let normalized_path = normalize_workspace_document_path(path)?;
+        let display_path = to_display_document_path(&normalized_path);
+        let path_by_label = self
+            .path_by_label
+            .lock()
+            .expect("workspace document registry lock poisoned");
+
+        match path_by_label.get(window_label) {
+            Some(claimed_path) if claimed_path == &display_path => Ok(display_path),
+            Some(_) => Err("Workspace document path is not claimed by this window.".into()),
+            None => Err("Workspace document path must be claimed before file access.".into()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -390,7 +409,10 @@ pub fn take_pending_workspace_window_request_runtime(
 
 #[cfg(test)]
 mod tests {
-    use super::{WindowDocumentState, WindowDocumentStateSnapshot};
+    use super::{
+        normalize_workspace_document_path, to_display_document_path, WindowDocumentState,
+        WindowDocumentStateSnapshot, WorkspaceDocumentRegistryState,
+    };
 
     #[test]
     fn first_dirty_window_returns_none_when_registered_windows_are_clean() {
@@ -442,5 +464,36 @@ mod tests {
         assert!(guard.has_allowance("main"));
         assert!(guard.take_allowance("main"));
         assert!(!guard.has_allowance("main"));
+    }
+
+    #[test]
+    fn workspace_document_registry_rejects_unclaimed_path_access() {
+        let registry = WorkspaceDocumentRegistryState::default();
+        let claimed_path = std::env::temp_dir().join("shipflow-claimed-window.shipflow");
+        let other_path = std::env::temp_dir().join("shipflow-other-window.shipflow");
+        let claimed_path_string = claimed_path.to_string_lossy().to_string();
+        let other_path_string = other_path.to_string_lossy().to_string();
+        let normalized_claimed =
+            normalize_workspace_document_path(&claimed_path_string).expect("path should normalize");
+        let display_claimed = to_display_document_path(&normalized_claimed);
+
+        registry
+            .path_by_label
+            .lock()
+            .expect("registry lock should not be poisoned")
+            .insert("main".into(), display_claimed.clone());
+
+        assert_eq!(
+            registry
+                .ensure_window_claims_path("main", &claimed_path_string)
+                .expect("claimed path should pass"),
+            display_claimed
+        );
+        assert!(registry
+            .ensure_window_claims_path("main", &other_path_string)
+            .is_err());
+        assert!(registry
+            .ensure_window_claims_path("other-window", &claimed_path_string)
+            .is_err());
     }
 }

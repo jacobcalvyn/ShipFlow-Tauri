@@ -34,7 +34,7 @@ Architecture references:
 - Supports creating a new sheet from selected shipment IDs only
 - Supports appending selected shipment IDs into another existing sheet
 - Uses a standalone `ShipFlow Service` for Desktop tracking and optional API access for other apps
-- Exposes a documented `ShipFlow Service` API v1 contract for status, capabilities, lookup, and batch tracking jobs
+- Exposes a documented `ShipFlow Service` API v1 contract for status, capabilities, direct lookup, and lookup backpressure
 
 ## Tracking Flow
 
@@ -127,7 +127,7 @@ The API supports:
 - raw upstream shipment HTML lookup through `GET /v1/track/:shipment_id/html`
 - best-effort contact enrichment for sender/recipient phone numbers from `lacak-mitra`, with persistent contact cache
 - force-refresh lookups with `x-shipflow-force-refresh: true`
-- background batch tracking jobs with start/status/result/cancel endpoints
+- bounded direct lookup backpressure for concurrent tracking, bag, and manifest requests
 
 See [docs/service-api-v1.md](./docs/service-api-v1.md) for endpoint details and example payloads.
 
@@ -441,7 +441,7 @@ The main table currently focuses on:
 - Runtime log files now also emit `[ShipFlowCacheMetrics]` summary lines with per-kind cache ratios and counters for operator audit.
 - Runtime log files also emit `[ShipFlowPerf]` timing lines for Desktop-to-Service, Service lookup, and external API lookup stages. These timings intentionally include route, lookup ID, duration, HTTP status, and byte counts, but never bearer tokens.
 - ShipFlow Service lookup endpoints now percent-encode bag and manifest IDs before issuing local HTTP requests.
-- ShipFlow Service now exposes a documented `/v1` API contract with response envelopes and batch tracking job endpoints.
+- ShipFlow Service now exposes a documented `/v1` API contract with response envelopes, direct lookup endpoints, and bounded upstream lookup backpressure.
 - Service tokens are written to a separate local token vault file and hydrated into runtime config when needed, so primary config files do not carry raw token fields.
 - Windows native URL launching now keeps full query strings intact, so bag print URLs preserve both `bag_id` and `oid`.
 - The service-settings UI is tuned to keep the main content panel height stable across view switches so the window does not expose large empty gaps.
@@ -465,6 +465,7 @@ The main table currently focuses on:
 - [src/features/workspace/components/SheetTabs.tsx](./src/features/workspace/components/SheetTabs.tsx): sheet tab shell and tab/menu orchestration
 - [src/features/workspace/components/SheetFileMenu.tsx](./src/features/workspace/components/SheetFileMenu.tsx): workspace file menu
 - [src/features/workspace/components/DesktopServiceConnectionPanel.tsx](./src/features/workspace/components/DesktopServiceConnectionPanel.tsx): Desktop-to-Service port/token settings panel
+- [src/features/workspace/rust-sheet-view-model-state.ts](./src/features/workspace/rust-sheet-view-model-state.ts): Rust row-window cache, value-filter query, and display-row adapter helpers used by the workspace view model
 - [src/features/sheet/components/SheetActionBar.tsx](./src/features/sheet/components/SheetActionBar.tsx): sheet action bar shell
 - [src/features/sheet/components/ImportSourceModal.tsx](./src/features/sheet/components/ImportSourceModal.tsx): bag/manifest import modal
 - [src/features/sheet/components/SheetAnalyticsView.tsx](./src/features/sheet/components/SheetAnalyticsView.tsx): sheet-local `Pivot/Grafik` side panel, chart view, and sortable pivot table
@@ -492,6 +493,7 @@ The main table currently focuses on:
 - [crates/shipflow-service-runtime](./crates/shipflow-service-runtime): shared ShipFlow Service HTTP API and lookup cache runtime
 - [crates/shipflow-service-runtime/src/api_contract.rs](./crates/shipflow-service-runtime/src/api_contract.rs): versioned API envelope and error contract
 - [crates/shipflow-service-runtime/src/persistent_store.rs](./crates/shipflow-service-runtime/src/persistent_store.rs): persistent lookup payload store
+- [crates/shipflow-service-runtime/src/upstream_backpressure.rs](./crates/shipflow-service-runtime/src/upstream_backpressure.rs): shared upstream lookup concurrency and queue guard used by direct lookup routes
 - [crates/shipflow-tauri-runtime/src/tracking/mod.rs](./crates/shipflow-tauri-runtime/src/tracking/mod.rs): shared tracking facade used by Tauri command handlers
 - [src-tauri/src/fixtures](./src-tauri/src/fixtures): parser fixtures used by Rust tests
 
@@ -541,10 +543,6 @@ Latest frontend workspace and pivot/grafik audit baseline, verified on 2026-05-2
 - Playwright opens the local Vite app, switches into `Pivot/Grafik`, renders the pivot action panel and pivot table without a blank screen, and reports no app runtime console errors.
 - Desktop and Service both pass `tauri build --no-bundle --ci`, validating the narrowed Tauri capability files and production Tauri config.
 - The audit specifically covers per-sheet workspace isolation, pivot/grafik mode isolation, value order preservation, empty field display by column type, Row/Column/Value pivot behavior, stable row keys for colliding pivot labels, visible fallback sorting when values are empty, persisted workspace repair, and guarded Tauri event listeners in browser/dev mode.
-
-### Reference Only
-
-`EX-SCRAP/` is kept only as a reference. It is not part of the active app flow and must not be modified for app changes.
 
 ## Run Locally
 
@@ -890,7 +888,7 @@ The table benchmark is kept separate from the normal test suite so regular check
 Rust tests are now split by domain and cover:
 
 - Service API v1 response envelope timestamp formatting
-- Service API batch-job status/result bookkeeping
+- Service API versioned-route guards and unsupported legacy-route rejection
 - persistent lookup-store overwrite durability
 - PID shipment detail URL generation with base64-encoded lookup IDs
 - embedded API bearer-auth validation

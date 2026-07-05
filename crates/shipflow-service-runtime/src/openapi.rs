@@ -61,8 +61,10 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
             "/v1/status": {
                 "get": {
                     "summary": "Check service status and product identity",
+                    "description": "Public identity probe used before sending a bearer token to a configured ShipFlow Service endpoint.",
                     "operationId": "getStatus",
                     "tags": ["Discovery"],
+                    "security": [],
                     "parameters": [{ "$ref": "#/components/parameters/RequestId" }],
                     "responses": {
                         "200": {
@@ -77,6 +79,35 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                                                 "required": ["data"],
                                                 "properties": {
                                                     "data": { "$ref": "#/components/schemas/Status" }
+                                                }
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/v1/auth/check": {
+                "get": {
+                    "summary": "Validate the configured service bearer token",
+                    "operationId": "checkAuth",
+                    "tags": ["Discovery"],
+                    "parameters": [{ "$ref": "#/components/parameters/RequestId" }],
+                    "responses": {
+                        "200": {
+                            "description": "Bearer token is valid for this ShipFlow Service instance",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "allOf": [
+                                            { "$ref": "#/components/schemas/EnvelopeBase" },
+                                            {
+                                                "type": "object",
+                                                "required": ["data"],
+                                                "properties": {
+                                                    "data": { "$ref": "#/components/schemas/AuthCheck" }
                                                 }
                                             }
                                         ]
@@ -151,6 +182,7 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                         "400": { "$ref": "#/components/responses/BadRequest" },
                         "401": { "$ref": "#/components/responses/Unauthorized" },
                         "404": { "$ref": "#/components/responses/NotFound" },
+                        "429": { "$ref": "#/components/responses/TooManyRequests" },
                         "502": { "$ref": "#/components/responses/BadGateway" }
                     }
                 }
@@ -188,6 +220,7 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                         "400": { "$ref": "#/components/responses/BadRequest" },
                         "401": { "$ref": "#/components/responses/Unauthorized" },
                         "404": { "$ref": "#/components/responses/NotFound" },
+                        "429": { "$ref": "#/components/responses/TooManyRequests" },
                         "502": { "$ref": "#/components/responses/BadGateway" }
                     }
                 }
@@ -225,6 +258,7 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                         "400": { "$ref": "#/components/responses/BadRequest" },
                         "401": { "$ref": "#/components/responses/Unauthorized" },
                         "404": { "$ref": "#/components/responses/NotFound" },
+                        "429": { "$ref": "#/components/responses/TooManyRequests" },
                         "502": { "$ref": "#/components/responses/BadGateway" }
                     }
                 }
@@ -289,6 +323,10 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                     "description": "Upstream tracking source failed",
                     "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
                 },
+                "TooManyRequests": {
+                    "description": "Too many upstream lookup requests are already in flight or queued",
+                    "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+                },
                 "PayloadTooLarge": {
                     "description": "Request payload is too large",
                     "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
@@ -343,6 +381,15 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                         "mode": { "type": "string", "enum": ["local", "lan"] },
                         "bindAddress": { "type": "string" },
                         "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+                    }
+                },
+                "AuthCheck": {
+                    "type": "object",
+                    "required": ["product", "auth", "status"],
+                    "properties": {
+                        "product": { "type": "string", "const": "shipflow-service" },
+                        "auth": { "type": "string", "const": "bearer" },
+                        "status": { "type": "string", "const": "ok" }
                     }
                 },
                 "Capabilities": {
@@ -515,6 +562,7 @@ fn tracking_html_path_document() -> Value {
                 "400": { "$ref": "#/components/responses/BadRequest" },
                 "401": { "$ref": "#/components/responses/Unauthorized" },
                 "404": { "$ref": "#/components/responses/NotFound" },
+                "429": { "$ref": "#/components/responses/TooManyRequests" },
                 "502": { "$ref": "#/components/responses/BadGateway" }
             }
         }
@@ -565,8 +613,14 @@ mod tests {
             "bearer"
         );
         assert!(document["paths"]["/v1/openapi.json"]["get"].is_object());
+        assert!(document["paths"]["/v1/auth/check"]["get"].is_object());
+        assert_eq!(
+            document["paths"]["/v1/status"]["get"]["security"]
+                .as_array()
+                .map(Vec::len),
+            Some(0)
+        );
         assert!(document["paths"]["/v1/track/{shipmentId}"]["get"].is_object());
-        assert!(!document["paths"]["/v1/jobs/track-batch"]["post"].is_object());
     }
 
     #[test]
@@ -590,7 +644,6 @@ mod tests {
         }
 
         assert!(paths.keys().all(|path| path.starts_with("/v1/")));
-        assert!(paths.keys().all(|path| !path.starts_with("/v1/jobs")));
     }
 
     #[test]

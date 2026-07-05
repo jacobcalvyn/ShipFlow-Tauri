@@ -22,25 +22,19 @@ jobs:
             platform: windows
     runs-on: ${{ matrix.platform == 'windows' && 'windows-latest' || 'macos-latest' }}
     timeout-minutes: 45
+    if: ${{ github.ref == 'refs/heads/main' }}
     env:
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
-      TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
-      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
       DUCKDB_DOWNLOAD_LIB: ${{ matrix.platform == 'windows' && matrix.target == 'desktop' && '1' || '' }}
 
     steps:
+      - name: Validate release ref
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error::Release workflows must run from the main branch."
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v6
 
@@ -75,11 +69,30 @@ jobs:
       - name: Validate macOS signing secrets
         if: ${{ matrix.platform == 'macos' }}
         shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
         run: |
           missing=0
           for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
             if [ -z "${!name}" ]; then
               echo "::error::${name} is required for signed macOS updater artifacts."
+              missing=1
+            fi
+          done
+
+          for name in TAURI_UPDATER_PUBLIC_KEY TAURI_UPDATER_ENDPOINTS; do
+            if [ -z "${!name}" ]; then
+              echo "::error::${name} is required for updater-ready macOS artifacts."
               missing=1
             fi
           done
@@ -94,14 +107,25 @@ jobs:
       - name: Validate Windows signing secrets
         if: ${{ matrix.platform == 'windows' }}
         shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
             throw "WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are required for signed Windows updater artifacts."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_PUBLIC_KEY) -or [string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_ENDPOINTS)) {
+            throw "TAURI_UPDATER_PUBLIC_KEY and TAURI_UPDATER_ENDPOINTS are required for updater-ready Windows artifacts."
           }
 
       - name: Import Apple signing certificate
         if: ${{ matrix.platform == 'macos' }}
         shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           CERTIFICATE_PATH="$RUNNER_TEMP/apple_certificate.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/shipflow-updater-signing.keychain-db"
@@ -115,9 +139,16 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
       - name: Prepare App Store Connect key
-        if: ${{ matrix.platform == 'macos' && env.APPLE_API_PRIVATE_KEY != '' && env.APPLE_API_KEY != '' }}
+        if: ${{ matrix.platform == 'macos' }}
         shell: bash
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
         run: |
+          if [ -z "$APPLE_API_PRIVATE_KEY" ] || [ -z "$APPLE_API_KEY" ]; then
+            echo "App Store Connect API key not configured; Apple ID notarization path may be used."
+            exit 0
+          fi
           mkdir -p "$RUNNER_TEMP/private_keys"
           printf '%s' "$APPLE_API_PRIVATE_KEY" > "$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8"
           echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8" >> "$GITHUB_ENV"
@@ -126,6 +157,14 @@ jobs:
         run: npm run security:baseline
 
       - name: Build signed updater artifacts
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: node scripts/build-updater-artifacts.mjs "${{ matrix.target }}"
 
       - name: Verify Windows updater installer signatures
@@ -168,6 +207,13 @@ jobs:
       - name: Notarize macOS updater artifacts
         if: ${{ matrix.platform == 'macos' }}
         shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
         run: |
           if [ "${{ matrix.target }}" = "desktop" ]; then
             BUNDLE_ROOT="target/release/bundle/macos"
@@ -193,12 +239,17 @@ jobs:
       - name: Re-sign macOS updater artifacts after notarization
         if: ${{ matrix.platform == 'macos' }}
         shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: bash scripts/macos/resign-updater-artifacts-after-notarization.sh "${{ matrix.target }}"
 
       - name: Verify updater signature artifacts
         run: node scripts/verify-updater-signatures.mjs "${{ matrix.target }}" "${{ matrix.platform }}"
 
       - name: Generate updater evidence manifest
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
         run: node scripts/generate-release-evidence.mjs "${{ matrix.target }}" "${{ matrix.platform }}" updater "release-evidence/${{ matrix.target }}-${{ matrix.platform }}-updater.evidence.json"
 
       - name: Verify updater evidence manifest

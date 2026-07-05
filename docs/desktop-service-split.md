@@ -32,13 +32,13 @@ Desktop lookup calls now build service endpoints from the configured client base
 
 Desktop does not enable or manage a bundled API endpoint. The target service owns its endpoint, API Service token, source mode, and lifecycle.
 
-Desktop-to-Service HTTP calls now live behind `src-tauri/src/service_client.rs`. The Tauri runtime layer calls that client boundary instead of owning endpoint construction, bearer auth, service error parsing, or `/v1/status` identity checks directly.
+Desktop-to-Service HTTP calls now live behind `crates/shipflow-tauri-runtime/src/service_client.rs`. The Desktop Tauri command layer calls that client boundary instead of owning endpoint construction, bearer auth, service error parsing, or `/v1/status` identity checks directly.
 
 `apps/service` is the standalone ShipFlow Service app package. It reuses the shared runtime/core crates and the existing Tauri service-settings window shell, but it is built and run as a separate Service artifact.
 
-`crates/shipflow-service-runtime` now owns the service HTTP API server, authenticated route handling, lookup cache, force-refresh header semantics, and service runtime validation. `src-tauri/src/service/http_api.rs` is now only an adapter from Desktop config into that shared runtime crate.
+`crates/shipflow-service-runtime` now owns the service HTTP API server, authenticated route handling, lookup cache, force-refresh header semantics, upstream lookup backpressure, and service runtime validation. Desktop no longer serves the Service HTTP API.
 
-The repository has a standalone service binary workflow at `.github/workflows/build-service-binary.yml`. It builds `apps/service` on macOS and Windows and uploads service-only binary artifacts. Desktop workflows no longer bundle the service binary.
+The repository builds standalone Service artifacts through `.github/workflows/build-service-macos-app.yml` and `.github/workflows/build-service-windows-installer.yml`. Desktop workflows no longer bundle the service binary.
 
 ## Service-Owned Config
 
@@ -60,7 +60,7 @@ Desktop only stores:
 
 1. Move remaining Desktop service-settings UI into a Desktop connection-settings surface only.
 2. Move Desktop into `apps/desktop` after service extraction is stable.
-3. Add independent Service and Desktop installer jobs on top of the service-only binary workflow.
+3. Keep independent Service and Desktop installer jobs aligned through the native runtime evidence and security-baseline gates.
 4. Add an optional combined installer only after both standalone installers are reliable.
 
 ## Recommended Monorepo Layout

@@ -420,7 +420,13 @@ export function useWorkspaceDocumentController({
 
     let isDisposed = false;
 
-    void Promise.resolve(readWorkspaceDocument(startupPath))
+    void Promise.resolve(claimCurrentWorkspaceDocumentPath(startupPath))
+      .then((claimResult) => {
+        if (claimResult.status === "alreadyOpen") {
+          throw new Error("Dokumen itu sudah terbuka di jendela lain.");
+        }
+        return readWorkspaceDocument(startupPath);
+      })
       .then(async (result) => {
         if (isDisposed || documentMetaRef.current.path !== startupPath) {
           return;
@@ -450,7 +456,7 @@ export function useWorkspaceDocumentController({
     return () => {
       isDisposed = true;
     };
-  }, [applyWorkspaceDocument, showNotice, windowStorageScope]);
+  }, [applyWorkspaceDocument, claimCurrentWorkspaceDocumentPath, showNotice, windowStorageScope]);
 
   const openWorkspaceDocumentFromPath = useCallback(
     async (path: string) => {

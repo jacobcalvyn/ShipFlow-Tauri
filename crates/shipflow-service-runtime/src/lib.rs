@@ -7,6 +7,7 @@ pub mod lookup_cache;
 pub mod model;
 pub mod openapi;
 pub mod persistent_store;
+mod upstream_backpressure;
 
 pub const FORCE_REFRESH_HEADER_NAME: &str = "x-shipflow-force-refresh";
 

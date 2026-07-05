@@ -16,14 +16,19 @@ jobs:
   build-service-windows:
     runs-on: windows-latest
     timeout-minutes: 30
+    if: ${{ !inputs.signed_release || github.ref == 'refs/heads/main' }}
     env:
-      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-      TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
-      TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
       SIGNED_RELEASE: ${{ inputs.signed_release && 'true' || 'false' }}
 
     steps:
+      - name: Validate signed release ref
+        if: ${{ inputs.signed_release }}
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -ne "refs/heads/main") {
+            throw "Signed release workflows must run from the main branch."
+          }
+
       - name: Checkout repository
         uses: actions/checkout@v6
 
@@ -64,6 +69,11 @@ jobs:
       - name: Validate Windows signing secrets
         if: ${{ inputs.signed_release }}
         shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
             throw "WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are required for a signed Windows service release."
@@ -72,18 +82,29 @@ jobs:
             throw "TAURI_UPDATER_PUBLIC_KEY and TAURI_UPDATER_ENDPOINTS are required for updater-ready Windows service releases."
           }
 
-      - name: Build Windows service app binary
+      - name: Build unsigned Windows service app binary
+        if: ${{ !inputs.signed_release }}
         shell: pwsh
         run: |
-          $configArgs = @()
-          if ($env:SIGNED_RELEASE -eq "true") {
-            $releaseConfigPath = Join-Path $env:RUNNER_TEMP "shipflow-service-release.conf.json"
-            node scripts/create-release-build-config.mjs service $releaseConfigPath
-            $configArgs = @("--config", $releaseConfigPath)
-          }
           Push-Location apps/service
           try {
-            npm exec tauri -- build --features custom-protocol --no-bundle --ci @configArgs
+            npm exec tauri -- build --features custom-protocol --no-bundle --ci
+          } finally {
+            Pop-Location
+          }
+
+      - name: Build signed Windows service app binary
+        if: ${{ inputs.signed_release }}
+        shell: pwsh
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
+        run: |
+          $releaseConfigPath = Join-Path $env:RUNNER_TEMP "shipflow-service-release.conf.json"
+          node scripts/create-release-build-config.mjs service $releaseConfigPath
+          Push-Location apps/service
+          try {
+            npm exec tauri -- build --features custom-protocol --no-bundle --ci --config $releaseConfigPath
           } finally {
             Pop-Location
           }
@@ -91,6 +112,9 @@ jobs:
       - name: Sign Windows service executable
         if: ${{ inputs.signed_release }}
         shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           ./scripts/windows/sign-windows-artifact.ps1 `
             -ArtifactPath "target/release/shipflow-service.exe" `
@@ -107,6 +131,9 @@ jobs:
       - name: Sign Windows service installer
         if: ${{ inputs.signed_release }}
         shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           ./scripts/windows/sign-windows-artifact.ps1 `
             -ArtifactPath "target/release/ShipFlow-Service-Setup.exe" `
@@ -151,6 +178,9 @@ jobs:
 
       - name: Generate Windows service release evidence
         if: ${{ inputs.signed_release }}
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
         run: node scripts/generate-release-evidence.mjs service windows distribution target/release/shipflow-service-windows-distribution.evidence.json
 
       - name: Verify Windows service release evidence

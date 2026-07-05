@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,6 +28,60 @@ function resolveArtifactPath(relativePath) {
   }
 
   return path.resolve(rootDir, relativePath);
+}
+
+function runNativeVerification(command, args, artifact, checkName) {
+  try {
+    execFileSync(command, args, {
+      encoding: "utf8",
+      stdio: "pipe",
+    });
+  } catch (error) {
+    const stderr = typeof error.stderr === "string" ? error.stderr.trim() : "";
+    const stdout = typeof error.stdout === "string" ? error.stdout.trim() : "";
+    const output = [stderr, stdout].filter(Boolean).join("\n");
+    fail(
+      `Artifact ${artifact.path} failed live ${checkName} verification.${output ? `\n${output}` : ""}`
+    );
+  }
+}
+
+function findWindowsSigntool() {
+  if (process.env.SIGNTOOL_PATH && fs.existsSync(process.env.SIGNTOOL_PATH)) {
+    return process.env.SIGNTOOL_PATH;
+  }
+
+  const kitsRoot = process.env["ProgramFiles(x86)"]
+    ? path.join(process.env["ProgramFiles(x86)"], "Windows Kits", "10", "bin")
+    : "";
+  const candidates = [];
+
+  function scan(dirPath) {
+    if (!fs.existsSync(dirPath)) {
+      return;
+    }
+
+    for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+      const entryPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        scan(entryPath);
+      } else if (
+        entry.isFile() &&
+        entry.name.toLowerCase() === "signtool.exe" &&
+        entryPath.toLowerCase().includes(`${path.sep}x64${path.sep}`)
+      ) {
+        candidates.push(entryPath);
+      }
+    }
+  }
+
+  scan(kitsRoot);
+  candidates.sort().reverse();
+  if (candidates.length === 0) {
+    fail("Unable to find Windows SDK signtool.exe for live release evidence verification.");
+  }
+
+  return candidates[0];
 }
 
 function normalizeEvidencePath(filePath) {
@@ -105,6 +160,10 @@ function requireCheckOutputContains(artifact, check, expectedToken) {
 }
 
 function validateMacosArtifactVerification(artifact) {
+  if (process.platform !== "darwin") {
+    fail("macOS release evidence must be verified on macOS so native signing checks can run.");
+  }
+
   const verification = artifactVerification(artifact);
   if (!verification) {
     fail(`macOS artifact ${artifact.path} must include verification metadata.`);
@@ -170,9 +229,40 @@ function validateMacosArtifactVerification(artifact) {
   );
   requireCheckCommandContains(artifact, staplerValidate, "xcrun stapler validate");
   requireCheckOutputContains(artifact, staplerValidate, "The validate action worked!");
+
+  const sourcePath = resolveArtifactPath(verification.sourcePath);
+  if (!fs.existsSync(sourcePath)) {
+    fail(`macOS artifact ${artifact.path} verification.sourcePath is missing on disk: ${verification.sourcePath}`);
+  }
+  const isAppBundle = sourcePath.endsWith(".app");
+  runNativeVerification(
+    "codesign",
+    ["--verify", ...(isAppBundle ? ["--deep", "--strict"] : []), "--verbose=2", sourcePath],
+    artifact,
+    "codesignVerify"
+  );
+  runNativeVerification("codesign", ["-dv", "--verbose=4", sourcePath], artifact, "codesignDetails");
+  runNativeVerification(
+    "spctl",
+    [
+      "--assess",
+      "--type",
+      isAppBundle ? "execute" : "open",
+      ...(isAppBundle ? [] : ["--context", "context:primary-signature"]),
+      "--verbose",
+      sourcePath,
+    ],
+    artifact,
+    "spctlAssess"
+  );
+  runNativeVerification("xcrun", ["stapler", "validate", sourcePath], artifact, "staplerValidate");
 }
 
 function validateWindowsSignedArtifactVerification(artifact) {
+  if (process.platform !== "win32") {
+    fail("Windows release evidence must be verified on Windows so Authenticode checks can run.");
+  }
+
   const verification = artifactVerification(artifact);
   if (!verification) {
     fail(`Windows signed artifact ${artifact.path} must include verification metadata.`);
@@ -194,6 +284,14 @@ function validateWindowsSignedArtifactVerification(artifact) {
   requireCheckCommandContains(artifact, signtoolVerify, "signtool");
   requireCheckCommandContains(artifact, signtoolVerify, "verify");
   requireCheckOutputContains(artifact, signtoolVerify, "Successfully verified:");
+
+  const artifactPath = resolveArtifactPath(artifact.path);
+  runNativeVerification(
+    findWindowsSigntool(),
+    ["verify", "/pa", "/v", artifactPath],
+    artifact,
+    "signtoolVerify"
+  );
 }
 
 function validateRequiredArtifactVerifications(artifacts) {

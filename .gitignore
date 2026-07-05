@@ -6,3 +6,4 @@ src-tauri/target
 .DS_Store
 .env
 .playwright-cli/
+EX-SCRAP/

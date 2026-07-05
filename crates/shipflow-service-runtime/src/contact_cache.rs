@@ -9,6 +9,8 @@ use shipflow_core::model::ContactEnrichment;
 use crate::persistent_store::default_persistent_lookup_store_path;
 
 const CONTACT_STORE_FILE_NAME: &str = "contact-store.json";
+const CONTACT_CACHE_TTL_MS: u128 = 90 * 24 * 60 * 60 * 1000;
+const MAX_CONTACT_CACHE_ENTRIES: usize = 20_000;
 
 #[derive(Clone, Debug)]
 pub struct ContactCacheState {
@@ -59,7 +61,7 @@ impl ContactCacheState {
     }
 
     pub fn open(path: PathBuf) -> Self {
-        let inner = fs::read(&path)
+        let mut inner = fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<ContactCacheStoreFile>(&bytes).ok())
             .filter(|store| store.version == 1)
@@ -67,6 +69,7 @@ impl ContactCacheState {
                 version: 1,
                 entries: HashMap::new(),
             });
+        inner.prune(unix_ms());
 
         Self {
             path,
@@ -75,17 +78,24 @@ impl ContactCacheState {
     }
 
     pub fn get(&self, shipment_id: &str) -> Option<ContactCacheEntry> {
-        let snapshot = {
+        let (snapshot, entry) = {
             let mut store = self.inner.lock().expect("contact cache lock poisoned");
+            let now = unix_ms();
             let entry = store.entries.get_mut(shipment_id)?;
-            entry.last_used_at_unix_ms = unix_ms();
-            let snapshot = store.clone();
-            let entry = store.entries.get(shipment_id).cloned();
-            (snapshot, entry)
+            if is_expired(entry, now) {
+                store.entries.remove(shipment_id);
+                (Some(store.clone()), None)
+            } else {
+                entry.last_used_at_unix_ms = now;
+                let entry = store.entries.get(shipment_id).cloned();
+                (Some(store.clone()), entry)
+            }
         };
 
-        let _ = self.persist_snapshot(&snapshot.0);
-        snapshot.1
+        if let Some(snapshot) = snapshot {
+            let _ = self.persist_snapshot(&snapshot);
+        }
+        entry
     }
 
     pub fn store(&self, shipment_id: &str, contact: ContactEnrichment) -> ContactCacheEntry {
@@ -106,6 +116,7 @@ impl ContactCacheState {
         let snapshot = {
             let mut store = self.inner.lock().expect("contact cache lock poisoned");
             store.entries.insert(shipment_id.to_string(), entry.clone());
+            store.prune(now);
             store.clone()
         };
         if let Err(error) = self.persist_snapshot(&snapshot) {
@@ -134,9 +145,41 @@ fn unix_ms() -> u128 {
         .unwrap_or(0)
 }
 
+fn is_expired(entry: &ContactCacheEntry, now_unix_ms: u128) -> bool {
+    entry
+        .fetched_at_unix_ms
+        .checked_add(CONTACT_CACHE_TTL_MS)
+        .is_none_or(|expires_at| expires_at <= now_unix_ms)
+}
+
+impl ContactCacheStoreFile {
+    fn prune(&mut self, now_unix_ms: u128) {
+        self.entries
+            .retain(|_, entry| !is_expired(entry, now_unix_ms));
+
+        if self.entries.len() <= MAX_CONTACT_CACHE_ENTRIES {
+            return;
+        }
+
+        let mut entries_by_last_used = self
+            .entries
+            .iter()
+            .map(|(shipment_id, entry)| (shipment_id.clone(), entry.last_used_at_unix_ms))
+            .collect::<Vec<_>>();
+        entries_by_last_used.sort_by_key(|(_, last_used_at)| *last_used_at);
+
+        let remove_count = self.entries.len() - MAX_CONTACT_CACHE_ENTRIES;
+        for (shipment_id, _) in entries_by_last_used.into_iter().take(remove_count) {
+            self.entries.remove(&shipment_id);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ContactCacheEntryStatus, ContactCacheState};
+    use super::{
+        ContactCacheEntryStatus, ContactCacheState, CONTACT_CACHE_TTL_MS, MAX_CONTACT_CACHE_ENTRIES,
+    };
     use shipflow_core::model::{ContactDetail, ContactEnrichment};
 
     #[test]
@@ -165,6 +208,77 @@ mod tests {
         assert_eq!(entry.status, ContactCacheEntryStatus::Ok);
         assert_eq!(entry.contact.pengirim.telepon.as_deref(), Some("628123"));
         assert!(cache.get("P260602018941230").is_none());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn drops_expired_contact_entries() {
+        let path = std::env::temp_dir().join(format!(
+            "shipflow-contact-cache-expired-test-{}-{}.json",
+            std::process::id(),
+            chrono_like_test_suffix()
+        ));
+        let cache = ContactCacheState::open(path.clone());
+        cache.store(
+            "P2606020189412",
+            ContactEnrichment {
+                penerima: ContactDetail {
+                    telepon: Some("628123".into()),
+                    ..ContactDetail::default()
+                },
+                ..ContactEnrichment::default()
+            },
+        );
+
+        {
+            let mut store = cache
+                .inner
+                .lock()
+                .expect("cache lock should not be poisoned");
+            let entry = store
+                .entries
+                .get_mut("P2606020189412")
+                .expect("entry should exist");
+            entry.fetched_at_unix_ms = super::unix_ms() - CONTACT_CACHE_TTL_MS - 1;
+        }
+
+        assert!(cache.get("P2606020189412").is_none());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn prunes_oldest_contacts_when_cache_is_over_limit() {
+        let path = std::env::temp_dir().join(format!(
+            "shipflow-contact-cache-limit-test-{}-{}.json",
+            std::process::id(),
+            chrono_like_test_suffix()
+        ));
+        let cache = ContactCacheState::open(path.clone());
+
+        {
+            let mut store = cache
+                .inner
+                .lock()
+                .expect("cache lock should not be poisoned");
+            for index in 0..(MAX_CONTACT_CACHE_ENTRIES + 1) {
+                store.entries.insert(
+                    format!("P{index:014}"),
+                    super::ContactCacheEntry {
+                        shipment_id: format!("P{index:014}"),
+                        contact: ContactEnrichment::default(),
+                        status: ContactCacheEntryStatus::Missing,
+                        source: "lacak_mitra".into(),
+                        fetched_at_unix_ms: super::unix_ms(),
+                        last_used_at_unix_ms: index as u128,
+                    },
+                );
+            }
+            store.prune(super::unix_ms());
+            assert_eq!(store.entries.len(), MAX_CONTACT_CACHE_ENTRIES);
+            assert!(!store.entries.contains_key("P00000000000000"));
+        }
 
         let _ = std::fs::remove_file(path);
     }

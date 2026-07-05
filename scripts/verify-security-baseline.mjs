@@ -1147,7 +1147,7 @@ for (const [workflowPath, workflowSource, buildTokens] of [
     serviceMacosWorkflow,
     [
       "../../node_modules/.bin/tauri build --features custom-protocol --bundles app,dmg --ci",
-      "CONFIG_ARGS=(--config \"$RELEASE_CONFIG_PATH\")",
+      "../../node_modules/.bin/tauri build --features custom-protocol --bundles app,dmg --ci --config \"$RELEASE_CONFIG_PATH\"",
     ],
   ],
 ]) {

@@ -16,15 +16,20 @@ jobs:
   build-windows:
     runs-on: windows-latest
     timeout-minutes: 30
+    if: ${{ !inputs.signed_release || github.ref == 'refs/heads/main' }}
     env:
-      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-      TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
-      TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
       SIGNED_RELEASE: ${{ inputs.signed_release && 'true' || 'false' }}
       DUCKDB_DOWNLOAD_LIB: "1"
 
     steps:
+      - name: Validate signed release ref
+        if: ${{ inputs.signed_release }}
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -ne "refs/heads/main") {
+            throw "Signed release workflows must run from the main branch."
+          }
+
       - name: Checkout repository
         uses: actions/checkout@v6
 
@@ -69,6 +74,11 @@ jobs:
       - name: Validate Windows signing secrets
         if: ${{ inputs.signed_release }}
         shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
             throw "WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are required for a signed Windows desktop release."
@@ -77,20 +87,28 @@ jobs:
             throw "TAURI_UPDATER_PUBLIC_KEY and TAURI_UPDATER_ENDPOINTS are required for updater-ready Windows desktop releases."
           }
 
-      - name: Build Windows desktop app binary
+      - name: Build unsigned Windows desktop app binary
+        if: ${{ !inputs.signed_release }}
         shell: pwsh
+        run: npm exec tauri -- build --no-bundle --ci
+
+      - name: Build signed Windows desktop app binary
+        if: ${{ inputs.signed_release }}
+        shell: pwsh
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
         run: |
-          if ($env:SIGNED_RELEASE -eq "true") {
-            $releaseConfigPath = Join-Path $env:RUNNER_TEMP "shipflow-desktop-release.conf.json"
-            node scripts/create-release-build-config.mjs desktop $releaseConfigPath
-            npm exec tauri -- build --no-bundle --config $releaseConfigPath --ci
-          } else {
-            npm exec tauri -- build --no-bundle --ci
-          }
+          $releaseConfigPath = Join-Path $env:RUNNER_TEMP "shipflow-desktop-release.conf.json"
+          node scripts/create-release-build-config.mjs desktop $releaseConfigPath
+          npm exec tauri -- build --no-bundle --config $releaseConfigPath --ci
 
       - name: Sign Windows desktop executable
         if: ${{ inputs.signed_release }}
         shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           ./scripts/windows/sign-windows-artifact.ps1 `
             -ArtifactPath "target/release/shipflow3-tauri.exe" `
@@ -107,6 +125,9 @@ jobs:
       - name: Sign Windows desktop installer
         if: ${{ inputs.signed_release }}
         shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           ./scripts/windows/sign-windows-artifact.ps1 `
             -ArtifactPath "target/release/ShipFlow-Desktop-Setup.exe" `
@@ -154,6 +175,9 @@ jobs:
 
       - name: Generate Windows desktop release evidence
         if: ${{ inputs.signed_release }}
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
         run: node scripts/generate-release-evidence.mjs desktop windows distribution target/release/shipflow-desktop-windows-distribution.evidence.json
 
       - name: Verify Windows desktop release evidence

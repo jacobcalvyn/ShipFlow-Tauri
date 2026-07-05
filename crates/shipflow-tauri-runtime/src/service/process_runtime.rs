@@ -26,8 +26,6 @@ use windows_sys::Win32::{
     System::Threading::CreateMutexW,
 };
 
-use base64::Engine as _;
-
 use super::{
     state_store::{
         claim_service_tray_launch_lock, clear_desktop_activation_request,
@@ -249,19 +247,12 @@ pub(super) fn request_service_settings_activation_and_wait(
     Ok(())
 }
 
-pub fn spawn_service_process(config: &ApiServiceConfig) -> Result<u32, String> {
+pub fn spawn_service_process(_config: &ApiServiceConfig) -> Result<u32, String> {
     let executable = resolve_service_companion_executable()?;
-    let encoded_config = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        serde_json::to_vec(config)
-            .map_err(|error| format!("Unable to serialize API service configuration: {error}"))?,
-    );
-
     let mut command = Command::new(executable);
     prepare_background_command(&mut command);
     let child = command
         .arg(SERVICE_PROCESS_FLAG)
-        .arg(super::SERVICE_CONFIG_ARG)
-        .arg(encoded_config)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -10,8 +10,6 @@ use std::{
     time::Duration,
 };
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use self::http_api::run_service_process;
@@ -36,8 +34,9 @@ use self::runtime_config::{
 #[cfg(target_os = "windows")]
 use self::state_store::clear_recorded_service_settings_pid;
 use self::state_store::{
-    load_desktop_service_config, load_saved_config, persist_desktop_service_config,
-    persist_runtime_config, persist_saved_config, persist_service_pid, read_recorded_pid,
+    load_desktop_service_config, load_runtime_config, load_saved_config,
+    persist_desktop_service_config, persist_runtime_config, persist_saved_config,
+    persist_service_pid, read_recorded_pid,
 };
 use self::tray_runtime::run_service_tray_app;
 use crate::tracking::model::{TrackingSource, TrackingSourceConfig};
@@ -54,7 +53,6 @@ const SERVICE_PROCESS_FLAG: &str = "--shipflow-service-process";
 const SERVICE_AUTOSTART_FLAG: &str = "--shipflow-service-autostart";
 const SERVICE_TRAY_FLAG: &str = "--shipflow-service-tray";
 const SERVICE_OPEN_SETTINGS_FLAG: &str = "--shipflow-service-open-settings";
-const SERVICE_CONFIG_ARG: &str = "--service-config-base64";
 pub use shipflow_service_runtime::SERVICE_STATUS_PRODUCT;
 pub const SERVICE_STATE_DIR_NAME: &str = "shipflow-service-runtime";
 const SERVICE_CONFIG_FILE_NAME: &str = "config.json";
@@ -224,6 +222,7 @@ impl ApiServiceController {
             }
         }
 
+        persist_runtime_config(&config)?;
         stop_service_process();
         let pid = spawn_service_process(&config)?;
         persist_service_pid(pid)?;
@@ -244,7 +243,6 @@ impl ApiServiceController {
                 .unwrap_or_else(|| "API service configuration failed.".into()));
         }
 
-        persist_runtime_config(&config)?;
         persist_saved_config(&config)?;
         let status = running_status(&config);
         self.set_status(status.clone());
@@ -506,17 +504,10 @@ pub fn stop_service_settings_companion() {
 
 pub fn maybe_run_service_process_from_current_args() -> Result<bool, String> {
     let mut is_service_process = false;
-    let mut encoded_config: Option<String> = None;
-    let mut args = env::args().skip(1);
 
-    while let Some(argument) = args.next() {
+    for argument in env::args().skip(1) {
         if argument == SERVICE_PROCESS_FLAG {
             is_service_process = true;
-            continue;
-        }
-
-        if argument == SERVICE_CONFIG_ARG {
-            encoded_config = args.next();
         }
     }
 
@@ -524,13 +515,8 @@ pub fn maybe_run_service_process_from_current_args() -> Result<bool, String> {
         return Ok(false);
     }
 
-    let encoded_config = encoded_config
-        .ok_or_else(|| "Service process configuration argument is required.".to_string())?;
-    let config_bytes = URL_SAFE_NO_PAD
-        .decode(encoded_config)
-        .map_err(|error| format!("Unable to decode service process configuration: {error}"))?;
-    let config: ApiServiceConfig = serde_json::from_slice(&config_bytes)
-        .map_err(|error| format!("Unable to parse service process configuration: {error}"))?;
+    let config = load_runtime_config()?
+        .ok_or_else(|| "Service process runtime configuration is required.".to_string())?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

@@ -1043,6 +1043,11 @@ export function loadStoredStringArray(storageKey: string, fallback: string[]) {
   }
 }
 
+function shouldNeutralizeCsvFormula(value: string) {
+  return /^[=+\-@\t\r\n]/u.test(value) || /^[ \t\r\n]+[=+\-@]/u.test(value);
+}
+
 export function buildCsvValue(value: string) {
-  return `"${value.replace(/"/g, '""')}"`;
+  const safeValue = shouldNeutralizeCsvFormula(value) ? `'${value}` : value;
+  return `"${safeValue.replace(/"/g, '""')}"`;
 }

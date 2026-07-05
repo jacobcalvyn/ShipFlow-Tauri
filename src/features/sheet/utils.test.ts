@@ -8,6 +8,7 @@ import {
 import { SheetRow, TrackResponse } from "./types";
 import {
   assertValidSheetState,
+  buildCsvValue,
   compareRows,
   ensureTrailingEmptyRows,
   formatColumnValue,
@@ -73,6 +74,17 @@ function formatDateDaysAgo(daysAgo: number) {
 }
 
 describe("sheet utils", () => {
+  it("neutralizes spreadsheet formula values when building CSV", () => {
+    expect(buildCsvValue("=cmd|' /C calc'!A0")).toBe("\"'=cmd|' /C calc'!A0\"");
+    expect(buildCsvValue("+SUM(A1:A2)")).toBe("\"'+SUM(A1:A2)\"");
+    expect(buildCsvValue("-10+20")).toBe("\"'-10+20\"");
+    expect(buildCsvValue("@HYPERLINK(\"https://example.test\")")).toBe(
+      "\"'@HYPERLINK(\"\"https://example.test\"\")\""
+    );
+    expect(buildCsvValue("  =SUM(A1:A2)")).toBe("\"'  =SUM(A1:A2)\"");
+    expect(buildCsvValue("regular value")).toBe("\"regular value\"");
+  });
+
   it("ensures a minimum number of trailing empty rows", () => {
     const rows = [
       createRow({ key: "filled", trackingInput: "P2601" }),

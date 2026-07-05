@@ -16,11 +16,7 @@ use shipflow_core::{
     },
     upstream::resolve_tracking_html_request,
 };
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use std::time::{Duration, Instant};
 
 use crate::api_contract::{
     envelope, error_response_v1, generate_request_id, REQUEST_ID_HEADER_NAME,
@@ -36,9 +32,11 @@ use crate::model::{
 };
 use crate::openapi::service_openapi_document;
 use crate::persistent_store::PersistentLookupStore;
+use crate::upstream_backpressure::{UpstreamBackpressure, UpstreamBackpressureError};
 use crate::FORCE_REFRESH_HEADER_NAME;
 
 const STATUS_SCHEMA_VERSION: &str = "shipflow.service.status.v1";
+const AUTH_CHECK_SCHEMA_VERSION: &str = "shipflow.service.auth_check.v1";
 const CAPABILITIES_SCHEMA_VERSION: &str = "shipflow.service.capabilities.v1";
 const TRACK_SCHEMA_VERSION: &str = "shipflow.tracking.detail.v1";
 const TRACK_HTML_SCHEMA_VERSION: &str = "shipflow.tracking.html.v1";
@@ -47,7 +45,6 @@ const MANIFEST_SCHEMA_VERSION: &str = "shipflow.tracking.manifest.v1";
 const SERVICE_UPSTREAM_CONNECT_TIMEOUT_SECS: u64 = 10;
 const SERVICE_UPSTREAM_READ_TIMEOUT_SECS: u64 = 60;
 const SERVICE_UPSTREAM_REQUEST_TIMEOUT_SECS: u64 = 90;
-const MAX_CONCURRENT_UPSTREAM_LOOKUPS: usize = 15;
 
 #[derive(Clone)]
 pub struct HttpApiState {
@@ -59,7 +56,7 @@ pub struct HttpApiState {
     pub tracking_source: shipflow_core::model::TrackingSourceConfig,
     pub lookup_cache: LookupCacheState,
     pub contact_cache: ContactCacheState,
-    pub upstream_lookup_limiter: Arc<Semaphore>,
+    pub upstream_backpressure: UpstreamBackpressure,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +67,14 @@ struct StatusResponse {
     mode: ServiceRuntimeMode,
     bind_address: String,
     port: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthCheckResponse {
+    product: &'static str,
+    auth: &'static str,
+    status: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -115,7 +120,7 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
         lookup_cache: LookupCacheState::default()
             .with_persistent_store(PersistentLookupStore::open_default()),
         contact_cache: ContactCacheState::default(),
-        upstream_lookup_limiter: Arc::new(Semaphore::new(MAX_CONCURRENT_UPSTREAM_LOOKUPS)),
+        upstream_backpressure: UpstreamBackpressure::default(),
     };
     let router = build_router(app_state);
 
@@ -127,6 +132,7 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
 fn build_router(app_state: HttpApiState) -> Router {
     Router::new()
         .route("/v1/status", get(v1_status_handler))
+        .route("/v1/auth/check", get(v1_auth_check_handler))
         .route("/v1/openapi.json", get(v1_openapi_handler))
         .route("/v1/capabilities", get(v1_capabilities_handler))
         .route("/v1/track/:shipment_id/html", get(v1_tracking_html_handler))
@@ -144,19 +150,38 @@ async fn v1_status_handler(
     (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
 > {
     let request_id = authorize_request_id(&headers);
+    Ok(envelope(
+        STATUS_SCHEMA_VERSION,
+        request_id,
+        status_response(&state),
+    ))
+}
+
+async fn v1_auth_check_handler(
+    State(state): State<HttpApiState>,
+    headers: HeaderMap,
+) -> Result<
+    Json<crate::api_contract::ApiEnvelope<AuthCheckResponse>>,
+    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
+> {
+    let request_id = authorize_request_id(&headers);
     authorize_request_message(&headers, &state.auth_token).map_err(|message| {
         error_response_v1(
             StatusCode::UNAUTHORIZED,
-            STATUS_SCHEMA_VERSION,
+            AUTH_CHECK_SCHEMA_VERSION,
             request_id.clone(),
             &message,
         )
     })?;
 
     Ok(envelope(
-        STATUS_SCHEMA_VERSION,
+        AUTH_CHECK_SCHEMA_VERSION,
         request_id,
-        status_response(&state),
+        AuthCheckResponse {
+            product: SERVICE_STATUS_PRODUCT,
+            auth: "bearer",
+            status: "ok",
+        },
     ))
 }
 
@@ -188,6 +213,7 @@ async fn v1_capabilities_handler(
             routes: vec![
                 "GET /v1/openapi.json",
                 "GET /v1/status",
+                "GET /v1/auth/check",
                 "GET /v1/capabilities",
                 "GET /v1/track/:shipment_id",
                 "GET /v1/track/:shipment_id/html",
@@ -430,36 +456,44 @@ async fn acquire_upstream_lookup_permit(
     request_id: &str,
     route: &str,
     lookup_id: &str,
-) -> Result<OwnedSemaphorePermit, (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>)> {
-    let queued_for_permit = state.upstream_lookup_limiter.available_permits() == 0;
-    let permit_started_at = Instant::now();
-    let permit = state
-        .upstream_lookup_limiter
-        .clone()
-        .acquire_owned()
+) -> Result<
+    tokio::sync::OwnedSemaphorePermit,
+    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
+> {
+    state
+        .upstream_backpressure
+        .acquire(route, lookup_id, request_id)
         .await
-        .map_err(|_| {
-            error_response_v1(
-                StatusCode::SERVICE_UNAVAILABLE,
-                schema_version,
-                request_id.to_owned(),
-                "Upstream lookup limiter is unavailable.",
-            )
-        })?;
-    let permit_wait_ms = permit_started_at.elapsed().as_millis();
-    if queued_for_permit || permit_wait_ms > 0 {
-        eprintln!(
-            "[ShipFlowBackpressure] service_upstream_lookup_permit route={} id={} requestId={} queued={} waitMs={} limit={}",
-            route,
-            lookup_id,
-            request_id,
-            queued_for_permit,
-            permit_wait_ms,
-            MAX_CONCURRENT_UPSTREAM_LOOKUPS
-        );
-    }
+        .map_err(|error| map_upstream_backpressure_error(error, schema_version, request_id))
+}
 
-    Ok(permit)
+fn map_upstream_backpressure_error(
+    error: UpstreamBackpressureError,
+    schema_version: &'static str,
+    request_id: &str,
+) -> (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>) {
+    match error {
+        UpstreamBackpressureError::QueueFull { depth } => error_response_v1(
+            StatusCode::TOO_MANY_REQUESTS,
+            schema_version,
+            request_id.to_owned(),
+            &format!(
+                "Too many upstream lookup requests are already queued ({depth}). Please retry shortly."
+            ),
+        ),
+        UpstreamBackpressureError::LimiterUnavailable => error_response_v1(
+            StatusCode::SERVICE_UNAVAILABLE,
+            schema_version,
+            request_id.to_owned(),
+            "Upstream lookup limiter is unavailable.",
+        ),
+        UpstreamBackpressureError::Timeout => error_response_v1(
+            StatusCode::SERVICE_UNAVAILABLE,
+            schema_version,
+            request_id.to_owned(),
+            "Upstream lookup queue timed out. Please retry shortly.",
+        ),
+    }
 }
 
 fn tracking_source_label(tracking_source: &TrackingSourceConfig) -> &'static str {
@@ -553,15 +587,18 @@ mod tests {
 
     use super::{
         authorize_request_message, build_router, external_api_request, read_lookup_request_options,
-        HttpApiState, MAX_CONCURRENT_UPSTREAM_LOOKUPS,
+        HttpApiState,
     };
     use std::sync::Arc;
     use tokio::sync::Semaphore;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::Duration;
 
     use crate::{
-        contact_cache::ContactCacheState, lookup_cache::LookupCacheState,
-        model::ServiceRuntimeMode, FORCE_REFRESH_HEADER_NAME,
+        contact_cache::ContactCacheState,
+        lookup_cache::LookupCacheState,
+        model::ServiceRuntimeMode,
+        upstream_backpressure::{UpstreamBackpressure, MAX_CONCURRENT_UPSTREAM_LOOKUPS},
+        FORCE_REFRESH_HEADER_NAME,
     };
 
     #[test]
@@ -626,10 +663,6 @@ mod tests {
             "/track/P2603310114291",
             "/bag/PID1",
             "/manifest/MAN1",
-            "/v1/jobs/track-batch",
-            "/v1/jobs/job_123",
-            "/v1/jobs/job_123/result",
-            "/v1/jobs/job_123/cancel",
         ] {
             let response = router
                 .clone()
@@ -680,6 +713,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn status_identity_is_available_without_bearer_token() {
+        let router = build_router(test_state());
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["data"]["product"], "shipflow-service");
+        assert_eq!(payload["data"]["service"], "running");
+    }
+
+    #[tokio::test]
+    async fn auth_check_requires_bearer_token() {
+        let router = build_router(test_state());
+        let unauthenticated = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/auth/check")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let authenticated = router
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/auth/check")
+                    .header(AUTHORIZATION, "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authenticated.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn rejects_unauthenticated_openapi_document() {
         let router = build_router(test_state());
         let response = router
@@ -720,9 +802,6 @@ mod tests {
         assert!(routes
             .iter()
             .any(|route| route == "GET /v1/track/:shipment_id/html"));
-        assert!(!routes.iter().any(|route| route
-            .as_str()
-            .is_some_and(|route| route.contains("/v1/jobs"))));
     }
 
     #[tokio::test]
@@ -754,7 +833,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upstream_lookup_routes_wait_for_shared_limiter() {
+    async fn upstream_lookup_routes_return_backpressure_when_queue_is_full() {
         for uri in [
             "/v1/track/P2603310114291/html",
             "/v1/bag/PID1",
@@ -766,24 +845,24 @@ mod tests {
                 .acquire_owned()
                 .await
                 .expect("test permit should acquire");
-            let router = build_router(external_api_test_state_with_limiter(limiter, "not-a-url"));
-
-            let response = timeout(
+            let router = build_router(external_api_test_state_with_limiter(
+                limiter,
+                "not-a-url",
+                0,
                 Duration::from_millis(50),
-                router.oneshot(
+            ));
+
+            let response = router
+                .oneshot(
                     Request::builder()
                         .uri(uri)
                         .header(AUTHORIZATION, "Bearer secret-token")
                         .body(Body::empty())
                         .unwrap(),
-                ),
-            )
-            .await;
+                )
+                .await;
 
-            assert!(
-                response.is_err(),
-                "{uri} should wait for upstream lookup permit"
-            );
+            assert_eq!(response.unwrap().status(), StatusCode::TOO_MANY_REQUESTS);
             drop(held_permit);
         }
     }
@@ -798,7 +877,7 @@ mod tests {
             tracking_source: TrackingSourceConfig::default(),
             lookup_cache: LookupCacheState::default(),
             contact_cache: ContactCacheState::default(),
-            upstream_lookup_limiter: Arc::new(Semaphore::new(MAX_CONCURRENT_UPSTREAM_LOOKUPS)),
+            upstream_backpressure: UpstreamBackpressure::default(),
         }
     }
 
@@ -817,6 +896,8 @@ mod tests {
     fn external_api_test_state_with_limiter(
         limiter: Arc<Semaphore>,
         external_api_base_url: &str,
+        max_queued: usize,
+        permit_timeout: Duration,
     ) -> HttpApiState {
         HttpApiState {
             tracking_source: TrackingSourceConfig {
@@ -825,7 +906,12 @@ mod tests {
                 external_api_auth_token: "sf_token".into(),
                 allow_insecure_external_api_http: true,
             },
-            upstream_lookup_limiter: limiter,
+            upstream_backpressure: UpstreamBackpressure::with_limiter(
+                limiter,
+                MAX_CONCURRENT_UPSTREAM_LOOKUPS,
+                max_queued,
+                permit_timeout,
+            ),
             ..test_state()
         }
     }

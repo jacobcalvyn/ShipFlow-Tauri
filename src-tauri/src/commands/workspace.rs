@@ -31,16 +31,24 @@ pub fn pick_workspace_document_path(
 }
 
 #[tauri::command]
-pub fn read_workspace_document(path: String) -> Result<WorkspaceDocumentReadResult, String> {
-    read_workspace_document_file(path)
+pub fn read_workspace_document(
+    window: tauri::Window,
+    registry: tauri::State<'_, WorkspaceDocumentRegistryState>,
+    path: String,
+) -> Result<WorkspaceDocumentReadResult, String> {
+    let claimed_path = registry.ensure_window_claims_path(window.label(), &path)?;
+    read_workspace_document_file(claimed_path)
 }
 
 #[tauri::command]
 pub fn write_workspace_document(
+    window: tauri::Window,
+    registry: tauri::State<'_, WorkspaceDocumentRegistryState>,
     path: String,
     document: WorkspaceDocumentFile,
 ) -> Result<WorkspaceDocumentWriteResult, String> {
-    write_workspace_document_file(path, document)
+    let claimed_path = registry.ensure_window_claims_path(window.label(), &path)?;
+    write_workspace_document_file(claimed_path, document)
 }
 
 #[tauri::command]
