@@ -1,4 +1,4 @@
-import { Dispatch, MutableRefObject, SetStateAction, useCallback, useEffect } from "react";
+import { Dispatch, MutableRefObject, SetStateAction, useCallback, useEffect, useRef } from "react";
 import { flushSync } from "react-dom";
 import { exportWorkspaceCsv } from "../../backend/commands";
 import { COLUMNS } from "../sheet/columns";
@@ -57,6 +57,7 @@ const CSV_EXCLUDED_COLUMN_PATHS = new Set([
   "history_summary.delivery_runsheet",
 ]);
 const CSV_RUST_EXPORT_WINDOW_LIMIT = 1_000;
+const TRACKING_PROGRESS_ENGINE_SYNC_DELAY_MS = 120;
 
 function createWorkspaceTrackingRunId(sheetId: string, reason: string) {
   return `${sheetId}:workspace-${reason}:${Date.now()}:${Math.random()
@@ -261,6 +262,9 @@ export function useWorkspaceCommandsController({
   refreshTrackingRows,
   onWorkspaceEngineMutation,
 }: UseWorkspaceCommandsControllerOptions) {
+  const trackingProgressEngineSyncTimeoutRef = useRef<number | null>(null);
+  const trackingProgressEngineSyncSheetIdsRef = useRef<Set<string>>(new Set());
+
   const updateSheetById = useCallback(
     (sheetId: string, updater: (sheetState: SheetState) => SheetState) => {
       setWorkspaceState((current) => {
@@ -284,6 +288,63 @@ export function useWorkspaceCommandsController({
       });
     },
     [setWorkspaceState]
+  );
+
+  const scheduleTrackingProgressEngineSync = useCallback(
+    (sheetId: string) => {
+      if (!onWorkspaceEngineMutation) {
+        return;
+      }
+
+      trackingProgressEngineSyncSheetIdsRef.current.add(sheetId);
+      if (trackingProgressEngineSyncTimeoutRef.current !== null) {
+        return;
+      }
+
+      trackingProgressEngineSyncTimeoutRef.current = window.setTimeout(() => {
+        trackingProgressEngineSyncTimeoutRef.current = null;
+        const sheetIds = Array.from(trackingProgressEngineSyncSheetIdsRef.current);
+        trackingProgressEngineSyncSheetIdsRef.current.clear();
+        if (sheetIds.length === 0) {
+          return;
+        }
+        onWorkspaceEngineMutation(sheetIds.length === 1 ? sheetIds[0] : sheetIds);
+      }, TRACKING_PROGRESS_ENGINE_SYNC_DELAY_MS);
+    },
+    [onWorkspaceEngineMutation]
+  );
+
+  const flushTrackingProgressEngineSync = useCallback(
+    (sheetId: string) => {
+      if (!onWorkspaceEngineMutation) {
+        return;
+      }
+
+      trackingProgressEngineSyncSheetIdsRef.current.add(sheetId);
+      if (trackingProgressEngineSyncTimeoutRef.current !== null) {
+        window.clearTimeout(trackingProgressEngineSyncTimeoutRef.current);
+        trackingProgressEngineSyncTimeoutRef.current = null;
+      }
+
+      const sheetIds = Array.from(trackingProgressEngineSyncSheetIdsRef.current);
+      trackingProgressEngineSyncSheetIdsRef.current.clear();
+      if (sheetIds.length === 0) {
+        return;
+      }
+      onWorkspaceEngineMutation(sheetIds.length === 1 ? sheetIds[0] : sheetIds);
+    },
+    [onWorkspaceEngineMutation]
+  );
+
+  useEffect(
+    () => () => {
+      if (trackingProgressEngineSyncTimeoutRef.current !== null) {
+        window.clearTimeout(trackingProgressEngineSyncTimeoutRef.current);
+        trackingProgressEngineSyncTimeoutRef.current = null;
+      }
+      trackingProgressEngineSyncSheetIdsRef.current.clear();
+    },
+    []
   );
 
   const copySelectedTrackingIds = useCallback(() => {
@@ -397,6 +458,9 @@ export function useWorkspaceCommandsController({
                 runId: trackingRunId,
               })
             );
+            if (event.payload.row.rowStatus !== "pending") {
+              scheduleTrackingProgressEngineSync(targetSheetId);
+            }
           }
         }
       )
@@ -416,7 +480,7 @@ export function useWorkspaceCommandsController({
               )
             );
           }
-          onWorkspaceEngineMutation?.(targetSheetId);
+          flushTrackingProgressEngineSync(targetSheetId);
 
           showNotice({
             tone: refreshResult.payload.failedCount > 0 ? "error" : "success",
@@ -454,10 +518,11 @@ export function useWorkspaceCommandsController({
     disarmDeleteAll,
     retryFailedEntries,
     refreshTrackingRows,
+    flushTrackingProgressEngineSync,
     rustExportRowsQuery,
+    scheduleTrackingProgressEngineSync,
     showNotice,
     updateSheetById,
-    onWorkspaceEngineMutation,
   ]);
 
   const clearHiddenFilters = useCallback(() => {
@@ -661,6 +726,9 @@ export function useWorkspaceCommandsController({
                     runId: trackingRunId,
                   })
                 );
+                if (event.payload.row.rowStatus !== "pending") {
+                  scheduleTrackingProgressEngineSync(targetSheetId);
+                }
               }
             }
           );
@@ -684,7 +752,7 @@ export function useWorkspaceCommandsController({
               )
             );
           }
-          onWorkspaceEngineMutation?.(targetSheetId);
+          flushTrackingProgressEngineSync(targetSheetId);
 
           showNotice({
             tone: refreshResult.payload.failedCount > 0 ? "error" : "success",
@@ -728,10 +796,11 @@ export function useWorkspaceCommandsController({
     activeSheetId,
     retrackableRows,
     refreshTrackingRows,
+    flushTrackingProgressEngineSync,
     rustExportRowsQuery,
+    scheduleTrackingProgressEngineSync,
     showNotice,
     updateSheetById,
-    onWorkspaceEngineMutation,
     workspaceRef,
   ]);
 

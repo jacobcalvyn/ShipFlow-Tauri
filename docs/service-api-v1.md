@@ -277,7 +277,7 @@ curl \
 
 ## Upstream Lookup Backpressure
 
-Bulk tracking is intentionally driven through bounded direct `GET /v1/track/:shipment_id` requests. ShipFlow Service applies a shared 15-permit concurrency gate to every Service route that can perform upstream scraping: direct tracking, raw tracking HTML, bag lookup, and manifest lookup.
+Bulk tracking is intentionally driven through bounded direct `GET /v1/track/:shipment_id` requests. ShipFlow Service applies a shared 30-permit concurrency gate and a 120-request queue to every Service route that can perform upstream scraping: direct tracking, raw tracking HTML, bag lookup, and manifest lookup. Cached lookup hits and coalesced in-flight waiters do not consume an upstream permit; only the actual upstream fetch does.
 
 Additional upstream lookup requests wait for the next Service permit instead of creating extra upstream pressure. Runtime logs include `[ShipFlowBackpressure]` when a request had to wait for an upstream lookup permit.
 

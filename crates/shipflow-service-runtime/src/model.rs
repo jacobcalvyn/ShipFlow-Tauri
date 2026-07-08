@@ -48,6 +48,8 @@ pub fn validate_service_runtime_config(config: &ServiceRuntimeConfig) -> Result<
     validate_tracking_source_config(&config.tracking_source).map_err(|error| match error {
         TrackingError::BadRequest(message)
         | TrackingError::NotFound(message)
+        | TrackingError::RateLimited(message)
+        | TrackingError::ServiceUnavailable(message)
         | TrackingError::Upstream(message) => message,
     })?;
 

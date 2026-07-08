@@ -11,8 +11,8 @@ use tokio::{
     time::timeout,
 };
 
-pub const MAX_CONCURRENT_UPSTREAM_LOOKUPS: usize = 15;
-const MAX_QUEUED_UPSTREAM_LOOKUPS: usize = 60;
+pub const MAX_CONCURRENT_UPSTREAM_LOOKUPS: usize = 30;
+const MAX_QUEUED_UPSTREAM_LOOKUPS: usize = 120;
 const UPSTREAM_LOOKUP_PERMIT_TIMEOUT_SECS: u64 = 15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

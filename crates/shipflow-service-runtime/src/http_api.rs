@@ -265,14 +265,9 @@ async fn v1_track_handler(
     let response_request_id = request_id.clone();
     let request_options = read_lookup_request_options(&headers);
     let normalized_id = shipment_id.trim().to_string();
-    let _upstream_lookup_permit = acquire_upstream_lookup_permit(
-        &state,
-        TRACK_SCHEMA_VERSION,
-        &request_id,
-        "v1",
-        &normalized_id,
-    )
-    .await?;
+    let backpressure = state.upstream_backpressure.clone();
+    let permit_request_id = request_id.clone();
+    let permit_lookup_id = normalized_id.clone();
 
     let result = resolve_tracking_request_cached(
         &state.lookup_cache,
@@ -281,6 +276,12 @@ async fn v1_track_handler(
         &state.tracking_source,
         &normalized_id,
         request_options,
+        move || async move {
+            backpressure
+                .acquire("v1", &permit_lookup_id, &permit_request_id)
+                .await
+                .map_err(tracking_error_from_upstream_backpressure)
+        },
     )
     .await;
     log_service_tracking_timing(
@@ -362,14 +363,9 @@ async fn v1_bag_handler(
     let response_request_id = request_id.clone();
     let request_options = read_lookup_request_options(&headers);
     let normalized_id = bag_id.trim().to_string();
-    let _upstream_lookup_permit = acquire_upstream_lookup_permit(
-        &state,
-        BAG_SCHEMA_VERSION,
-        &request_id,
-        "v1_bag",
-        &normalized_id,
-    )
-    .await?;
+    let backpressure = state.upstream_backpressure.clone();
+    let permit_request_id = request_id.clone();
+    let permit_lookup_id = normalized_id.clone();
 
     resolve_bag_request_cached(
         &state.lookup_cache,
@@ -377,6 +373,12 @@ async fn v1_bag_handler(
         &state.tracking_source,
         &normalized_id,
         request_options,
+        move || async move {
+            backpressure
+                .acquire("v1_bag", &permit_lookup_id, &permit_request_id)
+                .await
+                .map_err(tracking_error_from_upstream_backpressure)
+        },
     )
     .await
     .map(|payload| envelope(BAG_SCHEMA_VERSION, response_request_id, payload))
@@ -403,14 +405,9 @@ async fn v1_manifest_handler(
     let response_request_id = request_id.clone();
     let request_options = read_lookup_request_options(&headers);
     let normalized_id = manifest_id.trim().to_string();
-    let _upstream_lookup_permit = acquire_upstream_lookup_permit(
-        &state,
-        MANIFEST_SCHEMA_VERSION,
-        &request_id,
-        "v1_manifest",
-        &normalized_id,
-    )
-    .await?;
+    let backpressure = state.upstream_backpressure.clone();
+    let permit_request_id = request_id.clone();
+    let permit_lookup_id = normalized_id.clone();
 
     resolve_manifest_request_cached(
         &state.lookup_cache,
@@ -418,6 +415,12 @@ async fn v1_manifest_handler(
         &state.tracking_source,
         &normalized_id,
         request_options,
+        move || async move {
+            backpressure
+                .acquire("v1_manifest", &permit_lookup_id, &permit_request_id)
+                .await
+                .map_err(tracking_error_from_upstream_backpressure)
+        },
     )
     .await
     .map(|payload| envelope(MANIFEST_SCHEMA_VERSION, response_request_id, payload))
@@ -496,6 +499,20 @@ fn map_upstream_backpressure_error(
     }
 }
 
+fn tracking_error_from_upstream_backpressure(error: UpstreamBackpressureError) -> TrackingError {
+    match error {
+        UpstreamBackpressureError::QueueFull { depth } => TrackingError::RateLimited(format!(
+            "Too many upstream lookup requests are already queued ({depth}). Please retry shortly."
+        )),
+        UpstreamBackpressureError::LimiterUnavailable => {
+            TrackingError::ServiceUnavailable("Upstream lookup limiter is unavailable.".into())
+        }
+        UpstreamBackpressureError::Timeout => TrackingError::ServiceUnavailable(
+            "Upstream lookup queue timed out. Please retry shortly.".into(),
+        ),
+    }
+}
+
 fn tracking_source_label(tracking_source: &TrackingSourceConfig) -> &'static str {
     match tracking_source.tracking_source {
         TrackingSource::Default => "internal",
@@ -538,6 +555,18 @@ fn map_tracking_error_v1(
         TrackingError::NotFound(message) => {
             error_response_v1(StatusCode::NOT_FOUND, schema_version, request_id, &message)
         }
+        TrackingError::RateLimited(message) => error_response_v1(
+            StatusCode::TOO_MANY_REQUESTS,
+            schema_version,
+            request_id,
+            &message,
+        ),
+        TrackingError::ServiceUnavailable(message) => error_response_v1(
+            StatusCode::SERVICE_UNAVAILABLE,
+            schema_version,
+            request_id,
+            &message,
+        ),
         TrackingError::Upstream(message) => error_response_v1(
             StatusCode::BAD_GATEWAY,
             schema_version,
@@ -835,6 +864,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_lookup_routes_return_backpressure_when_queue_is_full() {
         for uri in [
+            "/v1/track/P2603310114291",
             "/v1/track/P2603310114291/html",
             "/v1/bag/PID1",
             "/v1/manifest/MAN1",

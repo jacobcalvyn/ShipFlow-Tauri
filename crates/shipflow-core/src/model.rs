@@ -285,6 +285,8 @@ pub struct ManifestResponse {
 pub enum TrackingError {
     BadRequest(String),
     NotFound(String),
+    RateLimited(String),
+    ServiceUnavailable(String),
     Upstream(String),
 }
 

@@ -239,6 +239,8 @@ async fn fetch_lookup_via_service<T: DeserializeOwned>(
     match status.as_u16() {
         400 => Err(tracking::model::TrackingError::BadRequest(message)),
         404 => Err(tracking::model::TrackingError::NotFound(message)),
+        429 => Err(tracking::model::TrackingError::RateLimited(message)),
+        503 => Err(tracking::model::TrackingError::ServiceUnavailable(message)),
         _ => Err(tracking::model::TrackingError::Upstream(message)),
     }
 }

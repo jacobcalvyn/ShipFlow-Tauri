@@ -68,6 +68,8 @@ async fn track_bag(
     .map_err(|error| match error {
         crate::tracking::model::TrackingError::BadRequest(message)
         | crate::tracking::model::TrackingError::NotFound(message)
+        | crate::tracking::model::TrackingError::RateLimited(message)
+        | crate::tracking::model::TrackingError::ServiceUnavailable(message)
         | crate::tracking::model::TrackingError::Upstream(message) => {
             log_runtime_event("ERROR", format!("[ShipFlowBackend] {context} {message}"));
             format!("{context} {message}")
@@ -108,6 +110,8 @@ async fn track_manifest(
     .map_err(|error| match error {
         crate::tracking::model::TrackingError::BadRequest(message)
         | crate::tracking::model::TrackingError::NotFound(message)
+        | crate::tracking::model::TrackingError::RateLimited(message)
+        | crate::tracking::model::TrackingError::ServiceUnavailable(message)
         | crate::tracking::model::TrackingError::Upstream(message) => {
             log_runtime_event("ERROR", format!("[ShipFlowBackend] {context} {message}"));
             format!("{context} {message}")

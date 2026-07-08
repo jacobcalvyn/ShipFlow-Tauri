@@ -451,6 +451,8 @@ async fn read_external_api_tracking_response(
         return Err(match status {
             StatusCode::BAD_REQUEST => TrackingError::BadRequest(message),
             StatusCode::NOT_FOUND => TrackingError::NotFound(message),
+            StatusCode::TOO_MANY_REQUESTS => TrackingError::RateLimited(message),
+            StatusCode::SERVICE_UNAVAILABLE => TrackingError::ServiceUnavailable(message),
             _ => TrackingError::Upstream(format!("External API returned HTTP {status}: {message}")),
         });
     }
@@ -491,6 +493,8 @@ async fn read_external_api_json_response<T>(
         return Err(match status {
             StatusCode::BAD_REQUEST => TrackingError::BadRequest(message),
             StatusCode::NOT_FOUND => TrackingError::NotFound(message),
+            StatusCode::TOO_MANY_REQUESTS => TrackingError::RateLimited(message),
+            StatusCode::SERVICE_UNAVAILABLE => TrackingError::ServiceUnavailable(message),
             _ => TrackingError::Upstream(format!("External API returned HTTP {status}: {message}")),
         });
     }
@@ -555,6 +559,8 @@ async fn read_external_api_status_response(response: Response) -> Result<String,
         return Err(match status {
             StatusCode::BAD_REQUEST => TrackingError::BadRequest(message),
             StatusCode::NOT_FOUND => TrackingError::NotFound(message),
+            StatusCode::TOO_MANY_REQUESTS => TrackingError::RateLimited(message),
+            StatusCode::SERVICE_UNAVAILABLE => TrackingError::ServiceUnavailable(message),
             _ => TrackingError::Upstream(format!("External API returned HTTP {status}: {message}")),
         });
     }

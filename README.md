@@ -153,12 +153,12 @@ Use the OpenAPI document as the source of truth for generated clients or agent t
 
 Bulk tracking clients should use direct `GET /v1/track/:shipment_id` calls.
 
-ShipFlow Service protects every upstream lookup path with a shared 15-permit concurrency gate, so multiple clients can share parallel tracking without creating unbounded upstream scraping pressure. The gate covers direct tracking, raw tracking HTML, bag lookup, and manifest lookup.
+ShipFlow Service protects every upstream lookup path with a shared 30-permit concurrency gate, so multiple clients can share parallel tracking without creating unbounded upstream scraping pressure. The gate covers direct tracking, raw tracking HTML, bag lookup, and manifest lookup.
 
 Upstream lookup guardrails:
 
-- at most 15 active upstream lookups run through the Service backpressure gate
-- additional direct tracking, HTML, bag, and manifest requests wait for the next permit instead of creating extra upstream pressure
+- at most 30 active upstream lookups run through the Service backpressure gate
+- up to 120 additional direct tracking, HTML, bag, and manifest requests wait for the next permit instead of creating extra upstream pressure
 - lookup cache and in-flight request coalescing still apply inside the Service runtime
 
 ## JSON Shape
@@ -404,7 +404,7 @@ The main table currently focuses on:
 - `Delete All` resets rows, filters, value filters, sort state, and in-flight tracking work so the table returns to a clean input state.
 - `Lacak Ulang` marks all target rows as queued first, then promotes only the active worker row to loading while preserving completed/failed row status.
 - Batch tracking refreshes carry a per-sheet `runId`; stale progress/results from cancelled, deleted, or superseded runs are ignored so old events cannot restore deleted rows or downgrade completed rows back to pending.
-- Batch tracking progress updates local row runtime state only; Rust row-window/cache mutation is emitted after the batch result settles, not once per row progress event.
+- Batch tracking progress updates local row runtime state immediately and emits debounced Rust row-window/cache mutations for active or settled rows, so visible rows can update during long refresh runs without waiting for the full batch to finish.
 - Sheet duplication deep-copies analytics arrays and aggregation maps, so the duplicate sheet cannot mutate the source sheet's pivot configuration by shared reference.
 - Workspace persistence repairs duplicate persisted sheet IDs, duplicate row keys, and duplicate selected row keys during load instead of allowing corrupted saved state to destabilize the workspace.
 - Legacy persisted `cod_total` value aggregations are migrated to the current `Total COD` analytics field key.

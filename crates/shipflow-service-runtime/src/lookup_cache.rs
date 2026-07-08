@@ -121,6 +121,27 @@ enum LookupCacheAction {
     Wait(Arc<Notify>),
 }
 
+enum LookupLoaderError {
+    Cacheable(TrackingError),
+    NonCacheable(TrackingError),
+}
+
+impl LookupLoaderError {
+    fn cacheable(error: TrackingError) -> Self {
+        Self::Cacheable(error)
+    }
+
+    fn non_cacheable(error: TrackingError) -> Self {
+        Self::NonCacheable(error)
+    }
+
+    fn into_tracking_error(self) -> TrackingError {
+        match self {
+            Self::Cacheable(error) | Self::NonCacheable(error) => error,
+        }
+    }
+}
+
 #[derive(Default)]
 struct LookupCacheMetrics {
     overall: LookupCacheMetricBucket,
@@ -203,7 +224,7 @@ impl LookupCacheState {
     where
         T: Serialize + DeserializeOwned + Send,
         F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = Result<T, TrackingError>> + Send,
+        Fut: Future<Output = Result<T, LookupLoaderError>> + Send,
     {
         let cache_key = build_cache_key(kind, &source_fingerprint, &normalized_id);
         let mut loader = Some(loader);
@@ -282,7 +303,10 @@ impl LookupCacheState {
                                 None
                             }
                         },
-                        Err(error) => Some(CachedLookupEntry::error(kind, error, self.policy)),
+                        Err(LookupLoaderError::Cacheable(error)) => {
+                            Some(CachedLookupEntry::error(kind, error, self.policy))
+                        }
+                        Err(LookupLoaderError::NonCacheable(_)) => None,
                     };
 
                     if let Some(entry) = cached_entry.as_ref() {
@@ -314,7 +338,7 @@ impl LookupCacheState {
                     if let Some(summary) = metrics_summary {
                         self.log("INFO", summary);
                     }
-                    return result;
+                    return result.map_err(LookupLoaderError::into_tracking_error);
                 }
             }
         }
@@ -550,6 +574,12 @@ impl CachedLookupError {
                 kind: CachedLookupErrorKind::NotFound,
                 message: message.clone(),
             },
+            TrackingError::RateLimited(message) | TrackingError::ServiceUnavailable(message) => {
+                Self {
+                    kind: CachedLookupErrorKind::Upstream,
+                    message: message.clone(),
+                }
+            }
             TrackingError::Upstream(message) => Self {
                 kind: CachedLookupErrorKind::Upstream,
                 message: message.clone(),
@@ -739,14 +769,20 @@ fn hash_string(value: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-pub async fn resolve_tracking_request_cached(
+pub async fn resolve_tracking_request_cached<F, Fut, Permit>(
     lookup_cache: &LookupCacheState,
     contact_cache: &ContactCacheState,
     client: &reqwest::Client,
     source_config: &TrackingSourceConfig,
     shipment_id: &str,
     options: LookupRequestOptions,
-) -> Result<TrackResponse, TrackingError> {
+    acquire_fetch_permit: F,
+) -> Result<TrackResponse, TrackingError>
+where
+    F: FnOnce() -> Fut + Send,
+    Fut: Future<Output = Result<Permit, TrackingError>> + Send,
+    Permit: Send,
+{
     let normalized_shipment_id = normalize_and_validate_shipment_id(shipment_id)?;
     let source_fingerprint = source_fingerprint_for_lookup(source_config);
     let lookup_client = client.clone();
@@ -761,7 +797,12 @@ pub async fn resolve_tracking_request_cached(
             source_fingerprint,
             options,
             move || async move {
-                resolve_tracking_request(&lookup_client, &tracking_source, &lookup_id).await
+                let _permit = acquire_fetch_permit()
+                    .await
+                    .map_err(LookupLoaderError::non_cacheable)?;
+                resolve_tracking_request(&lookup_client, &tracking_source, &lookup_id)
+                    .await
+                    .map_err(LookupLoaderError::cacheable)
             },
         )
         .await?;
@@ -896,13 +937,19 @@ fn contact_phone_present(value: &Option<String>) -> bool {
     })
 }
 
-pub async fn resolve_bag_request_cached(
+pub async fn resolve_bag_request_cached<F, Fut, Permit>(
     lookup_cache: &LookupCacheState,
     client: &reqwest::Client,
     source_config: &TrackingSourceConfig,
     bag_id: &str,
     options: LookupRequestOptions,
-) -> Result<BagResponse, TrackingError> {
+    acquire_fetch_permit: F,
+) -> Result<BagResponse, TrackingError>
+where
+    F: FnOnce() -> Fut + Send,
+    Fut: Future<Output = Result<Permit, TrackingError>> + Send,
+    Permit: Send,
+{
     let normalized_bag_id = normalize_and_validate_bag_id(bag_id)?;
     let source_fingerprint = source_fingerprint_for_lookup(source_config);
     let client = client.clone();
@@ -915,18 +962,31 @@ pub async fn resolve_bag_request_cached(
             normalized_bag_id,
             source_fingerprint,
             options,
-            move || async move { resolve_bag_request(&client, &tracking_source, &lookup_id).await },
+            move || async move {
+                let _permit = acquire_fetch_permit()
+                    .await
+                    .map_err(LookupLoaderError::non_cacheable)?;
+                resolve_bag_request(&client, &tracking_source, &lookup_id)
+                    .await
+                    .map_err(LookupLoaderError::cacheable)
+            },
         )
         .await
 }
 
-pub async fn resolve_manifest_request_cached(
+pub async fn resolve_manifest_request_cached<F, Fut, Permit>(
     lookup_cache: &LookupCacheState,
     client: &reqwest::Client,
     source_config: &TrackingSourceConfig,
     manifest_id: &str,
     options: LookupRequestOptions,
-) -> Result<ManifestResponse, TrackingError> {
+    acquire_fetch_permit: F,
+) -> Result<ManifestResponse, TrackingError>
+where
+    F: FnOnce() -> Fut + Send,
+    Fut: Future<Output = Result<Permit, TrackingError>> + Send,
+    Permit: Send,
+{
     let normalized_manifest_id = normalize_and_validate_manifest_id(manifest_id)?;
     let source_fingerprint = source_fingerprint_for_lookup(source_config);
     let client = client.clone();
@@ -940,7 +1000,12 @@ pub async fn resolve_manifest_request_cached(
             source_fingerprint,
             options,
             move || async move {
-                resolve_manifest_request(&client, &tracking_source, &lookup_id).await
+                let _permit = acquire_fetch_permit()
+                    .await
+                    .map_err(LookupLoaderError::non_cacheable)?;
+                resolve_manifest_request(&client, &tracking_source, &lookup_id)
+                    .await
+                    .map_err(LookupLoaderError::cacheable)
             },
         )
         .await
@@ -954,7 +1019,7 @@ mod tests {
 
     use super::{
         source_fingerprint_for_lookup, LookupCacheMetricEvent, LookupCacheMetrics,
-        LookupCachePolicy, LookupCacheState, LookupRequestOptions,
+        LookupCachePolicy, LookupCacheState, LookupLoaderError, LookupRequestOptions,
     };
     use shipflow_core::model::{
         BagResponse, LookupKind, TrackingError, TrackingSource, TrackingSourceConfig,
@@ -1210,7 +1275,9 @@ mod tests {
                         let fetch_count = Arc::clone(&fetch_count);
                         move || async move {
                             fetch_count.fetch_add(1, Ordering::SeqCst);
-                            Err(TrackingError::NotFound("Bag was not found.".into()))
+                            Err(LookupLoaderError::cacheable(TrackingError::NotFound(
+                                "Bag was not found.".into(),
+                            )))
                         }
                     },
                 )
@@ -1227,7 +1294,9 @@ mod tests {
                         let fetch_count = Arc::clone(&fetch_count);
                         move || async move {
                             fetch_count.fetch_add(1, Ordering::SeqCst);
-                            Err(TrackingError::NotFound("Bag was not found.".into()))
+                            Err(LookupLoaderError::cacheable(TrackingError::NotFound(
+                                "Bag was not found.".into(),
+                            )))
                         }
                     },
                 )
@@ -1250,13 +1319,67 @@ mod tests {
                         let fetch_count = Arc::clone(&fetch_count);
                         move || async move {
                             fetch_count.fetch_add(1, Ordering::SeqCst);
-                            Err(TrackingError::NotFound("Bag was not found.".into()))
+                            Err(LookupLoaderError::cacheable(TrackingError::NotFound(
+                                "Bag was not found.".into(),
+                            )))
                         }
                     },
                 )
                 .await
                 .expect_err("expired negative cache should refetch");
 
+            assert_eq!(fetch_count.load(Ordering::SeqCst), 2);
+        });
+    }
+
+    #[test]
+    fn non_cacheable_loader_errors_are_not_cached() {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        runtime.block_on(async {
+            let cache = LookupCacheState::with_policy(create_test_policy());
+            let fetch_count = Arc::new(AtomicUsize::new(0));
+
+            let first_error = cache
+                .resolve_cached_lookup::<BagResponse, _, _>(
+                    LookupKind::Bag,
+                    "PID-BUSY".into(),
+                    "pos-bag".into(),
+                    LookupRequestOptions::default(),
+                    {
+                        let fetch_count = Arc::clone(&fetch_count);
+                        move || async move {
+                            fetch_count.fetch_add(1, Ordering::SeqCst);
+                            Err(LookupLoaderError::non_cacheable(
+                                TrackingError::RateLimited("Service is busy.".into()),
+                            ))
+                        }
+                    },
+                )
+                .await
+                .expect_err("first lookup should fail without caching the error");
+
+            let second = cache
+                .resolve_cached_lookup(
+                    LookupKind::Bag,
+                    "PID-BUSY".into(),
+                    "pos-bag".into(),
+                    LookupRequestOptions::default(),
+                    {
+                        let fetch_count = Arc::clone(&fetch_count);
+                        move || async move {
+                            fetch_count.fetch_add(1, Ordering::SeqCst);
+                            Ok(BagResponse {
+                                nomor_kantung: Some("PID-BUSY".into()),
+                                ..BagResponse::default()
+                            })
+                        }
+                    },
+                )
+                .await
+                .expect("second lookup should refetch and succeed");
+
+            assert!(matches!(first_error, TrackingError::RateLimited(_)));
+            assert_eq!(second.nomor_kantung.as_deref(), Some("PID-BUSY"));
             assert_eq!(fetch_count.load(Ordering::SeqCst), 2);
         });
     }

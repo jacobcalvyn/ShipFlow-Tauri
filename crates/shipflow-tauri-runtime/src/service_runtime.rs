@@ -88,6 +88,8 @@ fn tracking_error_message(error: tracking::model::TrackingError) -> String {
     match error {
         tracking::model::TrackingError::BadRequest(message)
         | tracking::model::TrackingError::NotFound(message)
+        | tracking::model::TrackingError::RateLimited(message)
+        | tracking::model::TrackingError::ServiceUnavailable(message)
         | tracking::model::TrackingError::Upstream(message) => message,
     }
 }

@@ -88,7 +88,7 @@ impl ContactCacheState {
             } else {
                 entry.last_used_at_unix_ms = now;
                 let entry = store.entries.get(shipment_id).cloned();
-                (Some(store.clone()), entry)
+                (None, entry)
             }
         };
 

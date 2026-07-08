@@ -587,6 +587,8 @@ fn tracking_error_message(error: TrackingError) -> String {
     match error {
         TrackingError::BadRequest(message) => format!("bad request: {message}"),
         TrackingError::NotFound(message) => format!("not found: {message}"),
+        TrackingError::RateLimited(message) => format!("rate limited: {message}"),
+        TrackingError::ServiceUnavailable(message) => format!("service unavailable: {message}"),
         TrackingError::Upstream(message) => format!("upstream: {message}"),
     }
 }
