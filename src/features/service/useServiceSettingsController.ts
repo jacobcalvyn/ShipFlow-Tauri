@@ -142,6 +142,10 @@ function normalizeServiceConfig(
     port: normalizedPort,
   };
 
+  if (profile === "serviceRuntime" && !normalizedConfig.authToken.trim()) {
+    normalizedConfig.authToken = createServiceToken();
+  }
+
   if (profile === "desktopConnection") {
     return {
       ...normalizedConfig,
@@ -191,13 +195,17 @@ export function useServiceSettingsController({
 
       try {
         const savedConfig = await loadSavedApiServiceConfig();
+        const preservedAuthToken =
+          profile === "serviceRuntime"
+            ? serviceConfigRef.current.authToken || createServiceToken()
+            : serviceConfigRef.current.authToken;
         const baseConfig = savedConfig
           ? normalizeServiceConfig(savedConfig, profile)
           : {
               ...normalizeServiceConfig(defaultServiceConfig, profile),
-              authToken: serviceConfigRef.current.authToken,
+              authToken: preservedAuthToken,
             };
-        const nextConfig = baseConfig;
+        const nextConfig = normalizeServiceConfig(baseConfig, profile);
 
         if (!preservePreview || serviceConfigPreview === null) {
           if (!areServiceConfigsEqual(serviceConfigRef.current, nextConfig)) {
@@ -208,18 +216,23 @@ export function useServiceSettingsController({
 
         return nextConfig;
       } catch {
+        const preservedAuthToken =
+          profile === "serviceRuntime"
+            ? serviceConfigRef.current.authToken || createServiceToken()
+            : serviceConfigRef.current.authToken;
         const fallbackConfig = {
           ...normalizeServiceConfig(defaultServiceConfig, profile),
-          authToken: serviceConfigRef.current.authToken,
+          authToken: preservedAuthToken,
         };
+        const nextFallbackConfig = normalizeServiceConfig(fallbackConfig, profile);
         if (!preservePreview || serviceConfigPreview === null) {
-          if (!areServiceConfigsEqual(serviceConfigRef.current, fallbackConfig)) {
-            serviceConfigRef.current = fallbackConfig;
-            setServiceConfig(fallbackConfig);
+          if (!areServiceConfigsEqual(serviceConfigRef.current, nextFallbackConfig)) {
+            serviceConfigRef.current = nextFallbackConfig;
+            setServiceConfig(nextFallbackConfig);
           }
         }
 
-        return fallbackConfig;
+        return nextFallbackConfig;
       }
     },
     [defaultServiceConfig, profile, serviceConfigPreview]
@@ -502,7 +515,12 @@ export function useServiceSettingsController({
           ...serviceConfigPreview,
           lastUpdatedAt: new Date().toISOString(),
         }
-      : null;
+      : profile === "serviceRuntime"
+        ? {
+            ...serviceConfigRef.current,
+            lastUpdatedAt: new Date().toISOString(),
+          }
+        : null;
     const normalizedNextServiceConfig = nextServiceConfig
       ? normalizeServiceConfig(nextServiceConfig, profile)
       : null;

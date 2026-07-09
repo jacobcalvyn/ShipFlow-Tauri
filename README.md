@@ -377,7 +377,7 @@ The main table currently focuses on:
 - Custom Desktop-to-Service settings are saved only after an authenticated `/v1/status` response proves the endpoint is ShipFlow Service.
 - In custom Desktop-to-Service mode, Desktop does not enable or manage the Service API endpoint; the target service owns that endpoint and token.
 - The Service API token is required for Desktop tracking in both internal scraper mode and external API mode.
-- ShipFlow Service does not generate or rotate the API token automatically. The token changes only when the user clicks `Generate` or confirms `Regenerate`.
+- ShipFlow Service automatically creates an initial API token for a new Service Runtime config. It does not rotate or replace an existing token automatically; the token changes only when the user confirms `Regenerate`.
 - Legacy Desktop connection data that was saved into the old Service config file is migrated into `desktop-service-config.json`, so Service-owned runtime config and token remain stable after restart.
 - External tracking source access can be opened or closed from `ShipFlow Service` without affecting the desktop runtime itself.
 - Retrack failures do not wipe the last successful shipment data. Failed refreshes keep the old row data and mark the row as stale.
@@ -432,7 +432,7 @@ The main table currently focuses on:
 - Desktop custom connection saves no longer start or stop the Service tray companion.
 - Windows Desktop and Service installers run shutdown hooks before install and uninstall replacement, so running ShipFlow processes are closed before files are overwritten.
 - Custom Desktop-to-Service lookups re-check the authenticated `/v1/status` identity before sending shipment, bag, or manifest IDs to a custom endpoint.
-- Service configuration is validated before it is persisted, and enabled service configs are written after the service controller accepts the configuration. If tray/autostart companion synchronization fails after config persistence, the error is logged without rolling back the saved config.
+- Service configuration is validated before it is persisted. Valid Service Runtime configs are saved before the API process is restarted, so a startup/readiness failure returns an error status without rolling back the saved user configuration. If tray/autostart companion synchronization fails after config persistence, the error is logged without rolling back the saved config.
 - Service config, runtime config, token vault, PID markers, pending activation requests, and window state are stored under the user app-data state directory, with legacy temp-dir reads kept only as a migration fallback.
 - Native runtime state paths are intentionally user-scoped:
   - macOS config/state: `~/Library/Application Support/ShipFlow Service/shipflow-service-runtime`
@@ -592,7 +592,7 @@ npm run dev:service
 Open the Service window from the tray/menu-bar entry. In the Service window:
 
 1. Open `Sumber Lacak` and choose `Internal ShipFlow` or `API ShipFlow Eksternal`.
-2. Open `API`, review the localhost endpoint, generate a token if needed, and save.
+2. Open `API`, review the localhost endpoint and generated token, then save. Use `Regenerate` only when rotating an existing token.
 3. Copy the endpoint and token into Desktop `Setting`.
 
 The service also supports CLI mode for headless testing:
@@ -721,7 +721,7 @@ What it does:
 - requires `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD`
 - signs `target/release/shipflow3-tauri.exe` before packaging
 - signs `target/release/ShipFlow-Desktop-Setup.exe` after packaging
-- installs Desktop to `C:\ShipFlow\Desktop` and prepares writable runtime data folders under `C:\ShipFlow\Data`
+- installs Desktop binaries to `C:\ShipFlow\Desktop`; runtime data remains user-scoped under `%APPDATA%` / `%LOCALAPPDATA%`
 - wires the Desktop NSIS installer to close running Desktop processes before reinstall or uninstall replacement
 - smoke-checks the Desktop executable and installer icon
 - uploads the Desktop NSIS installer artifact: `shipflow-desktop-windows-installer`
@@ -802,7 +802,7 @@ What it does:
 - signs `target/release/shipflow-service.exe` before packaging
 - signs `target/release/ShipFlow-Service-Setup.exe` after packaging
 - builds an admin Windows installer with NSIS
-- installs Service to `C:\ShipFlow\Service` and prepares writable runtime data folders under `C:\ShipFlow\Data`
+- installs Service binaries to `C:\ShipFlow\Service`; runtime data remains user-scoped under `%APPDATA%` / `%LOCALAPPDATA%`
 - removes the explicit `ShipFlowServiceTray` user autostart entry during uninstall
 - builds the Windows Service app without a console window, applies the Service icon to the app executable and installer, and closes running `shipflow-service.exe` processes before reinstall or uninstall replacement
 - smoke-checks the generated installer and Service icon

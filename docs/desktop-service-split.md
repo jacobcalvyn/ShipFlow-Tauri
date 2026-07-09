@@ -94,7 +94,7 @@ Run Desktop and Service on separate ports during development:
 npm run dev:service
 ```
 
-In the Service window, choose the tracking source, review the localhost endpoint, generate a token if needed, and save. Then run Desktop:
+In the Service window, choose the tracking source, review the localhost endpoint, review the initial generated token, and save. The token is created automatically for a new Service Runtime config; use `Regenerate` only when rotating an existing token. Then run Desktop:
 
 ```bash
 npm run tauri -- dev --config '{"build":{"devUrl":"http://127.0.0.1:1431","beforeDevCommand":"npm run dev -- --host 127.0.0.1 --port 1431 --strictPort"}}'

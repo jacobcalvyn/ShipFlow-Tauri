@@ -207,6 +207,7 @@ impl ApiServiceController {
         }
 
         validate_service_config(&config, &bind_address)?;
+        persist_saved_config(&config)?;
 
         if let Some(saved_config) = self.load_saved_config()? {
             if saved_config == config
@@ -224,8 +225,19 @@ impl ApiServiceController {
 
         persist_runtime_config(&config)?;
         stop_service_process();
-        let pid = spawn_service_process(&config)?;
-        persist_service_pid(pid)?;
+        let pid = match spawn_service_process(&config) {
+            Ok(pid) => pid,
+            Err(error) => {
+                let status = error_status(&config, &bind_address, error);
+                self.set_status(status.clone());
+                return Ok(status);
+            }
+        };
+        if let Err(error) = persist_service_pid(pid) {
+            let status = error_status(&config, &bind_address, error);
+            self.set_status(status.clone());
+            return Ok(status);
+        }
 
         if !wait_for_service_runtime(&config, Duration::from_secs(5))
             || !is_expected_service_process(pid, SERVICE_PROCESS_FLAG)
@@ -237,13 +249,9 @@ impl ApiServiceController {
                 "API service failed to become ready.".into(),
             );
             self.set_status(status.clone());
-            return Err(status
-                .error_message
-                .clone()
-                .unwrap_or_else(|| "API service configuration failed.".into()));
+            return Ok(status);
         }
 
-        persist_saved_config(&config)?;
         let status = running_status(&config);
         self.set_status(status.clone());
         Ok(status)

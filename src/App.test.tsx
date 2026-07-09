@@ -4483,8 +4483,6 @@ describe("App workspace isolation", () => {
     expect(window.localStorage.getItem("shipflow-service-config")).toBeNull();
 
     const tokenField = screen.getByLabelText("Token API Service") as HTMLInputElement;
-    expect(tokenField.value).toBe("");
-    fireEvent.click(screen.getByRole("button", { name: "Buat" }));
     expect(tokenField.value).toMatch(/^sf_[a-f0-9]+$/);
 
     fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
@@ -4508,8 +4506,9 @@ describe("App workspace isolation", () => {
 
     fireEvent.click(await screen.findByRole("tab", { name: "API" }));
     const originalToken = (screen.getByLabelText("Token API Service") as HTMLInputElement).value;
-    expect(originalToken).toBe("");
-    fireEvent.click(screen.getByRole("button", { name: "Buat" }));
+    expect(originalToken).toMatch(/^sf_[a-f0-9]+$/);
+    fireEvent.click(screen.getByRole("button", { name: "Buat Ulang" }));
+    fireEvent.click(screen.getByRole("button", { name: "Konfirmasi" }));
     fireEvent.click(screen.getByRole("button", { name: "Reset Perubahan" }));
 
     expect(window.localStorage.getItem("shipflow-service-config")).toBeNull();
@@ -4593,7 +4592,6 @@ describe("App workspace isolation", () => {
       },
     });
     fireEvent.click(screen.getByRole("tab", { name: "API" }));
-    fireEvent.click(screen.getByRole("button", { name: "Buat" }));
     fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
 
     await waitFor(() => {
@@ -4622,7 +4620,7 @@ describe("App workspace isolation", () => {
     expect(tokenField).toBeInTheDocument();
 
     const initialToken = (tokenField as HTMLInputElement).value;
-    expect(initialToken).toBe("");
+    expect(initialToken).toMatch(/^sf_[a-f0-9]+$/);
     const loadCallCount = getInvokeCalls("load_saved_api_service_config").length;
     window.dispatchEvent(new Event("focus"));
 

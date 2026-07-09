@@ -12,7 +12,7 @@ All routes require a bearer token:
 Authorization: Bearer <service-token>
 ```
 
-The token is created only from the ShipFlow Service settings window when the user clicks `Generate` or confirms `Regenerate`. The app does not rotate or replace it automatically.
+The Service settings window creates an initial token automatically for a new Service Runtime config. Existing tokens are not rotated or replaced automatically; rotation happens only when the user confirms `Regenerate`.
 
 Clients may send an optional request id:
 
