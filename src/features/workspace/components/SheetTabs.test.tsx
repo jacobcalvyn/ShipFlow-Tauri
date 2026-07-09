@@ -323,14 +323,14 @@ describe("SheetTabs", () => {
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
     fireEvent.click(screen.getByRole("tab", { name: "Koneksi Service" }));
     expect(screen.getByRole("heading", { name: "Koneksi Service" })).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("ShipFlow Service Port"), {
-      target: { value: "18423" },
+    fireEvent.change(screen.getByLabelText("URL Service ShipFlow"), {
+      target: { value: "https://shipflow.example.test" },
     });
     fireEvent.change(screen.getByLabelText("ShipFlow Service Bearer Token"), {
       target: { value: "sf_desktop_token" },
     });
 
-    expect(onPreviewDesktopServiceUrl).toHaveBeenCalledWith("http://127.0.0.1:18423");
+    expect(onPreviewDesktopServiceUrl).toHaveBeenCalledWith("https://shipflow.example.test");
     expect(onPreviewDesktopServiceAuthToken).toHaveBeenCalledWith("sf_desktop_token");
   });
 

@@ -121,7 +121,7 @@ Envelope timestamps such as `generatedAt`, `createdAt`, and `updatedAt` use RFC3
 The API supports:
 
 - OpenAPI 3.1 discovery through `GET /v1/openapi.json`
-- authenticated status and product identity checks
+- service identity and bearer-token checks
 - capability discovery
 - shipment, bag, and manifest lookups
 - raw upstream shipment HTML lookup through `GET /v1/track/:shipment_id/html`
@@ -371,10 +371,10 @@ The main table currently focuses on:
 
 - `ShipFlow Desktop` does not scrape directly. Tracking is resolved by `ShipFlow Service`.
 - `ShipFlow Service` is the single source of truth for tracking source and external API access.
-- Desktop `Setting` only edits the Desktop-to-Service localhost port/token. It does not edit service-owned tracking source configuration.
-- Desktop always uses the configured standalone service port/token for tracking.
+- Desktop `Setting` only edits the Desktop-to-Service endpoint/token. The endpoint may be localhost, a LAN URL, or a trusted tunnel URL. It does not edit service-owned tracking source configuration.
+- Desktop always uses the configured standalone service endpoint/token for tracking.
 - Desktop does not spawn a managed tracking runtime and the target service owns its own scraper/internal API config.
-- Custom Desktop-to-Service settings are saved only after an authenticated `/v1/status` response proves the endpoint is ShipFlow Service.
+- Custom Desktop-to-Service settings are saved after URL/token validation. The connection status then checks `GET /v1/status` for the ShipFlow Service product marker and `GET /v1/auth/check` for bearer-token validity.
 - In custom Desktop-to-Service mode, Desktop does not enable or manage the Service API endpoint; the target service owns that endpoint and token.
 - The Service API token is required for Desktop tracking in both internal scraper mode and external API mode.
 - ShipFlow Service automatically creates an initial API token for a new Service Runtime config. It does not rotate or replace an existing token automatically; the token changes only when the user confirms `Regenerate`.
@@ -412,8 +412,8 @@ The main table currently focuses on:
 - Delivery-runsheet parsing is hardened so `FAILEDTODELIVERED` cases are not incorrectly split into two updates on the latest runsheet.
 - Delivery-runsheet parsing now keeps only the latest effective update for a runsheet summary.
 - Desktop no longer manages service tray/background lifecycle.
-- Desktop startup no longer starts a service companion. Start the standalone service first, then configure Desktop with that service port/token.
-- Desktop/service readiness checks now require an authenticated `GET /v1/status` response from `ShipFlow Service`, including a ShipFlow-specific product marker, before reusing an existing runtime process.
+- Desktop startup no longer starts a service companion. Start the standalone service first, then configure Desktop with that service endpoint/token.
+- Desktop/service readiness checks now require `GET /v1/status` to return the ShipFlow-specific product marker and `GET /v1/auth/check` to accept the configured bearer token before reusing an existing runtime process.
 - Windows release builds of `ShipFlow Service` use the Windows subsystem, so launching the installed service app does not open a console window.
 - Windows installers may install app binaries under fixed `C:\ShipFlow` locations such as `C:\ShipFlow\Desktop` and `C:\ShipFlow\Service`, but runtime config and state are not written to `C:\ShipFlow\Data` by default.
 - Launching `ShipFlow Service` normally starts it in the background and keeps only the system-tray/menu-bar entry visible.
@@ -431,7 +431,7 @@ The main table currently focuses on:
 - On Windows, cross-launch discovery prefers the installer-written `ExecutablePath` registry value and falls back to `InstallLocation`, so Desktop and Service can still find each other when the install directory contains spaces or the binary name changes.
 - Desktop custom connection saves no longer start or stop the Service tray companion.
 - Windows Desktop and Service installers run shutdown hooks before install and uninstall replacement, so running ShipFlow processes are closed before files are overwritten.
-- Custom Desktop-to-Service lookups re-check the authenticated `/v1/status` identity before sending shipment, bag, or manifest IDs to a custom endpoint.
+- Custom Desktop-to-Service lookups re-check service identity and bearer-token validity before sending shipment, bag, or manifest IDs to a custom endpoint.
 - Service configuration is validated before it is persisted. Valid Service Runtime configs are saved before the API process is restarted, so a startup/readiness failure returns an error status without rolling back the saved user configuration. If tray/autostart companion synchronization fails after config persistence, the error is logged without rolling back the saved config.
 - Service config, runtime config, token vault, PID markers, pending activation requests, and window state are stored under the user app-data state directory, with legacy temp-dir reads kept only as a migration fallback.
 - Native runtime state paths are intentionally user-scoped:
@@ -469,7 +469,7 @@ The main table currently focuses on:
 - [public/favicon.svg](./public/favicon.svg): browser/dev favicon asset
 - [src/features/workspace/components/SheetTabs.tsx](./src/features/workspace/components/SheetTabs.tsx): sheet tab shell and tab/menu orchestration
 - [src/features/workspace/components/SheetFileMenu.tsx](./src/features/workspace/components/SheetFileMenu.tsx): workspace file menu
-- [src/features/workspace/components/DesktopServiceConnectionPanel.tsx](./src/features/workspace/components/DesktopServiceConnectionPanel.tsx): Desktop-to-Service port/token settings panel
+- [src/features/workspace/components/DesktopServiceConnectionPanel.tsx](./src/features/workspace/components/DesktopServiceConnectionPanel.tsx): Desktop-to-Service endpoint/token settings panel
 - [src/features/workspace/rust-sheet-view-model-state.ts](./src/features/workspace/rust-sheet-view-model-state.ts): Rust row-window cache, value-filter query, and display-row adapter helpers used by the workspace view model
 - [src/features/sheet/components/SheetActionBar.tsx](./src/features/sheet/components/SheetActionBar.tsx): sheet action bar shell
 - [src/features/sheet/components/ImportSourceModal.tsx](./src/features/sheet/components/ImportSourceModal.tsx): bag/manifest import modal
@@ -518,10 +518,10 @@ The main table currently focuses on:
 
 Use this checklist before publishing a runtime/security change:
 
-- Start standalone `ShipFlow Service` and configure Desktop with its localhost port/token.
+- Start standalone `ShipFlow Service` and configure Desktop with the service endpoint/token.
 - Confirm tracking, bag import, and manifest import all resolve through `ShipFlow Service`.
 - Start another process on the configured service port and confirm Desktop does not treat a plain open port as ShipFlow Service.
-- Confirm Desktop reports a clear configuration error when no standalone service port/token is saved.
+- Confirm Desktop reports a clear configuration error when no standalone service endpoint/token is saved.
 - Open normal POD previews, then confirm oversized `data:image` payloads, SVG payloads, and private/loopback remote URLs are rejected.
 - Save the same workspace repeatedly and confirm the existing file remains readable after each save.
 
@@ -530,8 +530,9 @@ Latest CLI/runtime smoke baseline, verified on 2026-04-25:
 - `npm run build:service` builds the standalone service binary.
 - `cargo test --workspace --all-targets` passes the runtime hardening tests, including POD guardrails, custom service status identity checks, concurrent state writes, and workspace finalize failure preservation.
 - A standalone `ShipFlow Service` process can start on `127.0.0.1:19431` with a generated runtime config.
-- `GET /v1/status` with the expected bearer token returns `200 OK` and the `product: "shipflow-service"` marker in the response envelope.
-- `GET /v1/status` with the wrong bearer token returns `401 Unauthorized`.
+- `GET /v1/status` returns `200 OK` and the `product: "shipflow-service"` marker in the response envelope.
+- `GET /v1/auth/check` with the expected bearer token returns `200 OK`.
+- `GET /v1/auth/check` with the wrong bearer token returns `401 Unauthorized`.
 - Starting a second service process on the same port fails with `Address already in use`.
 - `npm run build`, `cargo fmt --all -- --check`, and `cargo clippy --workspace --all-targets -- -D warnings` pass after the runtime smoke test.
 
@@ -974,4 +975,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 - Browser/webview workspace snapshots are persisted as inputs-only data so local storage keeps sheet layout and tracking inputs without duplicating full tracking detail payloads
 - Local startup seed sync writes legacy tracking inputs into Rust only when the Rust sheet is empty; existing engine rows stay authoritative over stale browser/webview mirrors
 - `.shipflow` document saves prefer Rust row-window data and fall back to the current UI state if the engine snapshot cannot be queried
-- Desktop stores only the standalone ShipFlow Service port/token it uses for lookups
+- Desktop stores only the standalone ShipFlow Service endpoint/token it uses for lookups

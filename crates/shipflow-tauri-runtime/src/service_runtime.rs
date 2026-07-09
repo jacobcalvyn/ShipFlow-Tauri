@@ -104,7 +104,6 @@ pub async fn configure_api_service_runtime<R: Runtime>(
 ) -> Result<ApiServiceStatus, String> {
     if config.uses_custom_desktop_service_connection() {
         config.enabled = true;
-        test_api_service_connection(&client_state.client, &config).await?;
     } else {
         validate_tracking_source_settings(&config.tracking_source_config())
             .map_err(tracking_error_message)?;
@@ -113,6 +112,20 @@ pub async fn configure_api_service_runtime<R: Runtime>(
     let tracking_source_config = config.tracking_source_config();
     let result = service_controller.configure(config.clone()).await;
     let status = match &result {
+        Ok(_) if config.uses_custom_desktop_service_connection() => {
+            match test_api_service_connection(&client_state.client, &config).await {
+                Ok(_) => custom_service_status_from_config(
+                    &config,
+                    crate::service::ApiServiceStatusKind::Running,
+                    None,
+                ),
+                Err(error) => custom_service_status_from_config(
+                    &config,
+                    crate::service::ApiServiceStatusKind::Error,
+                    Some(error),
+                ),
+            }
+        }
         Ok(status) => status.clone(),
         Err(_) => service_controller.status(),
     };

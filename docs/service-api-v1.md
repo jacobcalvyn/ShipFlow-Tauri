@@ -344,15 +344,15 @@ How to read the stages:
 - Keep the service in localhost mode unless another trusted device on the local network must call it.
 - LAN mode still requires the same bearer token.
 - Treat the Service token like an API key; do not put it in screenshots, logs, or shared documents.
-- Desktop should store only the local Service port and bearer token it needs to call the separately installed Service app.
-- A successful Desktop connection test means the Service responded to an authenticated status request with the `shipflow-service` product marker.
+- Desktop should store only the Service endpoint and bearer token it needs to call the separately installed Service app.
+- A successful Desktop connection test means the Service returned the `shipflow-service` product marker from `GET /v1/status` and accepted the bearer token through `GET /v1/auth/check`.
 
 ## Ownership Boundary
 
 ShipFlow Desktop:
 
 - owns sheets, filters, table layout, workspace files, and UI state
-- calls ShipFlow Service by localhost port and bearer token
+- calls ShipFlow Service by configured endpoint and bearer token
 - does not scrape POS directly
 - does not own external API credentials
 

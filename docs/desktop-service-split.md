@@ -19,14 +19,19 @@ Desktop connection settings now use a standalone Desktop-to-Service connection:
 - Desktop calls the configured `desktopServiceUrl` with `desktopServiceAuthToken`.
 - The Desktop-to-Service token is required for all lookup flows, including internal scraper mode and external API mode.
 
-The custom connection is validated before it is saved:
+The custom connection is structurally validated before it is saved:
 
 - URL is required.
 - URL must use `http` or `https`.
 - URL must include a host.
 - URL must not include query strings or fragments.
 - bearer token is required.
-- authenticated `GET /v1/status` must respond with the ShipFlow Service product marker inside the response envelope.
+
+After saving, Desktop checks the live connection status:
+
+- `GET /v1/status` must respond with the ShipFlow Service product marker inside the response envelope.
+- `GET /v1/auth/check` must accept the configured bearer token.
+- failed status or token checks mark the saved custom connection as `error` without discarding the saved endpoint/token.
 
 Desktop lookup calls now build service endpoints from the configured client base URL instead of hard-coding `http://127.0.0.1:<port>`.
 
@@ -45,7 +50,7 @@ The repository builds standalone Service artifacts through `.github/workflows/bu
 The target service owns its own runtime and tracking configuration:
 
 - bind host and port
-- API Service bearer token accepted by `/v1/status`, `/v1/track`, `/v1/bag`, and `/v1/manifest`
+- API Service bearer token accepted by `/v1/auth/check`, `/v1/track`, `/v1/bag`, and `/v1/manifest`
 - source mode: internal scrap or external API
 - external API base URL/token when the service is configured for external API mode
 - cache and runtime state

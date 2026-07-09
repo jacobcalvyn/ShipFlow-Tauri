@@ -7,12 +7,12 @@ type ServiceConnectionTestResult = {
 
 type DesktopServiceConnectionPanelProps = {
   serviceConfig: ServiceConfig;
-  desktopServicePortDraft: string;
-  isDesktopServicePortValid: boolean;
+  desktopServiceUrlDraft: string;
+  isDesktopServiceUrlValid: boolean;
   isDesktopTokenVisible: boolean;
   isTestingServiceConnection: boolean;
   serviceConnectionTestResult: ServiceConnectionTestResult;
-  onDesktopServicePortDraftChange: (value: string) => void;
+  onDesktopServiceUrlDraftChange: (value: string) => void;
   onPreviewDesktopServiceAuthToken: (token: string) => void;
   onClearConnectionTestResult: () => void;
   onToggleDesktopTokenVisibility: () => void;
@@ -23,12 +23,12 @@ type DesktopServiceConnectionPanelProps = {
 
 export function DesktopServiceConnectionPanel({
   serviceConfig,
-  desktopServicePortDraft,
-  isDesktopServicePortValid,
+  desktopServiceUrlDraft,
+  isDesktopServiceUrlValid,
   isDesktopTokenVisible,
   isTestingServiceConnection,
   serviceConnectionTestResult,
-  onDesktopServicePortDraftChange,
+  onDesktopServiceUrlDraftChange,
   onPreviewDesktopServiceAuthToken,
   onClearConnectionTestResult,
   onToggleDesktopTokenVisibility,
@@ -40,24 +40,22 @@ export function DesktopServiceConnectionPanel({
     <div className="settings-pane">
       <div className="settings-pane-header">
         <h4>Koneksi Service</h4>
-        <p>Atur port localhost dan token ShipFlow Service yang dipakai Desktop untuk lacak.</p>
+        <p>Atur endpoint dan token ShipFlow Service yang dipakai Desktop untuk lacak.</p>
       </div>
       <div className="service-settings-stack">
-        <label className="settings-text-field settings-text-field-port">
-          <span className="settings-input-label">ShipFlow Service Port</span>
+        <label className="settings-text-field">
+          <span className="settings-input-label">URL Service ShipFlow</span>
           <input
-            type="number"
-            min={1}
-            max={65535}
-            inputMode="numeric"
-            aria-label="ShipFlow Service Port"
-            value={desktopServicePortDraft}
-            onChange={(event) => onDesktopServicePortDraftChange(event.target.value)}
+            type="url"
+            aria-label="URL Service ShipFlow"
+            value={desktopServiceUrlDraft}
+            onChange={(event) => onDesktopServiceUrlDraftChange(event.target.value)}
+            placeholder="http://127.0.0.1:18422"
           />
         </label>
-        {!isDesktopServicePortValid ? (
+        {!isDesktopServiceUrlValid ? (
           <div className="settings-field-help settings-field-help-error">
-            Port harus antara 1 dan 65535.
+            URL harus memakai HTTP/HTTPS, memiliki host, dan tidak memakai query atau fragment.
           </div>
         ) : null}
         <label className="settings-text-field">
@@ -86,7 +84,7 @@ export function DesktopServiceConnectionPanel({
             onClick={() => onCopyServiceToken(serviceConfig.desktopServiceAuthToken)}
             disabled={!serviceConfig.desktopServiceAuthToken}
           >
-            Copy
+            Salin
           </button>
           <button
             type="button"
@@ -96,7 +94,7 @@ export function DesktopServiceConnectionPanel({
               onClearConnectionTestResult();
             }}
           >
-            Paste
+            Tempel
           </button>
           <button
             type="button"
@@ -104,11 +102,11 @@ export function DesktopServiceConnectionPanel({
             onClick={onTestServiceConnection}
             disabled={
               isTestingServiceConnection ||
-              !isDesktopServicePortValid ||
+              !isDesktopServiceUrlValid ||
               !serviceConfig.desktopServiceAuthToken.trim()
             }
           >
-            {isTestingServiceConnection ? "Testing..." : "Tes Service"}
+            {isTestingServiceConnection ? "Menguji..." : "Tes Service"}
           </button>
         </div>
         {serviceConnectionTestResult ? (

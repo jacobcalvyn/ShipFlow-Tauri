@@ -3931,11 +3931,42 @@ describe("App workspace isolation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
     fireEvent.click(screen.getByRole("tab", { name: "Koneksi Service" }));
 
-    expect(screen.getByLabelText("ShipFlow Service Port")).toBeInTheDocument();
+    expect(screen.getByLabelText("URL Service ShipFlow")).toBeInTheDocument();
     expect(screen.getByLabelText("ShipFlow Service Bearer Token")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Paste" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Tempel" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Tes Service" })).toBeInTheDocument();
     expect(getInvokeCalls("open_shipflow_service_app")).toHaveLength(0);
+  });
+
+  it("preserves remote desktop service URLs when testing and saving settings", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Koneksi Service" }));
+
+    fireEvent.change(screen.getByLabelText("URL Service ShipFlow"), {
+      target: { value: "https://shipflow.example.test" },
+    });
+    fireEvent.change(screen.getByLabelText("ShipFlow Service Bearer Token"), {
+      target: { value: "sf_remote_token" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Tes Service" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("ShipFlow Service is reachable at https://shipflow.example.test.")
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
+
+    await waitFor(() => {
+      expect(persistedServiceConfig?.desktopConnectionMode).toBe("custom");
+      expect(persistedServiceConfig?.desktopServiceUrl).toBe(
+        "https://shipflow.example.test"
+      );
+      expect(persistedServiceConfig?.desktopServiceAuthToken).toBe("sf_remote_token");
+    });
   });
 
   it("pastes the desktop service token from the clipboard", async () => {
@@ -3943,7 +3974,7 @@ describe("App workspace isolation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
     fireEvent.click(screen.getByRole("tab", { name: "Koneksi Service" }));
-    fireEvent.click(screen.getByRole("button", { name: "Paste" }));
+    fireEvent.click(screen.getByRole("button", { name: "Tempel" }));
 
     await waitFor(() => {
       expect(screen.getByLabelText("ShipFlow Service Bearer Token")).toHaveValue(

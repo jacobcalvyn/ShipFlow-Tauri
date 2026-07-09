@@ -82,18 +82,11 @@ function createServiceToken() {
   return `sf_${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
 }
 
-function normalizeDesktopServiceUrlForLocalPort(serviceUrl: string, fallbackPort: number) {
-  try {
-    const parsedUrl = new URL(serviceUrl);
-    const port = parsedUrl.port
-      ? Number.parseInt(parsedUrl.port, 10)
-      : fallbackPort;
+function normalizeDesktopServiceUrl(serviceUrl: string, fallbackPort: number) {
+  const trimmedUrl = serviceUrl.trim();
 
-    if (Number.isInteger(port) && port >= 1 && port <= 65535) {
-      return `http://127.0.0.1:${port}`;
-    }
-  } catch {
-    // Fall through to the validated fallback port.
+  if (trimmedUrl) {
+    return trimmedUrl;
   }
 
   return `http://127.0.0.1:${normalizeServicePort(fallbackPort)}`;
@@ -149,7 +142,7 @@ function normalizeServiceConfig(
   if (profile === "desktopConnection") {
     return {
       ...normalizedConfig,
-      desktopServiceUrl: normalizeDesktopServiceUrlForLocalPort(
+      desktopServiceUrl: normalizeDesktopServiceUrl(
         normalizedConfig.desktopServiceUrl,
         normalizedPort
       ),
@@ -486,6 +479,14 @@ export function useServiceSettingsController({
         serviceConfigRef.current = nextConfig;
         setServiceConfig(nextConfig);
         setApiServiceStatus(status);
+        if (status.status === "error") {
+          showNotice({
+            tone: "error",
+            message:
+              status.errorMessage ||
+              "Pengaturan tersimpan, tetapi API Service belum siap.",
+          });
+        }
         return true;
       } catch (error) {
         const message =

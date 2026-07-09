@@ -78,22 +78,23 @@ type SheetTabsProps = {
 type SheetDropTransferMode = "copy" | "move";
 type DesktopSettingsTab = "display" | "service";
 
-const DEFAULT_DESKTOP_SERVICE_PORT = 18422;
-
-function parseDesktopServicePortDraft(serviceUrl: string) {
-  try {
-    const parsedUrl = new URL(serviceUrl);
-    const port = parsedUrl.port
-      ? Number.parseInt(parsedUrl.port, 10)
-      : DEFAULT_DESKTOP_SERVICE_PORT;
-    return String(port);
-  } catch {
-    return String(DEFAULT_DESKTOP_SERVICE_PORT);
+function isValidDesktopServiceUrl(serviceUrl: string) {
+  const trimmedUrl = serviceUrl.trim();
+  if (!trimmedUrl) {
+    return false;
   }
-}
 
-function buildDesktopServiceUrl(port: number) {
-  return `http://127.0.0.1:${port}`;
+  try {
+    const parsedUrl = new URL(trimmedUrl);
+    return (
+      (parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:") &&
+      Boolean(parsedUrl.hostname) &&
+      !parsedUrl.search &&
+      !parsedUrl.hash
+    );
+  } catch {
+    return false;
+  }
 }
 
 function resolveDropTransferMode(
@@ -199,8 +200,8 @@ export function SheetTabs({
   const [isConfirmingSettings, setIsConfirmingSettings] = useState(false);
   const [isDesktopTokenVisible, setIsDesktopTokenVisible] = useState(false);
   const [isTestingServiceConnection, setIsTestingServiceConnection] = useState(false);
-  const [desktopServicePortDraft, setDesktopServicePortDraft] = useState(() =>
-    parseDesktopServicePortDraft(serviceConfig.desktopServiceUrl)
+  const [desktopServiceUrlDraft, setDesktopServiceUrlDraft] = useState(
+    serviceConfig.desktopServiceUrl
   );
   const [serviceConnectionTestResult, setServiceConnectionTestResult] = useState<{
     tone: "success" | "error";
@@ -231,7 +232,7 @@ export function SheetTabs({
   }, []);
 
   useEffect(() => {
-    setDesktopServicePortDraft(parseDesktopServicePortDraft(serviceConfig.desktopServiceUrl));
+    setDesktopServiceUrlDraft(serviceConfig.desktopServiceUrl);
   }, [serviceConfig.desktopServiceUrl]);
 
   useEffect(() => {
@@ -551,20 +552,12 @@ export function SheetTabs({
     }
   };
 
-  const normalizedDesktopServicePort = Number.parseInt(desktopServicePortDraft, 10);
-  const isDesktopServicePortValid =
-    Number.isInteger(normalizedDesktopServicePort) &&
-    normalizedDesktopServicePort >= 1 &&
-    normalizedDesktopServicePort <= 65535;
+  const isDesktopServiceUrlValid = isValidDesktopServiceUrl(desktopServiceUrlDraft);
 
-  const handleDesktopServicePortDraftChange = (value: string) => {
-    setDesktopServicePortDraft(value);
+  const handleDesktopServiceUrlDraftChange = (value: string) => {
+    setDesktopServiceUrlDraft(value);
     setServiceConnectionTestResult(null);
-
-    const nextPort = Number.parseInt(value, 10);
-    if (Number.isInteger(nextPort) && nextPort >= 1 && nextPort <= 65535) {
-      onPreviewDesktopServiceUrl(buildDesktopServiceUrl(nextPort));
-    }
+    onPreviewDesktopServiceUrl(value);
   };
 
   const confirmSettings = async () => {
@@ -1071,12 +1064,12 @@ export function SheetTabs({
                       >
                         <DesktopServiceConnectionPanel
                           serviceConfig={serviceConfig}
-                          desktopServicePortDraft={desktopServicePortDraft}
-                          isDesktopServicePortValid={isDesktopServicePortValid}
+                          desktopServiceUrlDraft={desktopServiceUrlDraft}
+                          isDesktopServiceUrlValid={isDesktopServiceUrlValid}
                           isDesktopTokenVisible={isDesktopTokenVisible}
                           isTestingServiceConnection={isTestingServiceConnection}
                           serviceConnectionTestResult={serviceConnectionTestResult}
-                          onDesktopServicePortDraftChange={handleDesktopServicePortDraftChange}
+                          onDesktopServiceUrlDraftChange={handleDesktopServiceUrlDraftChange}
                           onPreviewDesktopServiceAuthToken={onPreviewDesktopServiceAuthToken}
                           onClearConnectionTestResult={() => setServiceConnectionTestResult(null)}
                           onToggleDesktopTokenVisibility={() =>
@@ -1105,7 +1098,7 @@ export function SheetTabs({
                     onClick={() => {
                       void confirmSettings();
                     }}
-                    disabled={isConfirmingSettings || !isDesktopServicePortValid}
+                    disabled={isConfirmingSettings || !isDesktopServiceUrlValid}
                   >
                     {isConfirmingSettings ? "Menyimpan..." : "Simpan"}
                   </button>
