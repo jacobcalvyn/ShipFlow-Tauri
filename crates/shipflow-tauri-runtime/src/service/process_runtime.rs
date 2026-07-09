@@ -1553,16 +1553,12 @@ fn service_probe_socket_addr(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
 }
 
-fn read_authenticated_service_status(
+fn read_service_probe_response(
     port: u16,
-    auth_token: &str,
+    path: &str,
+    auth_token: Option<&str>,
     timeout: Duration,
 ) -> Result<String, String> {
-    let trimmed_token = auth_token.trim();
-    if trimmed_token.is_empty() {
-        return Err("Service status probe requires an auth token.".into());
-    }
-
     let mut stream = TcpStream::connect_timeout(&service_probe_socket_addr(port), timeout)
         .map_err(|error| {
             format!("Unable to connect to ShipFlow Service status endpoint: {error}")
@@ -1570,8 +1566,13 @@ fn read_authenticated_service_status(
     let _ = stream.set_read_timeout(Some(timeout));
     let _ = stream.set_write_timeout(Some(timeout));
 
+    let auth_header = auth_token
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(|token| format!("Authorization: Bearer {token}\r\n"))
+        .unwrap_or_default();
     let request = format!(
-        "GET /v1/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {trimmed_token}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{auth_header}Accept: application/json\r\nConnection: close\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())
@@ -1584,15 +1585,40 @@ fn read_authenticated_service_status(
     Ok(response)
 }
 
-fn authenticated_service_status_is_valid(response: &str) -> bool {
+fn split_http_probe_response(response: &str) -> Option<(&str, &str)> {
     let mut parts = response.splitn(2, "\r\n\r\n");
     let headers = parts.next().unwrap_or_default();
     let body = parts.next().unwrap_or_default().trim();
 
-    let status_line = headers.lines().next().unwrap_or_default();
-    if !status_line.contains(" 200 ") {
-        return false;
+    if http_probe_status_code(response) != Some(200) {
+        return None;
     }
+
+    Some((headers, body))
+}
+
+fn http_probe_status_code(response: &str) -> Option<u16> {
+    let status_line = response.lines().next().unwrap_or_default();
+    let mut parts = status_line.split_whitespace();
+    let protocol = parts.next()?;
+    if !protocol.starts_with("HTTP/") {
+        return None;
+    }
+
+    parts.next()?.parse().ok()
+}
+
+fn http_probe_body(response: &str) -> &str {
+    response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.trim())
+        .unwrap_or_default()
+}
+
+fn service_status_identity_is_valid(response: &str) -> bool {
+    let Some((_, body)) = split_http_probe_response(response) else {
+        return false;
+    };
 
     let Ok(payload) = serde_json::from_str::<serde_json::Value>(body) else {
         return false;
@@ -1604,10 +1630,109 @@ fn authenticated_service_status_is_valid(response: &str) -> bool {
         && data.get("product").and_then(|value| value.as_str()) == Some(SERVICE_STATUS_PRODUCT)
 }
 
+fn service_auth_check_is_valid(response: &str) -> bool {
+    let Some((_, body)) = split_http_probe_response(response) else {
+        return false;
+    };
+
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+
+    let data = payload.get("data").unwrap_or(&payload);
+
+    data.get("product").and_then(|value| value.as_str()) == Some(SERVICE_STATUS_PRODUCT)
+        && data.get("status").and_then(|value| value.as_str()) == Some("ok")
+}
+
 pub fn is_service_runtime_ready(config: &ApiServiceConfig, timeout: Duration) -> bool {
-    read_authenticated_service_status(config.port, &config.auth_token, timeout)
-        .map(|response| authenticated_service_status_is_valid(&response))
-        .unwrap_or(false)
+    let status_ok = read_service_probe_response(config.port, "/v1/status", None, timeout)
+        .map(|response| service_status_identity_is_valid(&response))
+        .unwrap_or(false);
+    if !status_ok {
+        return false;
+    }
+
+    read_service_probe_response(
+        config.port,
+        "/v1/auth/check",
+        Some(&config.auth_token),
+        timeout,
+    )
+    .map(|response| service_auth_check_is_valid(&response))
+    .unwrap_or(false)
+}
+
+pub fn service_runtime_readiness_failure_hint(
+    config: &ApiServiceConfig,
+    timeout: Duration,
+) -> Option<String> {
+    let status_response =
+        match read_service_probe_response(config.port, "/v1/status", None, timeout) {
+            Ok(response) => response,
+            Err(error) => {
+                return Some(format!(
+                    "API service is not reachable on port {}: {error}",
+                    config.port
+                ));
+            }
+        };
+
+    match http_probe_status_code(&status_response) {
+        Some(200) => {
+            if !service_status_identity_is_valid(&status_response) {
+                return Some(
+                    "A service responded on the configured port, but it is not a compatible ShipFlow Service API."
+                        .into(),
+                );
+            }
+        }
+        Some(401) if http_probe_body(&status_response).contains("Authorization header") => {
+            return Some(
+                "An older ShipFlow Service API is still running on the configured port. Quit or reinstall ShipFlow Service so /v1/status is public and /v1/auth/check is available."
+                    .into(),
+            );
+        }
+        Some(status_code) => {
+            return Some(format!(
+                "ShipFlow Service status probe returned HTTP {status_code}; the service is not ready."
+            ));
+        }
+        None => {
+            return Some("ShipFlow Service status probe returned an invalid HTTP response.".into());
+        }
+    }
+
+    let auth_response = match read_service_probe_response(
+        config.port,
+        "/v1/auth/check",
+        Some(&config.auth_token),
+        timeout,
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return Some(format!(
+                "Unable to verify ShipFlow Service bearer token on port {}: {error}",
+                config.port
+            ));
+        }
+    };
+
+    if service_auth_check_is_valid(&auth_response) {
+        return None;
+    }
+
+    match http_probe_status_code(&auth_response) {
+        Some(401) => Some("ShipFlow Service rejected the configured bearer token.".into()),
+        Some(404) => Some(
+            "The ShipFlow Service API on the configured port does not expose /v1/auth/check; an older Service binary is likely still running."
+                .into(),
+        ),
+        Some(status_code) => Some(format!(
+            "ShipFlow Service auth check returned HTTP {status_code}; the service is not ready."
+        )),
+        None => Some("ShipFlow Service auth check returned an invalid HTTP response.".into()),
+    }
 }
 
 pub fn wait_for_service_runtime(config: &ApiServiceConfig, timeout: Duration) -> bool {
@@ -1685,9 +1810,10 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        authenticated_service_status_is_valid, build_service_endpoint,
-        command_line_matches_desktop_process, command_line_matches_service_process,
-        command_line_matches_service_settings_process, format_service_status_label,
+        build_service_endpoint, command_line_matches_desktop_process,
+        command_line_matches_service_process, command_line_matches_service_settings_process,
+        format_service_status_label, http_probe_body, http_probe_status_code,
+        service_auth_check_is_valid, service_status_identity_is_valid,
         should_keep_service_tray_companion, ApiServiceConfig, ApiServiceMode, ApiServiceStatus,
         ApiServiceStatusKind,
     };
@@ -2146,18 +2272,46 @@ HKEY_LOCAL_MACHINE\Software\ShipFlow\Service
     }
 
     #[test]
-    fn authenticated_status_probe_requires_shipflow_identity() {
+    fn service_status_probe_requires_shipflow_identity() {
         let response = concat!(
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n",
             r#"{"service":"running","product":"shipflow-service","mode":"local","port":18422}"#
         );
 
-        assert!(authenticated_service_status_is_valid(response));
-        assert!(!authenticated_service_status_is_valid(
+        assert!(service_status_identity_is_valid(response));
+        assert!(!service_status_identity_is_valid(
             "HTTP/1.1 200 OK\r\n\r\n{\"service\":\"running\"}"
         ));
-        assert!(!authenticated_service_status_is_valid(
+        assert!(!service_status_identity_is_valid(
             "HTTP/1.1 401 Unauthorized\r\n\r\n{\"error\":\"bad token\"}"
         ));
+    }
+
+    #[test]
+    fn service_auth_probe_requires_accepted_bearer_token() {
+        let response = concat!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n",
+            r#"{"data":{"product":"shipflow-service","auth":"bearer","status":"ok"}}"#
+        );
+
+        assert!(service_auth_check_is_valid(response));
+        assert!(!service_auth_check_is_valid(
+            "HTTP/1.1 200 OK\r\n\r\n{\"data\":{\"product\":\"shipflow-service\"}}"
+        ));
+        assert!(!service_auth_check_is_valid(
+            "HTTP/1.1 401 Unauthorized\r\n\r\n{\"error\":{\"message\":\"Bearer token is invalid.\"}}"
+        ));
+    }
+
+    #[test]
+    fn http_probe_helpers_parse_error_status_and_body() {
+        let response = concat!(
+            "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\n\r\n",
+            r#"{"error":{"message":"Authorization header is required."}}"#
+        );
+
+        assert_eq!(http_probe_status_code(response), Some(401));
+        assert!(http_probe_body(response).contains("Authorization header is required"));
+        assert_eq!(http_probe_status_code("not http"), None);
     }
 }

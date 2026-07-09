@@ -32,6 +32,7 @@ After saving, Desktop checks the live connection status:
 - `GET /v1/status` must respond with the ShipFlow Service product marker inside the response envelope.
 - `GET /v1/auth/check` must accept the configured bearer token.
 - failed status or token checks mark the saved custom connection as `error` without discarding the saved endpoint/token.
+- A `401` from unauthenticated `GET /v1/status` or a `404` from `GET /v1/auth/check` usually means Desktop is reaching an older Service binary or the wrong port.
 
 Desktop lookup calls now build service endpoints from the configured client base URL instead of hard-coding `http://127.0.0.1:<port>`.
 
@@ -60,6 +61,20 @@ Desktop only stores:
 - connection mode
 - service base URL
 - service bearer token
+
+## Service Runtime Restart Contract
+
+The Service settings window owns the local Service lifecycle for managed-local mode:
+
+1. Validate and persist the user-facing Service config.
+2. Stop the previously recorded API process.
+3. Write `runtime-config.json` after the stop completes.
+4. Spawn the new API process.
+5. Wait for both readiness probes:
+   - unauthenticated `GET /v1/status` with `product: "shipflow-service"`
+   - authenticated `GET /v1/auth/check` with `status: "ok"`
+
+`stop_service_process` clears `runtime-config.json` as part of shutdown cleanup. For that reason, startup must never write runtime config before stopping the old process. If readiness fails, the saved user config remains available and the UI should show the diagnostic returned by the readiness probe.
 
 ## Next Migration Phases
 

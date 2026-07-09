@@ -165,6 +165,14 @@ Example response:
 
 Desktop uses this endpoint as an identity check before sending shipment, bag, or manifest IDs to the configured service.
 
+Readiness behavior:
+
+- `GET /v1/status` is intentionally unauthenticated so Desktop and launcher code can confirm that the port belongs to ShipFlow Service before sending any bearer token.
+- The response must include `product: "shipflow-service"`.
+- If an unauthenticated status probe returns `401 Unauthorized`, the request is likely reaching an older Service binary.
+- After the status probe passes, clients must call `GET /v1/auth/check` with the configured bearer token before sending lookup requests.
+- If `GET /v1/auth/check` returns `404 Not Found`, the request is likely reaching an older Service binary or the wrong port.
+
 ## Capabilities
 
 ```http
@@ -346,6 +354,7 @@ How to read the stages:
 - Treat the Service token like an API key; do not put it in screenshots, logs, or shared documents.
 - Desktop should store only the Service endpoint and bearer token it needs to call the separately installed Service app.
 - A successful Desktop connection test means the Service returned the `shipflow-service` product marker from `GET /v1/status` and accepted the bearer token through `GET /v1/auth/check`.
+- Startup readiness must fail closed when the port responds without the ShipFlow product marker or without `/v1/auth/check`; this prevents Desktop from sending shipment IDs to a stale or unrelated local service.
 
 ## Ownership Boundary
 

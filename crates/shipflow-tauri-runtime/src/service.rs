@@ -16,8 +16,8 @@ use self::http_api::run_service_process;
 use self::process_runtime::{
     claim_current_service_tray_process, ensure_service_tray_process_running,
     is_expected_service_process, is_service_runtime_ready,
-    launch_shipflow_service_settings_companion, spawn_service_process,
-    stop_service_process as stop_api_service_process,
+    launch_shipflow_service_settings_companion, service_runtime_readiness_failure_hint,
+    spawn_service_process, stop_service_process as stop_api_service_process,
     stop_service_settings_process as stop_settings_ui_process,
     stop_service_tray_process as stop_tray_process, sync_service_tray_companion,
     wait_for_service_runtime,
@@ -223,8 +223,10 @@ impl ApiServiceController {
             }
         }
 
-        persist_runtime_config(&config)?;
         stop_service_process();
+        // `stop_service_process` clears runtime-config.json, so the config must be written
+        // after stopping the old process and before spawning the new one.
+        persist_runtime_config(&config)?;
         let pid = match spawn_service_process(&config) {
             Ok(pid) => pid,
             Err(error) => {
@@ -239,15 +241,19 @@ impl ApiServiceController {
             return Ok(status);
         }
 
-        if !wait_for_service_runtime(&config, Duration::from_secs(5))
-            || !is_expected_service_process(pid, SERVICE_PROCESS_FLAG)
-        {
+        let runtime_ready = wait_for_service_runtime(&config, Duration::from_secs(5));
+        let expected_process = is_expected_service_process(pid, SERVICE_PROCESS_FLAG);
+        if !runtime_ready || !expected_process {
+            let mut readiness_error =
+                service_runtime_readiness_failure_hint(&config, Duration::from_millis(300))
+                    .unwrap_or_else(|| "API service failed to become ready.".into());
+            if !expected_process {
+                readiness_error.push_str(
+                    " The launched service process exited or did not match the expected ShipFlow Service background command.",
+                );
+            }
             stop_service_process();
-            let status = error_status(
-                &config,
-                &bind_address,
-                "API service failed to become ready.".into(),
-            );
+            let status = error_status(&config, &bind_address, readiness_error);
             self.set_status(status.clone());
             return Ok(status);
         }
@@ -683,6 +689,23 @@ mod tests {
 
             assert_eq!(loaded_service_config, service_config);
             assert_eq!(loaded_desktop_config, desktop_config);
+        });
+    }
+
+    #[test]
+    fn stopping_service_process_clears_runtime_config() {
+        with_state_dir("shipflow-stop-clears-runtime-config-test", || {
+            let runtime_config = service_runtime_config();
+            persist_runtime_config(&runtime_config).expect("runtime config should persist");
+            assert!(load_runtime_config()
+                .expect("runtime config should load")
+                .is_some());
+
+            crate::service::stop_service_process();
+
+            assert!(load_runtime_config()
+                .expect("runtime config should load after stop")
+                .is_none());
         });
     }
 

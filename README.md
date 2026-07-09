@@ -222,8 +222,8 @@ Main TypeScript definitions live in [src/types.ts](./src/types.ts).
   - service bind mode (`localhost` or `LAN`)
   - service API port
   - service-generated bearer token
-- Desktop stores only the localhost service port and bearer token it uses to call that separate service.
-- The Desktop connection panel asks for the service port, not a full service URL, because Desktop always connects to the local `ShipFlow Service` app.
+- Desktop stores the service endpoint URL and bearer token it uses to call that separate service.
+- For local setups, use `http://127.0.0.1:<port>`; for LAN or tunnel setups, enter the full reachable Service endpoint URL.
 - The external API `Base URL` field no longer ships with a hard-coded example endpoint placeholder
 - `Nomor Kiriman` rows include per-row QR preview, copy ID, and source-link actions
 - `PID/Kantong Terakhir` is derived from the latest `bagging` / `unbagging` event and includes QR preview, copy ID, and print actions for the latest bag/PID
@@ -432,7 +432,7 @@ The main table currently focuses on:
 - Desktop custom connection saves no longer start or stop the Service tray companion.
 - Windows Desktop and Service installers run shutdown hooks before install and uninstall replacement, so running ShipFlow processes are closed before files are overwritten.
 - Custom Desktop-to-Service lookups re-check service identity and bearer-token validity before sending shipment, bag, or manifest IDs to a custom endpoint.
-- Service configuration is validated before it is persisted. Valid Service Runtime configs are saved before the API process is restarted, so a startup/readiness failure returns an error status without rolling back the saved user configuration. If tray/autostart companion synchronization fails after config persistence, the error is logged without rolling back the saved config.
+- Service configuration is validated before it is persisted. The saved user config is kept even when startup/readiness fails, while `runtime-config.json` is written only after the old API process is stopped and immediately before the new API process is spawned. This prevents a restart from deleting the runtime config that the child service needs at boot. If tray/autostart companion synchronization fails after config persistence, the error is logged without rolling back the saved config.
 - Service config, runtime config, token vault, PID markers, pending activation requests, and window state are stored under the user app-data state directory, with legacy temp-dir reads kept only as a migration fallback.
 - Native runtime state paths are intentionally user-scoped:
   - macOS config/state: `~/Library/Application Support/ShipFlow Service/shipflow-service-runtime`
@@ -605,11 +605,11 @@ cargo run -p shipflow-service -- --auth-token sf_dev_token --port 18422
 For CLI mode, configure Desktop with:
 
 ```text
-ShipFlow Service Port: 18422
+ShipFlow Service Endpoint: http://127.0.0.1:18422
 ShipFlow Service Token: sf_dev_token
 ```
 
-In the Desktop settings UI, enter only the port, for example `18422`; Desktop builds the localhost endpoint internally.
+In the Desktop settings UI, enter the endpoint URL and bearer token that match the running Service.
 
 ## Build
 
@@ -898,7 +898,7 @@ Rust tests are now split by domain and cover:
 - persistent lookup-store overwrite durability
 - PID shipment detail URL generation with base64-encoded lookup IDs
 - embedded API bearer-auth validation
-- authenticated service readiness probing and ShipFlow service identity checks
+- service identity and auth-check readiness probing
 - service settings activation, single-instance detection, and tray companion lifecycle checks
 - native runtime release gates compile and lint the shared Tauri runtime on macOS and Windows through the `Quality Gate` workflow matrix
 - backend shipment-ID normalization and validation
