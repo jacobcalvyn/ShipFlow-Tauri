@@ -380,7 +380,6 @@ function verifyWindowsEvidence() {
   if (requireWindowState) {
     verifySavedWindowStateEvidence();
     verifyWindowStateSourceEvidence([
-      "/ShipFlow/Data/Service/",
       "/AppData/Roaming/ShipFlow Service/",
     ]);
   }

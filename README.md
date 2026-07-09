@@ -391,7 +391,7 @@ The main table currently focuses on:
 - Manifest and bag imports auto-close the modal after `Ganti Semua` or `Tambah Data`, then immediately start shipment tracking in the target sheet.
 - Runtime lookup results for `track`, `bag`, and `manifest` now use one in-memory cache with in-flight coalescing, kind-specific TTL, and short negative-cache protection.
 - Successful lookup payloads are also persisted into a local user-state lookup store so repeated lookups can survive service restarts.
-- The persistent lookup store belongs to the `ShipFlow Service` app-data namespace, with a one-time legacy migration from the old `ShipFlow Desktop` namespace.
+- The persistent lookup store belongs to the `ShipFlow Service` app-data namespace, with a one-time legacy migration from the old `ShipFlow Desktop` namespace. On Windows, lookup cache writes use `%LOCALAPPDATA%\ShipFlow Service\shipflow-service-runtime` by default and fall back to `%APPDATA%`.
 - Persistent lookup-store writes run outside the lookup response path, so successful rows can return to Desktop without waiting for local disk persistence.
 - Persistent lookup-store writes use unique temporary files and OS-aware replacement, so repeated writes remain durable on Windows after the first cache file already exists.
 - Manual refresh flows such as `Lacak Ulang`, `Retry Gagal`, and bag/manifest modal fetches can explicitly bypass cache when the user intends a fresh lookup.
@@ -415,7 +415,7 @@ The main table currently focuses on:
 - Desktop startup no longer starts a service companion. Start the standalone service first, then configure Desktop with that service port/token.
 - Desktop/service readiness checks now require an authenticated `GET /v1/status` response from `ShipFlow Service`, including a ShipFlow-specific product marker, before reusing an existing runtime process.
 - Windows release builds of `ShipFlow Service` use the Windows subsystem, so launching the installed service app does not open a console window.
-- Windows installers use fixed `C:\ShipFlow` locations: `C:\ShipFlow\Desktop` for Desktop, `C:\ShipFlow\Service` for Service, and `C:\ShipFlow\Data` for shared runtime state, lookup cache, token vault, PID files, and logs.
+- Windows installers may install app binaries under fixed `C:\ShipFlow` locations such as `C:\ShipFlow\Desktop` and `C:\ShipFlow\Service`, but runtime config and state are not written to `C:\ShipFlow\Data` by default.
 - Launching `ShipFlow Service` normally starts it in the background and keeps only the system-tray/menu-bar entry visible.
 - Closing the `ShipFlow Service` settings window hides it and keeps the service tray companion available.
 - Reopening `ShipFlow Service` from the tray/menu-bar entry focuses or recreates the existing settings window instead of starting a duplicate settings instance.
@@ -432,12 +432,17 @@ The main table currently focuses on:
 - Desktop custom connection saves no longer start or stop the Service tray companion.
 - Windows Desktop and Service installers run shutdown hooks before install and uninstall replacement, so running ShipFlow processes are closed before files are overwritten.
 - Custom Desktop-to-Service lookups re-check the authenticated `/v1/status` identity before sending shipment, bag, or manifest IDs to a custom endpoint.
-- Service configuration is validated before it is persisted, and enabled service configs are written only after the companion process has started and passed the authenticated readiness probe.
-- Service config, runtime config, PID markers, pending activation requests, and runtime logs are stored under the user app-data state directory, with legacy temp-dir reads kept only as a migration fallback.
+- Service configuration is validated before it is persisted, and enabled service configs are written after the service controller accepts the configuration. If tray/autostart companion synchronization fails after config persistence, the error is logged without rolling back the saved config.
+- Service config, runtime config, token vault, PID markers, pending activation requests, and window state are stored under the user app-data state directory, with legacy temp-dir reads kept only as a migration fallback.
+- Native runtime state paths are intentionally user-scoped:
+  - macOS config/state: `~/Library/Application Support/ShipFlow Service/shipflow-service-runtime`
+  - Windows config/state: `%APPDATA%\ShipFlow Service\shipflow-service-runtime`
+  - Windows lookup cache/logs: `%LOCALAPPDATA%\ShipFlow Service\shipflow-service-runtime`, falling back to `%APPDATA%`
+  - `SHIPFLOW_WINDOWS_DATA_ROOT` is an explicit override only; ShipFlow no longer writes to `C:\ShipFlow\Data` just because that directory exists.
 - Service state files are written through unique temporary file names and atomic replacement paths to avoid in-process temp-file collisions.
 - PID-based shutdown now verifies the recorded process command line matches the expected ShipFlow service/tray process before attempting to terminate it.
 - Desktop bag and manifest lookups no longer bypass `ShipFlow Service` with a direct POS fallback when the service request fails.
-- Desktop and service runtime events are written to per-process log files under the shared runtime state directory.
+- Desktop and service runtime events are written to per-process log files under the native user runtime log directory.
 - Runtime log files now also emit `[ShipFlowCacheMetrics]` summary lines with per-kind cache ratios and counters for operator audit.
 - Runtime log files also emit `[ShipFlowPerf]` timing lines for Desktop-to-Service, Service lookup, and external API lookup stages. These timings intentionally include route, lookup ID, duration, HTTP status, and byte counts, but never bearer tokens.
 - ShipFlow Service lookup endpoints now percent-encode bag and manifest IDs before issuing local HTTP requests.

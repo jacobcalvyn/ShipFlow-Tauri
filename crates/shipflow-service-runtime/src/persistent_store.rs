@@ -17,8 +17,6 @@ const SERVICE_APP_DATA_DIR_NAME: &str = "ShipFlow Service";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const LEGACY_DESKTOP_APP_DATA_DIR_NAME: &str = "ShipFlow Desktop";
 #[cfg(target_os = "windows")]
-const WINDOWS_SHIPFLOW_DATA_ROOT: &str = r"C:\ShipFlow\Data";
-#[cfg(target_os = "windows")]
 const WINDOWS_SERVICE_DATA_DIR_NAME: &str = "Service";
 #[cfg(all(unix, not(target_os = "macos")))]
 const SERVICE_XDG_DATA_DIR_NAME: &str = "shipflow-service";
@@ -205,6 +203,13 @@ pub fn default_persistent_lookup_store_path() -> PathBuf {
             return path;
         }
 
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            return local_app_data
+                .join(SERVICE_APP_DATA_DIR_NAME)
+                .join(SERVICE_STATE_DIR_NAME)
+                .join(LOOKUP_STORE_FILE_NAME);
+        }
+
         if let Some(app_data) = std::env::var_os("APPDATA").map(PathBuf::from) {
             return app_data
                 .join(SERVICE_APP_DATA_DIR_NAME)
@@ -238,21 +243,15 @@ pub fn default_persistent_lookup_store_path() -> PathBuf {
 }
 
 #[cfg(target_os = "windows")]
-fn windows_shipflow_data_root() -> PathBuf {
+fn windows_shipflow_lookup_store_path() -> Option<PathBuf> {
     std::env::var_os("SHIPFLOW_WINDOWS_DATA_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(WINDOWS_SHIPFLOW_DATA_ROOT))
-}
-
-#[cfg(target_os = "windows")]
-fn windows_shipflow_lookup_store_path() -> Option<PathBuf> {
-    let data_root = windows_shipflow_data_root();
-    data_root.exists().then(|| {
-        data_root
-            .join(WINDOWS_SERVICE_DATA_DIR_NAME)
-            .join(SERVICE_STATE_DIR_NAME)
-            .join(LOOKUP_STORE_FILE_NAME)
-    })
+        .map(|data_root| {
+            data_root
+                .join(WINDOWS_SERVICE_DATA_DIR_NAME)
+                .join(SERVICE_STATE_DIR_NAME)
+                .join(LOOKUP_STORE_FILE_NAME)
+        })
 }
 
 #[cfg(target_os = "macos")]

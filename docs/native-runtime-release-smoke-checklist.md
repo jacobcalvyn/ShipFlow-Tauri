@@ -295,7 +295,9 @@ Attach the following evidence to the readiness checklist or pull request:
   persisted usable `desktop.main` and `service.settings` window state after the
   resize/move/relaunch smoke checks. The source file must come from the current
   installed runtime state directory (`ShipFlow Service/shipflow-service-runtime`),
-  not a temporary or legacy Desktop state directory.
+  not a temporary or legacy Desktop state directory. On Windows, this means the
+  user-scoped `%APPDATA%\ShipFlow Service\shipflow-service-runtime` state path;
+  `C:\ShipFlow\Data` is no longer a valid default runtime state source.
 - Service tray runtime logs proving repeated tray commands succeed without
   spawning duplicate UI processes or leaving the API runtime in an inconsistent
   state. Verify this with `--require-tray-actions` so

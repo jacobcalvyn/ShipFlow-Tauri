@@ -128,8 +128,7 @@ pub async fn configure_api_service_runtime<R: Runtime>(
         if let Err(error) = sync_service_tray_companion_for_config(&config) {
             let message =
                 format!("[ShipFlowTray] failed to sync tray companion after configure: {error}");
-            log_runtime_event("ERROR", message.clone());
-            return Err(message);
+            log_runtime_event("ERROR", message);
         }
     }
 

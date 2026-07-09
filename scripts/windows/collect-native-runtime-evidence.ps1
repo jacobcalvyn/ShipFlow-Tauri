@@ -261,14 +261,12 @@ function Write-ProcessEvidence {
 }
 
 function Get-RuntimeLogDir {
-  $dataRoot = if ([string]::IsNullOrWhiteSpace($env:SHIPFLOW_WINDOWS_DATA_ROOT)) {
-    "C:\ShipFlow\Data"
-  } else {
-    $env:SHIPFLOW_WINDOWS_DATA_ROOT
+  if (-not [string]::IsNullOrWhiteSpace($env:SHIPFLOW_WINDOWS_DATA_ROOT)) {
+    return Join-Path $env:SHIPFLOW_WINDOWS_DATA_ROOT "Logs"
   }
 
-  if (Test-Path $dataRoot -PathType Container) {
-    return Join-Path $dataRoot "Logs"
+  if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    return Join-Path $env:LOCALAPPDATA "ShipFlow Service\shipflow-service-runtime\logs"
   }
 
   if (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {
@@ -279,14 +277,8 @@ function Get-RuntimeLogDir {
 }
 
 function Get-ServiceStateDir {
-  $dataRoot = if ([string]::IsNullOrWhiteSpace($env:SHIPFLOW_WINDOWS_DATA_ROOT)) {
-    "C:\ShipFlow\Data"
-  } else {
-    $env:SHIPFLOW_WINDOWS_DATA_ROOT
-  }
-
-  if (Test-Path $dataRoot -PathType Container) {
-    return Join-Path (Join-Path $dataRoot "Service") "shipflow-service-runtime"
+  if (-not [string]::IsNullOrWhiteSpace($env:SHIPFLOW_WINDOWS_DATA_ROOT)) {
+    return Join-Path (Join-Path $env:SHIPFLOW_WINDOWS_DATA_ROOT "Service") "shipflow-service-runtime"
   }
 
   if (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {

@@ -10,9 +10,6 @@ use std::{
 
 use crate::service::SERVICE_STATE_DIR_NAME;
 
-#[cfg(target_os = "windows")]
-const WINDOWS_SHIPFLOW_DATA_ROOT: &str = r"C:\ShipFlow\Data";
-
 fn runtime_log_dir() -> PathBuf {
     #[cfg(test)]
     if let Some(path) = env::var_os("SHIPFLOW_SERVICE_STATE_DIR_OVERRIDE") {
@@ -21,11 +18,15 @@ fn runtime_log_dir() -> PathBuf {
 
     #[cfg(target_os = "windows")]
     {
-        let data_root = env::var_os("SHIPFLOW_WINDOWS_DATA_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(WINDOWS_SHIPFLOW_DATA_ROOT));
-        if data_root.exists() {
+        if let Some(data_root) = env::var_os("SHIPFLOW_WINDOWS_DATA_ROOT").map(PathBuf::from) {
             return data_root.join("Logs");
+        }
+
+        if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            return local_app_data
+                .join("ShipFlow Service")
+                .join(SERVICE_STATE_DIR_NAME)
+                .join("logs");
         }
 
         if let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) {

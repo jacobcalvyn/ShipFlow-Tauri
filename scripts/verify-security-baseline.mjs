@@ -826,7 +826,6 @@ for (const requiredToken of [
 for (const requiredToken of [
   "Native runtime evidence file window-state-source.txt must point to an installed ShipFlow runtime window-state.json path.",
   "/Library/Application Support/ShipFlow Service/",
-  "/ShipFlow/Data/Service/",
   "/AppData/Roaming/ShipFlow Service/",
 ]) {
   if (!nativeRuntimeEvidenceVerifier.includes(requiredToken)) {
@@ -2441,8 +2440,8 @@ requireTokenAfter(
 requireTokenAfter(
   serviceTrayStateRuntime,
   "if let Err(error) = sync_service_tray_companion_for_config(&config)",
-  "return Err(message);",
-  "Service configure must return an error when OS tray/autostart synchronization fails."
+  "log_runtime_event(\"ERROR\", message);",
+  "Service configure must log OS tray/autostart synchronization failures without failing persisted config."
 );
 if (
   !serviceTrayStateRuntime.includes(
