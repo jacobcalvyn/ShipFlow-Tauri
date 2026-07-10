@@ -20,7 +20,7 @@ use shipflow_core::{
         resolve_bag_request, resolve_manifest_request, resolve_tracking_request,
     },
 };
-use tokio::sync::Notify;
+use tokio::sync::{futures::OwnedNotified, Notify};
 
 use crate::contact_cache::{ContactCacheEntryStatus, ContactCacheState};
 use crate::persistent_store::{persistent_lookup_skip_reason, PersistentLookupStore};
@@ -118,7 +118,7 @@ enum CachedLookupErrorKind {
 enum LookupCacheAction {
     Return(CachedLookupEntry),
     StartFetch(Arc<Notify>, u64),
-    Wait(Arc<Notify>),
+    Wait(OwnedNotified),
 }
 
 enum LookupLoaderError {
@@ -274,8 +274,8 @@ impl LookupCacheState {
                     }
                     CachedLookupValue::Error(error) => return Err(error.to_tracking_error()),
                 },
-                LookupCacheAction::Wait(notify) => {
-                    notify.notified().await;
+                LookupCacheAction::Wait(notified) => {
+                    notified.await;
                 }
                 LookupCacheAction::StartFetch(notify, generation) => {
                     let result = loader
@@ -377,7 +377,7 @@ impl LookupCacheState {
                         .metrics
                         .record_event(kind, LookupCacheMetricEvent::Coalesced);
                     (
-                        LookupCacheAction::Wait(notify.clone()),
+                        LookupCacheAction::Wait(notify.clone().notified_owned()),
                         metrics_summary,
                         format!(
                             "[ShipFlowCache] cache_coalesced kind={} id={normalized_id} key={cache_key}",
@@ -1018,8 +1018,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        source_fingerprint_for_lookup, LookupCacheMetricEvent, LookupCacheMetrics,
-        LookupCachePolicy, LookupCacheState, LookupLoaderError, LookupRequestOptions,
+        source_fingerprint_for_lookup, LookupCacheAction, LookupCacheMetricEvent,
+        LookupCacheMetrics, LookupCachePolicy, LookupCacheState, LookupLoaderError,
+        LookupRequestOptions,
     };
     use shipflow_core::model::{
         BagResponse, LookupKind, TrackingError, TrackingSource, TrackingSourceConfig,
@@ -1255,6 +1256,39 @@ mod tests {
             assert!(first.is_ok());
             assert!(second.is_ok());
             assert_eq!(fetch_count.load(Ordering::SeqCst), 1);
+        });
+    }
+
+    #[test]
+    fn coalesced_waiter_cannot_miss_notify_waiters_signal() {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        runtime.block_on(async {
+            let cache = LookupCacheState::with_policy(create_test_policy());
+            let options = LookupRequestOptions::default();
+            let fetch_notify = match cache.next_action(
+                "manifest:MAN-RACE",
+                LookupKind::Manifest,
+                "MAN-RACE",
+                options,
+            ) {
+                LookupCacheAction::StartFetch(notify, _) => notify,
+                _ => panic!("first lookup should start a fetch"),
+            };
+            let waiter = match cache.next_action(
+                "manifest:MAN-RACE",
+                LookupKind::Manifest,
+                "MAN-RACE",
+                options,
+            ) {
+                LookupCacheAction::Wait(waiter) => waiter,
+                _ => panic!("second lookup should wait for the fetch"),
+            };
+
+            fetch_notify.notify_waiters();
+
+            tokio::time::timeout(Duration::from_millis(50), waiter)
+                .await
+                .expect("registered waiter should observe an earlier notify_waiters call");
         });
     }
 

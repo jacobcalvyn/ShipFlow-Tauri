@@ -1,6 +1,7 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use shipflow_tauri_runtime::service::{load_desktop_service_connection_config, ApiServiceConfig};
@@ -16,6 +17,7 @@ use shipflow_workspace_engine::engine::{
 };
 use shipflow_workspace_engine::events::WorkspaceEngineEvent;
 use shipflow_workspace_engine::import_engine::{ImportLookupFailure, ImportLookupSource};
+use shipflow_workspace_engine::storage::SqliteWorkspaceStore;
 use shipflow_workspace_engine::tracking::{
     TrackingBatchLookupFuture, TrackingBatchResultCallback, TrackingLookupFailure,
     TrackingLookupFuture, TrackingLookupSource,
@@ -39,24 +41,27 @@ static DESKTOP_TRACKING_BATCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
 pub struct WorkspaceEngineState {
-    runtime: Mutex<Option<DesktopWorkspaceEngineRuntime>>,
+    runtimes: Mutex<HashMap<String, Arc<Mutex<DesktopWorkspaceEngineRuntime>>>>,
 }
 
 #[tauri::command]
 pub async fn workspace_engine_command(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     command: WorkspaceEngineCommand,
     state: tauri::State<'_, WorkspaceEngineState>,
 ) -> Result<WorkspaceEngineResponse, String> {
-    let mut runtime = state.runtime.lock().await;
-
-    if runtime.is_none() {
-        *runtime = Some(build_workspace_engine_runtime(&app)?);
+    if matches!(command, WorkspaceEngineCommand::PreviewImportSource(_)) {
+        let mut runtime = build_workspace_engine_preview_runtime()?;
+        return runtime
+            .handle_command(command)
+            .await
+            .map_err(|error| error.to_string());
     }
 
-    runtime
-        .as_mut()
-        .expect("runtime initialized above")
+    let runtime = workspace_engine_runtime_for_window(&app, window.label(), &state).await?;
+    let mut runtime_guard = runtime.lock().await;
+    runtime_guard
         .handle_command(command)
         .await
         .map_err(|error| error.to_string())
@@ -65,19 +70,14 @@ pub async fn workspace_engine_command(
 #[tauri::command]
 pub async fn workspace_engine_run_import_job_with_progress(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     request: JobIdRequest,
     on_event: Channel<WorkspaceEngineEvent>,
     state: tauri::State<'_, WorkspaceEngineState>,
 ) -> Result<WorkspaceEngineResponse, String> {
-    let mut runtime = state.runtime.lock().await;
-
-    if runtime.is_none() {
-        *runtime = Some(build_workspace_engine_runtime(&app)?);
-    }
-
-    runtime
-        .as_mut()
-        .expect("runtime initialized above")
+    let runtime = workspace_engine_runtime_for_window(&app, window.label(), &state).await?;
+    let mut runtime_guard = runtime.lock().await;
+    runtime_guard
         .run_import_job_with_progress(&request.job_id, |event| {
             let _ = on_event.send(event);
         })
@@ -89,19 +89,14 @@ pub async fn workspace_engine_run_import_job_with_progress(
 #[tauri::command]
 pub async fn workspace_engine_retry_import_job_failed_with_progress(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     request: JobIdRequest,
     on_event: Channel<WorkspaceEngineEvent>,
     state: tauri::State<'_, WorkspaceEngineState>,
 ) -> Result<WorkspaceEngineResponse, String> {
-    let mut runtime = state.runtime.lock().await;
-
-    if runtime.is_none() {
-        *runtime = Some(build_workspace_engine_runtime(&app)?);
-    }
-
-    runtime
-        .as_mut()
-        .expect("runtime initialized above")
+    let runtime = workspace_engine_runtime_for_window(&app, window.label(), &state).await?;
+    let mut runtime_guard = runtime.lock().await;
+    runtime_guard
         .retry_import_job_failed_with_progress(&request.job_id, |event| {
             let _ = on_event.send(event);
         })
@@ -113,11 +108,12 @@ pub async fn workspace_engine_retry_import_job_failed_with_progress(
 #[tauri::command]
 pub async fn workspace_engine_refresh_sheet_rows_tracking_with_progress(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     request: RefreshSheetRowsTrackingRequest,
     on_event: Channel<WorkspaceEngineEvent>,
     _state: tauri::State<'_, WorkspaceEngineState>,
 ) -> Result<WorkspaceEngineResponse, String> {
-    let mut runtime = build_workspace_engine_runtime(&app)?;
+    let mut runtime = build_workspace_engine_runtime(&app, window.label())?;
 
     runtime
         .refresh_sheet_rows_tracking_with_progress(
@@ -134,23 +130,28 @@ pub async fn workspace_engine_refresh_sheet_rows_tracking_with_progress(
         .map_err(|error| error.to_string())
 }
 
-pub fn workspace_engine_db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(app
+pub fn workspace_engine_db_path(
+    app: &tauri::AppHandle,
+    window_label: &str,
+) -> Result<PathBuf, String> {
+    let engine_root = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("Unable to resolve ShipFlow app data directory: {error}"))?
-        .join("workspace-engine")
-        .join("workspace.sqlite3"))
+        .join("workspace-engine");
+
+    Ok(engine_root.join(workspace_engine_db_relative_path(window_label)))
 }
 
 fn build_workspace_engine_runtime(
     app: &tauri::AppHandle,
+    window_label: &str,
 ) -> Result<DesktopWorkspaceEngineRuntime, String> {
     let source = DesktopServiceLookupSource::new();
     let bootstrap = WorkspaceEngineRuntime::open_persistent(
         WorkspaceEngineConfig::default(),
         WorkspaceEngineBootstrapConfig::new(
-            workspace_engine_db_path(app)?,
+            workspace_engine_db_path(app, window_label)?,
             DEFAULT_WORKSPACE_ID,
             DEFAULT_WORKSPACE_NAME,
             DEFAULT_WORKSPACE_SHEET_ID,
@@ -161,6 +162,62 @@ fn build_workspace_engine_runtime(
     .map_err(|error| error.to_string())?;
 
     Ok(bootstrap.runtime)
+}
+
+fn build_workspace_engine_preview_runtime() -> Result<DesktopWorkspaceEngineRuntime, String> {
+    let store = SqliteWorkspaceStore::open_memory().map_err(|error| error.to_string())?;
+    Ok(WorkspaceEngineRuntime::new(
+        WorkspaceEngineConfig::default(),
+        store,
+        DesktopServiceLookupSource::new(),
+    ))
+}
+
+async fn workspace_engine_runtime_for_window(
+    app: &tauri::AppHandle,
+    window_label: &str,
+    state: &WorkspaceEngineState,
+) -> Result<Arc<Mutex<DesktopWorkspaceEngineRuntime>>, String> {
+    let mut runtimes = state.runtimes.lock().await;
+    if let Some(runtime) = runtimes.get(window_label) {
+        return Ok(Arc::clone(runtime));
+    }
+
+    let runtime = Arc::new(Mutex::new(build_workspace_engine_runtime(
+        app,
+        window_label,
+    )?));
+    runtimes.insert(window_label.to_string(), Arc::clone(&runtime));
+    Ok(runtime)
+}
+
+fn sanitize_window_label(window_label: &str) -> String {
+    let sanitized = window_label
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+
+    if sanitized.is_empty() {
+        "window".into()
+    } else {
+        sanitized
+    }
+}
+
+fn workspace_engine_db_relative_path(window_label: &str) -> PathBuf {
+    if window_label == "main" {
+        return PathBuf::from("workspace.sqlite3");
+    }
+
+    PathBuf::from("windows")
+        .join(sanitize_window_label(window_label))
+        .join("workspace.sqlite3")
 }
 
 #[derive(Clone)]
@@ -349,10 +406,29 @@ mod tests {
         let state = WorkspaceEngineState::default();
 
         assert!(state
-            .runtime
+            .runtimes
             .try_lock()
             .expect("state lock available")
-            .is_none());
+            .is_empty());
+    }
+
+    #[test]
+    fn window_labels_are_safe_as_storage_directories() {
+        assert_eq!(sanitize_window_label("workspace-12"), "workspace-12");
+        assert_eq!(sanitize_window_label("../workspace/12"), "___workspace_12");
+        assert_eq!(sanitize_window_label(""), "window");
+    }
+
+    #[test]
+    fn main_window_keeps_legacy_database_path_and_other_windows_are_isolated() {
+        assert_eq!(
+            workspace_engine_db_relative_path("main"),
+            PathBuf::from("workspace.sqlite3")
+        );
+        assert_eq!(
+            workspace_engine_db_relative_path("workspace-12"),
+            PathBuf::from("windows/workspace-12/workspace.sqlite3")
+        );
     }
 
     #[test]

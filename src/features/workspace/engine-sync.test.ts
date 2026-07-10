@@ -5,6 +5,8 @@ import { updateActiveSheetInWorkspace } from "./actions";
 import {
   clearSheetRows,
   createEngineSheet,
+  deleteSheet,
+  listEngineSheets,
   querySheetRows,
   upsertSheetRows,
 } from "../workspace-engine/client";
@@ -12,12 +14,16 @@ import {
 vi.mock("../workspace-engine/client", () => ({
   clearSheetRows: vi.fn(),
   createEngineSheet: vi.fn(),
+  deleteSheet: vi.fn(),
+  listEngineSheets: vi.fn(),
   querySheetRows: vi.fn(),
   upsertSheetRows: vi.fn(),
 }));
 
 const clearSheetRowsMock = vi.mocked(clearSheetRows);
 const createEngineSheetMock = vi.mocked(createEngineSheet);
+const deleteSheetMock = vi.mocked(deleteSheet);
+const listEngineSheetsMock = vi.mocked(listEngineSheets);
 const querySheetRowsMock = vi.mocked(querySheetRows);
 const upsertSheetRowsMock = vi.mocked(upsertSheetRows);
 
@@ -26,6 +32,10 @@ describe("workspace engine sync", () => {
     vi.clearAllMocks();
     clearSheetRowsMock.mockResolvedValue({ payload: null } as never);
     createEngineSheetMock.mockResolvedValue({ payload: null } as never);
+    deleteSheetMock.mockResolvedValue({ payload: null } as never);
+    listEngineSheetsMock.mockResolvedValue({
+      payload: [],
+    } as never);
     querySheetRowsMock.mockResolvedValue({
       payload: {
         sheetId: "default-sheet",
@@ -197,5 +207,41 @@ describe("workspace engine sync", () => {
     });
     expect(clearSheetRowsMock).not.toHaveBeenCalled();
     expect(upsertSheetRowsMock).not.toHaveBeenCalled();
+  });
+
+  it("deletes engine sheets absent from a replacement workspace", async () => {
+    const workspace = createDefaultWorkspaceState();
+    listEngineSheetsMock.mockResolvedValueOnce({
+      payload: [
+        {
+          sheetId: workspace.activeSheetId,
+          workspaceId: "default-workspace",
+          name: "Sheet 1",
+          position: 0,
+          viewMode: "workspace",
+        },
+        {
+          sheetId: "stale-sheet",
+          workspaceId: "default-workspace",
+          name: "Stale",
+          position: 1,
+          viewMode: "workspace",
+        },
+      ],
+    } as never);
+
+    await syncWorkspaceStateToEngine(workspace);
+
+    expect(deleteSheetMock).toHaveBeenCalledTimes(1);
+    expect(deleteSheetMock).toHaveBeenCalledWith({ sheetId: "stale-sheet" });
+  });
+
+  it("does not delete engine sheets while seeding a local mirror", async () => {
+    const workspace = createDefaultWorkspaceState();
+
+    await syncWorkspaceStateToEngine(workspace, { mode: "seed" });
+
+    expect(listEngineSheetsMock).not.toHaveBeenCalled();
+    expect(deleteSheetMock).not.toHaveBeenCalled();
   });
 });

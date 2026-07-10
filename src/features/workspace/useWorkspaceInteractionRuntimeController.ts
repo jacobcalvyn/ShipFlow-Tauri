@@ -184,33 +184,7 @@ function createImportTrackingRunId(sheetId: string, reason: string) {
 }
 
 const MAX_CONCURRENT_IMPORT_SOURCE_PREVIEW_LOOKUPS = 4;
-const IMPORT_SOURCE_PREVIEW_LOOKUP_TIMEOUT_MS = 30_000;
 const IMPORT_COMMIT_QUERY_PAGE_SIZE = 1_000;
-
-function createImportSourcePreviewTimeoutMessage() {
-  return `Timeout ambil data setelah ${
-    IMPORT_SOURCE_PREVIEW_LOOKUP_TIMEOUT_MS / 1000
-  } detik.`;
-}
-
-async function withImportSourcePreviewTimeout<T>(promise: Promise<T>) {
-  let timeoutId: number | null = null;
-
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_resolve, reject) => {
-        timeoutId = window.setTimeout(() => {
-          reject(new Error(createImportSourcePreviewTimeoutMessage()));
-        }, IMPORT_SOURCE_PREVIEW_LOOKUP_TIMEOUT_MS);
-      }),
-    ]);
-  } finally {
-    if (timeoutId !== null) {
-      window.clearTimeout(timeoutId);
-    }
-  }
-}
 
 function createEmptyImportSourcePreviewResult(
   kind: ImportSourceModalKind
@@ -323,12 +297,10 @@ async function runImportSourcePreviewInBatches({
       let preview: ImportSourcePreviewResult;
       try {
         preview = (
-          await withImportSourcePreviewTimeout(
-            previewImportSource({
-              kind,
-              ids: [sourceId],
-            })
-          )
+          await previewImportSource({
+            kind,
+            ids: [sourceId],
+          })
         ).payload;
       } catch (error) {
         preview = createFailedImportSourcePreviewResult(

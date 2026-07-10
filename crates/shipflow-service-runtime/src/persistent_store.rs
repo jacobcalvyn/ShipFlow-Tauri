@@ -95,9 +95,7 @@ impl PersistentLookupStore {
 
         if should_remove {
             store.entries.remove(key);
-            let snapshot = store.clone();
-            drop(store);
-            let _ = self.persist_snapshot(&snapshot);
+            let _ = self.persist_snapshot(&store);
             return None;
         }
 
@@ -111,7 +109,7 @@ impl PersistentLookupStore {
         }
 
         let expires_at_unix_ms = unix_ms().saturating_add(ttl.as_millis());
-        let snapshot = {
+        let persist_result = {
             let mut store = self
                 .inner
                 .lock()
@@ -124,10 +122,10 @@ impl PersistentLookupStore {
                 },
             );
             compact_store(&mut store);
-            store.clone()
+            self.persist_snapshot(&store)
         };
 
-        if let Err(error) = self.persist_snapshot(&snapshot) {
+        if let Err(error) = persist_result {
             eprintln!("[ShipFlowService] {error}");
             return false;
         }
@@ -135,7 +133,7 @@ impl PersistentLookupStore {
     }
 
     pub fn remove_success(&self, key: &str) -> bool {
-        let snapshot = {
+        let persist_result = {
             let mut store = self
                 .inner
                 .lock()
@@ -143,29 +141,36 @@ impl PersistentLookupStore {
             if store.entries.remove(key).is_none() {
                 return false;
             }
-            store.clone()
+            self.persist_snapshot(&store)
         };
 
-        if let Err(error) = self.persist_snapshot(&snapshot) {
+        if let Err(error) = persist_result {
             eprintln!("[ShipFlowService] {error}");
         }
         true
     }
 
     fn persist_snapshot(&self, snapshot: &PersistentLookupStoreFile) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                format!("Unable to prepare persistent lookup store directory: {error}")
-            })?;
-        }
-
-        let temp_path = unique_store_temp_path(&self.path);
         let bytes = serde_json::to_vec(snapshot)
             .map_err(|error| format!("Unable to serialize persistent lookup store: {error}"))?;
-        fs::write(&temp_path, bytes)
-            .map_err(|error| format!("Unable to write persistent lookup store: {error}"))?;
-        replace_store_file(temp_path, self.path.clone())
+        persist_bytes_atomically(&self.path, &bytes, "persistent lookup store")
     }
+}
+
+pub(crate) fn persist_bytes_atomically(
+    path: &Path,
+    bytes: &[u8],
+    store_label: &str,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Unable to prepare {store_label} directory: {error}"))?;
+    }
+
+    let temp_path = unique_store_temp_path(path);
+    fs::write(&temp_path, bytes)
+        .map_err(|error| format!("Unable to write {store_label}: {error}"))?;
+    replace_store_file(temp_path, path.to_path_buf(), store_label)
 }
 
 pub fn persistent_lookup_skip_reason(payload: &str) -> Option<&'static str> {
@@ -352,7 +357,7 @@ fn unique_store_temp_path(path: &Path) -> PathBuf {
 }
 
 #[cfg(target_os = "windows")]
-fn replace_store_file(temp_path: PathBuf, path: PathBuf) -> Result<(), String> {
+fn replace_store_file(temp_path: PathBuf, path: PathBuf, store_label: &str) -> Result<(), String> {
     use std::io::ErrorKind;
     use std::time::Duration;
 
@@ -370,9 +375,7 @@ fn replace_store_file(temp_path: PathBuf, path: PathBuf) -> Result<(), String> {
             }
             Err(error) => {
                 let _ = fs::remove_file(&temp_path);
-                return Err(format!(
-                    "Unable to finalize persistent lookup store: {error}"
-                ));
+                return Err(format!("Unable to finalize {store_label}: {error}"));
             }
         }
 
@@ -387,7 +390,7 @@ fn replace_store_file(temp_path: PathBuf, path: PathBuf) -> Result<(), String> {
             Err(error) => {
                 let _ = fs::remove_file(&temp_path);
                 return Err(format!(
-                    "Unable to prepare persistent lookup store replacement: {error}"
+                    "Unable to prepare {store_label} replacement: {error}"
                 ));
             }
         }
@@ -405,9 +408,7 @@ fn replace_store_file(temp_path: PathBuf, path: PathBuf) -> Result<(), String> {
             }
             Err(error) => {
                 let _ = fs::remove_file(&temp_path);
-                return Err(format!(
-                    "Unable to finalize persistent lookup store: {error}"
-                ));
+                return Err(format!("Unable to finalize {store_label}: {error}"));
             }
         }
     }
@@ -416,16 +417,14 @@ fn replace_store_file(temp_path: PathBuf, path: PathBuf) -> Result<(), String> {
     if last_error.is_empty() {
         last_error = "concurrent replacement did not settle".into();
     }
-    Err(format!(
-        "Unable to finalize persistent lookup store: {last_error}"
-    ))
+    Err(format!("Unable to finalize {store_label}: {last_error}"))
 }
 
 #[cfg(not(target_os = "windows"))]
-fn replace_store_file(temp_path: PathBuf, path: PathBuf) -> Result<(), String> {
+fn replace_store_file(temp_path: PathBuf, path: PathBuf, store_label: &str) -> Result<(), String> {
     fs::rename(&temp_path, &path).map_err(|error| {
         let _ = fs::remove_file(&temp_path);
-        format!("Unable to finalize persistent lookup store: {error}")
+        format!("Unable to finalize {store_label}: {error}")
     })
 }
 
@@ -474,6 +473,7 @@ fn unix_ms() -> u128 {
 mod tests {
     use std::collections::HashMap;
     use std::fs;
+    use std::sync::Arc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{
@@ -504,6 +504,38 @@ mod tests {
             reopened.load_success("track:1").as_deref(),
             Some("{\"ok\":true}")
         );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn concurrent_success_writes_remain_complete_after_reopen() {
+        let path = unique_store_path();
+        let store = Arc::new(PersistentLookupStore::open(path.clone()));
+        let writers = (0..16)
+            .map(|index| {
+                let store = Arc::clone(&store);
+                std::thread::spawn(move || {
+                    assert!(store.store_success(
+                        format!("track:{index}"),
+                        format!(r#"{{"index":{index}}}"#),
+                        Duration::from_secs(60),
+                    ));
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for writer in writers {
+            writer.join().expect("lookup store writer should finish");
+        }
+
+        let reopened = PersistentLookupStore::open(path.clone());
+        for index in 0..16 {
+            assert_eq!(
+                reopened.load_success(&format!("track:{index}")),
+                Some(format!(r#"{{"index":{index}}}"#))
+            );
+        }
 
         let _ = std::fs::remove_file(path);
     }

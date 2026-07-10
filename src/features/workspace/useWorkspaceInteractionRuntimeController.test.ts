@@ -558,9 +558,7 @@ describe("useWorkspaceInteractionRuntimeController", () => {
     });
   });
 
-  it("marks a stuck bag import preview source as timed out", async () => {
-    vi.useFakeTimers();
-
+  it("shows the Rust timeout returned for a stuck bag import preview source", async () => {
     const sheetState: SheetState = {
       ...createDefaultSheetState(),
       importSourceDrafts: {
@@ -597,7 +595,9 @@ describe("useWorkspaceInteractionRuntimeController", () => {
         };
       }
     );
-    mocks.previewImportSourceMock.mockReturnValue(new Promise(() => {}));
+    mocks.previewImportSourceMock.mockRejectedValue(
+      new Error("Timeout ambil data setelah 30 detik.")
+    );
     mocks.useWorkspaceRuntimeCommandsControllerMock.mockReturnValue({
       fetchRow: vi.fn(),
       copySelectedTrackingIds: vi.fn(),
@@ -651,15 +651,13 @@ describe("useWorkspaceInteractionRuntimeController", () => {
       } as never)
     );
 
-    const lookupPromise = result.current.runImportSourceLookup("bag");
+    await act(async () => {
+      await result.current.runImportSourceLookup("bag");
+    });
+
     expect(mocks.previewImportSourceMock).toHaveBeenCalledWith({
       kind: "bag",
       ids: ["PID-SLOW"],
-    });
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(30_000);
-      await lookupPromise;
     });
 
     const state =

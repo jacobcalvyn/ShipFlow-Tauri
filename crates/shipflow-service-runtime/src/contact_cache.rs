@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use shipflow_core::model::ContactEnrichment;
 
-use crate::persistent_store::default_persistent_lookup_store_path;
+use crate::persistent_store::{default_persistent_lookup_store_path, persist_bytes_atomically};
 
 const CONTACT_STORE_FILE_NAME: &str = "contact-store.json";
 const CONTACT_CACHE_TTL_MS: u128 = 90 * 24 * 60 * 60 * 1000;
@@ -78,24 +78,19 @@ impl ContactCacheState {
     }
 
     pub fn get(&self, shipment_id: &str) -> Option<ContactCacheEntry> {
-        let (snapshot, entry) = {
-            let mut store = self.inner.lock().expect("contact cache lock poisoned");
-            let now = unix_ms();
-            let entry = store.entries.get_mut(shipment_id)?;
-            if is_expired(entry, now) {
-                store.entries.remove(shipment_id);
-                (Some(store.clone()), None)
-            } else {
-                entry.last_used_at_unix_ms = now;
-                let entry = store.entries.get(shipment_id).cloned();
-                (None, entry)
+        let mut store = self.inner.lock().expect("contact cache lock poisoned");
+        let now = unix_ms();
+        let entry = store.entries.get_mut(shipment_id)?;
+        if is_expired(entry, now) {
+            store.entries.remove(shipment_id);
+            if let Err(error) = self.persist_snapshot(&store) {
+                eprintln!("[ShipFlowContactCache] prune_error id={shipment_id} error={error}");
             }
-        };
-
-        if let Some(snapshot) = snapshot {
-            let _ = self.persist_snapshot(&snapshot);
+            return None;
         }
-        entry
+
+        entry.last_used_at_unix_ms = now;
+        store.entries.get(shipment_id).cloned()
     }
 
     pub fn store(&self, shipment_id: &str, contact: ContactEnrichment) -> ContactCacheEntry {
@@ -113,28 +108,22 @@ impl ContactCacheState {
             fetched_at_unix_ms: now,
             last_used_at_unix_ms: now,
         };
-        let snapshot = {
+        let persist_result = {
             let mut store = self.inner.lock().expect("contact cache lock poisoned");
             store.entries.insert(shipment_id.to_string(), entry.clone());
             store.prune(now);
-            store.clone()
+            self.persist_snapshot(&store)
         };
-        if let Err(error) = self.persist_snapshot(&snapshot) {
+        if let Err(error) = persist_result {
             eprintln!("[ShipFlowContactCache] store_error id={shipment_id} error={error}");
         }
         entry
     }
 
     fn persist_snapshot(&self, snapshot: &ContactCacheStoreFile) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| format!("Unable to prepare contact cache directory: {error}"))?;
-        }
-
         let bytes = serde_json::to_vec(snapshot)
             .map_err(|error| format!("Unable to serialize contact cache: {error}"))?;
-        fs::write(&self.path, bytes)
-            .map_err(|error| format!("Unable to write contact cache: {error}"))
+        persist_bytes_atomically(&self.path, &bytes, "contact cache")
     }
 }
 
@@ -177,6 +166,8 @@ impl ContactCacheStoreFile {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
         ContactCacheEntryStatus, ContactCacheState, CONTACT_CACHE_TTL_MS, MAX_CONTACT_CACHE_ENTRIES,
     };
@@ -208,6 +199,44 @@ mod tests {
         assert_eq!(entry.status, ContactCacheEntryStatus::Ok);
         assert_eq!(entry.contact.pengirim.telepon.as_deref(), Some("628123"));
         assert!(cache.get("P260602018941230").is_none());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn concurrent_contact_writes_remain_complete_after_reopen() {
+        let path = std::env::temp_dir().join(format!(
+            "shipflow-contact-cache-concurrent-test-{}-{}.json",
+            std::process::id(),
+            chrono_like_test_suffix()
+        ));
+        let cache = Arc::new(ContactCacheState::open(path.clone()));
+        let writers = (0..16)
+            .map(|index| {
+                let cache = Arc::clone(&cache);
+                std::thread::spawn(move || {
+                    cache.store(
+                        &format!("P{index:014}"),
+                        ContactEnrichment {
+                            penerima: ContactDetail {
+                                telepon: Some(format!("62812{index:04}")),
+                                ..ContactDetail::default()
+                            },
+                            ..ContactEnrichment::default()
+                        },
+                    );
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for writer in writers {
+            writer.join().expect("contact writer should finish");
+        }
+
+        let reopened = ContactCacheState::open(path.clone());
+        for index in 0..16 {
+            assert!(reopened.get(&format!("P{index:014}")).is_some());
+        }
 
         let _ = std::fs::remove_file(path);
     }

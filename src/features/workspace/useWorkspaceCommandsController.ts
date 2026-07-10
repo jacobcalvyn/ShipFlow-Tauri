@@ -546,9 +546,6 @@ export function useWorkspaceCommandsController({
 
     disarmDeleteSelected();
     abortRowTrackingWork(targetSheetId, selectedRowKeysSnapshot, "selected_rows_deleted");
-    updateActiveSheet((current) =>
-      clearSelectionInSheet(deleteRowsInSheet(current, selectedRowKeysSnapshot))
-    );
 
     const engineRowIds =
       selectedEngineRowIdsSnapshot.length > 0
@@ -559,9 +556,16 @@ export function useWorkspaceCommandsController({
         sheetId: targetSheetId,
         rowIds: engineRowIds,
       });
+      updateActiveSheet((current) =>
+        clearSelectionInSheet(deleteRowsInSheet(current, selectedRowKeysSnapshot))
+      );
       onWorkspaceEngineMutation?.(targetSheetId);
     } catch (error) {
       console.error("[ShipFlowWorkspace] failed to delete Rust sheet rows", error);
+      showNotice({
+        tone: "error",
+        message: "Gagal menghapus row. Data tetap dipertahankan.",
+      });
     }
   }, [
     abortRowTrackingWork,
@@ -572,6 +576,7 @@ export function useWorkspaceCommandsController({
     selectedEngineRowIds,
     selectedVisibleRowKeys,
     onWorkspaceEngineMutation,
+    showNotice,
     updateActiveSheet,
   ]);
 
@@ -590,16 +595,20 @@ export function useWorkspaceCommandsController({
     disarmDeleteAll();
     disarmDeleteSelected();
     invalidateSheetTrackingWork(targetSheetId);
-    updateActiveSheet(clearAllDataInSheet);
-    focusFirstTrackingInput();
 
     try {
       await clearSheetRows({
         sheetId: targetSheetId,
       });
+      updateActiveSheet(clearAllDataInSheet);
+      focusFirstTrackingInput();
       onWorkspaceEngineMutation?.(targetSheetId);
     } catch (error) {
       console.error("[ShipFlowWorkspace] failed to clear Rust sheet rows", error);
+      showNotice({
+        tone: "error",
+        message: "Gagal menghapus semua row. Data tetap dipertahankan.",
+      });
     }
   }, [
     activeSheetDeleteAllArmed,
@@ -612,6 +621,7 @@ export function useWorkspaceCommandsController({
     invalidateSheetTrackingWork,
     onWorkspaceEngineMutation,
     rustExportRowsQuery,
+    showNotice,
     updateActiveSheet,
   ]);
 

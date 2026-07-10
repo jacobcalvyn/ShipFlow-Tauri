@@ -193,12 +193,15 @@ where
             workspace_id: bootstrap.workspace_id,
             name: bootstrap.workspace_name,
         })?;
-        let initial_sheet = store.create_sheet(&CreateSheetInput {
-            sheet_id: bootstrap.initial_sheet_id,
-            workspace_id: workspace.workspace_id.clone(),
-            name: bootstrap.initial_sheet_name,
-            position: 0,
-        })?;
+        let initial_sheet = match store.list_sheets()?.into_iter().next() {
+            Some(sheet) => sheet,
+            None => store.create_sheet(&CreateSheetInput {
+                sheet_id: bootstrap.initial_sheet_id,
+                workspace_id: workspace.workspace_id.clone(),
+                name: bootstrap.initial_sheet_name,
+                position: 0,
+            })?,
+        };
         let recovery = store.recover_interrupted_import_jobs()?;
         let runtime = Self::new_with_blob_root_path(config, store, import_source, blob_root_path);
 
@@ -1595,6 +1598,56 @@ mod tests {
             assert_eq!(rows.rows[0].display_tracking_id, "P2606020189412.30");
             assert_eq!(rows.rows[0].lookup_tracking_id, "P2606020189412");
         }
+
+        cleanup_temp_db(&path);
+    }
+
+    #[test]
+    fn persistent_bootstrap_does_not_recreate_a_removed_default_sheet() {
+        let path = temp_db_path("persistent-sheet-bootstrap");
+
+        {
+            let bootstrap = WorkspaceEngineRuntime::open_persistent(
+                WorkspaceEngineConfig::default(),
+                bootstrap_config(&path),
+                FakeImportSource::default(),
+            )
+            .expect("runtime opens persistent store");
+            let mut runtime = bootstrap.runtime;
+            runtime
+                .store_mut()
+                .create_sheet(&CreateSheetInput {
+                    sheet_id: "document-sheet".into(),
+                    workspace_id: "workspace-1".into(),
+                    name: "Document Sheet".into(),
+                    position: 0,
+                })
+                .expect("document sheet is created");
+            runtime
+                .store_mut()
+                .delete_sheet("sheet-1")
+                .expect("default sheet is deleted");
+        }
+
+        let bootstrap = WorkspaceEngineRuntime::open_persistent(
+            WorkspaceEngineConfig::default(),
+            bootstrap_config(&path),
+            FakeImportSource::default(),
+        )
+        .expect("runtime reopens persistent store");
+
+        assert_eq!(bootstrap.state.initial_sheet.sheet_id, "document-sheet");
+        assert_eq!(
+            bootstrap
+                .runtime
+                .store()
+                .list_sheets()
+                .expect("sheets are listed")
+                .into_iter()
+                .map(|sheet| sheet.sheet_id)
+                .collect::<Vec<_>>(),
+            vec!["document-sheet"]
+        );
 
         cleanup_temp_db(&path);
     }

@@ -1,6 +1,8 @@
 import {
   clearSheetRows,
   createEngineSheet,
+  deleteSheet,
+  listEngineSheets,
   querySheetRows,
   upsertSheetRows,
 } from "../workspace-engine/client";
@@ -17,6 +19,7 @@ export async function syncWorkspaceStateToEngine(
   options: WorkspaceEngineSyncOptions = {}
 ) {
   const mode = options.mode ?? "replace";
+  const desiredSheetIds = new Set(workspaceState.sheetOrder);
 
   for (const [position, sheetId] of workspaceState.sheetOrder.entries()) {
     const sheet = workspaceState.sheetsById[sheetId];
@@ -61,6 +64,15 @@ export async function syncWorkspaceStateToEngine(
 
     if (rows.length > 0) {
       await upsertSheetRows({ sheetId, rows });
+    }
+  }
+
+  if (mode === "replace") {
+    const response = await listEngineSheets();
+    for (const engineSheet of response.payload) {
+      if (!desiredSheetIds.has(engineSheet.sheetId)) {
+        await deleteSheet({ sheetId: engineSheet.sheetId });
+      }
     }
   }
 }

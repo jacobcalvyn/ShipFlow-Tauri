@@ -292,7 +292,7 @@ describe("useWorkspaceCommandsController", () => {
     expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
   });
 
-  it("removes selected local rows immediately before the engine delete settles", async () => {
+  it("removes selected local rows only after the engine delete succeeds", async () => {
     const options = buildOptions();
     options.deleteSelectedArmedSheetId = "sheet-1";
     options.selectedVisibleRowKeys = ["row-1"];
@@ -319,9 +319,16 @@ describe("useWorkspaceCommandsController", () => {
       void result.current.deleteSelectedRows();
     });
 
+    expect(options.updateActiveSheet).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveDeleteRows?.();
+      await Promise.resolve();
+    });
+
+    expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
     const updater = vi.mocked(options.updateActiveSheet).mock.calls[0]?.[0];
     expect(updater).toBeTypeOf("function");
-
     const nextSheet = updater({
       ...createDefaultSheetState(),
       rows: [
@@ -332,17 +339,29 @@ describe("useWorkspaceCommandsController", () => {
       ],
       selectedRowKeys: ["row-1"],
     });
-
-    expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
     expect(nextSheet.rows[0]?.trackingInput).toBe("");
     expect(nextSheet.selectedRowKeys).toEqual([]);
+  });
+
+  it("keeps selected local rows when the engine delete fails", async () => {
+    const options = buildOptions();
+    options.deleteSelectedArmedSheetId = "sheet-1";
+    options.selectedVisibleRowKeys = ["row-1"];
+    workspaceEngineMocks.deleteSheetRows.mockRejectedValueOnce(new Error("database locked"));
+
+    const { result } = renderHook(() =>
+      useWorkspaceCommandsController(options as never)
+    );
 
     await act(async () => {
-      resolveDeleteRows?.();
-      await Promise.resolve();
+      await result.current.deleteSelectedRows();
     });
 
-    expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
+    expect(options.updateActiveSheet).not.toHaveBeenCalled();
+    expect(options.showNotice).toHaveBeenCalledWith({
+      tone: "error",
+      message: "Gagal menghapus row. Data tetap dipertahankan.",
+    });
   });
 
   it("clears Rust sheet rows when the React row mirror is empty", async () => {
@@ -372,7 +391,7 @@ describe("useWorkspaceCommandsController", () => {
     expect(options.focusFirstTrackingInput).toHaveBeenCalledTimes(1);
   });
 
-  it("clears local rows immediately before the engine clear settles", async () => {
+  it("clears local rows only after the engine clear succeeds", async () => {
     const options = buildOptions();
     options.activeSheetDeleteAllArmed = true;
     let resolveClearRows: (() => void) | null = null;
@@ -397,9 +416,16 @@ describe("useWorkspaceCommandsController", () => {
       void result.current.deleteAllRows();
     });
 
+    expect(options.updateActiveSheet).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveClearRows?.();
+      await Promise.resolve();
+    });
+
+    expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
     const updater = vi.mocked(options.updateActiveSheet).mock.calls[0]?.[0];
     expect(updater).toBeTypeOf("function");
-
     const nextSheet = updater({
       ...createDefaultSheetState(),
       rows: [
@@ -411,18 +437,30 @@ describe("useWorkspaceCommandsController", () => {
       selectedRowKeys: ["row-1"],
       deleteAllArmed: true,
     });
-
-    expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
     expect(nextSheet.rows[0]?.trackingInput).toBe("");
     expect(nextSheet.selectedRowKeys).toEqual([]);
     expect(nextSheet.deleteAllArmed).toBe(false);
+  });
+
+  it("keeps all local rows when the engine clear fails", async () => {
+    const options = buildOptions();
+    options.activeSheetDeleteAllArmed = true;
+    workspaceEngineMocks.clearSheetRows.mockRejectedValueOnce(new Error("database locked"));
+
+    const { result } = renderHook(() =>
+      useWorkspaceCommandsController(options as never)
+    );
 
     await act(async () => {
-      resolveClearRows?.();
-      await Promise.resolve();
+      await result.current.deleteAllRows();
     });
 
-    expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
+    expect(options.updateActiveSheet).not.toHaveBeenCalled();
+    expect(options.focusFirstTrackingInput).not.toHaveBeenCalled();
+    expect(options.showNotice).toHaveBeenCalledWith({
+      tone: "error",
+      message: "Gagal menghapus semua row. Data tetap dipertahankan.",
+    });
   });
 
   it("creates a local sheet tab and syncs its metadata to the workspace engine", async () => {
