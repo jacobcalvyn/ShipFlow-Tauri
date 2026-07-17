@@ -94,6 +94,10 @@ run only in the Quality Gate; artifact workflows build, verify, and upload the
 installer without repeating those timing-sensitive suites. Publishing a release
 remains a separate, explicit operation with release credentials.
 
+Unsigned workflows omit signing credentials entirely and disable certificate
+auto-discovery. Signed workflows inject platform credentials only after their
+dedicated credential validation step succeeds.
+
 Unsigned local builds are suitable for development smoke tests. Production
 macOS distribution still requires Apple Developer signing and notarization.
 Production Windows distribution still requires a code-signing certificate.

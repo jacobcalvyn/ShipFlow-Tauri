@@ -317,16 +317,29 @@ requireTokens(".github/workflows/quality.yml", [
 requireTokens(".github/workflows/build-macos-app.yml", [
   "actions: read",
   "node scripts/verify-quality-gate.mjs",
+  "Build unsigned Electron macOS suite",
+  "Build signed Electron macOS suite",
+  'CSC_IDENTITY_AUTO_DISCOVERY: "false"',
+  'CSC_IDENTITY_AUTO_DISCOVERY: "true"',
   "npm run package:macos",
   "npm run package:verify",
 ]);
 forbidTokens(".github/workflows/build-macos-app.yml", [
   "npm test",
   "cargo test --workspace --all-targets",
+  "secrets.APPLE_CERTIFICATE || ''",
+  "secrets.APPLE_CERTIFICATE_PASSWORD || ''",
+  "secrets.APPLE_ID || ''",
+  "secrets.APPLE_PASSWORD || ''",
+  "secrets.APPLE_TEAM_ID || ''",
 ]);
 requireTokens(".github/workflows/build-windows-exe.yml", [
   "actions: read",
   "node scripts/verify-quality-gate.mjs",
+  "Build unsigned Electron Windows suite",
+  "Build signed Electron Windows suite",
+  'CSC_IDENTITY_AUTO_DISCOVERY: "false"',
+  'CSC_IDENTITY_AUTO_DISCOVERY: "true"',
   "npm run package:windows",
   "npm run package:verify",
   "target/release/duckdb.dll",
@@ -334,6 +347,8 @@ requireTokens(".github/workflows/build-windows-exe.yml", [
 forbidTokens(".github/workflows/build-windows-exe.yml", [
   "npm test",
   "cargo test --workspace --all-targets",
+  "secrets.WINDOWS_CERTIFICATE || ''",
+  "secrets.WINDOWS_CERTIFICATE_PASSWORD || ''",
 ]);
 
 requireTokens("docs/electron-parity-program.md", [

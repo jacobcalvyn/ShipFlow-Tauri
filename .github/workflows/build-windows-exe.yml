@@ -53,11 +53,17 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:CSC_LINK) -or [string]::IsNullOrWhiteSpace($env:CSC_KEY_PASSWORD)) {
             throw 'WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are required.'
           }
-      - name: Build Electron Windows suite
+      - name: Build unsigned Electron Windows suite
+        if: ${{ !inputs.signed_release }}
         env:
-          CSC_LINK: ${{ inputs.signed_release && secrets.WINDOWS_CERTIFICATE || '' }}
-          CSC_KEY_PASSWORD: ${{ inputs.signed_release && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ inputs.signed_release && 'true' || 'false' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run package:windows
+      - name: Build signed Electron Windows suite
+        if: ${{ inputs.signed_release }}
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "true"
         run: npm run package:windows
       - name: Verify package contents
         shell: pwsh

@@ -50,14 +50,20 @@ jobs:
           for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
             test -n "${!name}" || { echo "::error::$name is required"; exit 1; }
           done
-      - name: Build Electron macOS suite
+      - name: Build unsigned Electron macOS suite
+        if: ${{ !inputs.signed_release }}
         env:
-          CSC_LINK: ${{ inputs.signed_release && secrets.APPLE_CERTIFICATE || '' }}
-          CSC_KEY_PASSWORD: ${{ inputs.signed_release && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_ID: ${{ inputs.signed_release && secrets.APPLE_ID || '' }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ inputs.signed_release && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ inputs.signed_release && secrets.APPLE_TEAM_ID || '' }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ inputs.signed_release && 'true' || 'false' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run package:macos
+      - name: Build signed Electron macOS suite
+        if: ${{ inputs.signed_release }}
+        env:
+          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "true"
         run: npm run package:macos
       - name: Verify package contents
         run: |
