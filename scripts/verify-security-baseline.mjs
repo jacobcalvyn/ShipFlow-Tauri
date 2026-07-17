@@ -67,9 +67,22 @@ for (const dependency of ["@tauri-apps/api", "@tauri-apps/cli"]) {
     errors.push(`package.json must not include legacy dependency ${dependency}.`);
   }
 }
-for (const scriptName of ["dev", "build", "build:native", "package", "package:macos", "package:windows"]) {
+for (const scriptName of [
+  "dev",
+  "build",
+  "build:native",
+  "package",
+  "package:dir",
+  "package:macos",
+  "package:windows",
+]) {
   if (!packageJson.scripts?.[scriptName]) {
     errors.push(`package.json must expose script ${scriptName}.`);
+  }
+}
+for (const scriptName of ["package", "package:dir", "package:macos", "package:windows"]) {
+  if (!packageJson.scripts?.[scriptName]?.includes("--publish never")) {
+    errors.push(`package.json script ${scriptName} must disable implicit publishing.`);
   }
 }
 for (const [scriptName, script] of Object.entries(packageJson.scripts ?? {})) {
@@ -275,6 +288,14 @@ requireTokens("scripts/verify-electron-package.mjs", [
   "duckdb.dll",
   "app.asar",
 ]);
+requireTokens("scripts/verify-quality-gate.mjs", [
+  "actions/workflows/",
+  "head_sha",
+  'conclusion === "success"',
+  "GITHUB_REPOSITORY",
+  "GITHUB_SHA",
+  "GITHUB_TOKEN",
+]);
 
 for (const workflow of [
   ".github/workflows/quality.yml",
@@ -294,13 +315,25 @@ requireTokens(".github/workflows/quality.yml", [
   "xvfb-run --auto-servernum npm run test:e2e",
 ]);
 requireTokens(".github/workflows/build-macos-app.yml", [
+  "actions: read",
+  "node scripts/verify-quality-gate.mjs",
   "npm run package:macos",
   "npm run package:verify",
 ]);
+forbidTokens(".github/workflows/build-macos-app.yml", [
+  "npm test",
+  "cargo test --workspace --all-targets",
+]);
 requireTokens(".github/workflows/build-windows-exe.yml", [
+  "actions: read",
+  "node scripts/verify-quality-gate.mjs",
   "npm run package:windows",
   "npm run package:verify",
   "target/release/duckdb.dll",
+]);
+forbidTokens(".github/workflows/build-windows-exe.yml", [
+  "npm test",
+  "cargo test --workspace --all-targets",
 ]);
 
 requireTokens("docs/electron-parity-program.md", [

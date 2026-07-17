@@ -109,6 +109,17 @@ and expose rollback evidence in logs.
 | Packaging | One installer contains Desktop and both Rust binaries | macOS local and Windows CI packaged smoke |
 | Updater | Suite update is atomic and rollback-safe | Signed-artifact verifier when credentials exist |
 
+## Build And Publication Contract
+
+- The Quality Gate is the only workflow that owns the complete frontend, Rust,
+  Clippy, formatting, native IPC, and Electron smoke suites.
+- Manual platform workflows may package a commit only after the Quality Gate
+  has succeeded for that exact SHA.
+- Packaging always uses `--publish never`; installer creation cannot publish a
+  GitHub release as a side effect.
+- Artifact upload, release publication, code signing, and notarization are
+  separate operations with explicit credentials and permissions.
+
 ## Cutover Gates
 
 The migration is complete only when:

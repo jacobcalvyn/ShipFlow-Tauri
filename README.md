@@ -84,7 +84,15 @@ npm run package:dir
 ```
 
 Create platform installers with `npm run package:macos` or
-`npm run package:windows`.
+`npm run package:windows`. Packaging commands always use
+`electron-builder --publish never`; creating an artifact never publishes a
+GitHub release implicitly.
+
+The manual macOS and Windows artifact workflows require a successful Quality
+Gate for the exact commit being packaged. Full frontend and Rust test suites
+run only in the Quality Gate; artifact workflows build, verify, and upload the
+installer without repeating those timing-sensitive suites. Publishing a release
+remains a separate, explicit operation with release credentials.
 
 Unsigned local builds are suitable for development smoke tests. Production
 macOS distribution still requires Apple Developer signing and notarization.

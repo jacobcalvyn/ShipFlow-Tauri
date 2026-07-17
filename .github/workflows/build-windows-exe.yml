@@ -10,6 +10,7 @@ on:
         type: boolean
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -38,11 +39,10 @@ jobs:
         run: npm ci
       - name: Check security baseline
         run: npm run security:baseline
-      - name: Run quality checks
-        run: |
-          npm test
-          cargo fmt --all -- --check
-          cargo test --workspace --all-targets
+      - name: Verify Quality Gate for commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/verify-quality-gate.mjs
       - name: Validate signing credentials
         if: ${{ inputs.signed_release }}
         shell: pwsh
