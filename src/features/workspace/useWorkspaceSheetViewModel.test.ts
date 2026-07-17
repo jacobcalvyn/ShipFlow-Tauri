@@ -484,7 +484,7 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
     expect(result.current.displayedRowWindow?.totalCount).toBe(0);
   });
 
-  it("does not fall back to filled React mirror rows while a representable Rust row query is pending", async () => {
+  it("keeps the current React row projection visible while a representable Rust row query is pending", async () => {
     mocks.querySheetRows.mockReturnValueOnce(new Promise(() => undefined));
     let sheet = createDefaultSheetState();
     sheet = setRowSuccessInSheet(
@@ -506,8 +506,9 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
 
     expect(
       result.current.displayedTableRows.some((row) => row.trackingInput === "PLEGACY")
-    ).toBe(false);
-    expect(result.current.displayedRowWindow?.totalCount).toBe(0);
+    ).toBe(true);
+    expect(result.current.displayedRowWindow).toBeNull();
+    expect(result.current.isDisplayedRowsQueryPending).toBe(true);
   });
 
   it("does not resurrect filled React mirror rows when the Rust row query fails", async () => {

@@ -5,9 +5,6 @@ description = "Standalone ShipFlow Service companion"
 authors = ["Codex"]
 edition = "2021"
 
-[features]
-custom-protocol = ["tauri/custom-protocol"]
-
 [[bin]]
 name = "shipflow-service"
 path = "src/main.rs"
@@ -15,9 +12,4 @@ path = "src/main.rs"
 [dependencies]
 shipflow-core = { path = "../../crates/shipflow-core" }
 shipflow-service-runtime = { path = "../../crates/shipflow-service-runtime" }
-shipflow-tauri-runtime = { path = "../../crates/shipflow-tauri-runtime" }
-tauri = { workspace = true }
 tokio = { workspace = true }
-
-[build-dependencies]
-tauri-build = { workspace = true }

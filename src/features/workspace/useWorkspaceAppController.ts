@@ -122,6 +122,7 @@ export function useWorkspaceAppController(): ComponentProps<
     highlightedColumnTimeoutRef: interactionRefs.highlightedColumnTimeoutRef,
     highlightedColumnSheetIdRef: interactionRefs.highlightedColumnSheetIdRef,
     activeFilterCount: sheetViewModel.activeFilterCount,
+    isDisplayedRowsQueryPending: sheetViewModel.isDisplayedRowsQueryPending,
     allTrackingIds: sheetViewModel.allTrackingIds,
     exportableTableRows: sheetViewModel.exportableTableRows,
     rustExportRowsQuery: sheetViewModel.rustExportRowsQuery,

@@ -720,6 +720,7 @@ type UseWorkspaceInteractionRuntimeControllerOptions = {
   highlightedColumnTimeoutRef: MutableRefObject<number | null>;
   highlightedColumnSheetIdRef: MutableRefObject<string | null>;
   activeFilterCount: number;
+  isDisplayedRowsQueryPending: boolean;
   allTrackingIds: string[];
   exportableTableRows: SheetTableRow[];
   rustExportRowsQuery: SheetRowsQuery | null;
@@ -764,6 +765,7 @@ export function useWorkspaceInteractionRuntimeController({
   highlightedColumnTimeoutRef,
   highlightedColumnSheetIdRef,
   activeFilterCount,
+  isDisplayedRowsQueryPending,
   allTrackingIds,
   exportableTableRows,
   rustExportRowsQuery,
@@ -830,6 +832,7 @@ export function useWorkspaceInteractionRuntimeController({
     highlightedColumnTimeoutRef,
     highlightedColumnSheetIdRef,
     hasActiveFilters: activeFilterCount > 0,
+    isDisplayedRowsQueryPending,
     visibleSelectableKeys,
     selectedVisibleRowKeys,
     selectedTrackingIds,

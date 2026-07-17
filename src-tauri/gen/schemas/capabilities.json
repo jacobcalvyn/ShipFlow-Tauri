@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Minimal desktop workspace capability. Native access stays behind explicit Tauri commands; the frontend only needs to subscribe to runtime menu/window events.","local":true,"windows":["main","workspace-*"],"permissions":["core:event:allow-listen","core:event:allow-unlisten"]}}

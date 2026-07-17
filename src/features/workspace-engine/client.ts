@@ -1,4 +1,4 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { getShipFlowBridge } from "../../backend/bridge";
 
 export type ImportKind = "bag" | "manifest";
 export type ImportMode = "replace" | "append";
@@ -533,7 +533,7 @@ export type ResolvedTrackingIdResponse = Extract<
 export function workspaceEngineCommand<
   Response extends WorkspaceEngineResponse = WorkspaceEngineResponse,
 >(command: WorkspaceEngineCommand) {
-  return invoke<Response>("workspace_engine_command", { command });
+  return getShipFlowBridge().requestWorkspace<Response>("workspace.command", command);
 }
 
 export function createImportJob(payload: CreateImportJobRequest) {
@@ -554,12 +554,10 @@ export function runImportJobWithProgress(
   jobId: string,
   onEvent: (event: WorkspaceEngineEvent) => void,
 ) {
-  return invoke<ImportJobDetailResponse>(
-    "workspace_engine_run_import_job_with_progress",
-    {
-      request: { jobId },
-      onEvent: new Channel<WorkspaceEngineEvent>(onEvent),
-    },
+  return getShipFlowBridge().requestWorkspace<ImportJobDetailResponse>(
+    "workspace.run_import_job_with_progress",
+    { jobId },
+    (event) => onEvent(event as WorkspaceEngineEvent),
   );
 }
 
@@ -574,12 +572,10 @@ export function retryImportJobFailedWithProgress(
   jobId: string,
   onEvent: (event: WorkspaceEngineEvent) => void,
 ) {
-  return invoke<ImportJobDetailResponse>(
-    "workspace_engine_retry_import_job_failed_with_progress",
-    {
-      request: { jobId },
-      onEvent: new Channel<WorkspaceEngineEvent>(onEvent),
-    },
+  return getShipFlowBridge().requestWorkspace<ImportJobDetailResponse>(
+    "workspace.retry_import_job_with_progress",
+    { jobId },
+    (event) => onEvent(event as WorkspaceEngineEvent),
   );
 }
 
@@ -684,12 +680,10 @@ export function refreshSheetRowsTrackingWithProgress(
   payload: RefreshSheetRowsTrackingRequest,
   onEvent: (event: WorkspaceEngineEvent) => void,
 ) {
-  return invoke<SheetRowsTrackingRefreshResponse>(
-    "workspace_engine_refresh_sheet_rows_tracking_with_progress",
-    {
-      request: payload,
-      onEvent: new Channel<WorkspaceEngineEvent>(onEvent),
-    },
+  return getShipFlowBridge().requestWorkspace<SheetRowsTrackingRefreshResponse>(
+    "workspace.refresh_tracking_with_progress",
+    payload,
+    (event) => onEvent(event as WorkspaceEngineEvent),
   );
 }
 

@@ -37,12 +37,20 @@ pub struct ServiceRuntimeConfig {
     pub mode: ServiceRuntimeMode,
     pub port: u16,
     pub auth_token: String,
+    #[serde(default)]
+    pub internal_auth_token: String,
+    #[serde(default)]
+    pub internal_ipc_endpoint: Option<String>,
     pub tracking_source: TrackingSourceConfig,
 }
 
 pub fn validate_service_runtime_config(config: &ServiceRuntimeConfig) -> Result<(), String> {
     if config.auth_token.trim().is_empty() {
         return Err("Auth token is required before enabling API service.".into());
+    }
+
+    if config.internal_ipc_endpoint.is_some() && config.internal_auth_token.trim().is_empty() {
+        return Err("Internal IPC token is required when the IPC endpoint is enabled.".into());
     }
 
     validate_tracking_source_config(&config.tracking_source).map_err(|error| match error {
@@ -75,6 +83,8 @@ mod tests {
             mode: ServiceRuntimeMode::Local,
             port: 18422,
             auth_token: auth_token.into(),
+            internal_auth_token: String::new(),
+            internal_ipc_endpoint: None,
             tracking_source: TrackingSourceConfig::default(),
         }
     }

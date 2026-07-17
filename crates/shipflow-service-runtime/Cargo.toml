@@ -11,6 +11,7 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 shipflow-core = { path = "../shipflow-core" }
+shipflow-ipc = { path = "../shipflow-ipc" }
 time = { workspace = true }
 tokio = { workspace = true }
 

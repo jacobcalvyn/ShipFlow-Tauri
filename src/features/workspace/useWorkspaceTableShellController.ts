@@ -24,6 +24,7 @@ type UseWorkspaceTableShellControllerOptions = {
   hiddenColumnPaths: string[];
   pinnedColumnPaths: string[];
   hasActiveFilters: boolean;
+  isDisplayedRowsQueryPending: boolean;
   visibleSelectableKeys: string[];
   selectedVisibleRowKeys: string[];
   selectedTrackingIds: string[];
@@ -47,6 +48,7 @@ export function useWorkspaceTableShellController({
   hiddenColumnPaths,
   pinnedColumnPaths,
   hasActiveFilters,
+  isDisplayedRowsQueryPending,
   visibleSelectableKeys,
   selectedVisibleRowKeys,
   selectedTrackingIds,
@@ -153,14 +155,19 @@ export function useWorkspaceTableShellController({
   }, [activeSheetSelectionFollowsVisibleRows, updateActiveSheet, visibleSelectableKeys]);
 
   useEffect(() => {
-    if (activeSheetSelectionFollowsVisibleRows) {
+    if (activeSheetSelectionFollowsVisibleRows || isDisplayedRowsQueryPending) {
       return;
     }
 
     updateActiveSheet((current) =>
       pruneSelectionToVisibleRowsInSheet(current, visibleSelectableKeys)
     );
-  }, [activeSheetSelectionFollowsVisibleRows, updateActiveSheet, visibleSelectableKeys]);
+  }, [
+    activeSheetSelectionFollowsVisibleRows,
+    isDisplayedRowsQueryPending,
+    updateActiveSheet,
+    visibleSelectableKeys,
+  ]);
 
   const scrollToColumn = useCallback(
     (path: string) => {

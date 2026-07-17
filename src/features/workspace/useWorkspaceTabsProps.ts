@@ -6,12 +6,10 @@ type UseWorkspaceTabsPropsOptions = {
   activeSheetId: string;
   effectiveDisplayScale: ComponentProps<typeof SheetTabs>["displayScale"];
   settingsOpenRequestToken: number;
+  serviceSettingsOpenRequestToken: number;
   recentDocumentItems: NonNullable<ComponentProps<typeof SheetTabs>["recentDocuments"]>;
   canUseAutosave: boolean;
   isAutosaveActive: boolean;
-  effectiveServiceConfig: ComponentProps<typeof SheetTabs>["serviceConfig"];
-  apiServiceStatus: ComponentProps<typeof SheetTabs>["serviceStatus"];
-  hasPendingServiceConfigChanges: boolean;
   toggleAutosave: NonNullable<ComponentProps<typeof SheetTabs>["onToggleAutosave"]>;
   createNewWorkspaceDocument: NonNullable<ComponentProps<typeof SheetTabs>["onCreateDocument"]>;
   openWorkspaceDocumentWithPicker: () => Promise<unknown>;
@@ -19,7 +17,6 @@ type UseWorkspaceTabsPropsOptions = {
   saveWorkspaceDocumentAs: () => Promise<unknown>;
   createNewWorkspaceWindow: () => Promise<unknown>;
   openWorkspaceInNewWindow: () => Promise<unknown>;
-  openShipFlowServiceApp: () => Promise<unknown>;
   openWorkspaceDocumentFromPath: (path: string) => Promise<unknown>;
   activateSheet: ComponentProps<typeof SheetTabs>["onActivateSheet"];
   createSheet: ComponentProps<typeof SheetTabs>["onCreateSheet"];
@@ -27,22 +24,6 @@ type UseWorkspaceTabsPropsOptions = {
   renameActiveSheet: ComponentProps<typeof SheetTabs>["onRenameSheet"];
   deleteActiveSheet: ComponentProps<typeof SheetTabs>["onDeleteSheet"];
   previewDisplayScale: ComponentProps<typeof SheetTabs>["onPreviewDisplayScale"];
-  previewServiceEnabled: ComponentProps<typeof SheetTabs>["onPreviewServiceEnabled"];
-  previewServiceMode: ComponentProps<typeof SheetTabs>["onPreviewServiceMode"];
-  previewServicePort: ComponentProps<typeof SheetTabs>["onPreviewServicePort"];
-  previewTrackingSource: NonNullable<ComponentProps<typeof SheetTabs>["onPreviewTrackingSource"]>;
-  previewExternalApiBaseUrl: NonNullable<ComponentProps<typeof SheetTabs>["onPreviewExternalApiBaseUrl"]>;
-  previewExternalApiAuthToken: NonNullable<ComponentProps<typeof SheetTabs>["onPreviewExternalApiAuthToken"]>;
-  previewAllowInsecureExternalApiHttp: NonNullable<ComponentProps<typeof SheetTabs>["onPreviewAllowInsecureExternalApiHttp"]>;
-  previewDesktopServiceUrl: NonNullable<ComponentProps<typeof SheetTabs>["onPreviewDesktopServiceUrl"]>;
-  previewDesktopServiceAuthToken: NonNullable<ComponentProps<typeof SheetTabs>["onPreviewDesktopServiceAuthToken"]>;
-  pasteDesktopServiceAuthToken: NonNullable<ComponentProps<typeof SheetTabs>["onPasteDesktopServiceAuthToken"]>;
-  previewGenerateServiceToken: ComponentProps<typeof SheetTabs>["onGenerateServiceToken"];
-  previewRegenerateServiceToken: ComponentProps<typeof SheetTabs>["onRegenerateServiceToken"];
-  copyServiceEndpoint: NonNullable<ComponentProps<typeof SheetTabs>["onCopyServiceEndpoint"]>;
-  copyServiceToken: NonNullable<ComponentProps<typeof SheetTabs>["onCopyServiceToken"]>;
-  testApiServiceConnection: NonNullable<ComponentProps<typeof SheetTabs>["onTestApiServiceConnection"]>;
-  testExternalTrackingSource: NonNullable<ComponentProps<typeof SheetTabs>["onTestExternalTrackingSource"]>;
   confirmSettings: ComponentProps<typeof SheetTabs>["onConfirmSettings"];
   cancelSettingsPreview: ComponentProps<typeof SheetTabs>["onCancelSettings"];
   isSheetTransferDragActive: boolean;
@@ -55,12 +36,10 @@ export function useWorkspaceTabsProps({
   activeSheetId,
   effectiveDisplayScale,
   settingsOpenRequestToken,
+  serviceSettingsOpenRequestToken,
   recentDocumentItems,
   canUseAutosave,
   isAutosaveActive,
-  effectiveServiceConfig,
-  apiServiceStatus,
-  hasPendingServiceConfigChanges,
   toggleAutosave,
   createNewWorkspaceDocument,
   openWorkspaceDocumentWithPicker,
@@ -68,7 +47,6 @@ export function useWorkspaceTabsProps({
   saveWorkspaceDocumentAs,
   createNewWorkspaceWindow,
   openWorkspaceInNewWindow,
-  openShipFlowServiceApp,
   openWorkspaceDocumentFromPath,
   activateSheet,
   createSheet,
@@ -76,22 +54,6 @@ export function useWorkspaceTabsProps({
   renameActiveSheet,
   deleteActiveSheet,
   previewDisplayScale,
-  previewServiceEnabled,
-  previewServiceMode,
-  previewServicePort,
-  previewTrackingSource,
-  previewExternalApiBaseUrl,
-  previewExternalApiAuthToken,
-  previewAllowInsecureExternalApiHttp,
-  previewDesktopServiceUrl,
-  previewDesktopServiceAuthToken,
-  pasteDesktopServiceAuthToken,
-  previewGenerateServiceToken,
-  previewRegenerateServiceToken,
-  copyServiceEndpoint,
-  copyServiceToken,
-  testApiServiceConnection,
-  testExternalTrackingSource,
   confirmSettings,
   cancelSettingsPreview,
   isSheetTransferDragActive,
@@ -103,12 +65,10 @@ export function useWorkspaceTabsProps({
     activeSheetId,
     displayScale: effectiveDisplayScale,
     settingsOpenRequestToken,
+    serviceSettingsOpenRequestToken,
     recentDocuments: recentDocumentItems,
     canUseAutosave,
     isAutosaveEnabled: isAutosaveActive,
-    serviceConfig: effectiveServiceConfig,
-    serviceStatus: apiServiceStatus,
-    hasPendingServiceConfigChanges,
     onToggleAutosave: toggleAutosave,
     onCreateDocument: createNewWorkspaceDocument,
     onOpenDocument: () => {
@@ -126,9 +86,6 @@ export function useWorkspaceTabsProps({
     onOpenDocumentInNewWindow: () => {
       void openWorkspaceInNewWindow();
     },
-    onOpenServiceSettings: () => {
-      void openShipFlowServiceApp();
-    },
     onOpenRecentDocument: (path) => {
       void openWorkspaceDocumentFromPath(path);
     },
@@ -138,22 +95,6 @@ export function useWorkspaceTabsProps({
     onRenameSheet: renameActiveSheet,
     onDeleteSheet: deleteActiveSheet,
     onPreviewDisplayScale: previewDisplayScale,
-    onPreviewServiceEnabled: previewServiceEnabled,
-    onPreviewServiceMode: previewServiceMode,
-    onPreviewServicePort: previewServicePort,
-    onPreviewTrackingSource: previewTrackingSource,
-    onPreviewExternalApiBaseUrl: previewExternalApiBaseUrl,
-    onPreviewExternalApiAuthToken: previewExternalApiAuthToken,
-    onPreviewAllowInsecureExternalApiHttp: previewAllowInsecureExternalApiHttp,
-    onPreviewDesktopServiceUrl: previewDesktopServiceUrl,
-    onPreviewDesktopServiceAuthToken: previewDesktopServiceAuthToken,
-    onPasteDesktopServiceAuthToken: pasteDesktopServiceAuthToken,
-    onGenerateServiceToken: previewGenerateServiceToken,
-    onRegenerateServiceToken: previewRegenerateServiceToken,
-    onCopyServiceEndpoint: copyServiceEndpoint,
-    onCopyServiceToken: copyServiceToken,
-    onTestApiServiceConnection: testApiServiceConnection,
-    onTestExternalTrackingSource: testExternalTrackingSource,
     onConfirmSettings: confirmSettings,
     onCancelSettings: cancelSettingsPreview,
     isSelectionDragActive: isSheetTransferDragActive,

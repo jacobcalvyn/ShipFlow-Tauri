@@ -12,6 +12,7 @@ function createOptions(overrides: Partial<Parameters<typeof useWorkspaceTableShe
     hiddenColumnPaths: [],
     pinnedColumnPaths: [],
     hasActiveFilters: false,
+    isDisplayedRowsQueryPending: false,
     visibleSelectableKeys: ["row-1", "row-2"],
     selectedVisibleRowKeys: [],
     selectedTrackingIds: [],
@@ -86,6 +87,26 @@ describe("useWorkspaceTableShellController", () => {
     const nextSheet = applyActiveSheetUpdaters(initialSheet, updateActiveSheet);
 
     expect(nextSheet.selectionFollowsVisibleRows).toBe(false);
+    expect(nextSheet.selectedRowKeys).toEqual(["row-2"]);
+  });
+
+  it("preserves selection while the filtered Rust row window is pending", () => {
+    const updateActiveSheet = vi.fn();
+    const options = createOptions({
+      hasActiveFilters: true,
+      isDisplayedRowsQueryPending: true,
+      visibleSelectableKeys: [],
+      updateActiveSheet,
+    });
+    const initialSheet = {
+      ...createDefaultSheetState(),
+      selectedRowKeys: ["row-2"],
+      selectionFollowsVisibleRows: false,
+    };
+
+    renderHook(() => useWorkspaceTableShellController(options));
+
+    const nextSheet = applyActiveSheetUpdaters(initialSheet, updateActiveSheet);
     expect(nextSheet.selectedRowKeys).toEqual(["row-2"]);
   });
 });

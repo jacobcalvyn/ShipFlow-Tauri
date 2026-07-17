@@ -1,0 +1,11 @@
+[package]
+name = "shipflow-ipc"
+version = "0.1.0"
+edition = "2021"
+description = "Versioned native IPC contract for ShipFlow Electron and Rust processes"
+license = "UNLICENSED"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

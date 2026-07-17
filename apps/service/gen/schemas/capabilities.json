@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Minimal capability for the standalone ShipFlow Service settings window. Native access stays behind explicit Tauri commands.","local":true,"windows":["service-settings"],"permissions":["core:event:allow-listen","core:event:allow-unlisten"]}}

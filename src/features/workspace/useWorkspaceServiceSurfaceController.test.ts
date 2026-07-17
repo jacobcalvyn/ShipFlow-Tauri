@@ -1,75 +1,30 @@
-import { act, renderHook } from "@testing-library/react";
+import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkspaceServiceSurfaceController } from "./useWorkspaceServiceSurfaceController";
+import { installTestBridge } from "../../test/bridge";
 
 const mocks = vi.hoisted(() => ({
   invokeMock: vi.fn(),
-  useServiceSettingsControllerMock: vi.fn(),
-}));
-
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: mocks.invokeMock,
-}));
-
-vi.mock("../service/useServiceSettingsController", () => ({
-  useServiceSettingsController: mocks.useServiceSettingsControllerMock,
 }));
 
 describe("useWorkspaceServiceSurfaceController", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    installTestBridge({ invoke: mocks.invokeMock });
   });
 
-  it("composes service settings and opens service connection settings", async () => {
+  it("exposes updater commands and the shared notice surface", () => {
     const showNotice = vi.fn();
-    const serviceSettings = {
-      effectiveServiceConfig: { enabled: false },
-      hasPendingServiceConfigChanges: false,
-    };
-
-    mocks.useServiceSettingsControllerMock.mockReturnValue(serviceSettings);
     mocks.invokeMock.mockResolvedValue(undefined);
 
     const { result } = renderHook(() =>
       useWorkspaceServiceSurfaceController({ showNotice })
     );
 
-    expect(mocks.useServiceSettingsControllerMock).toHaveBeenCalledWith({
-      copyText: expect.any(Function),
-      pasteText: expect.any(Function),
-      showNotice,
-    });
     expect(result.current).toEqual({
-      ...serviceSettings,
       showNotice,
-      openShipFlowServiceApp: expect.any(Function),
-    });
-
-    await act(async () => {
-      await result.current.openShipFlowServiceApp();
-    });
-
-    expect(mocks.invokeMock).toHaveBeenCalledWith("open_shipflow_service_app");
-    expect(showNotice).not.toHaveBeenCalled();
-  });
-
-  it("shows an error notice when opening service connection settings fails", async () => {
-    const showNotice = vi.fn();
-
-    mocks.useServiceSettingsControllerMock.mockReturnValue({});
-    mocks.invokeMock.mockRejectedValue(new Error("boom"));
-
-    const { result } = renderHook(() =>
-      useWorkspaceServiceSurfaceController({ showNotice })
-    );
-
-    await act(async () => {
-      await result.current.openShipFlowServiceApp();
-    });
-
-    expect(showNotice).toHaveBeenCalledWith({
-      tone: "error",
-      message: "Gagal membuka pengaturan koneksi service.",
+      checkForAppUpdate: expect.any(Function),
+      installAvailableAppUpdate: expect.any(Function),
     });
   });
 });

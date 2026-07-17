@@ -25,10 +25,6 @@ describe("useWorkspaceShellSettingsSurfaceController", () => {
       openWorkspaceInNewWindow: vi.fn(),
     };
     const service = {
-      hasPendingServiceConfigChanges: true,
-      cancelServiceConfigPreview: vi.fn(),
-      confirmServiceConfig: vi.fn(),
-      openShipFlowServiceApp: vi.fn(),
       checkForAppUpdate: vi.fn(),
       installAvailableAppUpdate: vi.fn(),
       showNotice: vi.fn(),
@@ -48,16 +44,12 @@ describe("useWorkspaceShellSettingsSurfaceController", () => {
     );
 
     expect(mocks.useWorkspaceShellControllerMock).toHaveBeenCalledWith({
-      hasPendingServiceConfigChanges: service.hasPendingServiceConfigChanges,
-      cancelServiceConfigPreview: service.cancelServiceConfigPreview,
-      confirmServiceConfig: service.confirmServiceConfig,
       createNewWorkspaceDocument: document.createNewWorkspaceDocument,
       openWorkspaceDocumentWithPicker: document.openWorkspaceDocumentWithPicker,
       saveCurrentWorkspaceDocument: document.saveCurrentWorkspaceDocument,
       saveWorkspaceDocumentAs: document.saveWorkspaceDocumentAs,
       createNewWorkspaceWindow: document.createNewWorkspaceWindow,
       openWorkspaceInNewWindow: document.openWorkspaceInNewWindow,
-      openShipFlowServiceApp: service.openShipFlowServiceApp,
       checkForAppUpdate: service.checkForAppUpdate,
       installAvailableAppUpdate: service.installAvailableAppUpdate,
       showNotice: service.showNotice,

@@ -16,7 +16,11 @@ use shipflow_core::{
     },
     upstream::resolve_tracking_html_request,
 };
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::sync::Notify;
 
 use crate::api_contract::{
     envelope, error_response_v1, generate_request_id, REQUEST_ID_HEADER_NAME,
@@ -50,6 +54,7 @@ const SERVICE_UPSTREAM_REQUEST_TIMEOUT_SECS: u64 = 90;
 pub struct HttpApiState {
     pub client: Client,
     pub auth_token: String,
+    pub internal_auth_token: String,
     pub mode: ServiceRuntimeMode,
     pub bind_address: String,
     pub port: u16,
@@ -57,6 +62,7 @@ pub struct HttpApiState {
     pub lookup_cache: LookupCacheState,
     pub contact_cache: ContactCacheState,
     pub upstream_backpressure: UpstreamBackpressure,
+    pub shutdown_signal: Arc<Notify>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,9 +116,11 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
         .build()
         .map_err(|error| format!("Unable to create service HTTP client: {error}"))?;
 
+    let shutdown_signal = Arc::new(Notify::new());
     let app_state = HttpApiState {
         client,
         auth_token: config.auth_token.clone(),
+        internal_auth_token: config.internal_auth_token.clone(),
         mode: config.mode,
         bind_address,
         port: config.port,
@@ -121,12 +129,27 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
             .with_persistent_store(PersistentLookupStore::open_default()),
         contact_cache: ContactCacheState::default(),
         upstream_backpressure: UpstreamBackpressure::default(),
+        shutdown_signal: Arc::clone(&shutdown_signal),
     };
-    let router = build_router(app_state);
+    let router = build_router(app_state.clone());
+    let http_shutdown_signal = Arc::clone(&shutdown_signal);
+    let http_server = async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                http_shutdown_signal.notified().await;
+            })
+            .await
+            .map_err(|error| format!("API service stopped unexpectedly: {error}"))
+    };
 
-    axum::serve(listener, router)
-        .await
-        .map_err(|error| format!("API service stopped unexpectedly: {error}"))
+    if let Some(endpoint) = config.internal_ipc_endpoint {
+        let ipc_listener = shipflow_ipc::LocalIpcListener::bind(&endpoint)
+            .map_err(|error| format!("Unable to start internal IPC service: {error}"))?;
+        let ipc_server = crate::internal_ipc::run_internal_ipc_server(ipc_listener, app_state);
+        tokio::try_join!(http_server, ipc_server).map(|_| ())
+    } else {
+        http_server.await
+    }
 }
 
 fn build_router(app_state: HttpApiState) -> Router {
@@ -165,7 +188,7 @@ async fn v1_auth_check_handler(
     (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
 > {
     let request_id = authorize_request_id(&headers);
-    authorize_request_message(&headers, &state.auth_token).map_err(|message| {
+    authorize_state_request(&headers, &state).map_err(|message| {
         error_response_v1(
             StatusCode::UNAUTHORIZED,
             AUTH_CHECK_SCHEMA_VERSION,
@@ -193,7 +216,7 @@ async fn v1_capabilities_handler(
     (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
 > {
     let request_id = authorize_request_id(&headers);
-    authorize_request_message(&headers, &state.auth_token).map_err(|message| {
+    authorize_state_request(&headers, &state).map_err(|message| {
         error_response_v1(
             StatusCode::UNAUTHORIZED,
             CAPABILITIES_SCHEMA_VERSION,
@@ -229,7 +252,7 @@ async fn v1_openapi_handler(
     headers: HeaderMap,
 ) -> Result<Json<Value>, (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>)> {
     let request_id = authorize_request_id(&headers);
-    authorize_request_message(&headers, &state.auth_token).map_err(|message| {
+    authorize_state_request(&headers, &state).map_err(|message| {
         error_response_v1(
             StatusCode::UNAUTHORIZED,
             crate::openapi::OPENAPI_SCHEMA_VERSION,
@@ -252,9 +275,8 @@ async fn v1_track_handler(
     Json<crate::api_contract::ApiEnvelope<TrackResponse>>,
     (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
 > {
-    let started_at = Instant::now();
     let request_id = authorize_request_id(&headers);
-    authorize_request_message(&headers, &state.auth_token).map_err(|message| {
+    authorize_state_request(&headers, &state).map_err(|message| {
         error_response_v1(
             StatusCode::UNAUTHORIZED,
             TRACK_SCHEMA_VERSION,
@@ -265,33 +287,8 @@ async fn v1_track_handler(
     let response_request_id = request_id.clone();
     let request_options = read_lookup_request_options(&headers);
     let normalized_id = shipment_id.trim().to_string();
-    let backpressure = state.upstream_backpressure.clone();
-    let permit_request_id = request_id.clone();
-    let permit_lookup_id = normalized_id.clone();
-
-    let result = resolve_tracking_request_cached(
-        &state.lookup_cache,
-        &state.contact_cache,
-        &state.client,
-        &state.tracking_source,
-        &normalized_id,
-        request_options,
-        move || async move {
-            backpressure
-                .acquire("v1", &permit_lookup_id, &permit_request_id)
-                .await
-                .map_err(tracking_error_from_upstream_backpressure)
-        },
-    )
-    .await;
-    log_service_tracking_timing(
-        "v1",
-        &normalized_id,
-        started_at,
-        &state.tracking_source,
-        request_options.force_refresh,
-        result.is_ok(),
-    );
+    let result =
+        resolve_tracking_payload(&state, &normalized_id, request_options, "v1", &request_id).await;
 
     result
         .map(|payload| envelope(TRACK_SCHEMA_VERSION, response_request_id, payload))
@@ -308,7 +305,7 @@ async fn v1_tracking_html_handler(
 > {
     let started_at = Instant::now();
     let request_id = authorize_request_id(&headers);
-    authorize_request_message(&headers, &state.auth_token).map_err(|message| {
+    authorize_state_request(&headers, &state).map_err(|message| {
         error_response_v1(
             StatusCode::UNAUTHORIZED,
             TRACK_HTML_SCHEMA_VERSION,
@@ -352,7 +349,7 @@ async fn v1_bag_handler(
     (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
 > {
     let request_id = authorize_request_id(&headers);
-    authorize_request_message(&headers, &state.auth_token).map_err(|message| {
+    authorize_state_request(&headers, &state).map_err(|message| {
         error_response_v1(
             StatusCode::UNAUTHORIZED,
             BAG_SCHEMA_VERSION,
@@ -363,22 +360,12 @@ async fn v1_bag_handler(
     let response_request_id = request_id.clone();
     let request_options = read_lookup_request_options(&headers);
     let normalized_id = bag_id.trim().to_string();
-    let backpressure = state.upstream_backpressure.clone();
-    let permit_request_id = request_id.clone();
-    let permit_lookup_id = normalized_id.clone();
-
-    resolve_bag_request_cached(
-        &state.lookup_cache,
-        &state.client,
-        &state.tracking_source,
+    resolve_bag_payload(
+        &state,
         &normalized_id,
         request_options,
-        move || async move {
-            backpressure
-                .acquire("v1_bag", &permit_lookup_id, &permit_request_id)
-                .await
-                .map_err(tracking_error_from_upstream_backpressure)
-        },
+        "v1_bag",
+        &request_id,
     )
     .await
     .map(|payload| envelope(BAG_SCHEMA_VERSION, response_request_id, payload))
@@ -394,7 +381,7 @@ async fn v1_manifest_handler(
     (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
 > {
     let request_id = authorize_request_id(&headers);
-    authorize_request_message(&headers, &state.auth_token).map_err(|message| {
+    authorize_state_request(&headers, &state).map_err(|message| {
         error_response_v1(
             StatusCode::UNAUTHORIZED,
             MANIFEST_SCHEMA_VERSION,
@@ -405,10 +392,94 @@ async fn v1_manifest_handler(
     let response_request_id = request_id.clone();
     let request_options = read_lookup_request_options(&headers);
     let normalized_id = manifest_id.trim().to_string();
-    let backpressure = state.upstream_backpressure.clone();
-    let permit_request_id = request_id.clone();
-    let permit_lookup_id = normalized_id.clone();
+    resolve_manifest_payload(
+        &state,
+        &normalized_id,
+        request_options,
+        "v1_manifest",
+        &request_id,
+    )
+    .await
+    .map(|payload| envelope(MANIFEST_SCHEMA_VERSION, response_request_id, payload))
+    .map_err(|error| map_tracking_error_v1(error, MANIFEST_SCHEMA_VERSION, request_id))
+}
 
+pub(crate) async fn resolve_tracking_payload(
+    state: &HttpApiState,
+    shipment_id: &str,
+    request_options: LookupRequestOptions,
+    route: &'static str,
+    request_id: &str,
+) -> Result<TrackResponse, TrackingError> {
+    let started_at = Instant::now();
+    let normalized_id = shipment_id.trim().to_string();
+    let backpressure = state.upstream_backpressure.clone();
+    let permit_request_id = request_id.to_string();
+    let permit_lookup_id = normalized_id.clone();
+    let result = resolve_tracking_request_cached(
+        &state.lookup_cache,
+        &state.contact_cache,
+        &state.client,
+        &state.tracking_source,
+        &normalized_id,
+        request_options,
+        move || async move {
+            backpressure
+                .acquire(route, &permit_lookup_id, &permit_request_id)
+                .await
+                .map_err(tracking_error_from_upstream_backpressure)
+        },
+    )
+    .await;
+    log_service_tracking_timing(
+        route,
+        &normalized_id,
+        started_at,
+        &state.tracking_source,
+        request_options.force_refresh,
+        result.is_ok(),
+    );
+    result
+}
+
+pub(crate) async fn resolve_bag_payload(
+    state: &HttpApiState,
+    bag_id: &str,
+    request_options: LookupRequestOptions,
+    route: &'static str,
+    request_id: &str,
+) -> Result<BagResponse, TrackingError> {
+    let normalized_id = bag_id.trim().to_string();
+    let backpressure = state.upstream_backpressure.clone();
+    let permit_request_id = request_id.to_string();
+    let permit_lookup_id = normalized_id.clone();
+    resolve_bag_request_cached(
+        &state.lookup_cache,
+        &state.client,
+        &state.tracking_source,
+        &normalized_id,
+        request_options,
+        move || async move {
+            backpressure
+                .acquire(route, &permit_lookup_id, &permit_request_id)
+                .await
+                .map_err(tracking_error_from_upstream_backpressure)
+        },
+    )
+    .await
+}
+
+pub(crate) async fn resolve_manifest_payload(
+    state: &HttpApiState,
+    manifest_id: &str,
+    request_options: LookupRequestOptions,
+    route: &'static str,
+    request_id: &str,
+) -> Result<ManifestResponse, TrackingError> {
+    let normalized_id = manifest_id.trim().to_string();
+    let backpressure = state.upstream_backpressure.clone();
+    let permit_request_id = request_id.to_string();
+    let permit_lookup_id = normalized_id.clone();
     resolve_manifest_request_cached(
         &state.lookup_cache,
         &state.client,
@@ -417,14 +488,12 @@ async fn v1_manifest_handler(
         request_options,
         move || async move {
             backpressure
-                .acquire("v1_manifest", &permit_lookup_id, &permit_request_id)
+                .acquire(route, &permit_lookup_id, &permit_request_id)
                 .await
                 .map_err(tracking_error_from_upstream_backpressure)
         },
     )
     .await
-    .map(|payload| envelope(MANIFEST_SCHEMA_VERSION, response_request_id, payload))
-    .map_err(|error| map_tracking_error_v1(error, MANIFEST_SCHEMA_VERSION, request_id))
 }
 
 #[cfg(test)]
@@ -520,6 +589,41 @@ fn tracking_source_label(tracking_source: &TrackingSourceConfig) -> &'static str
     }
 }
 
+fn authorize_state_request(headers: &HeaderMap, state: &HttpApiState) -> Result<(), String> {
+    let token = bearer_token(headers)?;
+    if !constant_time_token_eq(token, &state.auth_token) {
+        return Err("Bearer token is invalid.".into());
+    }
+    Ok(())
+}
+
+fn bearer_token(headers: &HeaderMap) -> Result<&str, String> {
+    let Some(raw_header) = headers.get(AUTHORIZATION) else {
+        return Err("Authorization header is required.".into());
+    };
+    let Ok(header_value) = raw_header.to_str() else {
+        return Err("Authorization header is invalid.".into());
+    };
+    let Some(token) = header_value.strip_prefix("Bearer ") else {
+        return Err("Authorization header must use Bearer token.".into());
+    };
+    Ok(token)
+}
+
+pub(crate) fn constant_time_token_eq(candidate: &str, expected: &str) -> bool {
+    let candidate = candidate.as_bytes();
+    let expected = expected.as_bytes();
+    let max_len = candidate.len().max(expected.len());
+    let mut difference = candidate.len() ^ expected.len();
+    for index in 0..max_len {
+        let left = candidate.get(index).copied().unwrap_or_default();
+        let right = expected.get(index).copied().unwrap_or_default();
+        difference |= usize::from(left ^ right);
+    }
+    difference == 0
+}
+
+#[cfg(test)]
 fn authorize_request_message(headers: &HeaderMap, expected_token: &str) -> Result<(), String> {
     let Some(raw_header) = headers.get(AUTHORIZATION) else {
         return Err("Authorization header is required.".into());
@@ -533,7 +637,7 @@ fn authorize_request_message(headers: &HeaderMap, expected_token: &str) -> Resul
         return Err("Authorization header must use Bearer token.".into());
     };
 
-    if token != expected_token {
+    if !constant_time_token_eq(token, expected_token) {
         return Err("Bearer token is invalid.".into());
     }
 
@@ -619,6 +723,7 @@ mod tests {
         HttpApiState,
     };
     use std::sync::Arc;
+    use tokio::sync::Notify;
     use tokio::sync::Semaphore;
     use tokio::time::Duration;
 
@@ -791,6 +896,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn public_http_rejects_the_internal_ipc_token() {
+        let response = build_router(test_state())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/auth/check")
+                    .header(AUTHORIZATION, "Bearer internal-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn rejects_unauthenticated_openapi_document() {
         let router = build_router(test_state());
         let response = router
@@ -901,6 +1022,7 @@ mod tests {
         HttpApiState {
             client: reqwest::Client::new(),
             auth_token: "secret-token".into(),
+            internal_auth_token: "internal-token".into(),
             mode: ServiceRuntimeMode::Local,
             bind_address: "127.0.0.1".into(),
             port: 18422,
@@ -908,6 +1030,7 @@ mod tests {
             lookup_cache: LookupCacheState::default(),
             contact_cache: ContactCacheState::default(),
             upstream_backpressure: UpstreamBackpressure::default(),
+            shutdown_signal: Arc::new(Notify::new()),
         }
     }
 

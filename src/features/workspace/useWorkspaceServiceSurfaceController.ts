@@ -1,10 +1,8 @@
-import { useCallback } from "react";
-import { openShipflowServiceApp } from "../../backend/commands";
 import {
-  ServiceSettingsNotice,
-  useServiceSettingsController,
-} from "../service/useServiceSettingsController";
-import { readClipboardText, writeClipboardText } from "../clipboard";
+  checkAppUpdate,
+  installAppUpdate,
+} from "../../backend/commands";
+import type { ServiceSettingsNotice } from "../service/useServiceSettingsController";
 
 type UseWorkspaceServiceSurfaceControllerOptions = {
   showNotice: (notice: ServiceSettingsNotice) => void;
@@ -13,26 +11,9 @@ type UseWorkspaceServiceSurfaceControllerOptions = {
 export function useWorkspaceServiceSurfaceController({
   showNotice,
 }: UseWorkspaceServiceSurfaceControllerOptions) {
-  const serviceSettings = useServiceSettingsController({
-    copyText: writeClipboardText,
-    pasteText: readClipboardText,
-    showNotice,
-  });
-
-  const openShipFlowServiceApp = useCallback(async () => {
-    try {
-      await openShipflowServiceApp();
-    } catch {
-      showNotice({
-        tone: "error",
-        message: "Gagal membuka pengaturan koneksi service.",
-      });
-    }
-  }, [showNotice]);
-
   return {
-    ...serviceSettings,
     showNotice,
-    openShipFlowServiceApp,
+    checkForAppUpdate: checkAppUpdate,
+    installAvailableAppUpdate: installAppUpdate,
   };
 }

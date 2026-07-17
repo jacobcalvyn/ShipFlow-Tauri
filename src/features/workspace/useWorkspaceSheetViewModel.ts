@@ -458,6 +458,7 @@ export function useWorkspaceSheetViewModel(
     activeRustDisplayedRowsState?.window ??
     failedRustDisplayedRowsWindow ??
     pendingRustDisplayedRowsWindow;
+  const isDisplayedRowsQueryPending = pendingRustDisplayedRowsWindow !== null;
   const previousRustProjectedTableRowsRef = useRef<{
     windowKey: string;
     rows: SheetTableRow[];
@@ -467,7 +468,7 @@ export function useWorkspaceSheetViewModel(
     [legacyDisplayedRows]
   );
   const rustProjectedTableRows = useMemo(() => {
-    if (!authoritativeRustDisplayedRowsWindow) {
+    if (!authoritativeRustDisplayedRowsWindow || isDisplayedRowsQueryPending) {
       previousRustProjectedTableRowsRef.current = null;
       return null;
     }
@@ -489,9 +490,15 @@ export function useWorkspaceSheetViewModel(
 
     previousRustProjectedTableRowsRef.current = { windowKey, rows };
     return rows;
-  }, [activeSheet.rows, authoritativeRustDisplayedRowsWindow]);
+  }, [
+    activeSheet.rows,
+    authoritativeRustDisplayedRowsWindow,
+    isDisplayedRowsQueryPending,
+  ]);
   const displayedTableRows = rustProjectedTableRows ?? legacyDisplayedTableRows;
-  const displayedRowWindow = authoritativeRustDisplayedRowsWindow;
+  const displayedRowWindow = isDisplayedRowsQueryPending
+    ? null
+    : authoritativeRustDisplayedRowsWindow;
 
   const retrackableRows = useMemo(
     () => getRetrackableTableRows(displayedTableRows),
@@ -760,6 +767,7 @@ export function useWorkspaceSheetViewModel(
     rustExportRowsQuery,
     hiddenColumns,
     ignoredHiddenFilterCount,
+    isDisplayedRowsQueryPending,
     loadedCount,
     loadingCount,
     pinnedColumnSet,

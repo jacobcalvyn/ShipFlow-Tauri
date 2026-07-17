@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "types": ["node", "electron", "vite/client"]
+  },
+  "include": [
+    "electron/**/*.ts",
+    "electron.vite.config.ts",
+    "src/backend/bridge-contract.ts",
+    "src/backend/commands.ts",
+    "src/features/workspace/document.ts",
+    "src/features/workspace/types.ts",
+    "src/types.ts"
+  ]
+}

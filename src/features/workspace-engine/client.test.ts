@@ -1,27 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { installTestBridge } from "../../test/bridge";
 
-const invokeMock = vi.fn();
-const channelMock = vi.fn();
-
-vi.mock("@tauri-apps/api/core", () => ({
-  Channel: channelMock,
-  invoke: invokeMock,
-}));
+const requestWorkspaceMock = vi.fn();
 
 describe("workspace engine client", () => {
   beforeEach(() => {
-    invokeMock.mockReset();
-    channelMock.mockReset();
-    channelMock.mockImplementation(function Channel(
-      this: { onmessage: unknown },
-      onmessage: unknown,
-    ) {
-      this.onmessage = onmessage;
-    });
+    requestWorkspaceMock.mockReset();
+    installTestBridge({ requestWorkspace: requestWorkspaceMock });
   });
 
   it("serializes import job creation with the Rust command contract", async () => {
-    invokeMock.mockResolvedValueOnce({
+    requestWorkspaceMock.mockResolvedValueOnce({
       type: "import_job_detail",
       payload: {
         summary: {
@@ -47,21 +36,19 @@ describe("workspace engine client", () => {
       mode: "append",
     });
 
-    expect(invokeMock).toHaveBeenCalledWith("workspace_engine_command", {
-      command: {
-        command: "create_import_job",
-        payload: {
-          sheetId: "sheet-1",
-          kind: "manifest",
-          ids: ["MNF1", "MNF2"],
-          mode: "append",
-        },
+    expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      command: "create_import_job",
+      payload: {
+        sheetId: "sheet-1",
+        kind: "manifest",
+        ids: ["MNF1", "MNF2"],
+        mode: "append",
       },
     });
   });
 
-  it("serializes import run progress through a Tauri channel command", async () => {
-    invokeMock.mockResolvedValueOnce({
+  it("serializes import run progress through the Electron workspace bridge", async () => {
+    requestWorkspaceMock.mockResolvedValueOnce({
       type: "import_job_detail",
       payload: {
         summary: {
@@ -83,20 +70,15 @@ describe("workspace engine client", () => {
 
     await runImportJobWithProgress("job-1", onEvent);
 
-    expect(channelMock).toHaveBeenCalledWith(onEvent);
-    expect(invokeMock).toHaveBeenCalledWith(
-      "workspace_engine_run_import_job_with_progress",
-      {
-        request: { jobId: "job-1" },
-        onEvent: expect.objectContaining({
-          onmessage: onEvent,
-        }),
-      },
+    expect(requestWorkspaceMock).toHaveBeenCalledWith(
+      "workspace.run_import_job_with_progress",
+      { jobId: "job-1" },
+      expect.any(Function),
     );
   });
 
-  it("serializes failed import retry progress through a Tauri channel command", async () => {
-    invokeMock.mockResolvedValueOnce({
+  it("serializes failed import retry progress through the Electron workspace bridge", async () => {
+    requestWorkspaceMock.mockResolvedValueOnce({
       type: "import_job_detail",
       payload: {
         summary: {
@@ -118,20 +100,15 @@ describe("workspace engine client", () => {
 
     await retryImportJobFailedWithProgress("job-1", onEvent);
 
-    expect(channelMock).toHaveBeenCalledWith(onEvent);
-    expect(invokeMock).toHaveBeenCalledWith(
-      "workspace_engine_retry_import_job_failed_with_progress",
-      {
-        request: { jobId: "job-1" },
-        onEvent: expect.objectContaining({
-          onmessage: onEvent,
-        }),
-      },
+    expect(requestWorkspaceMock).toHaveBeenCalledWith(
+      "workspace.retry_import_job_with_progress",
+      { jobId: "job-1" },
+      expect.any(Function),
     );
   });
 
   it("serializes dotted tracking id resolution with the Rust field name", async () => {
-    invokeMock.mockResolvedValueOnce({
+    requestWorkspaceMock.mockResolvedValueOnce({
       type: "resolved_tracking_id",
       payload: {
         displayId: "P2606020189412.30",
@@ -143,19 +120,17 @@ describe("workspace engine client", () => {
 
     const response = await resolveTrackingId("P2606020189412.30");
 
-    expect(invokeMock).toHaveBeenCalledWith("workspace_engine_command", {
-      command: {
-        command: "resolve_tracking_id",
-        payload: {
-          display_id: "P2606020189412.30",
-        },
+    expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      command: "resolve_tracking_id",
+      payload: {
+        display_id: "P2606020189412.30",
       },
     });
     expect(response.payload.lookupId).toBe("P2606020189412");
   });
 
   it("serializes sheet metadata listing without a payload", async () => {
-    invokeMock.mockResolvedValueOnce({
+    requestWorkspaceMock.mockResolvedValueOnce({
       type: "sheets",
       payload: [
         {
@@ -171,16 +146,14 @@ describe("workspace engine client", () => {
 
     const response = await listEngineSheets();
 
-    expect(invokeMock).toHaveBeenCalledWith("workspace_engine_command", {
-      command: {
-        command: "list_sheets",
-      },
+    expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      command: "list_sheets",
     });
     expect(response.payload[0]?.sheetId).toBe("sheet-1");
   });
 
   it("serializes sheet row tracking refresh with the Rust command contract", async () => {
-    invokeMock.mockResolvedValueOnce({
+    requestWorkspaceMock.mockResolvedValueOnce({
       type: "sheet_row",
       payload: {
         rowId: "row-1",
@@ -201,20 +174,18 @@ describe("workspace engine client", () => {
       forceRefresh: true,
     });
 
-    expect(invokeMock).toHaveBeenCalledWith("workspace_engine_command", {
-      command: {
-        command: "refresh_sheet_row_tracking",
-        payload: {
-          rowId: "row-1",
-          forceRefresh: true,
-        },
+    expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      command: "refresh_sheet_row_tracking",
+      payload: {
+        rowId: "row-1",
+        forceRefresh: true,
       },
     });
     expect(response.payload.displayTrackingId).toBe("P2606020189412.30");
   });
 
   it("serializes sheet row window queries for the Rust-owned grid boundary", async () => {
-    invokeMock.mockResolvedValueOnce({
+    requestWorkspaceMock.mockResolvedValueOnce({
       type: "sheet_rows",
       payload: {
         sheetId: "sheet-1",
@@ -248,17 +219,15 @@ describe("workspace engine client", () => {
       sort: [{ field: "displayTrackingId", direction: "asc" }],
     });
 
-    expect(invokeMock).toHaveBeenCalledWith("workspace_engine_command", {
-      command: {
-        command: "query_sheet_rows",
-        payload: {
-          query: {
-            sheetId: "sheet-1",
-            offset: 50,
-            limit: 25,
-            filters: [{ field: "rowStatus", value: "loaded" }],
-            sort: [{ field: "displayTrackingId", direction: "asc" }],
-          },
+    expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      command: "query_sheet_rows",
+      payload: {
+        query: {
+          sheetId: "sheet-1",
+          offset: 50,
+          limit: 25,
+          filters: [{ field: "rowStatus", value: "loaded" }],
+          sort: [{ field: "displayTrackingId", direction: "asc" }],
         },
       },
     });
@@ -268,7 +237,7 @@ describe("workspace engine client", () => {
   });
 
   it("serializes sheet field value queries for engine-owned value-filter menus", async () => {
-    invokeMock.mockResolvedValueOnce({
+    requestWorkspaceMock.mockResolvedValueOnce({
       type: "sheet_field_values",
       payload: {
         sheetId: "sheet-1",
@@ -290,19 +259,17 @@ describe("workspace engine client", () => {
       limit: 1000,
     });
 
-    expect(invokeMock).toHaveBeenCalledWith("workspace_engine_command", {
-      command: {
-        command: "query_sheet_field_values",
-        payload: {
-          query: {
-            sheetId: "sheet-1",
-            field: "status_akhir.status",
-            filters: [{ field: "rowStatus", value: "loaded" }],
-            valueFilters: [
-              { field: "detail.package_detail.jenis_layanan", values: ["PKH"] },
-            ],
-            limit: 1000,
-          },
+    expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      command: "query_sheet_field_values",
+      payload: {
+        query: {
+          sheetId: "sheet-1",
+          field: "status_akhir.status",
+          filters: [{ field: "rowStatus", value: "loaded" }],
+          valueFilters: [
+            { field: "detail.package_detail.jenis_layanan", values: ["PKH"] },
+          ],
+          limit: 1000,
         },
       },
     });
@@ -310,7 +277,7 @@ describe("workspace engine client", () => {
   });
 
   it("serializes import source preview without a sheet mutation command", async () => {
-    invokeMock.mockResolvedValueOnce({
+    requestWorkspaceMock.mockResolvedValueOnce({
       type: "import_source_preview",
       payload: {
         kind: "manifest",
@@ -343,20 +310,18 @@ describe("workspace engine client", () => {
       ids: ["MAN1"],
     });
 
-    expect(invokeMock).toHaveBeenCalledWith("workspace_engine_command", {
-      command: {
-        command: "preview_import_source",
-        payload: {
-          kind: "manifest",
-          ids: ["MAN1"],
-        },
+    expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      command: "preview_import_source",
+      payload: {
+        kind: "manifest",
+        ids: ["MAN1"],
       },
     });
     expect(response.payload.trackingIds).toEqual(["P2606020189412.30"]);
   });
 
   it("keeps pivot commands ready for row-column-value analytics", async () => {
-    invokeMock.mockResolvedValueOnce({
+    requestWorkspaceMock.mockResolvedValueOnce({
       type: "pivot",
       payload: {
         sheetId: "sheet-1",
@@ -393,10 +358,9 @@ describe("workspace engine client", () => {
       limit: 1000,
     });
 
-    expect(invokeMock).toHaveBeenCalledWith("workspace_engine_command", {
-      command: {
-        command: "query_pivot",
-        payload: {
+    expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      command: "query_pivot",
+      payload: {
           sheetId: "sheet-1",
           sourceScope: "filtered_rows",
           filters: [{ field: "rowStatus", value: "loaded" }],
@@ -421,13 +385,12 @@ describe("workspace engine client", () => {
             },
           ],
           limit: 1000,
-        },
       },
     });
   });
 
   it("keeps chart commands ready for Rust-owned bar and donut analytics", async () => {
-    invokeMock.mockResolvedValueOnce({
+    requestWorkspaceMock.mockResolvedValueOnce({
       type: "chart",
       payload: {
         sheetId: "sheet-1",
@@ -464,10 +427,9 @@ describe("workspace engine client", () => {
       chartType: "bar",
     });
 
-    expect(invokeMock).toHaveBeenCalledWith("workspace_engine_command", {
-      command: {
-        command: "query_chart",
-        payload: {
+    expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      command: "query_chart",
+      payload: {
           pivotQuery: {
             sheetId: "sheet-1",
             sourceScope: "filtered_rows",
@@ -491,7 +453,6 @@ describe("workspace engine client", () => {
             limit: 1000,
           },
           chartType: "bar",
-        },
       },
     });
     expect(response.payload.sourceRowCount).toBe(30);

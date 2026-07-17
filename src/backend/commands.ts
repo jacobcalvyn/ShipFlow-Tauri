@@ -1,10 +1,11 @@
-import { invoke } from "@tauri-apps/api/core";
+import { getShipFlowBridge } from "./bridge";
 import type {
   ApiServiceStatus,
   AppUpdateStatus,
   ServiceConfig,
 } from "../types";
 import type { WorkspaceDocumentFile } from "../features/workspace/document";
+import type { ShipFlowCommand } from "./bridge-contract";
 
 export type WorkspaceDocumentReadResult = {
   path: string;
@@ -51,12 +52,8 @@ export type WorkspaceDocumentClaimResult = {
 
 export type WindowCloseAction = "cancel" | "discard";
 
-function invokeCommand<T>(command: string, args?: Record<string, unknown>) {
-  if (args === undefined) {
-    return invoke<T>(command);
-  }
-
-  return invoke<T>(command, args);
+function invokeCommand<T>(command: ShipFlowCommand, args?: Record<string, unknown>) {
+  return getShipFlowBridge().invoke<T>(command, args);
 }
 
 export function resolvePodImage(imageSource: string) {
@@ -75,6 +72,10 @@ export function readFromClipboard() {
   return invokeCommand<string>("read_from_clipboard");
 }
 
+export function openAppLog() {
+  return invokeCommand<void>("open_app_log");
+}
+
 export function logFrontendRuntimeEvent(level: "info" | "error", message: string) {
   return invokeCommand<void>("log_frontend_runtime_event", { level, message });
 }
@@ -89,10 +90,6 @@ export function checkAppUpdate() {
 
 export function installAppUpdate() {
   return invokeCommand<AppUpdateStatus>("install_app_update");
-}
-
-export function openShipflowServiceApp() {
-  return invokeCommand<void>("open_shipflow_service_app");
 }
 
 export function loadSavedApiServiceConfig() {
@@ -113,10 +110,6 @@ export function validateTrackingSourceConfig(config: ServiceConfig) {
 
 export function testExternalTrackingSource(config: ServiceConfig) {
   return invokeCommand<string>("test_external_tracking_source", { config });
-}
-
-export function testApiServiceConnection(config: ServiceConfig) {
-  return invokeCommand<string>("test_api_service_connection", { config });
 }
 
 export function pickWorkspaceDocumentPath(

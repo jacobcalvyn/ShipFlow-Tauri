@@ -2251,7 +2251,8 @@ button {
   align-items: center;
   justify-content: center;
   padding: 20px;
-  background: rgba(15, 23, 42, 0.06);
+  background: rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(1px);
 }
 
 .settings-modal {
@@ -2259,10 +2260,10 @@ button {
   --tab-padding-y: 8px;
   --tab-padding-x: 14px;
   --tab-font-size: 0.82rem;
-  width: min(860px, calc(100vw - 48px));
-  height: min(640px, calc(100vh - 48px));
+  width: min(920px, calc(100vw - 48px));
+  height: min(680px, calc(100vh - 48px));
   border: 1px solid #d9e3ee;
-  border-radius: 14px;
+  border-radius: 8px;
   background: #ffffff;
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
   padding: 20px 20px 18px;
@@ -2338,119 +2339,16 @@ button {
 }
 
 .settings-content {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   padding-right: 4px;
 }
 
 .settings-content-single {
   padding-right: 0;
-}
-
-.service-settings-shell {
-  overflow: hidden;
-  padding: 12px;
-}
-
-.service-settings-panel {
-  flex: 1 1 auto;
-  width: min(100%, 1040px);
-  max-width: 1040px;
-  margin: 0 auto;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.service-settings-title {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.service-settings-title h2 {
-  margin: 0;
-  color: #0f172a;
-  font-size: var(--sheet-title-size);
-  font-weight: 800;
-}
-
-.service-settings-title p {
-  margin: 0;
-  color: #64748b;
-  font-size: 0.86rem;
-}
-
-.service-settings-head {
-  align-items: flex-start;
-}
-
-.service-settings-workbench {
-  display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
-  gap: 22px;
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-.service-settings-tabs {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: space-between;
-  gap: 12px;
-  padding-right: 18px;
-  border-right: 1px solid #e8eef5;
-}
-
-.service-settings-tab-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.service-settings-tab {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  min-height: 40px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: #475569;
-  border-radius: 11px;
-  padding: 9px 14px;
-  font-size: 0.82rem;
-  font-weight: 700;
-  transition:
-    border-color 140ms ease,
-    background-color 140ms ease,
-    color 140ms ease,
-    box-shadow 140ms ease;
-}
-
-.service-settings-tab:hover {
-  border-color: #e2e8f0;
-  background: #f8fafc;
-}
-
-.service-settings-tab.is-active {
-  border-color: #93c5fd;
-  background: #eff6ff;
-  color: #1d4ed8;
-  box-shadow: none;
-}
-
-.service-settings-sidebar-note {
-  margin-top: auto;
-  padding: 10px 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  background: #f8fafc;
-  color: #475569;
-  font-size: 0.76rem;
-  font-weight: 600;
-  line-height: 1.45;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
 }
 
 .service-settings-layout {
@@ -2460,11 +2358,21 @@ button {
   min-height: 0;
   gap: 16px;
   overflow-y: auto;
-  padding-right: 6px;
+  padding-right: 8px;
 }
 
 .service-settings-footer {
-  margin-top: auto;
+  margin-top: 16px;
+}
+
+.service-settings-loading {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  place-items: center;
+  color: #64748b;
+  font-size: 0.86rem;
+  font-weight: 600;
 }
 
 .service-settings-section-header {
@@ -2658,7 +2566,8 @@ button {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  min-height: 100%;
+  min-height: 0;
+  overflow: auto;
 }
 
 .settings-pane-header {
@@ -3164,45 +3073,6 @@ button {
 
   .analytics-donut-layout {
     grid-template-columns: 1fr;
-  }
-
-  .service-settings-shell {
-    padding: 12px;
-  }
-
-  .service-settings-panel {
-    flex: 1 1 auto;
-    min-height: 0;
-  }
-
-  .service-settings-workbench {
-    grid-template-columns: 1fr;
-    gap: 16px;
-  }
-
-  .service-settings-tabs {
-    flex-direction: row;
-    flex-wrap: wrap;
-    justify-content: flex-start;
-    padding-right: 0;
-    padding-bottom: 14px;
-    border-right: 0;
-    border-bottom: 1px solid #e2e8f0;
-  }
-
-  .service-settings-tab-list {
-    flex-direction: row;
-    flex-wrap: wrap;
-  }
-
-  .service-settings-sidebar-note {
-    margin-top: 0;
-    width: 100%;
-  }
-
-  .service-settings-sidebar-note {
-    width: 100%;
-    margin-top: 2px;
   }
 
   .service-settings-inline-grid {
@@ -4283,7 +4153,7 @@ button {
    ========================================================================== */
 
 /* 1. Text selection control for app chrome and commands */
-button, .sheet-tabs-list, .service-settings-tabs, th {
+button, .sheet-tabs-list, th {
   user-select: none;
   -webkit-user-select: none;
 }
@@ -4294,9 +4164,7 @@ textarea,
 .cell-text,
 .tracking-cell,
 .settings-field-help,
-.service-settings-endpoint-code,
-.service-settings-sidebar-note,
-.service-settings-title p {
+.service-settings-endpoint-code {
   user-select: text;
   -webkit-user-select: text;
 }

@@ -1,5 +1,6 @@
 import { CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import { openAppLog } from "../../../backend/commands";
 
 type RecentDocumentItem = {
   path: string;
@@ -104,6 +105,20 @@ export function SheetFileMenu({
           onClick={() => onAction(onOpenDocumentInNewWindow)}
         >
           Buka di Jendela Baru
+        </button>
+      </div>
+      <div className="sheet-file-menu-section">
+        <button
+          type="button"
+          className="sheet-file-menu-button"
+          role="menuitem"
+          onClick={() =>
+            onAction(() => {
+              void openAppLog().catch(() => undefined);
+            })
+          }
+        >
+          Buka File Log
         </button>
       </div>
       <div className="sheet-file-menu-section">

@@ -1,18 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  checkAppUpdate,
   configureApiService,
-  getReleaseHealth,
   getApiServiceStatus,
-  installAppUpdate,
   loadSavedApiServiceConfig,
-  testApiServiceConnection as testApiServiceConnectionCommand,
   testExternalTrackingSource as testExternalTrackingSourceCommand,
   validateTrackingSourceConfig,
 } from "../../backend/commands";
 import {
   ApiServiceStatus,
-  DesktopServiceConnectionMode,
   ServiceConfig,
   ServiceMode,
   TrackingSource,
@@ -26,9 +21,6 @@ export type ServiceSettingsNotice = {
 
 const DEFAULT_SERVICE_CONFIG: ServiceConfig = {
   version: 1,
-  desktopConnectionMode: "custom",
-  desktopServiceUrl: "http://127.0.0.1:18422",
-  desktopServiceAuthToken: "",
   enabled: true,
   mode: "local",
   port: 18422,
@@ -40,13 +32,6 @@ const DEFAULT_SERVICE_CONFIG: ServiceConfig = {
   keepRunningInTray: true,
   startAtLogin: false,
   lastUpdatedAt: "",
-};
-
-const SERVICE_RUNTIME_DEFAULT_CONFIG: ServiceConfig = {
-  ...DEFAULT_SERVICE_CONFIG,
-  desktopConnectionMode: "managedLocal",
-  desktopServiceAuthToken: "",
-  enabled: true,
 };
 
 const DEFAULT_API_SERVICE_STATUS: ApiServiceStatus = {
@@ -82,22 +67,9 @@ function createServiceToken() {
   return `sf_${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
 }
 
-function normalizeDesktopServiceUrl(serviceUrl: string, fallbackPort: number) {
-  const trimmedUrl = serviceUrl.trim();
-
-  if (trimmedUrl) {
-    return trimmedUrl;
-  }
-
-  return `http://127.0.0.1:${normalizeServicePort(fallbackPort)}`;
-}
-
 function areServiceConfigsEqual(left: ServiceConfig, right: ServiceConfig) {
   return (
     left.version === right.version &&
-    left.desktopConnectionMode === right.desktopConnectionMode &&
-    left.desktopServiceUrl === right.desktopServiceUrl &&
-    left.desktopServiceAuthToken === right.desktopServiceAuthToken &&
     left.enabled === right.enabled &&
     left.mode === right.mode &&
     left.port === right.port &&
@@ -112,41 +84,17 @@ function areServiceConfigsEqual(left: ServiceConfig, right: ServiceConfig) {
   );
 }
 
-type ServiceSettingsProfile = "desktopConnection" | "serviceRuntime";
-
-function defaultServiceConfigForProfile(profile: ServiceSettingsProfile): ServiceConfig {
-  return profile === "serviceRuntime"
-    ? SERVICE_RUNTIME_DEFAULT_CONFIG
-    : DEFAULT_SERVICE_CONFIG;
-}
-
-function normalizeServiceConfig(
-  config: ServiceConfig,
-  profile: ServiceSettingsProfile
-): ServiceConfig {
-  const defaultConfig = defaultServiceConfigForProfile(profile);
+function normalizeServiceConfig(config: ServiceConfig): ServiceConfig {
   const normalizedPort = normalizeServicePort(config.port);
   const normalizedConfig: ServiceConfig = {
-    ...defaultConfig,
+    ...DEFAULT_SERVICE_CONFIG,
     ...config,
-    desktopConnectionMode:
-      profile === "serviceRuntime" ? "managedLocal" : "custom",
-    enabled: profile === "serviceRuntime" ? true : config.enabled,
+    enabled: true,
     port: normalizedPort,
   };
 
-  if (profile === "serviceRuntime" && !normalizedConfig.authToken.trim()) {
+  if (!normalizedConfig.authToken.trim()) {
     normalizedConfig.authToken = createServiceToken();
-  }
-
-  if (profile === "desktopConnection") {
-    return {
-      ...normalizedConfig,
-      desktopServiceUrl: normalizeDesktopServiceUrl(
-        normalizedConfig.desktopServiceUrl,
-        normalizedPort
-      ),
-    };
   }
 
   return normalizedConfig;
@@ -154,20 +102,15 @@ function normalizeServiceConfig(
 
 type UseServiceSettingsControllerOptions = {
   copyText: (value: string) => Promise<void>;
-  pasteText?: () => Promise<string>;
   showNotice: (notice: ServiceSettingsNotice) => void;
-  profile?: ServiceSettingsProfile;
 };
 
 export function useServiceSettingsController({
   copyText,
-  pasteText,
   showNotice,
-  profile = "desktopConnection",
 }: UseServiceSettingsControllerOptions) {
-  const defaultServiceConfig = defaultServiceConfigForProfile(profile);
   const [serviceConfig, setServiceConfig] = useState<ServiceConfig>(() =>
-    normalizeServiceConfig(defaultServiceConfig, profile)
+    normalizeServiceConfig(DEFAULT_SERVICE_CONFIG)
   );
   const [serviceConfigPreview, setServiceConfigPreview] = useState<ServiceConfig | null>(null);
   const [hasLoadedServiceConfig, setHasLoadedServiceConfig] = useState(false);
@@ -189,16 +132,14 @@ export function useServiceSettingsController({
       try {
         const savedConfig = await loadSavedApiServiceConfig();
         const preservedAuthToken =
-          profile === "serviceRuntime"
-            ? serviceConfigRef.current.authToken || createServiceToken()
-            : serviceConfigRef.current.authToken;
+          serviceConfigRef.current.authToken || createServiceToken();
         const baseConfig = savedConfig
-          ? normalizeServiceConfig(savedConfig, profile)
+          ? normalizeServiceConfig(savedConfig)
           : {
-              ...normalizeServiceConfig(defaultServiceConfig, profile),
+              ...normalizeServiceConfig(DEFAULT_SERVICE_CONFIG),
               authToken: preservedAuthToken,
             };
-        const nextConfig = normalizeServiceConfig(baseConfig, profile);
+        const nextConfig = normalizeServiceConfig(baseConfig);
 
         if (!preservePreview || serviceConfigPreview === null) {
           if (!areServiceConfigsEqual(serviceConfigRef.current, nextConfig)) {
@@ -210,14 +151,12 @@ export function useServiceSettingsController({
         return nextConfig;
       } catch {
         const preservedAuthToken =
-          profile === "serviceRuntime"
-            ? serviceConfigRef.current.authToken || createServiceToken()
-            : serviceConfigRef.current.authToken;
+          serviceConfigRef.current.authToken || createServiceToken();
         const fallbackConfig = {
-          ...normalizeServiceConfig(defaultServiceConfig, profile),
+          ...normalizeServiceConfig(DEFAULT_SERVICE_CONFIG),
           authToken: preservedAuthToken,
         };
-        const nextFallbackConfig = normalizeServiceConfig(fallbackConfig, profile);
+        const nextFallbackConfig = normalizeServiceConfig(fallbackConfig);
         if (!preservePreview || serviceConfigPreview === null) {
           if (!areServiceConfigsEqual(serviceConfigRef.current, nextFallbackConfig)) {
             serviceConfigRef.current = nextFallbackConfig;
@@ -228,7 +167,7 @@ export function useServiceSettingsController({
         return nextFallbackConfig;
       }
     },
-    [defaultServiceConfig, profile, serviceConfigPreview]
+    [serviceConfigPreview]
   );
 
   const refreshApiServiceStatus = useCallback(async () => {
@@ -294,19 +233,9 @@ export function useServiceSettingsController({
   const previewServiceConfig = useCallback((updater: (config: ServiceConfig) => ServiceConfig) => {
     setServiceConfigPreview((current) => {
       const base = current ?? serviceConfigRef.current;
-      return normalizeServiceConfig(updater(base), profile);
+      return normalizeServiceConfig(updater(base));
     });
-  }, [profile]);
-
-  const previewServiceEnabled = useCallback(
-    (enabled: boolean) => {
-      previewServiceConfig((current) => ({
-        ...current,
-        enabled,
-      }));
-    },
-    [previewServiceConfig]
-  );
+  }, []);
 
   const previewServiceMode = useCallback(
     (mode: ServiceMode) => {
@@ -317,72 +246,6 @@ export function useServiceSettingsController({
     },
     [previewServiceConfig]
   );
-
-  const previewDesktopConnectionMode = useCallback(
-    (desktopConnectionMode: DesktopServiceConnectionMode) => {
-      previewServiceConfig((current) => ({
-        ...current,
-        desktopConnectionMode,
-        enabled: desktopConnectionMode === "custom" ? true : current.enabled,
-      }));
-    },
-    [previewServiceConfig]
-  );
-
-  const previewDesktopServiceUrl = useCallback(
-    (desktopServiceUrl: string) => {
-      previewServiceConfig((current) => ({
-        ...current,
-        desktopServiceUrl,
-      }));
-    },
-    [previewServiceConfig]
-  );
-
-  const previewDesktopServiceAuthToken = useCallback(
-    (desktopServiceAuthToken: string) => {
-      previewServiceConfig((current) => ({
-        ...current,
-        desktopServiceAuthToken,
-      }));
-    },
-    [previewServiceConfig]
-  );
-
-  const pasteDesktopServiceAuthToken = useCallback(async () => {
-    if (!pasteText) {
-      showNotice({
-        tone: "error",
-        message: "Clipboard paste tidak tersedia.",
-      });
-      return;
-    }
-
-    try {
-      const text = (await pasteText()).trim();
-      if (!text) {
-        showNotice({
-          tone: "error",
-          message: "Clipboard kosong.",
-        });
-        return;
-      }
-
-      previewDesktopServiceAuthToken(text);
-      showNotice({
-        tone: "success",
-        message: "Token service ditempel dari clipboard.",
-      });
-    } catch (error) {
-      showNotice({
-        tone: "error",
-        message:
-          error instanceof Error
-            ? error.message
-            : "Gagal membaca clipboard.",
-      });
-    }
-  }, [pasteText, previewDesktopServiceAuthToken, showNotice]);
 
   const previewServicePort = useCallback(
     (port: number) => {
@@ -516,22 +379,15 @@ export function useServiceSettingsController({
           ...serviceConfigPreview,
           lastUpdatedAt: new Date().toISOString(),
         }
-      : profile === "serviceRuntime"
-        ? {
-            ...serviceConfigRef.current,
-            lastUpdatedAt: new Date().toISOString(),
-          }
-        : null;
+      : {
+          ...serviceConfigRef.current,
+          lastUpdatedAt: new Date().toISOString(),
+        };
     const normalizedNextServiceConfig = nextServiceConfig
-      ? normalizeServiceConfig(nextServiceConfig, profile)
+      ? normalizeServiceConfig(nextServiceConfig)
       : null;
 
-    if (
-      normalizedNextServiceConfig &&
-      profile === "serviceRuntime" &&
-      (normalizedNextServiceConfig.desktopConnectionMode === "managedLocal" ||
-        normalizedNextServiceConfig.enabled)
-    ) {
+    if (normalizedNextServiceConfig) {
       try {
         await validateTrackingSourceConfig(normalizedNextServiceConfig);
       } catch (error) {
@@ -555,7 +411,7 @@ export function useServiceSettingsController({
 
     setServiceConfigPreview(null);
     return true;
-  }, [applyServiceConfig, profile, serviceConfigPreview, showNotice]);
+  }, [applyServiceConfig, serviceConfigPreview, showNotice]);
 
   const copyServiceEndpoint = useCallback(
     (endpoint: string) => {
@@ -607,50 +463,25 @@ export function useServiceSettingsController({
     return testExternalTrackingSourceCommand(config);
   }, []);
 
-  const testApiServiceConnection = useCallback(async (config: ServiceConfig) => {
-    return testApiServiceConnectionCommand(config);
-  }, []);
-
-  const checkForAppUpdate = useCallback(async () => {
-    return checkAppUpdate();
-  }, []);
-
-  const getAppReleaseHealth = useCallback(async () => {
-    return getReleaseHealth();
-  }, []);
-
-  const installAvailableAppUpdate = useCallback(async () => {
-    return installAppUpdate();
-  }, []);
-
   return {
     apiServiceStatus,
     cancelServiceConfigPreview,
-    checkForAppUpdate,
     confirmServiceConfig,
     copyServiceEndpoint,
     copyServiceToken,
     effectiveServiceConfig,
-    getAppReleaseHealth,
     hasLoadedServiceConfig,
     hasPendingServiceConfigChanges,
     previewAllowInsecureExternalApiHttp,
-    previewDesktopConnectionMode,
-    previewDesktopServiceAuthToken,
-    previewDesktopServiceUrl,
     previewExternalApiAuthToken,
     previewExternalApiBaseUrl,
     previewGenerateServiceToken,
     previewKeepRunningInTray,
-    pasteDesktopServiceAuthToken,
     previewRegenerateServiceToken,
     previewStartAtLogin,
-    previewServiceEnabled,
     previewServiceMode,
     previewServicePort,
     previewTrackingSource,
-    installAvailableAppUpdate,
-    testApiServiceConnection,
     testExternalTrackingSource,
   };
 }

@@ -1,12 +1,12 @@
-name: Build Desktop Windows
+name: Build ShipFlow Windows
 
 on:
   workflow_dispatch:
     inputs:
       signed_release:
-        description: "Build signed updater-ready release artifacts. Requires Windows signing and updater secrets."
+        description: Build a signed Windows release
         required: false
-        default: "false"
+        default: false
         type: boolean
 
 permissions:
@@ -15,182 +15,67 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     if: ${{ !inputs.signed_release || github.ref == 'refs/heads/main' }}
     env:
-      SIGNED_RELEASE: ${{ inputs.signed_release && 'true' || 'false' }}
       DUCKDB_DOWNLOAD_LIB: "1"
-
     steps:
-      - name: Validate signed release ref
-        if: ${{ inputs.signed_release }}
-        shell: pwsh
-        run: |
-          if ($env:GITHUB_REF -ne "refs/heads/main") {
-            throw "Signed release workflows must run from the main branch."
-          }
-
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-
-      - name: Cache Rust build
-        uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@v2
         with:
           workspaces: . -> target
-
       - name: Prepare Windows DuckDB SDK
         shell: pwsh
         run: ./scripts/windows/prepare-duckdb-download.ps1
-
-      - name: Install frontend dependencies
+      - name: Install dependencies
         run: npm ci
-
       - name: Check security baseline
         run: npm run security:baseline
-
-      - name: Run frontend tests
-        run: npm test
-
-      - name: Check Rust format
-        run: cargo fmt --all -- --check
-
-      - name: Run Windows native runtime Rust tests
-        run: cargo test -p shipflow-core -p shipflow-service-runtime -p shipflow-tauri-runtime -p shipflow-service --all-targets
-
-      - name: Run Windows native runtime Rust clippy
-        run: cargo clippy -p shipflow-core -p shipflow-service-runtime -p shipflow-tauri-runtime -p shipflow-service --all-targets -- -D warnings
-
-      - name: Validate Windows signing secrets
+      - name: Run quality checks
+        run: |
+          npm test
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets
+      - name: Validate signing credentials
         if: ${{ inputs.signed_release }}
         shell: pwsh
         env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
-          TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
-            throw "WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are required for a signed Windows desktop release."
+          if ([string]::IsNullOrWhiteSpace($env:CSC_LINK) -or [string]::IsNullOrWhiteSpace($env:CSC_KEY_PASSWORD)) {
+            throw 'WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are required.'
           }
-          if ([string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_PUBLIC_KEY) -or [string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_ENDPOINTS)) {
-            throw "TAURI_UPDATER_PUBLIC_KEY and TAURI_UPDATER_ENDPOINTS are required for updater-ready Windows desktop releases."
-          }
-
-      - name: Build unsigned Windows desktop app binary
-        if: ${{ !inputs.signed_release }}
-        shell: pwsh
-        run: npm exec tauri -- build --no-bundle --ci
-
-      - name: Build signed Windows desktop app binary
-        if: ${{ inputs.signed_release }}
-        shell: pwsh
+      - name: Build Electron Windows suite
         env:
-          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
-          TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
-        run: |
-          $releaseConfigPath = Join-Path $env:RUNNER_TEMP "shipflow-desktop-release.conf.json"
-          node scripts/create-release-build-config.mjs desktop $releaseConfigPath
-          npm exec tauri -- build --no-bundle --config $releaseConfigPath --ci
-
-      - name: Sign Windows desktop executable
-        if: ${{ inputs.signed_release }}
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          ./scripts/windows/sign-windows-artifact.ps1 `
-            -ArtifactPath "target/release/shipflow3-tauri.exe" `
-            -CertificateBase64 "$env:WINDOWS_CERTIFICATE" `
-            -CertificatePassword "$env:WINDOWS_CERTIFICATE_PASSWORD"
-
-      - name: Install NSIS
-        run: choco install nsis -y --no-progress
-
-      - name: Build Windows desktop installer
-        shell: pwsh
-        run: ./scripts/windows/build-desktop-installer.ps1
-
-      - name: Sign Windows desktop installer
-        if: ${{ inputs.signed_release }}
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          ./scripts/windows/sign-windows-artifact.ps1 `
-            -ArtifactPath "target/release/ShipFlow-Desktop-Setup.exe" `
-            -CertificateBase64 "$env:WINDOWS_CERTIFICATE" `
-            -CertificatePassword "$env:WINDOWS_CERTIFICATE_PASSWORD"
-
-      - name: Verify Windows desktop signatures
-        if: ${{ inputs.signed_release }}
+          CSC_LINK: ${{ inputs.signed_release && secrets.WINDOWS_CERTIFICATE || '' }}
+          CSC_KEY_PASSWORD: ${{ inputs.signed_release && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ inputs.signed_release && 'true' || 'false' }}
+        run: npm run package:windows
+      - name: Verify package contents
         shell: pwsh
         run: |
-          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
-            -Recurse `
-            -Filter signtool.exe `
-            -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
-            Sort-Object FullName -Descending |
-            Select-Object -First 1
-
-          if ($null -eq $signtool) {
-            throw "Unable to find Windows SDK signtool.exe"
+          npm run package:verify
+          $resourceRoot = Get-ChildItem release -Recurse -Directory | Where-Object { $_.FullName -like '*resources\native' } | Select-Object -First 1
+          if ($null -eq $resourceRoot) { throw 'Missing Electron native resource directory' }
+          foreach ($file in @('shipflow-service.exe', 'shipflow-workspace-host.exe', 'duckdb.dll')) {
+            if (-not (Test-Path (Join-Path $resourceRoot.FullName $file))) { throw "Missing $file" }
           }
-
-          foreach ($artifact in @(
-            "target/release/shipflow3-tauri.exe",
-            "target/release/ShipFlow-Desktop-Setup.exe"
-          )) {
-            & $signtool.FullName verify /pa /v $artifact
-          }
-
-      - name: Smoke check Windows desktop artifacts
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "target/release/shipflow3-tauri.exe")) {
-            throw "Missing desktop executable"
-          }
-          if (-not (Test-Path "target/release/ShipFlow-Desktop-Setup.exe")) {
-            throw "Missing desktop installer"
-          }
-          if (-not (Test-Path "target/release/duckdb.dll")) {
-            throw "Missing desktop DuckDB runtime DLL"
-          }
-          if (-not (Test-Path "src-tauri/icons/icon.ico")) {
-            throw "Missing desktop installer icon"
-          }
-
-      - name: Generate Windows desktop release evidence
-        if: ${{ inputs.signed_release }}
-        env:
-          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
-          TAURI_UPDATER_ENDPOINTS: ${{ vars.TAURI_UPDATER_ENDPOINTS }}
-        run: node scripts/generate-release-evidence.mjs desktop windows distribution target/release/shipflow-desktop-windows-distribution.evidence.json
-
-      - name: Verify Windows desktop release evidence
-        if: ${{ inputs.signed_release }}
-        run: node scripts/verify-release-evidence.mjs desktop windows distribution target/release/shipflow-desktop-windows-distribution.evidence.json
-
-      - name: Upload NSIS installer
+          if (-not (Get-ChildItem release -File -Filter '*.exe')) { throw 'Missing NSIS installer' }
+          if (-not (Test-Path 'target/release/duckdb.dll')) { throw 'Missing source DuckDB runtime DLL' }
+      - name: Upload Windows suite
         uses: actions/upload-artifact@v6
         with:
-          name: shipflow-desktop-windows-installer
+          name: shipflow-windows-suite
           path: |
-            target/release/shipflow-desktop-windows-distribution.evidence.json
-            target/release/shipflow3-tauri.exe
-            target/release/duckdb.dll
-            target/release/ShipFlow-Desktop-Setup.exe
+            release/*.exe
+            release/*.yml
+            release/*.blockmap
           if-no-files-found: error

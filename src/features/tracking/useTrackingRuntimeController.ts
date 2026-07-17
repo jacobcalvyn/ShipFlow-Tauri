@@ -8,7 +8,6 @@ import {
   setRowsQueuedInSheet,
   startTrackingRunInSheet,
   setTrackingInputInSheet,
-  settleRowRuntimeStateInSheet,
 } from "../sheet/actions";
 import { SheetState } from "../sheet/types";
 import {
@@ -357,12 +356,14 @@ export function useTrackingRuntimeController({
   const bulkRunTokenRef = useRef(0);
   const activeBulkRunTokenBySheetRef = useRef(new Map<string, number>());
   const pendingBulkEntriesBySheetRef = useRef(new Map<string, BulkQueueEntry[]>());
+  const engineMutationQueueByRowRef = useRef(new Map<string, Promise<void>>());
 
   useEffect(() => {
     return () => {
       requestControllersRef.current.forEach((controller) => controller.abort());
       requestControllersRef.current.clear();
       requestMetaRef.current.clear();
+      engineMutationQueueByRowRef.current.clear();
     };
   }, []);
 
@@ -436,6 +437,34 @@ export function useTrackingRuntimeController({
     [onWorkspaceEngineMutation]
   );
 
+  const queueTrackingRowEngineMutation = useCallback(
+    async (
+      sheetId: string,
+      rowId: string,
+      mutation: () => Promise<void>
+    ) => {
+      const mutationKey = getSheetRequestKey(sheetId, rowId);
+      const previousMutation =
+        engineMutationQueueByRowRef.current.get(mutationKey) ?? Promise.resolve();
+      const currentMutation = previousMutation
+        .catch(() => undefined)
+        .then(mutation);
+
+      engineMutationQueueByRowRef.current.set(mutationKey, currentMutation);
+
+      try {
+        await currentMutation;
+      } finally {
+        if (
+          engineMutationQueueByRowRef.current.get(mutationKey) === currentMutation
+        ) {
+          engineMutationQueueByRowRef.current.delete(mutationKey);
+        }
+      }
+    },
+    []
+  );
+
   const markTrackingEntriesFailed = useCallback(
     (sheetId: string, entries: BulkQueueEntry[], error: unknown) => {
       const message = getTrackingFailureMessage(error);
@@ -473,26 +502,33 @@ export function useTrackingRuntimeController({
 
       if (!value) {
         const engineRowId = options?.engineRowId?.trim() || rowKey;
-        void deleteTrackingRowsFromEngine(sheetId, [engineRowId]).catch(
-          (error) => {
-            console.error("[ShipFlowWorkspace] failed to delete Rust draft row", error);
-          }
-        );
+        void queueTrackingRowEngineMutation(sheetId, engineRowId, () =>
+          deleteTrackingRowsFromEngine(sheetId, [engineRowId])
+        ).catch((error) => {
+          console.error("[ShipFlowWorkspace] failed to delete Rust draft row", error);
+        });
         return;
       }
 
-      void upsertTrackingRowsIntoEngine(sheetId, [
-        {
-          key: rowKey,
-          value,
-          position: options?.position,
-          engineRowId: options?.engineRowId,
-        },
-      ]).catch((error) => {
+      const engineRowId = options?.engineRowId?.trim() || rowKey;
+      void queueTrackingRowEngineMutation(sheetId, engineRowId, () =>
+        upsertTrackingRowsIntoEngine(sheetId, [
+          {
+            key: rowKey,
+            value,
+            position: options?.position,
+            engineRowId: options?.engineRowId,
+          },
+        ])
+      ).catch((error) => {
         console.error("[ShipFlowWorkspace] failed to upsert Rust draft row", error);
       });
     },
-    [deleteTrackingRowsFromEngine, upsertTrackingRowsIntoEngine]
+    [
+      deleteTrackingRowsFromEngine,
+      queueTrackingRowEngineMutation,
+      upsertTrackingRowsIntoEngine,
+    ]
   );
 
   const invalidateSheetTrackingWork = useCallback(
@@ -620,9 +656,10 @@ export function useTrackingRuntimeController({
       if (!displayShipmentId) {
         requestControllersRef.current.delete(requestKey);
         requestMetaRef.current.delete(requestKey);
-        await deleteTrackingRowsFromEngine(sheetId, [
-          options?.engineRowId?.trim() || rowKey,
-        ]);
+        const engineRowId = options?.engineRowId?.trim() || rowKey;
+        await queueTrackingRowEngineMutation(sheetId, engineRowId, () =>
+          deleteTrackingRowsFromEngine(sheetId, [engineRowId])
+        );
         updateSheet(sheetId, (current) => clearTrackingCellInSheet(current, rowKey));
         return;
       }
@@ -661,15 +698,23 @@ export function useTrackingRuntimeController({
       );
 
       try {
-        await upsertTrackingRowsIntoEngine(sheetId, [
-          {
-            key: rowKey,
-            value: displayShipmentId,
-            position: options?.position,
-            engineRowId: options?.engineRowId,
-          },
-        ]);
+        const engineRowId = options?.engineRowId?.trim() || rowKey;
+        await queueTrackingRowEngineMutation(sheetId, engineRowId, () =>
+          upsertTrackingRowsIntoEngine(sheetId, [
+            {
+              key: rowKey,
+              value: displayShipmentId,
+              position: options?.position,
+              engineRowId: options?.engineRowId,
+            },
+          ])
+        );
+        controller.signal.throwIfAborted();
         const abortPromise = new Promise<never>((_, reject) => {
+          if (controller.signal.aborted) {
+            reject(new DOMException("Aborted", "AbortError"));
+            return;
+          }
           controller.signal.addEventListener(
             "abort",
             () => reject(new DOMException("Aborted", "AbortError")),
@@ -683,7 +728,6 @@ export function useTrackingRuntimeController({
           }),
           abortPromise,
         ]);
-        onWorkspaceEngineMutation?.(sheetId);
         const rowProjection = response.payload;
         const targetSheet = workspaceRef.current.sheetsById[sheetId];
 
@@ -705,8 +749,11 @@ export function useTrackingRuntimeController({
         }
 
         updateSheet(sheetId, (current) =>
-          settleRowRuntimeStateInSheet(current, rowKey)
+          applyTrackingRefreshRowsToSheet(current, [rowProjection], {
+            getRowKey: () => rowKey,
+          })
         );
+        onWorkspaceEngineMutation?.(sheetId);
 
         if (rowProjection.rowStatus === "failed") {
           const errorMessage = rowProjection.errorMessage ?? "Tracking request failed.";
@@ -730,6 +777,24 @@ export function useTrackingRuntimeController({
               reason: "abort_signal",
               classification: "abort",
               durationMs: Math.round(performance.now() - requestMeta.startedAt),
+            });
+          }
+          const targetRow = workspaceRef.current.sheetsById[sheetId]?.rows.find(
+            (row) => row.key === rowKey
+          );
+          if (
+            targetRow &&
+            sanitizeTrackingInput(targetRow.trackingInput) === "" &&
+            !requestControllersRef.current.has(requestKey)
+          ) {
+            const engineRowId = options?.engineRowId?.trim() || rowKey;
+            await queueTrackingRowEngineMutation(sheetId, engineRowId, () =>
+              deleteTrackingRowsFromEngine(sheetId, [engineRowId])
+            ).catch((cleanupError) => {
+              console.error(
+                "[ShipFlowWorkspace] failed to remove an aborted empty draft row",
+                cleanupError
+              );
             });
           }
           return;
@@ -778,6 +843,7 @@ export function useTrackingRuntimeController({
     [
       deleteTrackingRowsFromEngine,
       getSheetEpoch,
+      queueTrackingRowEngineMutation,
       updateSheet,
       upsertTrackingRowsIntoEngine,
       onWorkspaceEngineMutation,
@@ -822,13 +888,20 @@ export function useTrackingRuntimeController({
   const clearTrackingCell = useCallback(
     (sheetId: string, rowKey: string, options?: TrackingRowContext) => {
       abortRowTrackingWork(sheetId, [rowKey], "cell_cleared");
-      void deleteTrackingRowsFromEngine(sheetId, [
-        options?.engineRowId?.trim() || rowKey,
-      ]).finally(() => {
-        updateSheet(sheetId, (current) => clearTrackingCellInSheet(current, rowKey));
+      updateSheet(sheetId, (current) => clearTrackingCellInSheet(current, rowKey));
+      const engineRowId = options?.engineRowId?.trim() || rowKey;
+      void queueTrackingRowEngineMutation(sheetId, engineRowId, () =>
+        deleteTrackingRowsFromEngine(sheetId, [engineRowId])
+      ).catch((error) => {
+        console.error("[ShipFlowWorkspace] failed to delete cleared Rust row", error);
       });
     },
-    [abortRowTrackingWork, deleteTrackingRowsFromEngine, updateSheet]
+    [
+      abortRowTrackingWork,
+      deleteTrackingRowsFromEngine,
+      queueTrackingRowEngineMutation,
+      updateSheet,
+    ]
   );
 
   const refreshTrackingRows = useCallback(

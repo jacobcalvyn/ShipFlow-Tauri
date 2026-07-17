@@ -1370,19 +1370,18 @@ fn parse_proses_antaran_status(raw: &str) -> ProsesAntaranDetail {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use sha2::{Digest, Sha256};
 
     use super::parse_tracking_html;
     use crate::model::TrackingError;
 
-    const SAMPLE_HTML: &str =
-        include_str!("../../../src-tauri/src/fixtures/pos_tracking_sample.html");
+    const SAMPLE_HTML: &str = include_str!("../tests/fixtures/pos_tracking_sample.html");
     const NULLABLE_NUMERIC_HTML: &str =
-        include_str!("../../../src-tauri/src/fixtures/pos_tracking_nullable_numeric.html");
+        include_str!("../tests/fixtures/pos_tracking_nullable_numeric.html");
     const REORDERED_TABLES_HTML: &str =
-        include_str!("../../../src-tauri/src/fixtures/pos_tracking_reordered_tables.html");
-    const RUNSHEET_FAILEDTODELIVERED_HTML: &str = include_str!(
-        "../../../src-tauri/src/fixtures/pos_tracking_runsheet_failedtoddelivered.html"
-    );
+        include_str!("../tests/fixtures/pos_tracking_reordered_tables.html");
+    const RUNSHEET_FAILEDTODELIVERED_HTML: &str =
+        include_str!("../tests/fixtures/pos_tracking_runsheet_failedtoddelivered.html");
 
     #[test]
     fn parse_tracking_html_matches_track_response_shape() {
@@ -1525,6 +1524,22 @@ mod tests {
                 "history_count": 2,
                 "delivery_runsheet_count": 1
             })
+        );
+    }
+
+    #[test]
+    fn parse_tracking_html_full_payload_matches_golden_contract() {
+        let response = parse_tracking_html(
+            "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id=UDI2MDMzMTAxMTQyOTE%3D",
+            SAMPLE_HTML,
+        )
+        .expect("sample should parse");
+        let payload = serde_json::to_vec(&response).expect("response should serialize");
+        let digest = format!("{:x}", Sha256::digest(payload));
+
+        assert_eq!(
+            digest,
+            "2e9458ace339e7dafe3bece7c1620b0d1fc6af4db52f6094b168568be4a5da1f"
         );
     }
 

@@ -1,46 +1,10 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SheetTabs } from "./SheetTabs";
-import { ApiServiceStatus, ServiceConfig } from "../../../types";
-
-function createServiceConfig(overrides: Partial<ServiceConfig> = {}): ServiceConfig {
-  return {
-    version: 1,
-    desktopConnectionMode: "managedLocal",
-    desktopServiceUrl: "http://127.0.0.1:18422",
-    desktopServiceAuthToken: "",
-    enabled: false,
-    mode: "local",
-    port: 18422,
-    authToken: "",
-    trackingSource: "default",
-    externalApiBaseUrl: "",
-    externalApiAuthToken: "",
-    allowInsecureExternalApiHttp: false,
-    keepRunningInTray: true,
-    startAtLogin: true,
-    lastUpdatedAt: "",
-    ...overrides,
-  };
-}
 
 function openSheetTabMenu(name: string) {
   const tabTrigger = screen.getByRole("tab", { name });
   fireEvent.contextMenu(tabTrigger);
   return tabTrigger;
-}
-
-function createServiceStatus(
-  overrides: Partial<ApiServiceStatus> = {}
-): ApiServiceStatus {
-  return {
-    status: "stopped",
-    enabled: false,
-    mode: null,
-    bindAddress: null,
-    port: null,
-    errorMessage: null,
-    ...overrides,
-  };
 }
 
 describe("SheetTabs", () => {
@@ -59,20 +23,12 @@ describe("SheetTabs", () => {
         ]}
         activeSheetId="sheet-1"
         displayScale="small"
-        serviceConfig={createServiceConfig()}
-        serviceStatus={createServiceStatus()}
-        hasPendingServiceConfigChanges={false}
         onActivateSheet={onActivateSheet}
         onCreateSheet={onCreateSheet}
         onDuplicateSheet={onDuplicateSheet}
         onRenameSheet={onRenameSheet}
         onDeleteSheet={onDeleteSheet}
         onPreviewDisplayScale={vi.fn()}
-        onPreviewServiceEnabled={vi.fn()}
-        onPreviewServiceMode={vi.fn()}
-        onPreviewServicePort={vi.fn()}
-        onGenerateServiceToken={vi.fn()}
-        onRegenerateServiceToken={vi.fn()}
         onConfirmSettings={vi.fn()}
         onCancelSettings={vi.fn()}
       />
@@ -114,20 +70,12 @@ describe("SheetTabs", () => {
         ]}
         activeSheetId="sheet-1"
         displayScale="small"
-        serviceConfig={createServiceConfig()}
-        serviceStatus={createServiceStatus()}
-        hasPendingServiceConfigChanges={false}
         onActivateSheet={vi.fn()}
         onCreateSheet={vi.fn()}
         onDuplicateSheet={vi.fn()}
         onRenameSheet={vi.fn()}
         onDeleteSheet={vi.fn()}
         onPreviewDisplayScale={vi.fn()}
-        onPreviewServiceEnabled={vi.fn()}
-        onPreviewServiceMode={vi.fn()}
-        onPreviewServicePort={vi.fn()}
-        onGenerateServiceToken={vi.fn()}
-        onRegenerateServiceToken={vi.fn()}
         onConfirmSettings={vi.fn()}
         onCancelSettings={vi.fn()}
       />
@@ -153,20 +101,12 @@ describe("SheetTabs", () => {
         ]}
         activeSheetId="sheet-1"
         displayScale="small"
-        serviceConfig={createServiceConfig()}
-        serviceStatus={createServiceStatus()}
-        hasPendingServiceConfigChanges={false}
         onActivateSheet={onActivateSheet}
         onCreateSheet={vi.fn()}
         onDuplicateSheet={vi.fn()}
         onRenameSheet={onRenameSheet}
         onDeleteSheet={vi.fn()}
         onPreviewDisplayScale={vi.fn()}
-        onPreviewServiceEnabled={vi.fn()}
-        onPreviewServiceMode={vi.fn()}
-        onPreviewServicePort={vi.fn()}
-        onGenerateServiceToken={vi.fn()}
-        onRegenerateServiceToken={vi.fn()}
         onConfirmSettings={vi.fn()}
         onCancelSettings={vi.fn()}
       />
@@ -191,20 +131,12 @@ describe("SheetTabs", () => {
         tabs={[{ id: "sheet-1", name: "Sheet 1", color: "slate", icon: "sheet", isActive: true }]}
         activeSheetId="sheet-1"
         displayScale="small"
-        serviceConfig={createServiceConfig()}
-        serviceStatus={createServiceStatus()}
-        hasPendingServiceConfigChanges={false}
         onActivateSheet={vi.fn()}
         onCreateSheet={vi.fn()}
         onDuplicateSheet={vi.fn()}
         onRenameSheet={vi.fn()}
         onDeleteSheet={vi.fn()}
         onPreviewDisplayScale={onPreviewDisplayScale}
-        onPreviewServiceEnabled={vi.fn()}
-        onPreviewServiceMode={vi.fn()}
-        onPreviewServicePort={vi.fn()}
-        onGenerateServiceToken={vi.fn()}
-        onRegenerateServiceToken={vi.fn()}
         onConfirmSettings={vi.fn()}
         onCancelSettings={vi.fn()}
       />
@@ -225,20 +157,12 @@ describe("SheetTabs", () => {
         tabs={[{ id: "sheet-1", name: "Sheet 1", color: "slate", icon: "sheet", isActive: true }]}
         activeSheetId="sheet-1"
         displayScale="small"
-        serviceConfig={createServiceConfig()}
-        serviceStatus={createServiceStatus()}
-        hasPendingServiceConfigChanges={false}
         onActivateSheet={vi.fn()}
         onCreateSheet={vi.fn()}
         onDuplicateSheet={vi.fn()}
         onRenameSheet={vi.fn()}
         onDeleteSheet={vi.fn()}
         onPreviewDisplayScale={onPreviewDisplayScale}
-        onPreviewServiceEnabled={vi.fn()}
-        onPreviewServiceMode={vi.fn()}
-        onPreviewServicePort={vi.fn()}
-        onGenerateServiceToken={vi.fn()}
-        onRegenerateServiceToken={vi.fn()}
         onConfirmSettings={vi.fn()}
         onCancelSettings={onCancelSettings}
       />
@@ -261,20 +185,12 @@ describe("SheetTabs", () => {
         tabs={[{ id: "sheet-1", name: "Sheet 1", color: "slate", icon: "sheet", isActive: true }]}
         activeSheetId="sheet-1"
         displayScale="small"
-        serviceConfig={createServiceConfig({ authToken: "sf_existing" })}
-        serviceStatus={createServiceStatus()}
-        hasPendingServiceConfigChanges={false}
         onActivateSheet={vi.fn()}
         onCreateSheet={vi.fn()}
         onDuplicateSheet={vi.fn()}
         onRenameSheet={vi.fn()}
         onDeleteSheet={vi.fn()}
         onPreviewDisplayScale={onPreviewDisplayScale}
-        onPreviewServiceEnabled={vi.fn()}
-        onPreviewServiceMode={vi.fn()}
-        onPreviewServicePort={vi.fn()}
-        onGenerateServiceToken={vi.fn()}
-        onRegenerateServiceToken={vi.fn()}
         onConfirmSettings={onConfirmSettings}
         onCancelSettings={vi.fn()}
       />
@@ -290,48 +206,32 @@ describe("SheetTabs", () => {
     });
   });
 
-  it("edits service connection settings from the desktop settings modal", () => {
-    const onPreviewDesktopServiceUrl = vi.fn();
-    const onPreviewDesktopServiceAuthToken = vi.fn();
-
+  it("opens service settings inside the desktop settings dialog", async () => {
     render(
       <SheetTabs
         tabs={[{ id: "sheet-1", name: "Sheet 1", color: "slate", icon: "sheet", isActive: true }]}
         activeSheetId="sheet-1"
         displayScale="small"
-        serviceConfig={createServiceConfig()}
-        serviceStatus={createServiceStatus({ status: "running" })}
-        hasPendingServiceConfigChanges={false}
         onActivateSheet={vi.fn()}
         onCreateSheet={vi.fn()}
         onDuplicateSheet={vi.fn()}
         onRenameSheet={vi.fn()}
         onDeleteSheet={vi.fn()}
         onPreviewDisplayScale={vi.fn()}
-        onPreviewServiceEnabled={vi.fn()}
-        onPreviewServiceMode={vi.fn()}
-        onPreviewServicePort={vi.fn()}
-        onGenerateServiceToken={vi.fn()}
-        onRegenerateServiceToken={vi.fn()}
         onConfirmSettings={vi.fn()}
         onCancelSettings={vi.fn()}
-        onPreviewDesktopServiceUrl={onPreviewDesktopServiceUrl}
-        onPreviewDesktopServiceAuthToken={onPreviewDesktopServiceAuthToken}
       />
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Koneksi Service" }));
-    expect(screen.getByRole("heading", { name: "Koneksi Service" })).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("URL Service ShipFlow"), {
-      target: { value: "https://shipflow.example.test" },
-    });
-    fireEvent.change(screen.getByLabelText("ShipFlow Service Bearer Token"), {
-      target: { value: "sf_desktop_token" },
-    });
+    expect(screen.queryByLabelText("URL Service ShipFlow")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("ShipFlow Service Bearer Token")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Sumber Lacak" }));
 
-    expect(onPreviewDesktopServiceUrl).toHaveBeenCalledWith("https://shipflow.example.test");
-    expect(onPreviewDesktopServiceAuthToken).toHaveBeenCalledWith("sf_desktop_token");
+    await waitFor(() => {
+      expect(screen.getByRole("dialog", { name: "Pengaturan ShipFlow" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Sumber Lacak" })).toBeInTheDocument();
+    });
   });
 
   it("drops dragged selections onto another sheet with copy mode", () => {
@@ -345,23 +245,12 @@ describe("SheetTabs", () => {
         ]}
         activeSheetId="sheet-1"
         displayScale="small"
-        serviceConfig={createServiceConfig()}
-        serviceStatus={createServiceStatus()}
-        hasPendingServiceConfigChanges={false}
         onActivateSheet={vi.fn()}
         onCreateSheet={vi.fn()}
         onDuplicateSheet={vi.fn()}
         onRenameSheet={vi.fn()}
         onDeleteSheet={vi.fn()}
         onPreviewDisplayScale={vi.fn()}
-        onPreviewServiceEnabled={vi.fn()}
-        onPreviewServiceMode={vi.fn()}
-        onPreviewServicePort={vi.fn()}
-        onPreviewServiceKeepRunningInTray={vi.fn()}
-        onGenerateServiceToken={vi.fn()}
-        onRegenerateServiceToken={vi.fn()}
-        onCopyServiceEndpoint={vi.fn()}
-        onCopyServiceToken={vi.fn()}
         onConfirmSettings={vi.fn()}
         onCancelSettings={vi.fn()}
         isSelectionDragActive

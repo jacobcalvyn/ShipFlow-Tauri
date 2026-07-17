@@ -1,8 +1,9 @@
 node_modules
 dist
+out
+release
 output/
 target
-src-tauri/target
 .DS_Store
 .env
 .playwright-cli/

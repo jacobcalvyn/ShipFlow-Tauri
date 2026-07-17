@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { listenToTauriEvent } from "../../backend/events";
+import { listenToShipFlowEvent } from "../../backend/events";
 import { isBrowserReady } from "../sheet/utils";
 
 export type DisplayScale = "small" | "medium" | "large";
@@ -27,16 +27,12 @@ function isDisplayScale(value: string | null): value is DisplayScale {
 }
 
 type UseWorkspaceShellControllerOptions = {
-  hasPendingServiceConfigChanges: boolean;
-  cancelServiceConfigPreview: () => void;
-  confirmServiceConfig: () => Promise<boolean>;
   createNewWorkspaceDocument: () => void;
   openWorkspaceDocumentWithPicker: () => Promise<unknown>;
   saveCurrentWorkspaceDocument: () => Promise<unknown>;
   saveWorkspaceDocumentAs: () => Promise<unknown>;
   createNewWorkspaceWindow: () => Promise<unknown> | void;
   openWorkspaceInNewWindow: () => Promise<unknown> | void;
-  openShipFlowServiceApp: () => Promise<unknown> | void;
   checkForAppUpdate: () => Promise<{
     available: boolean;
     currentVersion: string;
@@ -51,21 +47,18 @@ type UseWorkspaceShellControllerOptions = {
 };
 
 export function useWorkspaceShellController({
-  hasPendingServiceConfigChanges,
-  cancelServiceConfigPreview,
-  confirmServiceConfig,
   createNewWorkspaceDocument,
   openWorkspaceDocumentWithPicker,
   saveCurrentWorkspaceDocument,
   saveWorkspaceDocumentAs,
   createNewWorkspaceWindow,
   openWorkspaceInNewWindow,
-  openShipFlowServiceApp,
   checkForAppUpdate,
   installAvailableAppUpdate,
   showNotice,
 }: UseWorkspaceShellControllerOptions) {
   const [settingsOpenRequestToken, setSettingsOpenRequestToken] = useState(0);
+  const [serviceSettingsOpenRequestToken, setServiceSettingsOpenRequestToken] = useState(0);
   const [displayScale, setDisplayScale] = useState<DisplayScale>(() => {
     if (!isBrowserReady()) {
       return "small";
@@ -91,25 +84,9 @@ export function useWorkspaceShellController({
 
   const cancelSettingsPreview = useCallback(() => {
     setDisplayScalePreview(null);
-    cancelServiceConfigPreview();
-  }, [cancelServiceConfigPreview]);
+  }, []);
 
-  const confirmSettings = useCallback(async () => {
-    if (!hasPendingServiceConfigChanges) {
-      const nextDisplayScale = displayScalePreview ?? displayScale;
-      setDisplayScale(nextDisplayScale);
-      if (isBrowserReady()) {
-        window.localStorage.setItem(DISPLAY_SCALE_STORAGE_KEY, nextDisplayScale);
-      }
-      setDisplayScalePreview(null);
-      return true;
-    }
-
-    const didConfirm = await confirmServiceConfig();
-    if (!didConfirm) {
-      return false;
-    }
-
+  const confirmSettings = useCallback(() => {
     const nextDisplayScale = displayScalePreview ?? displayScale;
     setDisplayScale(nextDisplayScale);
     if (isBrowserReady()) {
@@ -117,12 +94,7 @@ export function useWorkspaceShellController({
     }
     setDisplayScalePreview(null);
     return true;
-  }, [
-    confirmServiceConfig,
-    displayScale,
-    displayScalePreview,
-    hasPendingServiceConfigChanges,
-  ]);
+  }, [displayScale, displayScalePreview]);
 
   const handleCheckForUpdates = useCallback(async () => {
     try {
@@ -164,7 +136,7 @@ export function useWorkspaceShellController({
     let isDisposed = false;
     let unlistenAppMenu: null | (() => void) = null;
 
-    void listenToTauriEvent<AppMenuCommandPayload>(
+    void listenToShipFlowEvent<AppMenuCommandPayload>(
       "shipflow://app-menu-command",
       (event) => {
         switch (event.payload.command) {
@@ -190,7 +162,7 @@ export function useWorkspaceShellController({
             setSettingsOpenRequestToken((current) => current + 1);
             break;
           case "show-service-settings":
-            void openShipFlowServiceApp();
+            setServiceSettingsOpenRequestToken((current) => current + 1);
             break;
           case "check-for-updates":
             void handleCheckForUpdates();
@@ -222,7 +194,6 @@ export function useWorkspaceShellController({
     createNewWorkspaceWindow,
     handleCheckForUpdates,
     handleInstallAppUpdate,
-    openShipFlowServiceApp,
     openWorkspaceDocumentWithPicker,
     openWorkspaceInNewWindow,
     saveCurrentWorkspaceDocument,
@@ -235,6 +206,7 @@ export function useWorkspaceShellController({
     displayScale,
     effectiveDisplayScale,
     previewDisplayScale,
+    serviceSettingsOpenRequestToken,
     settingsOpenRequestToken,
   };
 }

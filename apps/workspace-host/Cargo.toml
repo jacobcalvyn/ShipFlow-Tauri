@@ -1,0 +1,21 @@
+[package]
+name = "shipflow-workspace-host"
+version = "0.1.0"
+edition = "2021"
+description = "Native workspace sidecar for ShipFlow Desktop"
+license = "UNLICENSED"
+
+[[bin]]
+name = "shipflow-workspace-host"
+path = "src/main.rs"
+
+[dependencies]
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+shipflow-core = { path = "../../crates/shipflow-core" }
+shipflow-ipc = { path = "../../crates/shipflow-ipc" }
+shipflow-service-client = { path = "../../crates/shipflow-service-client" }
+shipflow-workspace-engine = { path = "../../crates/shipflow-workspace-engine" }
+tokio = { workspace = true }
+

@@ -7,13 +7,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import {
-  ApiServiceStatus,
-  ServiceConfig,
-  ServiceMode,
-  TrackingSource,
-} from "../../../types";
-import { DesktopServiceConnectionPanel } from "./DesktopServiceConnectionPanel";
+import { IntegratedServiceSettings } from "../../service/components/IntegratedServiceSettings";
 import { SheetFileMenu } from "./SheetFileMenu";
 
 type SheetTabItem = {
@@ -29,12 +23,10 @@ type SheetTabsProps = {
   activeSheetId: string;
   displayScale: "small" | "medium" | "large";
   settingsOpenRequestToken?: number;
+  serviceSettingsOpenRequestToken?: number;
   recentDocuments?: Array<{ path: string; name: string }>;
   canUseAutosave?: boolean;
   isAutosaveEnabled?: boolean;
-  serviceConfig: ServiceConfig;
-  serviceStatus: ApiServiceStatus;
-  hasPendingServiceConfigChanges: boolean;
   onToggleAutosave?: () => void;
   onCreateDocument?: () => void;
   onOpenDocument?: () => void;
@@ -43,30 +35,12 @@ type SheetTabsProps = {
   onCreateDocumentWindow?: () => void;
   onOpenDocumentInNewWindow?: () => void;
   onOpenRecentDocument?: (path: string) => void;
-  onOpenServiceSettings?: () => void;
   onActivateSheet: (sheetId: string) => void;
   onCreateSheet: () => void;
   onDuplicateSheet: (sheetId: string) => void;
   onRenameSheet: (sheetId: string, name: string) => void;
   onDeleteSheet: (sheetId: string) => void;
   onPreviewDisplayScale: (scale: "small" | "medium" | "large") => void;
-  onPreviewServiceEnabled: (enabled: boolean) => void;
-  onPreviewServiceMode: (mode: ServiceMode) => void;
-  onPreviewServicePort: (port: number) => void;
-  onPreviewServiceKeepRunningInTray?: (enabled: boolean) => void;
-  onPreviewTrackingSource?: (trackingSource: TrackingSource) => void;
-  onPreviewExternalApiBaseUrl?: (baseUrl: string) => void;
-  onPreviewExternalApiAuthToken?: (token: string) => void;
-  onPreviewAllowInsecureExternalApiHttp?: (enabled: boolean) => void;
-  onPreviewDesktopServiceUrl?: (url: string) => void;
-  onPreviewDesktopServiceAuthToken?: (token: string) => void;
-  onPasteDesktopServiceAuthToken?: () => Promise<void> | void;
-  onGenerateServiceToken: () => void;
-  onRegenerateServiceToken: () => void;
-  onCopyServiceEndpoint?: (endpoint: string) => void;
-  onCopyServiceToken?: (token: string) => void;
-  onTestApiServiceConnection?: (config: ServiceConfig) => Promise<string>;
-  onTestExternalTrackingSource?: (config: ServiceConfig) => Promise<string>;
   onConfirmSettings: () => Promise<boolean> | boolean;
   onCancelSettings: () => void;
   isSelectionDragActive?: boolean;
@@ -76,27 +50,6 @@ type SheetTabsProps = {
 };
 
 type SheetDropTransferMode = "copy" | "move";
-type DesktopSettingsTab = "display" | "service";
-
-function isValidDesktopServiceUrl(serviceUrl: string) {
-  const trimmedUrl = serviceUrl.trim();
-  if (!trimmedUrl) {
-    return false;
-  }
-
-  try {
-    const parsedUrl = new URL(trimmedUrl);
-    return (
-      (parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:") &&
-      Boolean(parsedUrl.hostname) &&
-      !parsedUrl.search &&
-      !parsedUrl.hash
-    );
-  } catch {
-    return false;
-  }
-}
-
 function resolveDropTransferMode(
   event: Pick<
     ReactDragEvent<HTMLElement>,
@@ -143,11 +96,10 @@ export function SheetTabs({
   activeSheetId,
   displayScale,
   settingsOpenRequestToken = 0,
+  serviceSettingsOpenRequestToken = 0,
   recentDocuments = [],
   canUseAutosave = false,
   isAutosaveEnabled = false,
-  serviceConfig,
-  serviceStatus,
   onToggleAutosave = () => {},
   onCreateDocument = () => {},
   onOpenDocument = () => {},
@@ -156,30 +108,12 @@ export function SheetTabs({
   onCreateDocumentWindow = () => {},
   onOpenDocumentInNewWindow = () => {},
   onOpenRecentDocument = () => {},
-  onOpenServiceSettings = () => {},
   onActivateSheet,
   onCreateSheet,
   onDuplicateSheet,
   onRenameSheet,
   onDeleteSheet,
   onPreviewDisplayScale,
-  onPreviewServiceEnabled,
-  onPreviewServiceMode,
-  onPreviewServicePort,
-  onPreviewServiceKeepRunningInTray = () => {},
-  onPreviewTrackingSource = () => {},
-  onPreviewExternalApiBaseUrl = () => {},
-  onPreviewExternalApiAuthToken = () => {},
-  onPreviewAllowInsecureExternalApiHttp = () => {},
-  onPreviewDesktopServiceUrl = () => {},
-  onPreviewDesktopServiceAuthToken = () => {},
-  onPasteDesktopServiceAuthToken = () => {},
-  onGenerateServiceToken,
-  onRegenerateServiceToken,
-  onCopyServiceEndpoint = () => {},
-  onCopyServiceToken = () => {},
-  onTestApiServiceConnection = async () => "",
-  onTestExternalTrackingSource = async () => "",
   onConfirmSettings,
   onCancelSettings,
   isSelectionDragActive = false,
@@ -196,17 +130,10 @@ export function SheetTabs({
     left: number;
   } | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [activeSettingsTab, setActiveSettingsTab] = useState<DesktopSettingsTab>("display");
+  const [activeSettingsSection, setActiveSettingsSection] = useState<
+    "display" | "service-runtime" | "service-api"
+  >("display");
   const [isConfirmingSettings, setIsConfirmingSettings] = useState(false);
-  const [isDesktopTokenVisible, setIsDesktopTokenVisible] = useState(false);
-  const [isTestingServiceConnection, setIsTestingServiceConnection] = useState(false);
-  const [desktopServiceUrlDraft, setDesktopServiceUrlDraft] = useState(
-    serviceConfig.desktopServiceUrl
-  );
-  const [serviceConnectionTestResult, setServiceConnectionTestResult] = useState<{
-    tone: "success" | "error";
-    message: string;
-  } | null>(null);
   const [isFileMenuOpen, setIsFileMenuOpen] = useState(false);
   const [dropTargetSheetId, setDropTargetSheetId] = useState<string | null>(null);
   const [dropTargetMode, setDropTargetMode] = useState<SheetDropTransferMode>("move");
@@ -230,10 +157,6 @@ export function SheetTabs({
       }
     };
   }, []);
-
-  useEffect(() => {
-    setDesktopServiceUrlDraft(serviceConfig.desktopServiceUrl);
-  }, [serviceConfig.desktopServiceUrl]);
 
   useEffect(() => {
     if (!isSelectionDragActive) {
@@ -349,9 +272,22 @@ export function SheetTabs({
     setSheetMenuPosition(null);
     setDeleteArmedSheetId(null);
     setIsFileMenuOpen(false);
-    setActiveSettingsTab("display");
+    setActiveSettingsSection("display");
     setIsSettingsOpen(true);
   }, [settingsOpenRequestToken]);
+
+  useEffect(() => {
+    if (serviceSettingsOpenRequestToken === 0) {
+      return;
+    }
+
+    setOpenSheetMenuSheetId(null);
+    setSheetMenuPosition(null);
+    setDeleteArmedSheetId(null);
+    setIsFileMenuOpen(false);
+    setActiveSettingsSection("service-runtime");
+    setIsSettingsOpen(true);
+  }, [serviceSettingsOpenRequestToken]);
 
   useEffect(() => {
     if (!isSettingsOpen) {
@@ -527,37 +463,8 @@ export function SheetTabs({
     setOpenSheetMenuSheetId(null);
     setSheetMenuPosition(null);
     setDeleteArmedSheetId(null);
-    setActiveSettingsTab("display");
+    setActiveSettingsSection("display");
     setIsSettingsOpen(true);
-  };
-
-  const handleTestServiceConnection = async () => {
-    setIsTestingServiceConnection(true);
-    setServiceConnectionTestResult(null);
-
-    try {
-      const message = await onTestApiServiceConnection(serviceConfig);
-      setServiceConnectionTestResult({
-        tone: "success",
-        message,
-      });
-    } catch (error) {
-      setServiceConnectionTestResult({
-        tone: "error",
-        message:
-          error instanceof Error ? error.message : "Gagal menguji koneksi ShipFlow Service.",
-      });
-    } finally {
-      setIsTestingServiceConnection(false);
-    }
-  };
-
-  const isDesktopServiceUrlValid = isValidDesktopServiceUrl(desktopServiceUrlDraft);
-
-  const handleDesktopServiceUrlDraftChange = (value: string) => {
-    setDesktopServiceUrlDraft(value);
-    setServiceConnectionTestResult(null);
-    onPreviewDesktopServiceUrl(value);
   };
 
   const confirmSettings = async () => {
@@ -954,48 +861,54 @@ export function SheetTabs({
                 className="settings-modal"
                 role="dialog"
                 aria-modal="true"
-                aria-label="Setting"
+                aria-label="Pengaturan ShipFlow"
               >
                 <div className="settings-modal-header">
-                  <h3>Setting</h3>
+                  <h3>Pengaturan</h3>
                 </div>
                 <div className="settings-layout settings-layout-tabs">
-                  <div className="settings-sidebar" role="tablist" aria-label="Setting">
+                  <div
+                    className="settings-sidebar"
+                    role="tablist"
+                    aria-label="Bagian pengaturan"
+                    aria-orientation="vertical"
+                  >
                     <button
                       type="button"
                       id="desktop-settings-display-tab"
-                      className={[
-                        "settings-nav-button",
-                        activeSettingsTab === "display" ? "is-active" : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" ")}
+                      className={`settings-nav-button ${activeSettingsSection === "display" ? "is-active" : ""}`}
                       role="tab"
-                      aria-selected={activeSettingsTab === "display"}
+                      aria-selected={activeSettingsSection === "display"}
                       aria-controls="desktop-settings-display-panel"
-                      onClick={() => setActiveSettingsTab("display")}
+                      onClick={() => setActiveSettingsSection("display")}
                     >
                       Ukuran Tampilan
                     </button>
                     <button
                       type="button"
-                      id="desktop-settings-service-tab"
-                      className={[
-                        "settings-nav-button",
-                        activeSettingsTab === "service" ? "is-active" : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" ")}
+                      id="service-settings-runtime-tab"
+                      className={`settings-nav-button ${activeSettingsSection === "service-runtime" ? "is-active" : ""}`}
                       role="tab"
-                      aria-selected={activeSettingsTab === "service"}
-                      aria-controls="desktop-settings-service-panel"
-                      onClick={() => setActiveSettingsTab("service")}
+                      aria-selected={activeSettingsSection === "service-runtime"}
+                      aria-controls="service-settings-runtime-panel"
+                      onClick={() => setActiveSettingsSection("service-runtime")}
                     >
-                      Koneksi Service
+                      Sumber Lacak
+                    </button>
+                    <button
+                      type="button"
+                      id="service-settings-api-tab"
+                      className={`settings-nav-button ${activeSettingsSection === "service-api" ? "is-active" : ""}`}
+                      role="tab"
+                      aria-selected={activeSettingsSection === "service-api"}
+                      aria-controls="service-settings-api-panel"
+                      onClick={() => setActiveSettingsSection("service-api")}
+                    >
+                      API Publik
                     </button>
                   </div>
                   <div className="settings-content">
-                    {activeSettingsTab === "display" ? (
+                    {activeSettingsSection === "display" ? (
                       <section
                         id="desktop-settings-display-panel"
                         className="settings-pane"
@@ -1055,54 +968,38 @@ export function SheetTabs({
                           </button>
                         </div>
                       </section>
-                    ) : null}
-                    {activeSettingsTab === "service" ? (
-                      <section
-                        id="desktop-settings-service-panel"
-                        role="tabpanel"
-                        aria-labelledby="desktop-settings-service-tab"
-                      >
-                        <DesktopServiceConnectionPanel
-                          serviceConfig={serviceConfig}
-                          desktopServiceUrlDraft={desktopServiceUrlDraft}
-                          isDesktopServiceUrlValid={isDesktopServiceUrlValid}
-                          isDesktopTokenVisible={isDesktopTokenVisible}
-                          isTestingServiceConnection={isTestingServiceConnection}
-                          serviceConnectionTestResult={serviceConnectionTestResult}
-                          onDesktopServiceUrlDraftChange={handleDesktopServiceUrlDraftChange}
-                          onPreviewDesktopServiceAuthToken={onPreviewDesktopServiceAuthToken}
-                          onClearConnectionTestResult={() => setServiceConnectionTestResult(null)}
-                          onToggleDesktopTokenVisibility={() =>
-                            setIsDesktopTokenVisible((current) => !current)
-                          }
-                          onCopyServiceToken={onCopyServiceToken}
-                          onPasteDesktopServiceAuthToken={onPasteDesktopServiceAuthToken}
-                          onTestServiceConnection={handleTestServiceConnection}
-                        />
-                      </section>
-                    ) : null}
+                    ) : (
+                      <IntegratedServiceSettings
+                        activeView={
+                          activeSettingsSection === "service-api" ? "api" : "runtime"
+                        }
+                        onClose={() => setIsSettingsOpen(false)}
+                      />
+                    )}
                   </div>
                 </div>
-                <div className="settings-modal-footer">
-                  <button
-                    type="button"
-                    className="sheet-tab-action settings-modal-cancel"
-                    onClick={closeSettings}
-                    disabled={isConfirmingSettings}
-                  >
-                    Batal
-                  </button>
-                  <button
-                    type="button"
-                    className="sheet-tab-action settings-modal-ok"
-                    onClick={() => {
-                      void confirmSettings();
-                    }}
-                    disabled={isConfirmingSettings || !isDesktopServiceUrlValid}
-                  >
-                    {isConfirmingSettings ? "Menyimpan..." : "Simpan"}
-                  </button>
-                </div>
+                {activeSettingsSection === "display" ? (
+                  <div className="settings-modal-footer">
+                    <button
+                      type="button"
+                      className="sheet-tab-action settings-modal-cancel"
+                      onClick={closeSettings}
+                      disabled={isConfirmingSettings}
+                    >
+                      Batal
+                    </button>
+                    <button
+                      type="button"
+                      className="sheet-tab-action settings-modal-ok"
+                      onClick={() => {
+                        void confirmSettings();
+                      }}
+                      disabled={isConfirmingSettings}
+                    >
+                      {isConfirmingSettings ? "Menyimpan..." : "Simpan"}
+                    </button>
+                  </div>
+                ) : null}
               </div>
             </div>,
             document.body

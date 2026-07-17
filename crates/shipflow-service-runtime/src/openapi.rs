@@ -35,7 +35,7 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
         "info": {
             "title": "ShipFlow Service API",
             "version": "v1",
-            "description": "Authenticated local/LAN API for ShipFlow Desktop and trusted internal clients. ShipFlow Service exposes only the versioned /v1 API surface; unversioned legacy routes are not served."
+            "description": "Authenticated local/LAN API for third-party ShipFlow integrations. ShipFlow Desktop uses a separate native IPC transport. ShipFlow Service exposes only the versioned /v1 HTTP surface; unversioned legacy routes are not served."
         },
         "servers": servers,
         "security": [{ "bearerAuth": [] }],

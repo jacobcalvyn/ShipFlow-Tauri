@@ -1,82 +1,119 @@
 # Runtime Architecture
 
-## Status
+## Product Boundary
 
-Active
+ShipFlow is one installed Electron suite with two native Rust executables. The
+Electron process owns user-facing lifecycle. Rust owns data and network work.
 
-## Goal
+| Runtime | Responsibility |
+| --- | --- |
+| Electron main | workspace windows, tray, menus, single instance, updates, file dialogs, native process supervision |
+| Electron preload | narrow, context-isolated, allowlisted IPC |
+| React renderer | visual state, user interaction, visible row windows |
+| ShipFlow Service | public HTTP API, native internal IPC, scraping, cache, source selection, request concurrency and backpressure |
+| Workspace Host | SQLite workspace mutations, import jobs, progress events, DuckDB pivot/chart queries |
 
-Keep the current ShipFlow product split, but raise the internal architecture to a stronger desktop standard:
+## Native Process Topology
 
-- `ShipFlow Desktop` owns UI, workspace documents, and user interaction
-- `ShipFlow Service` owns runtime API access, tray lifecycle, and background availability
-- `shipflow-core` owns tracking domain models, POS parsing, upstream request rules, and shared validation
+Electron starts one managed `shipflow-service` instance. Every workspace window
+gets one `shipflow-workspace-host` process and one workspace database. Closing a
+window terminates only its Workspace Host.
 
-## Current Runtime Boundaries
+Electron and Workspace Hosts call the Service through a Unix domain socket on
+macOS or a local-only named pipe on Windows. Each request uses a private suite
+credential. The public HTTP port and token are separate and exist only for
+third-party API clients. Neither internal credential nor native process control
+is exposed to a renderer.
 
-### `ShipFlow Desktop`
+## IPC Contract
 
-Owns:
+Renderer code can only use commands and workspace methods declared in
+`src/backend/bridge-contract.ts`. The preload rejects unknown commands. Electron
+main independently validates the sender window, top-level frame, command scope,
+argument shape, and workspace method.
 
-- Tauri window lifecycle
-- document workspace flow
-- sheet state and table rendering
-- desktop command handling
+Workspace RPC and Service IPC use newline-delimited JSON with a protocol
+version, request ID, bounded frame size, bounded timeout, and one terminal
+response or error. Workspace RPC additionally carries progress events. The
+Service transport is permission-restricted to the current OS user on macOS and
+rejects remote named-pipe clients on Windows.
 
-Does not own:
+Each Service IPC connection carries exactly one request. If the caller closes
+the connection or reaches its timeout, the Service drops the in-flight lookup
+future so abandoned requests release their upstream concurrency slot.
 
-- POS scraping rules
-- external API validation rules
-- tracking response normalization logic
+## Storage
 
-### `ShipFlow Service`
+The main database remains at the historical application-data identity:
 
-Owns:
+```text
+<appData>/com.shipflow.desktop/workspace-engine/workspace.sqlite3
+```
 
-- service configuration
-- tray process and background lifecycle
-- external API access mode and token handling
-- track endpoint for other local clients
+The stable identity lets Electron reuse existing Rust workspace data without
+copying a large SQLite/WAL pair. Additional workspace windows use isolated
+databases below `workspace-engine/windows/<window-label>`.
 
-Does not own:
+Service Agent configuration lives at:
 
-- desktop workspace UI
-- parser-specific business rules
+```text
+<appData>/ShipFlow Service/shipflow-service-runtime/agent-config.json
+```
 
-### `shipflow-core`
+Electron imports the legacy Service config on first run. Secret values are
+encrypted with `safeStorage` when OS credential encryption is available.
+If a legacy Service already owns the configured port without the managed IPC
+endpoint, Electron rejects startup with an explicit instruction to stop it.
+Electron never adopts a process through the public token and never kills an
+unverified process by stale PID.
 
-Owns:
+## Runtime Logs
 
-- tracking response models
-- shipment ID normalization and validation
-- POS HTML parsing
-- upstream URL construction and retry logic
-- external API source validation
+Electron main owns the suite log and combines lifecycle events, renderer runtime
+errors, Service output, and Workspace Host diagnostics into
+`shipflow-desktop.log`. The file lives in Electron's platform-native logs
+directory and rotates to one bounded `.1` backup after reaching 5 MiB.
+ShipFlow and Authorization token patterns are redacted before persistence.
 
-Does not own:
+Users can open the active file from either the native
+`File > Open Log File` menu or the workspace toolbar
+`File > Buka File Log` action. The renderer receives no arbitrary filesystem
+path or direct filesystem access.
 
-- window management
-- tray UI
-- desktop document persistence
+## Lifecycle Rules
 
-## Why This Split Matters
+1. Only one Electron suite instance may run per OS user.
+2. A second launch focuses the existing workspace and may open its integrated Service Settings modal.
+3. The tray belongs to Electron, never to a Rust child process.
+4. Closing windows keeps the Service running only when tray persistence is enabled.
+5. Quit and updater installation stop all Workspace Hosts and the managed Service.
+6. A foreign or stale Service occupying the configured port is detected before spawn and reported explicitly.
 
-This project already had the right product split with `ShipFlow Desktop` and `ShipFlow Service`, but the tracking logic still lived inside the Tauri crate. That kept the Rust app functional, but it did not create a reusable engine boundary.
+Service Settings is not a separate application window. Workspace display,
+tracking source, and public API settings share one modal in the active Desktop
+window. The modal backdrop blocks workspace interaction until the user saves or
+cancels it. Tray, menu, and `--service-settings` entry points all focus the
+Desktop window and select the Service section in that modal.
 
-By extracting `shipflow-core`, the shared logic can now evolve independently from the desktop shell and the service runtime. That is the first required step toward a higher-standard desktop architecture.
+## Security Boundary
 
-## Practical Rules
+- renderer Node integration is disabled;
+- context isolation and renderer sandboxing are enabled;
+- navigation and new-window creation are denied;
+- CSP is applied by Electron session headers;
+- OS permissions requested by renderers are denied;
+- Service credentials are stored outside renderer storage;
+- POD URL fetching is validated and size bounded;
+- native RPC methods are allowlisted in preload and main.
 
-When adding new features:
+## Release Model
 
-1. Put tracking parsing, request normalization, and shared tracking validation in `shipflow-core`.
-2. Put runtime process behavior, tray behavior, and local API behavior in `ShipFlow Service`.
-3. Put document UI, sheet UI, and user interaction flow in `ShipFlow Desktop`.
-4. Do not place new scraping logic directly in `src-tauri/src/lib.rs` or React components.
+Electron Builder creates one platform installer containing Electron,
+`shipflow-service`, `shipflow-workspace-host`, DuckDB runtime files where needed,
+and application icons. CI verifies packaged resources before artifact upload.
 
-## Next Recommended Steps
-
-1. Move more runtime-facing tracking orchestration out of the Tauri app layer and into service/core boundaries.
-2. Introduce a persistent local data model for workspace documents instead of relying so heavily on frontend-owned state.
-3. Reduce custom HTML shell surfaces so the desktop shell feels less like a web app and more like a desktop workspace.
-4. Use `docs/native-platform-architecture.md` as the migration baseline when native macOS and Windows shells begin.
+The current release-readiness boundary is runtime readiness before signing.
+Unsigned local macOS packages are smoke-tested as real Electron applications.
+Windows package creation is verified in GitHub Actions. Apple notarization,
+platform signing, signed updater publication, and manual Windows installation
+smoke remain explicit external prerequisites.

@@ -19,7 +19,7 @@ import {
   takePendingWorkspaceWindowRequest,
   writeWorkspaceDocument,
 } from "../../backend/commands";
-import { listenToTauriEvent } from "../../backend/events";
+import { listenToShipFlowEvent } from "../../backend/events";
 import { createDefaultWorkspaceState } from "./default-state";
 import {
   createDefaultWorkspaceDocumentMeta,
@@ -729,7 +729,7 @@ export function useWorkspaceDocumentController({
     let isDisposed = false;
     let unlistenWindowCloseRequest: null | (() => void) = null;
 
-    void listenToTauriEvent<WindowCloseRequestPayload>(
+    void listenToShipFlowEvent<WindowCloseRequestPayload>(
       "shipflow://window-close-requested",
       (event) => {
         if (isDisposed) {

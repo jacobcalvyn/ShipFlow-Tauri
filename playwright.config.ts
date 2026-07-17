@@ -1,7 +1,7 @@
-import { defineConfig, devices } from "@playwright/test";
+import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
-  testDir: "./tests/e2e",
+  testDir: "./tests/electron",
   outputDir: "./output/playwright",
   fullyParallel: false,
   reporter: process.env.CI
@@ -10,22 +10,10 @@ export default defineConfig({
         ["html", { open: "never", outputFolder: "output/playwright-report" }],
       ]
     : "list",
+  timeout: 90_000,
+  expect: { timeout: 15_000 },
   use: {
-    baseURL: "http://127.0.0.1:1420",
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
-    video: "retain-on-failure",
   },
-  webServer: {
-    command: "npm run dev -- --host 127.0.0.1 --port 1420 --strictPort",
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-    url: "http://127.0.0.1:1420",
-  },
-  projects: [
-    {
-      name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
-    },
-  ],
 });

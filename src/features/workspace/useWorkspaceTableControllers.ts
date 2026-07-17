@@ -27,6 +27,7 @@ type UseWorkspaceTableControllersOptions = {
   highlightedColumnTimeoutRef: MutableRefObject<number | null>;
   highlightedColumnSheetIdRef: MutableRefObject<string | null>;
   hasActiveFilters: boolean;
+  isDisplayedRowsQueryPending: boolean;
   visibleSelectableKeys: string[];
   selectedVisibleRowKeys: string[];
   selectedTrackingIds: string[];
@@ -51,6 +52,7 @@ export function useWorkspaceTableControllers({
   highlightedColumnTimeoutRef,
   highlightedColumnSheetIdRef,
   hasActiveFilters,
+  isDisplayedRowsQueryPending,
   visibleSelectableKeys,
   selectedVisibleRowKeys,
   selectedTrackingIds,
@@ -77,6 +79,7 @@ export function useWorkspaceTableControllers({
     hiddenColumnPaths: activeSheet.hiddenColumnPaths,
     pinnedColumnPaths: activeSheet.pinnedColumnPaths,
     hasActiveFilters,
+    isDisplayedRowsQueryPending,
     visibleSelectableKeys,
     selectedVisibleRowKeys,
     selectedTrackingIds,

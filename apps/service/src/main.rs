@@ -15,14 +15,18 @@ struct CliConfig {
 
 impl Default for CliConfig {
     fn default() -> Self {
+        let external_api_base_url = env::var("SHIPFLOW_EXTERNAL_API_BASE_URL").unwrap_or_default();
         Self {
             mode: ServiceRuntimeMode::Local,
             port: 18422,
             auth_token: env::var("SHIPFLOW_SERVICE_TOKEN").unwrap_or_default(),
             tracking_source: TrackingSourceConfig {
-                tracking_source: TrackingSource::Default,
-                external_api_base_url: env::var("SHIPFLOW_EXTERNAL_API_BASE_URL")
-                    .unwrap_or_default(),
+                tracking_source: if external_api_base_url.trim().is_empty() {
+                    TrackingSource::Default
+                } else {
+                    TrackingSource::ExternalApi
+                },
+                external_api_base_url,
                 external_api_auth_token: env::var("SHIPFLOW_EXTERNAL_API_TOKEN")
                     .unwrap_or_default(),
                 allow_insecure_external_api_http: env::var("SHIPFLOW_ALLOW_INSECURE_HTTP")
@@ -36,8 +40,8 @@ fn print_help() {
     println!(
         "ShipFlow Service\n\n\
 Usage:\n  shipflow-service --auth-token <token> [--port <port>] [--lan]\n\n\
-Options:\n  --auth-token <token>               Bearer token required by Desktop and API clients.\n  --port <port>                      HTTP port. Defaults to 18422.\n  --lan                              Bind to 0.0.0.0 instead of 127.0.0.1.\n  --external-api-base-url <url>      Use an external tracking API instead of POS scraping.\n  --external-api-token <token>       API token for the external tracking API.\n  --allow-insecure-external-api-http Allow HTTP external API URLs.\n  --help                             Show this help.\n\n\
-Environment:\n  SHIPFLOW_SERVICE_TOKEN\n  SHIPFLOW_EXTERNAL_API_BASE_URL\n  SHIPFLOW_EXTERNAL_API_TOKEN\n  SHIPFLOW_ALLOW_INSECURE_HTTP=true"
+Options:\n  --auth-token <token>               Public bearer token for third-party API clients.\n  --port <port>                      HTTP port. Defaults to 18422.\n  --lan                              Bind to 0.0.0.0 instead of 127.0.0.1.\n  --external-api-base-url <url>      Use an external tracking API instead of POS scraping.\n  --external-api-token <token>       API token for the external tracking API.\n  --allow-insecure-external-api-http Allow HTTP external API URLs.\n  --help                             Show this help.\n\n\
+Environment:\n  SHIPFLOW_SERVICE_TOKEN\n  SHIPFLOW_INTERNAL_SERVICE_TOKEN\n  SHIPFLOW_INTERNAL_IPC_ENDPOINT\n  SHIPFLOW_EXTERNAL_API_BASE_URL\n  SHIPFLOW_EXTERNAL_API_TOKEN\n  SHIPFLOW_ALLOW_INSECURE_HTTP=true"
     );
 }
 
@@ -85,37 +89,7 @@ fn parse_args() -> Result<Option<CliConfig>, String> {
     Ok(Some(config))
 }
 
-fn run_service_settings_app() {
-    shipflow_tauri_runtime::install_runtime_logging();
-
-    if shipflow_tauri_runtime::maybe_run_service_autostart_from_current_args()
-        .expect("failed to initialize ShipFlow service login autostart")
-    {
-        return;
-    }
-
-    if shipflow_tauri_runtime::maybe_run_service_tray_from_current_args()
-        .expect("failed to initialize ShipFlow service tray companion")
-    {
-        return;
-    }
-
-    if shipflow_tauri_runtime::maybe_run_service_process_from_current_args()
-        .expect("failed to initialize ShipFlow service process")
-    {
-        return;
-    }
-
-    if shipflow_tauri_runtime::maybe_delegate_service_settings_launch_to_existing_process()
-        .expect("failed to delegate to existing ShipFlow Service settings process")
-    {
-        return;
-    }
-
-    shipflow_tauri_runtime::run_service_settings_with_context(tauri::generate_context!());
-}
-
-fn run_cli_service() {
+fn main() {
     let Some(config) = parse_args().unwrap_or_else(|error| {
         eprintln!("{error}");
         eprintln!("Run `shipflow-service --help` for usage.");
@@ -129,6 +103,10 @@ fn run_cli_service() {
         mode: config.mode,
         port: config.port,
         auth_token: config.auth_token,
+        internal_auth_token: env::var("SHIPFLOW_INTERNAL_SERVICE_TOKEN").unwrap_or_default(),
+        internal_ipc_endpoint: env::var("SHIPFLOW_INTERNAL_IPC_ENDPOINT")
+            .ok()
+            .filter(|endpoint| !endpoint.trim().is_empty()),
         tracking_source: config.tracking_source,
     };
 
@@ -147,20 +125,4 @@ fn run_cli_service() {
         eprintln!("{error}");
         std::process::exit(1);
     }
-}
-
-fn main() {
-    if env::args().len() == 1
-        || env::args().skip(1).any(|argument| {
-            argument == "--shipflow-service-process"
-                || argument == "--shipflow-service-autostart"
-                || argument == "--shipflow-service-tray"
-                || argument == "--shipflow-service-open-settings"
-        })
-    {
-        run_service_settings_app();
-        return;
-    }
-
-    run_cli_service();
 }

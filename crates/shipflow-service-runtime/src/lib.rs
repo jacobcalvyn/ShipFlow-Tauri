@@ -3,6 +3,7 @@
 pub mod api_contract;
 pub mod contact_cache;
 pub mod http_api;
+mod internal_ipc;
 pub mod lookup_cache;
 pub mod model;
 pub mod openapi;

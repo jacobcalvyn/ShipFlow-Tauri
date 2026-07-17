@@ -1,12 +1,13 @@
 # ShipFlow Service API v1
 
-ShipFlow Service exposes an authenticated local or LAN HTTP API for ShipFlow Desktop and optional internal clients. Desktop is only a client of the service: source selection, external API credentials, bearer-token ownership, lookup cache, persistent lookup store, and direct lookup backpressure all belong to ShipFlow Service.
+ShipFlow Service exposes an authenticated local or LAN HTTP API for third-party clients. ShipFlow Desktop and its Workspace Hosts use a separate native IPC transport; the public HTTP endpoint and token are not part of Desktop's internal data path. Source selection, external API credentials, bearer-token ownership, lookup cache, persistent lookup store, and direct lookup backpressure all belong to ShipFlow Service.
 
 New integrations should use the versioned `/v1` contract. Unversioned legacy routes are not served.
 
 ## Authentication
 
-All routes require a bearer token:
+All protected routes require a bearer token. `GET /v1/status` is the only
+unauthenticated identity probe:
 
 ```http
 Authorization: Bearer <service-token>
@@ -28,7 +29,7 @@ If the header is omitted, the service generates one. The request id is returned 
 GET /v1/openapi.json
 ```
 
-The OpenAPI endpoint returns an authenticated OpenAPI 3.1 JSON document for the current service port. It is intended for internal clients, agent tooling, Postman, Insomnia, Swagger Editor, and generated client experiments.
+The OpenAPI endpoint returns an authenticated OpenAPI 3.1 JSON document for the current service port. It is intended for third-party integrations, agent tooling, Postman, Insomnia, Swagger Editor, and generated client experiments.
 
 This endpoint returns the raw OpenAPI document, not the normal `/v1` response envelope, so tools can import it directly.
 
@@ -229,7 +230,7 @@ Lookup schema versions:
 - `shipflow.tracking.bag.v1`
 - `shipflow.tracking.manifest.v1`
 
-The `data` object is the normalized response shape used by Desktop. Shipment tracking can use the active Service source, either internal POS scraping or the configured external ShipFlow API. Bag and manifest lookup paths currently use the internal POS scraper.
+The `data` object is the same normalized response shape returned through Desktop's native IPC path. Shipment tracking can use the active Service source, either internal POS scraping or the configured external ShipFlow API. Bag and manifest lookup paths currently use the internal POS scraper.
 
 For the internal POS scraper, `detail_lacak_banyak.php` remains the primary tracking source for shipment status, SLA, history, POD, bagging, manifest, delivery, names, and addresses. ShipFlow Service may call `https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=<shipment_id>` only as a best-effort contact enrichment source for missing sender/recipient phone numbers. `lacak-mitra` data must not overwrite primary tracking fields.
 
@@ -332,7 +333,7 @@ Runtime logs include `[ShipFlowPerf]` timing lines for tracking diagnostics. The
 Typical stages:
 
 ```text
-[ShipFlowPerf] desktop_service route=track id=P2603310114291 stage=http durationMs=812 status=200 OK
+[ShipFlowPerf] service_tracking route=ipc_track id=P2603310114291 source=external_api forceRefresh=false durationMs=812 result=ok
 [ShipFlowPerf] service_tracking route=v1 id=P2603310114291 source=external_api forceRefresh=false durationMs=809 result=ok
 [ShipFlowPerf] external_api_tracking id=P2603310114291 stage=http durationMs=786 route=v1 status=200 OK
 [ShipFlowPerf] external_api_tracking id=P2603310114291 stage=body_read durationMs=1 route=v1 bytes=123456
@@ -341,7 +342,7 @@ Typical stages:
 
 How to read the stages:
 
-- `desktop_service stage=http` is the full wait from Desktop to Service for that lookup.
+- `service_tracking route=ipc_track` is a Desktop lookup received over native IPC.
 - `service_tracking` is the Service-side lookup duration for the active source.
 - `external_api_tracking stage=http` is the outbound wait from Service to the external API.
 - `body_read` and `parse` separate payload transfer/parsing from upstream wait time.
@@ -352,16 +353,16 @@ How to read the stages:
 - Keep the service in localhost mode unless another trusted device on the local network must call it.
 - LAN mode still requires the same bearer token.
 - Treat the Service token like an API key; do not put it in screenshots, logs, or shared documents.
-- Desktop should store only the Service endpoint and bearer token it needs to call the separately installed Service app.
-- A successful Desktop connection test means the Service returned the `shipflow-service` product marker from `GET /v1/status` and accepted the bearer token through `GET /v1/auth/check`.
-- Startup readiness must fail closed when the port responds without the ShipFlow product marker or without `/v1/auth/check`; this prevents Desktop from sending shipment IDs to a stale or unrelated local service.
+- Desktop stores a private IPC endpoint and encrypted internal credential outside renderer state; users do not configure either value.
+- Desktop readiness requires an authenticated `service.status` IPC response with the `shipflow-service` product marker.
+- The unauthenticated public status probe is used only to detect a stale or unrelated process occupying the configured HTTP port; shipment IDs are never sent to that process.
 
 ## Ownership Boundary
 
 ShipFlow Desktop:
 
 - owns sheets, filters, table layout, workspace files, and UI state
-- calls ShipFlow Service by configured endpoint and bearer token
+- calls ShipFlow Service through managed native IPC
 - does not scrape POS directly
 - does not own external API credentials
 

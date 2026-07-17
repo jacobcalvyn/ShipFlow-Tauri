@@ -9,10 +9,6 @@ const { mockedToDataUrl } = vi.hoisted(() => ({
   mockedToDataUrl: vi.fn().mockResolvedValue("data:image/png;base64,qr"),
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: mockedInvoke,
-}));
-
 vi.mock("qrcode", () => ({
   default: {
     toDataURL: mockedToDataUrl,
@@ -23,6 +19,7 @@ import { SheetTable } from "./SheetTable";
 import { COLUMNS } from "../columns";
 import { SheetRow } from "../types";
 import { createSheetTableRowsFromSheetRows } from "../table-row-view";
+import { installTestBridge } from "../../../test/bridge";
 
 const visibleColumns = COLUMNS.slice(0, 6);
 const columnWidths = Object.fromEntries(
@@ -42,6 +39,10 @@ function createBenchmarkRow(index: number): SheetRow {
 }
 
 describe("SheetTable benchmark", () => {
+  beforeEach(() => {
+    installTestBridge({ invoke: mockedInvoke });
+  });
+
   it("renders 1000 rows with virtualization and logs baseline metrics", async () => {
     const originalClientHeight = Object.getOwnPropertyDescriptor(
       HTMLElement.prototype,

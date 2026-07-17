@@ -9,10 +9,6 @@ const { mockedToDataUrl } = vi.hoisted(() => ({
   mockedToDataUrl: vi.fn().mockResolvedValue("data:image/png;base64,qr"),
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: mockedInvoke,
-}));
-
 vi.mock("qrcode", () => ({
   default: {
     toDataURL: mockedToDataUrl,
@@ -29,6 +25,7 @@ import {
 } from "../columns";
 import { SheetRow } from "../types";
 import { createSheetTableRowsFromSheetRows } from "../table-row-view";
+import { installTestBridge } from "../../../test/bridge";
 
 const visibleColumns = COLUMNS.slice(0, 2);
 const columnWidths = Object.fromEntries(
@@ -48,6 +45,10 @@ function createRow(): SheetRow {
 }
 
 describe("SheetTable", () => {
+  beforeEach(() => {
+    installTestBridge({ invoke: mockedInvoke });
+  });
+
   it("wires core table interactions", async () => {
     const onToggleVisibleSelection = vi.fn();
     const onToggleRowSelection = vi.fn();
