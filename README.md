@@ -95,8 +95,10 @@ installer without repeating those timing-sensitive suites. Publishing a release
 remains a separate, explicit operation with release credentials.
 
 Unsigned workflows omit signing credentials entirely and disable certificate
-auto-discovery. Signed workflows inject platform credentials only after their
-dedicated credential validation step succeeds.
+auto-discovery. Unsigned macOS artifacts receive a complete ad-hoc signature so
+their bundle integrity remains verifiable, while signed workflows inject
+platform credentials only after their dedicated credential validation step
+succeeds.
 
 Unsigned local builds are suitable for development smoke tests. Production
 macOS distribution still requires Apple Developer signing and notarization.

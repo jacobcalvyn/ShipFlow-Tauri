@@ -279,6 +279,9 @@ requireTokens("electron-builder.config.cjs", [
   "shipflow-workspace-host",
   "duckdb.dll",
   "assets/icons",
+  "useAdHocMacSigning",
+  'identity: useAdHocMacSigning ? "-" : undefined',
+  "hardenedRuntime: !useAdHocMacSigning",
   "target: [\"dmg\", \"zip\"]",
   "target: [\"nsis\"]",
 ]);
@@ -287,6 +290,7 @@ requireTokens("scripts/verify-electron-package.mjs", [
   "shipflow-workspace-host",
   "duckdb.dll",
   "app.asar",
+  '"--verify", "--deep", "--strict", "--verbose=2"',
 ]);
 requireTokens("scripts/verify-quality-gate.mjs", [
   "actions/workflows/",
@@ -321,6 +325,8 @@ requireTokens(".github/workflows/build-macos-app.yml", [
   "Build signed Electron macOS suite",
   'CSC_IDENTITY_AUTO_DISCOVERY: "false"',
   'CSC_IDENTITY_AUTO_DISCOVERY: "true"',
+  'SHIPFLOW_MAC_ADHOC_SIGN: "true"',
+  "codesign --verify --deep --strict --verbose=2",
   "npm run package:macos",
   "npm run package:verify",
 ]);

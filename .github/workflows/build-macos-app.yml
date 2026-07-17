@@ -54,6 +54,7 @@ jobs:
         if: ${{ !inputs.signed_release }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          SHIPFLOW_MAC_ADHOC_SIGN: "true"
         run: npm run package:macos
       - name: Build signed Electron macOS suite
         if: ${{ inputs.signed_release }}
@@ -72,6 +73,7 @@ jobs:
           test -n "$APP_PATH"
           test -x "$APP_PATH/Contents/Resources/native/shipflow-service"
           test -x "$APP_PATH/Contents/Resources/native/shipflow-workspace-host"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           test "$('/usr/libexec/PlistBuddy' -c 'Print :CFBundleIdentifier' "$APP_PATH/Contents/Info.plist")" = "com.shipflow.desktop"
       - name: Upload macOS suite
         uses: actions/upload-artifact@v6

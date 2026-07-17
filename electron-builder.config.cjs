@@ -1,6 +1,10 @@
 const path = require("node:path");
 
 const isWindows = process.platform === "win32";
+const useAdHocMacSigning =
+  process.platform === "darwin" &&
+  (process.env.SHIPFLOW_MAC_ADHOC_SIGN === "true" ||
+    (!process.env.CSC_LINK?.trim() && !process.env.CSC_NAME?.trim()));
 const executable = (name) => `${name}${isWindows ? ".exe" : ""}`;
 const nativeResources = [
   {
@@ -50,7 +54,8 @@ module.exports = {
     icon: "assets/icons/icon.png",
     target: ["dmg", "zip"],
     artifactName: "ShipFlow-${version}-macos-${arch}.${ext}",
-    hardenedRuntime: true,
+    identity: useAdHocMacSigning ? "-" : undefined,
+    hardenedRuntime: !useAdHocMacSigning,
     gatekeeperAssess: false,
   },
   win: {

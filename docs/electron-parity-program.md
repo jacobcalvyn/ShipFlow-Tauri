@@ -118,8 +118,9 @@ and expose rollback evidence in logs.
 - Packaging always uses `--publish never`; installer creation cannot publish a
   GitHub release as a side effect.
 - Unsigned builds omit all signing credentials and disable certificate
-  auto-discovery; signed builds receive credentials only in their dedicated
-  packaging step after validation.
+  auto-discovery. Unsigned macOS artifacts use a full ad-hoc signature and must
+  pass strict deep signature verification; signed builds receive credentials
+  only in their dedicated packaging step after validation.
 - Artifact upload, release publication, code signing, and notarization are
   separate operations with explicit credentials and permissions.
 

@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 
 const packageRoot = path.resolve(process.argv[2] ?? "release");
@@ -59,6 +60,17 @@ if (process.platform === "darwin") {
   const infoPlist = entries.find((entry) => entry.endsWith("ShipFlow Desktop.app/Contents/Info.plist"));
   if (!infoPlist) {
     errors.push("Missing macOS ShipFlow Desktop.app Info.plist.");
+  } else {
+    const appBundle = infoPlist.slice(0, -"/Contents/Info.plist".length);
+    const verification = spawnSync(
+      "/usr/bin/codesign",
+      ["--verify", "--deep", "--strict", "--verbose=2", appBundle],
+      { encoding: "utf8" },
+    );
+    if (verification.status !== 0) {
+      const detail = `${verification.stdout ?? ""}${verification.stderr ?? ""}`.trim();
+      errors.push(`Invalid macOS application signature: ${detail || "codesign failed"}.`);
+    }
   }
 }
 
