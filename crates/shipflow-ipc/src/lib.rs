@@ -189,11 +189,22 @@ impl LocalIpcListener {
 
 #[cfg(windows)]
 pub async fn connect_local_ipc(endpoint: &str) -> io::Result<LocalIpcClientStream> {
+    const ERROR_FILE_NOT_FOUND: i32 = 2;
+    const ERROR_PIPE_BUSY: i32 = 231;
+    const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
+
+    let deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
     loop {
         match ClientOptions::new().open(endpoint) {
             Ok(client) => return Ok(client),
-            Err(error) if error.raw_os_error() == Some(231) => {
-                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(ERROR_FILE_NOT_FOUND | ERROR_PIPE_BUSY)
+                ) && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(RETRY_DELAY).await;
             }
             Err(error) => return Err(error),
         }

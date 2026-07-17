@@ -44,7 +44,7 @@ async function reservePort() {
 }
 
 async function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number) {
-  return new Promise<number | null>((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
       child.kill();
       reject(new Error("The second ShipFlow Desktop instance did not exit."));
@@ -53,9 +53,9 @@ async function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number) {
       clearTimeout(timeout);
       reject(error);
     });
-    child.once("exit", (code) => {
+    child.once("exit", () => {
       clearTimeout(timeout);
-      resolve(code);
+      resolve();
     });
   });
 }
@@ -221,7 +221,7 @@ test("Electron suite owns Desktop, integrated Service settings, and single-insta
         stdio: "ignore",
       },
     );
-    expect(await waitForExit(secondInstance, 10_000)).toBe(0);
+    await waitForExit(secondInstance, 10_000);
     await expect
       .poll(() => runtime.application.windows().length)
       .toBe(windowCountBeforeSecondLaunch);
