@@ -190,6 +190,25 @@ requireTokens("electron/main/service-agent.ts", [
   "app.setLoginItemSettings",
   "SHIPFLOW_SERVICE_AGENT_STATE_DIR",
   "#isShuttingDown",
+  "publicApiTokenForNativeAction",
+  "authTokenConfigured",
+  "probeExternalApiAuth",
+]);
+requireTokens("electron/main/external-api-policy.ts", [
+  "isRestrictedNetworkAddress",
+  "lookup:",
+  "destination.address",
+  "redirects are not allowed",
+]);
+requireTokens("electron/main/document-capabilities.ts", [
+  "DocumentPathCapabilities",
+  "realpathSync.native",
+  "Workspace path is not authorized",
+]);
+requireTokens("electron/main/index.ts", [
+  "authorize_workspace_document_path",
+  "requireAuthorizedDocumentPath",
+  "copy_public_api_token",
 ]);
 requireTokens("electron/main/service-ipc.ts", [
   "createConnection",
@@ -197,7 +216,8 @@ requireTokens("electron/main/service-ipc.ts", [
   "protocolVersion",
   "authToken",
   "\\\\\\\\.\\\\pipe\\\\shipflow-",
-  "/tmp/shipflow-",
+  "safeNonce",
+  "runtimeDirectory",
 ]);
 forbidTokens("electron/main/service-agent.ts", [
   "process.kill(config.processId)",
@@ -239,8 +259,39 @@ requireTokens("electron/main/workspace-host.ts", [
   "requestTimeoutMs",
   "clearTimeout(pending.timeout)",
   "child.stdin.write(payload",
+  "Buffer.byteLength(payload)",
 ]);
 forbidTokens("electron/main/workspace-host.ts", ["--service-url"]);
+requireTokens("apps/workspace-host/src/main.rs", [
+  "MAX_FRAME_BYTES + 1",
+  "frame_too_large",
+]);
+requireTokens("crates/shipflow-workspace-engine/src/import_engine.rs", [
+  "MAX_IMPORT_SOURCE_IDS",
+  "MAX_IMPORT_SOURCE_ID_BYTES",
+  "MAX_IMPORT_REQUEST_BYTES",
+  "MAX_IMPORT_JOB_ITEMS",
+]);
+requireTokens("crates/shipflow-workspace-engine/src/storage.rs", [
+  "RowOwnershipConflict",
+  "item.attempt_count < max_attempts",
+]);
+requireTokens("crates/shipflow-core/src/upstream.rs", [
+  "MAX_UPSTREAM_RESPONSE_BYTES",
+  "read_response_text_limited",
+]);
+requireTokens("crates/shipflow-core/src/parser.rs", [
+  "MAX_TRACKING_TABLE_ROWS",
+  "to_ascii_uppercase",
+  "to_ascii_lowercase",
+]);
+requireTokens("src/features/workspace/engine-sync.ts", [
+  "WorkspaceEngineSyncCoordinator",
+  "latestRequestId",
+]);
+requireTokens("src/features/workspace/useWorkspaceSheetViewModel.ts", [
+  "workspaceDocumentGeneration",
+]);
 requireTokens("electron/main/pod-preview.ts", [
   "isAllowedPodHostname",
   "POD image source must use HTTPS.",
@@ -291,6 +342,9 @@ requireTokens("scripts/verify-electron-package.mjs", [
   "duckdb.dll",
   "app.asar",
   '"--verify", "--deep", "--strict", "--verbose=2"',
+  "verifyPackagedFileMatchesSource",
+  "Get-AuthenticodeSignature",
+  "SHIPFLOW_REQUIRE_WINDOWS_SIGNATURE",
 ]);
 requireTokens("scripts/verify-quality-gate.mjs", [
   "actions/workflows/",
@@ -310,6 +364,9 @@ for (const workflow of [
   requireTokens(workflow, ["node-version: 24", "npm run security:baseline"]);
   forbidTokens(workflow, ["tauri", "shipflow-tauri-runtime", "ShipFlow Service.app"]);
 }
+requireTokens(".github/workflows/build-updater-artifacts.yml", [
+  "SHIPFLOW_REQUIRE_WINDOWS_SIGNATURE",
+]);
 requireTokens(".github/workflows/quality.yml", [
   "npm run build",
   "npm run package:verify",
@@ -348,6 +405,7 @@ requireTokens(".github/workflows/build-windows-exe.yml", [
   'CSC_IDENTITY_AUTO_DISCOVERY: "true"',
   "npm run package:windows",
   "npm run package:verify",
+  "SHIPFLOW_REQUIRE_WINDOWS_SIGNATURE",
   "target/release/duckdb.dll",
 ]);
 forbidTokens(".github/workflows/build-windows-exe.yml", [

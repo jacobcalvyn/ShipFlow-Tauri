@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  copyPublicApiToken,
   configureApiService,
   getApiServiceStatus,
   loadSavedApiServiceConfig,
@@ -74,9 +75,11 @@ function areServiceConfigsEqual(left: ServiceConfig, right: ServiceConfig) {
     left.mode === right.mode &&
     left.port === right.port &&
     left.authToken === right.authToken &&
+    left.authTokenConfigured === right.authTokenConfigured &&
     left.trackingSource === right.trackingSource &&
     left.externalApiBaseUrl === right.externalApiBaseUrl &&
     left.externalApiAuthToken === right.externalApiAuthToken &&
+    left.externalApiAuthTokenConfigured === right.externalApiAuthTokenConfigured &&
     left.allowInsecureExternalApiHttp === right.allowInsecureExternalApiHttp &&
     left.keepRunningInTray === right.keepRunningInTray &&
     left.startAtLogin === right.startAtLogin &&
@@ -93,7 +96,7 @@ function normalizeServiceConfig(config: ServiceConfig): ServiceConfig {
     port: normalizedPort,
   };
 
-  if (!normalizedConfig.authToken.trim()) {
+  if (!normalizedConfig.authToken.trim() && !normalizedConfig.authTokenConfigured) {
     normalizedConfig.authToken = createServiceToken();
   }
 
@@ -339,8 +342,11 @@ export function useServiceSettingsController({
     async (nextConfig: ServiceConfig) => {
       try {
         const status = await configureApiService(nextConfig);
-        serviceConfigRef.current = nextConfig;
-        setServiceConfig(nextConfig);
+        const persistedConfig = normalizeServiceConfig(
+          (await loadSavedApiServiceConfig()) ?? nextConfig
+        );
+        serviceConfigRef.current = persistedConfig;
+        setServiceConfig(persistedConfig);
         setApiServiceStatus(status);
         if (status.status === "error") {
           showNotice({
@@ -436,28 +442,23 @@ export function useServiceSettingsController({
     [copyText, showNotice]
   );
 
-  const copyServiceToken = useCallback(
-    (token: string) => {
-      if (!token.trim()) {
-        return;
-      }
-
-      void copyText(token)
-        .then(() =>
+  const copyServiceToken = useCallback(() => {
+    void copyPublicApiToken()
+      .then((copied) => {
+        if (copied) {
           showNotice({
             tone: "success",
             message: "Token API Service berhasil disalin.",
-          })
-        )
-        .catch(() =>
-          showNotice({
-            tone: "error",
-            message: "Gagal menyalin token API Service.",
-          })
-        );
-    },
-    [copyText, showNotice]
-  );
+          });
+        }
+      })
+      .catch(() =>
+        showNotice({
+          tone: "error",
+          message: "Gagal menyalin token API Service.",
+        })
+      );
+  }, [showNotice]);
 
   const testExternalTrackingSource = useCallback(async (config: ServiceConfig) => {
     return testExternalTrackingSourceCommand(config);

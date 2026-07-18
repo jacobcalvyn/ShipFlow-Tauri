@@ -576,13 +576,14 @@ where
     where
         F: FnMut(WorkspaceEngineEvent),
     {
+        let max_attempts = self.config.retry_policy.max_attempts;
         let mut import_engine = ImportEngine::with_blob_root_path(
             &mut self.store,
             &mut self.import_source,
             self.blob_root_path.clone(),
         );
         Ok(import_engine
-            .retry_failed_and_run_with_progress(job_id, |event| {
+            .retry_failed_and_run_with_progress(job_id, max_attempts, |event| {
                 on_event(WorkspaceEngineEvent::ImportJobProgress(event));
             })
             .await?)
@@ -598,7 +599,7 @@ where
             &mut self.import_source,
             self.blob_root_path.clone(),
         );
-        Ok(import_engine.preview_import_source(kind, ids).await)
+        Ok(import_engine.preview_import_source(kind, ids).await?)
     }
 
     fn ensure_sheet_exists(&mut self, sheet_id: &str) -> WorkspaceEngineRuntimeResult<()> {

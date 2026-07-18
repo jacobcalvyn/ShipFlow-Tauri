@@ -123,6 +123,19 @@ impl LocalIpcListener {
                 "ShipFlow IPC endpoint is required.",
             ));
         }
+        let parent = path.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "ShipFlow IPC endpoint must have a parent directory.",
+            )
+        })?;
+        let parent_metadata = std::fs::metadata(parent)?;
+        if !parent_metadata.is_dir() || parent_metadata.permissions().mode() & 0o077 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "ShipFlow IPC directory must be private to the current user.",
+            ));
+        }
         if let Ok(metadata) = std::fs::symlink_metadata(&path) {
             if !metadata.file_type().is_socket() {
                 return Err(io::Error::new(
@@ -342,14 +355,20 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn unix_transport_round_trips_a_versioned_frame() {
-        let endpoint = std::path::Path::new("/tmp").join(format!(
-            "shipflow-ipc-test-{}-{}.sock",
+        use std::os::unix::fs::PermissionsExt;
+
+        let runtime_dir = std::path::Path::new("/tmp").join(format!(
+            "sf-ipc-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock should be valid")
                 .as_nanos()
         ));
+        std::fs::create_dir_all(&runtime_dir).expect("runtime directory should be created");
+        std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o700))
+            .expect("runtime directory should be private");
+        let endpoint = runtime_dir.join("service.sock");
         let endpoint_string = endpoint.to_string_lossy().into_owned();
         let listener =
             super::LocalIpcListener::bind(&endpoint_string).expect("listener should bind");
@@ -390,6 +409,27 @@ mod tests {
             true
         );
         server.await.expect("server task should finish");
+        std::fs::remove_dir_all(runtime_dir).expect("runtime directory should be removed");
+    }
+
+    #[tokio::test]
+    async fn read_json_frame_rejects_oversized_payloads() {
+        let (mut writer, mut reader) = tokio::io::duplex(super::MAX_FRAME_BYTES + 2);
+        let write = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+
+            writer
+                .write_all(&vec![b'a'; super::MAX_FRAME_BYTES + 1])
+                .await
+                .expect("oversized payload should be written");
+        });
+
+        let error = super::read_json_frame::<_, serde_json::Value>(&mut reader)
+            .await
+            .expect_err("oversized frame should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        write.await.expect("writer task should finish");
     }
 
     #[cfg(windows)]

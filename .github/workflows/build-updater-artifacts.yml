@@ -76,6 +76,8 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "true"
         run: npm run ${{ matrix.package_script }}
       - name: Verify package contents
+        env:
+          SHIPFLOW_REQUIRE_WINDOWS_SIGNATURE: ${{ runner.os == 'Windows' }}
         run: npm run package:verify
       - name: Upload updater artifacts
         uses: actions/upload-artifact@v6

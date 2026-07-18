@@ -6,6 +6,7 @@ import { app, safeStorage } from "electron";
 import type { ApiServiceStatus, ServiceConfig } from "../../src/types";
 import type { ManagedServiceConnection } from "./workspace-host";
 import { appLogger } from "./app-logger";
+import { probeExternalApiAuth } from "./external-api-policy";
 import { buildServiceIpcEndpoint, requestServiceIpc } from "./service-ipc";
 
 type PersistedAgentConfig = {
@@ -77,16 +78,33 @@ function agentConfigPath() {
   return path.join(serviceStateDirectory(), "agent-config.json");
 }
 
-function serviceIpcEndpoint() {
+function serviceIpcIdentity() {
+  return createHash("sha256")
+    .update(app.getPath("userData"))
+    .digest("hex")
+    .slice(0, 20);
+}
+
+function serviceIpcRuntimeDirectory() {
+  const userIdentity = process.getuid?.() ?? process.env.USERNAME ?? "user";
+  const runtimeRoot = process.platform === "win32" ? "" : "/tmp";
+  return path.join(
+    runtimeRoot,
+    `shipflow-${userIdentity}-${serviceIpcIdentity().slice(0, 8)}`,
+  );
+}
+
+function createServiceIpcEndpoint(nonce: string, runtimeDirectory: string) {
   const override = process.env.SHIPFLOW_INTERNAL_IPC_ENDPOINT?.trim();
   if (override) {
     return override;
   }
-  const identity = createHash("sha256")
-    .update(app.getPath("userData"))
-    .digest("hex")
-    .slice(0, 20);
-  return buildServiceIpcEndpoint(process.platform, identity);
+  return buildServiceIpcEndpoint(
+    process.platform,
+    serviceIpcIdentity(),
+    nonce,
+    runtimeDirectory,
+  );
 }
 
 async function firstExistingPath(candidates: string[]) {
@@ -234,10 +252,12 @@ function asServiceConfig(config: PersistedAgentConfig): ServiceConfig {
     enabled: config.enabled,
     mode: config.mode,
     port: config.port,
-    authToken: config.publicApiToken,
+    authToken: "",
+    authTokenConfigured: Boolean(config.publicApiToken),
     trackingSource: config.trackingSource,
     externalApiBaseUrl: config.externalApiBaseUrl,
-    externalApiAuthToken: config.externalApiAuthToken,
+    externalApiAuthToken: "",
+    externalApiAuthTokenConfigured: Boolean(config.externalApiAuthToken),
     allowInsecureExternalApiHttp: config.allowInsecureExternalApiHttp,
     keepRunningInTray: config.keepRunningInTray,
     startAtLogin: config.startAtLogin,
@@ -256,21 +276,25 @@ function stoppedStatus(config: PersistedAgentConfig): ApiServiceStatus {
   };
 }
 
-function connectionFor(config: PersistedAgentConfig): ManagedServiceConnection {
+function connectionFor(
+  config: PersistedAgentConfig,
+  ipcEndpoint: string,
+): ManagedServiceConnection {
   return {
-    ipcEndpoint: serviceIpcEndpoint(),
+    ipcEndpoint,
     internalToken: config.internalToken,
   };
 }
 
 async function requestManagedService<T>(
   config: PersistedAgentConfig,
+  ipcEndpoint: string,
   method: string,
   params: unknown = {},
   timeoutMs = 2_000,
 ) {
   return requestServiceIpc<T>(
-    serviceIpcEndpoint(),
+    ipcEndpoint,
     config.internalToken,
     method,
     params,
@@ -280,13 +304,14 @@ async function requestManagedService<T>(
 
 async function readManagedServiceStatus(
   config: PersistedAgentConfig,
+  ipcEndpoint: string,
   timeoutMs = 2_000,
 ) {
   const status = await requestManagedService<{
     product?: unknown;
     service?: unknown;
     port?: unknown;
-  }>(config, "service.status", {}, timeoutMs);
+  }>(config, ipcEndpoint, "service.status", {}, timeoutMs);
   if (status.product !== "shipflow-service" || status.service !== "running") {
     throw new Error("The native IPC endpoint is not a running ShipFlow Service.");
   }
@@ -333,6 +358,19 @@ export class ServiceAgentManager {
   #child: ChildProcess | null = null;
   #shutdownPromise: Promise<void> | null = null;
   #isShuttingDown = false;
+  readonly #ipcRuntimeDirectory = serviceIpcRuntimeDirectory();
+  readonly #ipcEndpoint = createServiceIpcEndpoint(
+    randomBytes(16).toString("hex"),
+    this.#ipcRuntimeDirectory,
+  );
+
+  async #prepareIpcRuntime() {
+    if (process.platform === "win32" || process.env.SHIPFLOW_INTERNAL_IPC_ENDPOINT?.trim()) {
+      return;
+    }
+    await mkdir(this.#ipcRuntimeDirectory, { recursive: true, mode: 0o700 });
+    await chmod(this.#ipcRuntimeDirectory, 0o700);
+  }
 
   async loadConfig() {
     if (this.#config) {
@@ -349,6 +387,10 @@ export class ServiceAgentManager {
     return asServiceConfig(await this.loadConfig());
   }
 
+  async publicApiTokenForNativeAction() {
+    return (await this.loadConfig()).publicApiToken;
+  }
+
   async keepRunningInTray() {
     return (await this.loadConfig()).keepRunningInTray;
   }
@@ -360,6 +402,7 @@ export class ServiceAgentManager {
     if (this.#startPromise) {
       return this.#startPromise;
     }
+    await this.#prepareIpcRuntime();
     this.#startPromise = this.#ensureStarted();
     try {
       return await this.#startPromise;
@@ -374,7 +417,7 @@ export class ServiceAgentManager {
       return stoppedStatus(config);
     }
     try {
-      await readManagedServiceStatus(config);
+      await readManagedServiceStatus(config, this.#ipcEndpoint);
       return {
         status: "running",
         enabled: true,
@@ -399,10 +442,11 @@ export class ServiceAgentManager {
       enabled: frontendConfig.enabled,
       mode: frontendConfig.mode,
       port: frontendConfig.port,
-      publicApiToken: frontendConfig.authToken,
+      publicApiToken: frontendConfig.authToken.trim() || previous.publicApiToken,
       trackingSource: frontendConfig.trackingSource,
       externalApiBaseUrl: frontendConfig.externalApiBaseUrl,
-      externalApiAuthToken: frontendConfig.externalApiAuthToken,
+      externalApiAuthToken:
+        frontendConfig.externalApiAuthToken.trim() || previous.externalApiAuthToken,
       allowInsecureExternalApiHttp: frontendConfig.allowInsecureExternalApiHttp,
       keepRunningInTray: frontendConfig.keepRunningInTray,
       startAtLogin: frontendConfig.startAtLogin,
@@ -436,31 +480,21 @@ export class ServiceAgentManager {
   }
 
   async testExternalSource(frontendConfig: ServiceConfig) {
-    const baseUrl = frontendConfig.externalApiBaseUrl.trim().replace(/\/$/, "");
-    if (!baseUrl) {
+    const requestedBaseUrl = frontendConfig.externalApiBaseUrl.trim();
+    if (!requestedBaseUrl) {
       throw new Error("External API base URL is required.");
     }
-    const parsed = new URL(baseUrl);
-    if (
-      parsed.protocol !== "https:" &&
-      !(frontendConfig.allowInsecureExternalApiHttp && parsed.protocol === "http:")
-    ) {
-      throw new Error("External API must use HTTPS unless insecure HTTP is explicitly enabled.");
+    const storedConfig = await this.loadConfig();
+    const externalApiAuthToken =
+      frontendConfig.externalApiAuthToken.trim() || storedConfig.externalApiAuthToken;
+    if (!externalApiAuthToken) {
+      throw new Error("External API token is required.");
     }
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10_000);
-    let response: Response;
-    try {
-      response = await fetch(`${baseUrl}/v1/auth/check`, {
-        headers: { Authorization: `Bearer ${frontendConfig.externalApiAuthToken.trim()}` },
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
-    if (!response.ok) {
-      throw new Error(`External ShipFlow API returned HTTP ${response.status}.`);
-    }
+    const baseUrl = await probeExternalApiAuth(
+      requestedBaseUrl,
+      frontendConfig.allowInsecureExternalApiHttp,
+      externalApiAuthToken,
+    );
     return `External ShipFlow API is reachable at ${baseUrl}.`;
   }
 
@@ -492,8 +526,8 @@ export class ServiceAgentManager {
       throw new Error("ShipFlow Service is disabled.");
     }
     try {
-      await readManagedServiceStatus(config);
-      return connectionFor(config);
+      await readManagedServiceStatus(config, this.#ipcEndpoint);
+      return connectionFor(config, this.#ipcEndpoint);
     } catch {
       // No managed IPC endpoint is currently available.
     }
@@ -525,7 +559,7 @@ export class ServiceAgentManager {
         ...process.env,
         SHIPFLOW_SERVICE_TOKEN: config.publicApiToken,
         SHIPFLOW_INTERNAL_SERVICE_TOKEN: config.internalToken,
-        SHIPFLOW_INTERNAL_IPC_ENDPOINT: serviceIpcEndpoint(),
+        SHIPFLOW_INTERNAL_IPC_ENDPOINT: this.#ipcEndpoint,
         SHIPFLOW_EXTERNAL_API_BASE_URL:
           config.trackingSource === "externalApi" ? config.externalApiBaseUrl : "",
         SHIPFLOW_EXTERNAL_API_TOKEN:
@@ -567,8 +601,8 @@ export class ServiceAgentManager {
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 150));
       try {
-        await readManagedServiceStatus(config, 750);
-        return connectionFor(config);
+        await readManagedServiceStatus(config, this.#ipcEndpoint, 750);
+        return connectionFor(config, this.#ipcEndpoint);
       } catch {
         // Continue until the bounded startup deadline.
       }
@@ -581,7 +615,7 @@ export class ServiceAgentManager {
   async #stopManagedService(config: PersistedAgentConfig, requireStopped: boolean) {
     let managedServiceWasReachable = false;
     try {
-      await readManagedServiceStatus(config);
+      await readManagedServiceStatus(config, this.#ipcEndpoint);
       managedServiceWasReachable = true;
     } catch {
       // The managed Service is already stopped or the IPC endpoint is stale.
@@ -607,7 +641,13 @@ export class ServiceAgentManager {
 
     if (managedServiceWasReachable) {
       try {
-        await requestManagedService(config, "service.shutdown", {}, 3_000);
+        await requestManagedService(
+          config,
+          this.#ipcEndpoint,
+          "service.shutdown",
+          {},
+          3_000,
+        );
       } catch (error) {
         if (!this.#child || this.#child.killed) {
           if (requireStopped) {
@@ -627,7 +667,7 @@ export class ServiceAgentManager {
       while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 100));
         try {
-          await readManagedServiceStatus(config, 500);
+          await readManagedServiceStatus(config, this.#ipcEndpoint, 500);
         } catch {
           break;
         }

@@ -10,9 +10,41 @@ import { WorkspaceState } from "./types";
 
 export type WorkspaceEngineSyncMode = "replace" | "seed";
 
-type WorkspaceEngineSyncOptions = {
+export type WorkspaceEngineSyncOptions = {
   mode?: WorkspaceEngineSyncMode;
 };
+
+type WorkspaceEngineSyncOperation = (
+  workspaceState: WorkspaceState,
+  options?: WorkspaceEngineSyncOptions
+) => Promise<void>;
+
+export class WorkspaceEngineSyncCoordinator {
+  private queue: Promise<void> = Promise.resolve();
+  private latestRequestId = 0;
+
+  constructor(
+    private readonly syncOperation: WorkspaceEngineSyncOperation =
+      syncWorkspaceStateToEngine
+  ) {}
+
+  async run(
+    workspaceState: WorkspaceState,
+    options: WorkspaceEngineSyncOptions = {}
+  ) {
+    const requestId = this.latestRequestId + 1;
+    this.latestRequestId = requestId;
+    const operation = this.queue
+      .catch(() => undefined)
+      .then(() => this.syncOperation(workspaceState, options));
+    this.queue = operation.then(
+      () => undefined,
+      () => undefined
+    );
+    await operation;
+    return requestId === this.latestRequestId;
+  }
+}
 
 export async function syncWorkspaceStateToEngine(
   workspaceState: WorkspaceState,

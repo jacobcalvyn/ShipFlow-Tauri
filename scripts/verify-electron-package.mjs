@@ -1,9 +1,27 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 
 const packageRoot = path.resolve(process.argv[2] ?? "release");
 const errors = [];
+const requireWindowsSignature =
+  process.env.SHIPFLOW_REQUIRE_WINDOWS_SIGNATURE?.trim().toLowerCase() === "true";
+
+function sha256(filePath) {
+  return createHash("sha256").update(readFileSync(filePath)).digest("hex");
+}
+
+function verifyPackagedFileMatchesSource(fileName, packagedPath) {
+  const sourcePath = path.resolve("target", "release", fileName);
+  if (!existsSync(sourcePath)) {
+    errors.push(`Missing native build provenance source: ${sourcePath}.`);
+    return;
+  }
+  if (sha256(packagedPath) !== sha256(sourcePath)) {
+    errors.push(`Packaged native resource does not match its build output: ${fileName}.`);
+  }
+}
 
 function walk(directory, depth = 0) {
   if (!existsSync(directory) || depth > 7) {
@@ -48,6 +66,12 @@ if (!nativeDirectory) {
     if (process.platform !== "win32" && (statSync(filePath).mode & 0o111) === 0) {
       errors.push(`Packaged native resource is not executable: ${fileName}.`);
     }
+    if (
+      process.platform === "win32" &&
+      (!requireWindowsSignature || !fileName.toLowerCase().endsWith(".exe"))
+    ) {
+      verifyPackagedFileMatchesSource(fileName, filePath);
+    }
   }
 }
 
@@ -70,6 +94,47 @@ if (process.platform === "darwin") {
     if (verification.status !== 0) {
       const detail = `${verification.stdout ?? ""}${verification.stderr ?? ""}`.trim();
       errors.push(`Invalid macOS application signature: ${detail || "codesign failed"}.`);
+    }
+  }
+}
+
+if (process.platform === "win32" && requireWindowsSignature) {
+  const executablePaths = entries.filter(
+    (entry) => statSync(entry).isFile() && entry.toLowerCase().endsWith(".exe"),
+  );
+  const nativeExecutables = executablePaths.filter((entry) =>
+    entry.split(path.sep).join("/").toLowerCase().includes("/resources/native/"),
+  );
+  const installers = executablePaths.filter(
+    (entry) => path.dirname(entry) === packageRoot,
+  );
+  const requiredSignedPaths = [...new Set([...nativeExecutables, ...installers])];
+  if (nativeExecutables.length < 2 || installers.length === 0) {
+    errors.push("Missing Windows executables required for Authenticode verification.");
+  } else {
+    const verification = spawnSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$paths = ConvertFrom-Json $env:SHIPFLOW_SIGNATURE_PATHS; " +
+          "$invalid = @($paths | ForEach-Object { " +
+          "$signature = Get-AuthenticodeSignature -LiteralPath $_; " +
+          "if ($signature.Status -ne 'Valid') { \"$_ => $($signature.Status)\" } }); " +
+          "if ($invalid.Count -gt 0) { $invalid | Write-Error; exit 1 }",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          SHIPFLOW_SIGNATURE_PATHS: JSON.stringify(requiredSignedPaths),
+        },
+      },
+    );
+    if (verification.status !== 0) {
+      const detail = `${verification.stdout ?? ""}${verification.stderr ?? ""}`.trim();
+      errors.push(`Invalid Windows Authenticode signature: ${detail || "verification failed"}.`);
     }
   }
 }

@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultWorkspaceState } from "./default-state";
-import { syncWorkspaceStateToEngine } from "./engine-sync";
+import {
+  syncWorkspaceStateToEngine,
+  WorkspaceEngineSyncCoordinator,
+} from "./engine-sync";
 import { updateActiveSheetInWorkspace } from "./actions";
 import {
   clearSheetRows,
@@ -26,6 +29,16 @@ const deleteSheetMock = vi.mocked(deleteSheet);
 const listEngineSheetsMock = vi.mocked(listEngineSheets);
 const querySheetRowsMock = vi.mocked(querySheetRows);
 const upsertSheetRowsMock = vi.mocked(upsertSheetRows);
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
 
 describe("workspace engine sync", () => {
   beforeEach(() => {
@@ -243,5 +256,34 @@ describe("workspace engine sync", () => {
 
     expect(listEngineSheetsMock).not.toHaveBeenCalled();
     expect(deleteSheetMock).not.toHaveBeenCalled();
+  });
+
+  it("serializes document syncs and only commits the latest request", async () => {
+    const firstWorkspace = createDefaultWorkspaceState();
+    const secondWorkspace = {
+      ...createDefaultWorkspaceState(),
+      workspaceId: "replacement-workspace",
+    };
+    const firstSync = createDeferred<void>();
+    const secondSync = createDeferred<void>();
+    const syncOperation = vi
+      .fn()
+      .mockReturnValueOnce(firstSync.promise)
+      .mockReturnValueOnce(secondSync.promise);
+    const coordinator = new WorkspaceEngineSyncCoordinator(syncOperation);
+
+    const firstResult = coordinator.run(firstWorkspace);
+    const secondResult = coordinator.run(secondWorkspace);
+
+    await vi.waitFor(() => expect(syncOperation).toHaveBeenCalledTimes(1));
+    expect(syncOperation).toHaveBeenNthCalledWith(1, firstWorkspace, {});
+
+    firstSync.resolve(undefined);
+    await expect(firstResult).resolves.toBe(false);
+    await vi.waitFor(() => expect(syncOperation).toHaveBeenCalledTimes(2));
+    expect(syncOperation).toHaveBeenNthCalledWith(2, secondWorkspace, {});
+
+    secondSync.resolve(undefined);
+    await expect(secondResult).resolves.toBe(true);
   });
 });

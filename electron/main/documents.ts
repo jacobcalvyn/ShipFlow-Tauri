@@ -10,7 +10,7 @@ import type {
 
 const MAX_RECOVERY_FILES = 8;
 
-function normalizeWorkspacePath(input: string) {
+export function resolveWorkspaceDocumentPath(input: string) {
   const trimmed = input.trim();
   if (!trimmed) {
     throw new Error("Workspace file path is required.");
@@ -94,7 +94,7 @@ async function createRecoverySnapshot(targetPath: string) {
 export async function readWorkspaceDocument(
   inputPath: string,
 ): Promise<WorkspaceDocumentReadResult> {
-  const targetPath = normalizeWorkspacePath(inputPath);
+  const targetPath = resolveWorkspaceDocumentPath(inputPath);
   const document = JSON.parse(await readFile(targetPath, "utf8")) as WorkspaceDocumentFile;
   validateDocument(document);
   return { path: targetPath, document };
@@ -105,7 +105,7 @@ export async function writeWorkspaceDocument(
   document: WorkspaceDocumentFile,
 ): Promise<WorkspaceDocumentWriteResult> {
   validateDocument(document);
-  const targetPath = normalizeWorkspacePath(inputPath);
+  const targetPath = resolveWorkspaceDocumentPath(inputPath);
   await createRecoverySnapshot(targetPath);
   await replaceFileAtomically(targetPath, `${JSON.stringify(document, null, 2)}\n`);
   return { path: targetPath, savedAt: document.savedAt };
@@ -128,7 +128,7 @@ export async function writeCsvExport(
 export async function listWorkspaceRecovery(
   inputPath: string,
 ): Promise<WorkspaceRecoverySnapshot[]> {
-  const targetPath = normalizeWorkspacePath(inputPath);
+  const targetPath = resolveWorkspaceDocumentPath(inputPath);
   const snapshots = await recoveryPaths(targetPath);
   const results = await Promise.all(
     snapshots.reverse().map(async (snapshotPath) => ({
@@ -138,4 +138,3 @@ export async function listWorkspaceRecovery(
   );
   return results;
 }
-

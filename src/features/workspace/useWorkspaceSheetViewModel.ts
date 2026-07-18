@@ -73,7 +73,8 @@ export function useWorkspaceSheetViewModel(
   activeSheet: SheetState,
   activeSheetId?: string,
   workspaceEngineSyncGeneration = 0,
-  workspaceEngineCacheGeneration = workspaceEngineSyncGeneration
+  workspaceEngineCacheGeneration = workspaceEngineSyncGeneration,
+  workspaceDocumentGeneration = workspaceEngineSyncGeneration
 ) {
   const legacyNonEmptyRows = useMemo(
     () => getNonEmptyRows(activeSheet.rows),
@@ -234,8 +235,14 @@ export function useWorkspaceSheetViewModel(
     [rustValueOptionsQuery, workspaceEngineSyncGeneration]
   );
   const rustSheetRowsCacheKey = useMemo(
-    () => (rustSheetRowsQuery ? JSON.stringify(rustSheetRowsQuery) : null),
-    [rustSheetRowsQuery]
+    () =>
+      rustSheetRowsQuery
+        ? JSON.stringify({
+            query: rustSheetRowsQuery,
+            workspaceDocumentGeneration,
+          })
+        : null,
+    [rustSheetRowsQuery, workspaceDocumentGeneration]
   );
   const rustSheetRowsQueryKey = useMemo(
     () =>

@@ -93,7 +93,8 @@ export function useWorkspaceAppController(): ComponentProps<
     workspaceState.activeSheetId,
     surface.workspaceEngineSyncGeneration +
       workspaceEngineActiveSheetMutationRevision,
-    workspaceEngineActiveSheetMutationRevision
+    workspaceEngineActiveSheetMutationRevision,
+    surface.workspaceEngineSyncGeneration
   );
   const interactionRefs = useWorkspaceInteractionRefs();
   const interactionRuntime = useWorkspaceInteractionRuntimeController({

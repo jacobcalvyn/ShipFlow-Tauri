@@ -11,6 +11,8 @@ use crate::model::{
 };
 use crate::upstream::resolve_pos_href;
 
+const MAX_TRACKING_TABLE_ROWS: usize = 10_000;
+
 #[derive(Default)]
 struct ProsesAntaranDetail {
     petugas: Option<String>,
@@ -26,6 +28,17 @@ pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackRespons
     let table_selector = Selector::parse("table").expect("valid selector");
     let img_selector = Selector::parse("img").expect("valid selector");
     let a_selector = Selector::parse("a").expect("valid selector");
+
+    if document
+        .select(&tr_selector)
+        .take(MAX_TRACKING_TABLE_ROWS + 1)
+        .count()
+        > MAX_TRACKING_TABLE_ROWS
+    {
+        return Err(TrackingError::Upstream(format!(
+            "Tracking response exceeds {MAX_TRACKING_TABLE_ROWS} table rows."
+        )));
+    }
 
     let mut header = ShipmentHeader::default();
     let mut origin = OriginDetail::default();
@@ -518,7 +531,7 @@ fn parse_sla_from_nomor_kiriman(raw: &str) -> PerformanceDetail {
     }
 
     let inside = &trimmed[start + 1..end];
-    let upper = inside.to_uppercase();
+    let upper = inside.to_ascii_uppercase();
     let Some(sla_pos) = upper.find("SLA :") else {
         return PerformanceDetail::default();
     };
@@ -699,7 +712,7 @@ fn parse_status_akhir(raw: &str) -> StatusAkhirParts {
 
     let mut location = None;
     let rem_after_di = rem_after_di.trim_start();
-    let rem_lower = rem_after_di.to_lowercase();
+    let rem_lower = rem_after_di.to_ascii_lowercase();
 
     let mut after_location = if rem_lower.starts_with("oleh ") {
         &rem_after_di["oleh ".len()..]
@@ -741,7 +754,7 @@ fn parse_status_akhir(raw: &str) -> StatusAkhirParts {
         }
     }
 
-    let lower_after = after_location.to_lowercase();
+    let lower_after = after_location.to_ascii_lowercase();
     if let Some(idx_tanggal) = lower_after.find("tanggal") {
         let after = &after_location[idx_tanggal..];
         let (_, after_colon) = after.split_once(':').unwrap_or(("", ""));
@@ -1372,7 +1385,7 @@ mod tests {
     use serde_json::json;
     use sha2::{Digest, Sha256};
 
-    use super::parse_tracking_html;
+    use super::{parse_tracking_html, MAX_TRACKING_TABLE_ROWS};
     use crate::model::TrackingError;
 
     const SAMPLE_HTML: &str = include_str!("../tests/fixtures/pos_tracking_sample.html");
@@ -1471,6 +1484,40 @@ mod tests {
             .expect_err("invalid numeric values should fail loudly");
 
         assert!(matches!(error, TrackingError::Upstream(_)));
+    }
+
+    #[test]
+    fn parse_tracking_html_handles_unicode_before_ascii_markers_without_panicking() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P1 [ΐ SLA :é]</td></tr>
+              <tr><td>Status Akhir</td><td>DELIVERED di X İ oleh é</td></tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("unicode text must not invalidate byte offsets");
+
+        assert_eq!(response.detail.header.nomor_kiriman.as_deref(), Some("P1"));
+        assert_eq!(response.status_akhir.status.as_deref(), Some("DELIVERED"));
+        assert_eq!(response.status_akhir.location.as_deref(), Some("X İ"));
+        assert_eq!(response.status_akhir.officer_name.as_deref(), None);
+    }
+
+    #[test]
+    fn parse_tracking_html_rejects_excessive_table_cardinality() {
+        let mut html = String::from("<table>");
+        for _ in 0..=MAX_TRACKING_TABLE_ROWS {
+            html.push_str("<tr><td>A</td><td>B</td></tr>");
+        }
+        html.push_str("</table>");
+
+        let error = parse_tracking_html("https://example.test", &html)
+            .expect_err("oversized table cardinality must be rejected");
+
+        assert!(
+            matches!(error, TrackingError::Upstream(message) if message.contains("table rows"))
+        );
     }
 
     #[test]

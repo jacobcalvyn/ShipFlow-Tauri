@@ -128,7 +128,15 @@ pub enum WorkspaceStoreError {
     Sqlite(rusqlite::Error),
     Json(serde_json::Error),
     MissingImportJob(String),
-    InvalidValue { field: &'static str, value: String },
+    RowOwnershipConflict {
+        row_id: String,
+        existing_sheet_id: String,
+        requested_sheet_id: String,
+    },
+    InvalidValue {
+        field: &'static str,
+        value: String,
+    },
 }
 
 impl Display for WorkspaceStoreError {
@@ -137,6 +145,14 @@ impl Display for WorkspaceStoreError {
             Self::Sqlite(error) => write!(formatter, "sqlite error: {error}"),
             Self::Json(error) => write!(formatter, "json error: {error}"),
             Self::MissingImportJob(job_id) => write!(formatter, "missing import job: {job_id}"),
+            Self::RowOwnershipConflict {
+                row_id,
+                existing_sheet_id,
+                requested_sheet_id,
+            } => write!(
+                formatter,
+                "row {row_id} belongs to sheet {existing_sheet_id}, not {requested_sheet_id}"
+            ),
             Self::InvalidValue { field, value } => {
                 write!(formatter, "invalid {field} value: {value}")
             }
@@ -548,6 +564,24 @@ impl SqliteWorkspaceStore {
     }
 
     pub fn upsert_sheet_row(&mut self, input: &UpsertSheetRowInput) -> WorkspaceStoreResult<()> {
+        let existing_sheet_id = self
+            .connection
+            .query_row(
+                "SELECT sheet_id FROM sheet_rows WHERE id = ?1",
+                params![input.row_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if let Some(existing_sheet_id) = existing_sheet_id {
+            if existing_sheet_id != input.sheet_id {
+                return Err(WorkspaceStoreError::RowOwnershipConflict {
+                    row_id: input.row_id.clone(),
+                    existing_sheet_id,
+                    requested_sheet_id: input.sheet_id.clone(),
+                });
+            }
+        }
+
         let now = now_utc_text();
         self.connection.execute(
             r#"
@@ -1841,6 +1875,7 @@ impl SqliteWorkspaceStore {
     pub fn retry_import_job_failed(
         &mut self,
         job_id: &str,
+        max_attempts: u32,
     ) -> WorkspaceStoreResult<ImportRetryTargets> {
         let Some(detail) = self.get_import_job(job_id)? else {
             return Err(WorkspaceStoreError::MissingImportJob(job_id.to_string()));
@@ -1848,11 +1883,9 @@ impl SqliteWorkspaceStore {
         let mut retry_targets = ImportRetryTargets::default();
         let now = now_utc_text();
 
-        for item in detail
-            .items
-            .iter()
-            .filter(|item| item.status == ImportJobItemStatus::Failed)
-        {
+        for item in detail.items.iter().filter(|item| {
+            item.status == ImportJobItemStatus::Failed && item.attempt_count < max_attempts
+        }) {
             match item.source_item_kind {
                 ImportSourceItemKind::ManifestBag => retry_targets
                     .manifest_bag_ids
@@ -2968,6 +3001,67 @@ mod tests {
     }
 
     #[test]
+    fn sheet_row_upsert_rejects_cross_sheet_row_reassignment() {
+        let mut store = prepared_store();
+        store
+            .create_sheet(&CreateSheetInput {
+                sheet_id: "sheet-2".to_string(),
+                workspace_id: "workspace-1".to_string(),
+                name: "Second".to_string(),
+                position: 1,
+            })
+            .expect("second sheet is created");
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "shared-row-id".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 0,
+                display_tracking_id: "PORIGINAL".to_string(),
+                lookup_tracking_id: "PORIGINAL".to_string(),
+                row_status: SheetRowStatus::Loaded,
+                error_message: None,
+            })
+            .expect("source row is stored");
+
+        let error = store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "shared-row-id".to_string(),
+                sheet_id: "sheet-2".to_string(),
+                position: 0,
+                display_tracking_id: "PATTACKER".to_string(),
+                lookup_tracking_id: "PATTACKER".to_string(),
+                row_status: SheetRowStatus::Empty,
+                error_message: None,
+            })
+            .expect_err("cross-sheet row reassignment is rejected");
+
+        assert!(matches!(
+            error,
+            WorkspaceStoreError::RowOwnershipConflict {
+                row_id,
+                existing_sheet_id,
+                requested_sheet_id,
+            } if row_id == "shared-row-id"
+                && existing_sheet_id == "sheet-1"
+                && requested_sheet_id == "sheet-2"
+        ));
+        assert!(store
+            .sheet_row_belongs_to_sheet("shared-row-id", "sheet-1")
+            .expect("source ownership is queried"));
+        assert!(!store
+            .sheet_row_belongs_to_sheet("shared-row-id", "sheet-2")
+            .expect("target ownership is queried"));
+        assert_eq!(
+            store
+                .get_sheet_row("shared-row-id")
+                .expect("row lookup succeeds")
+                .expect("row still exists")
+                .display_tracking_id,
+            "PORIGINAL"
+        );
+    }
+
+    #[test]
     fn conditional_tracking_updates_do_not_touch_reused_row_ids_with_new_lookup() {
         let mut store = prepared_store();
 
@@ -4008,7 +4102,7 @@ mod tests {
         assert_eq!(detail.summary.status, ImportJobStatus::Running);
 
         let retry_targets = store
-            .retry_import_job_failed("job-1")
+            .retry_import_job_failed("job-1", 3)
             .expect("failed items become retry targets");
         assert!(retry_targets.source_item_ids.is_empty());
         assert_eq!(retry_targets.manifest_bag_ids, vec!["PID99429465"]);
@@ -4025,6 +4119,40 @@ mod tests {
         assert_eq!(retried_item.status, ImportJobItemStatus::Pending);
         assert_eq!(retried_item.error_message, None);
         assert!(retried_item.sheet_row_ids.is_empty());
+    }
+
+    #[test]
+    fn import_retry_does_not_requeue_items_at_attempt_limit() {
+        let mut store = prepared_store();
+        seed_import_job_with_items(
+            &mut store,
+            "job-at-limit",
+            &[("item-1", "PID99429465", ImportSourceItemKind::Bag)],
+        );
+        for attempt in 1..=3 {
+            store
+                .update_import_job_item_status(&UpdateImportJobItemStatusInput {
+                    item_id: "item-1".to_string(),
+                    status: ImportJobItemStatus::Failed,
+                    tracking_ids: vec![],
+                    error_message: Some(format!("attempt {attempt} failed")),
+                })
+                .expect("failed attempt is recorded");
+        }
+
+        let targets = store
+            .retry_import_job_failed("job-at-limit", 3)
+            .expect("retry selection succeeds");
+        let detail = store
+            .get_import_job("job-at-limit")
+            .expect("job loads")
+            .expect("job exists");
+
+        assert!(targets.source_item_ids.is_empty());
+        assert_eq!(detail.items[0].status, ImportJobItemStatus::Failed);
+        assert_eq!(detail.items[0].attempt_count, 3);
+        assert_eq!(detail.summary.failed_count, 1);
+        assert_eq!(detail.summary.pending_count, 0);
     }
 
     #[test]

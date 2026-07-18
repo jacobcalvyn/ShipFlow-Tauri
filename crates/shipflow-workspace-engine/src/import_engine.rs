@@ -23,6 +23,10 @@ use crate::storage::{
 use crate::tracking::resolve_tracking_id;
 
 const IMPORT_SOURCE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(30);
+pub const MAX_IMPORT_SOURCE_IDS: usize = 10_000;
+pub const MAX_IMPORT_JOB_ITEMS: usize = 100_000;
+pub const MAX_IMPORT_SOURCE_ID_BYTES: usize = 64;
+pub const MAX_IMPORT_REQUEST_BYTES: usize = 1024 * 1024;
 
 pub trait ImportLookupSource {
     fn fetch_bag<'a>(
@@ -72,6 +76,7 @@ pub enum ImportEngineError {
     MissingJob(String),
     Json(serde_json::Error),
     Blob(BlobStoreError),
+    InvalidInput(String),
 }
 
 impl Display for ImportEngineError {
@@ -81,6 +86,7 @@ impl Display for ImportEngineError {
             Self::MissingJob(job_id) => write!(formatter, "missing import job: {job_id}"),
             Self::Json(error) => write!(formatter, "json error: {error}"),
             Self::Blob(error) => write!(formatter, "{error}"),
+            Self::InvalidInput(message) => formatter.write_str(message),
         }
     }
 }
@@ -154,7 +160,7 @@ where
         &mut self,
         plan: &CreateImportJobPlan,
     ) -> ImportEngineResult<ImportJobDetail> {
-        let source_ids = dedupe_non_empty(plan.ids.iter().map(String::as_str));
+        let source_ids = validate_import_source_ids(&plan.ids)?;
         if plan.mode == ImportMode::Replace {
             self.store.clear_sheet_rows(&plan.sheet_id)?;
         }
@@ -239,20 +245,22 @@ where
     pub async fn retry_failed_and_run(
         &mut self,
         job_id: &str,
+        max_attempts: u32,
     ) -> ImportEngineResult<ImportJobDetail> {
-        self.retry_failed_and_run_with_progress(job_id, |_| {})
+        self.retry_failed_and_run_with_progress(job_id, max_attempts, |_| {})
             .await
     }
 
     pub async fn retry_failed_and_run_with_progress<F>(
         &mut self,
         job_id: &str,
+        max_attempts: u32,
         on_progress: F,
     ) -> ImportEngineResult<ImportJobDetail>
     where
         F: FnMut(ImportJobProgressEvent),
     {
-        self.store.retry_import_job_failed(job_id)?;
+        self.store.retry_import_job_failed(job_id, max_attempts)?;
         self.run_job_with_progress(job_id, on_progress).await
     }
 
@@ -260,8 +268,8 @@ where
         &mut self,
         kind: ImportKind,
         ids: &[String],
-    ) -> ImportSourcePreviewResult {
-        let source_ids = dedupe_non_empty(ids.iter().map(String::as_str));
+    ) -> ImportEngineResult<ImportSourcePreviewResult> {
+        let source_ids = validate_import_source_ids(ids)?;
 
         match kind {
             ImportKind::Bag => self.preview_bag_sources(&source_ids).await,
@@ -269,7 +277,10 @@ where
         }
     }
 
-    async fn preview_bag_sources(&mut self, bag_ids: &[String]) -> ImportSourcePreviewResult {
+    async fn preview_bag_sources(
+        &mut self,
+        bag_ids: &[String],
+    ) -> ImportEngineResult<ImportSourcePreviewResult> {
         let mut source_items = Vec::new();
         let mut responses = Vec::new();
         let mut tracking_ids = Vec::new();
@@ -278,7 +289,7 @@ where
             match self.fetch_bag_with_timeout(bag_id).await {
                 Ok(response) => {
                     let bag_tracking_ids = extract_bag_tracking_ids(&response);
-                    extend_unique(&mut tracking_ids, &bag_tracking_ids);
+                    extend_unique_bounded(&mut tracking_ids, &bag_tracking_ids)?;
                     source_items.push(preview_item(
                         bag_id,
                         ImportSourceItemKind::Bag,
@@ -300,19 +311,19 @@ where
             }
         }
 
-        ImportSourcePreviewResult {
+        Ok(ImportSourcePreviewResult {
             kind: ImportKind::Bag,
             source_items,
             manifest_bags: Vec::new(),
             tracking_ids,
             raw_response: stringify_responses(&responses),
-        }
+        })
     }
 
     async fn preview_manifest_sources(
         &mut self,
         manifest_ids: &[String],
-    ) -> ImportSourcePreviewResult {
+    ) -> ImportEngineResult<ImportSourcePreviewResult> {
         let mut source_items = Vec::new();
         let mut manifest_responses = Vec::new();
         let mut manifest_bag_ids = Vec::new();
@@ -321,7 +332,7 @@ where
             match self.fetch_manifest_with_timeout(manifest_id).await {
                 Ok(response) => {
                     let bag_ids = extract_manifest_bag_ids(&response);
-                    extend_unique(&mut manifest_bag_ids, &bag_ids);
+                    extend_unique_bounded(&mut manifest_bag_ids, &bag_ids)?;
                     source_items.push(preview_item(
                         manifest_id,
                         ImportSourceItemKind::Manifest,
@@ -349,7 +360,7 @@ where
             match self.fetch_bag_with_timeout(bag_id).await {
                 Ok(response) => {
                     let bag_tracking_ids = extract_bag_tracking_ids(&response);
-                    extend_unique(&mut tracking_ids, &bag_tracking_ids);
+                    extend_unique_bounded(&mut tracking_ids, &bag_tracking_ids)?;
                     manifest_bags.push(preview_item(
                         bag_id,
                         ImportSourceItemKind::ManifestBag,
@@ -370,13 +381,13 @@ where
             }
         }
 
-        ImportSourcePreviewResult {
+        Ok(ImportSourcePreviewResult {
             kind: ImportKind::Manifest,
             source_items,
             manifest_bags,
             tracking_ids,
             raw_response: stringify_responses(&manifest_responses),
-        }
+        })
     }
 
     async fn fetch_bag_with_timeout(
@@ -444,6 +455,25 @@ where
                         .iter()
                         .filter_map(|manifest_item| manifest_item.nomor_kantung.as_deref()),
                 );
+                let existing_item_count = self
+                    .store
+                    .get_import_job(job_id)?
+                    .ok_or_else(|| ImportEngineError::MissingJob(job_id.to_string()))?
+                    .items
+                    .len();
+                if existing_item_count.saturating_add(bag_ids.len()) > MAX_IMPORT_JOB_ITEMS {
+                    self.store
+                        .finish_import_attempt(&FinishImportAttemptInput {
+                            attempt_id: attempt_id.to_string(),
+                            status: ImportAttemptStatus::Failed,
+                            tracking_ids: Vec::new(),
+                            error_message: Some(format!(
+                                "Import job exceeds {MAX_IMPORT_JOB_ITEMS} items."
+                            )),
+                            raw_blob_id: None,
+                        })?;
+                    return Ok(());
+                }
                 let raw_blob_id = self.store_raw_response_blob(&response)?;
 
                 for bag_id in &bag_ids {
@@ -600,6 +630,43 @@ fn import_lookup_timeout_message() -> String {
     )
 }
 
+fn validate_import_source_ids(ids: &[String]) -> ImportEngineResult<Vec<String>> {
+    if ids.len() > MAX_IMPORT_SOURCE_IDS {
+        return Err(ImportEngineError::InvalidInput(format!(
+            "Import request exceeds {MAX_IMPORT_SOURCE_IDS} source IDs."
+        )));
+    }
+
+    let mut total_bytes = 0usize;
+    for id in ids {
+        let trimmed = id.trim();
+        if trimmed.len() > MAX_IMPORT_SOURCE_ID_BYTES {
+            return Err(ImportEngineError::InvalidInput(format!(
+                "Import source ID exceeds {MAX_IMPORT_SOURCE_ID_BYTES} bytes."
+            )));
+        }
+        if trimmed.chars().any(char::is_control) {
+            return Err(ImportEngineError::InvalidInput(
+                "Import source ID contains control characters.".to_string(),
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(trimmed.len());
+        if total_bytes > MAX_IMPORT_REQUEST_BYTES {
+            return Err(ImportEngineError::InvalidInput(format!(
+                "Import request exceeds {MAX_IMPORT_REQUEST_BYTES} bytes."
+            )));
+        }
+    }
+
+    let source_ids = dedupe_non_empty(ids.iter().map(String::as_str));
+    if source_ids.len() > MAX_IMPORT_SOURCE_IDS {
+        return Err(ImportEngineError::InvalidInput(format!(
+            "Import request exceeds {MAX_IMPORT_SOURCE_IDS} unique source IDs."
+        )));
+    }
+    Ok(source_ids)
+}
+
 fn dedupe_non_empty<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut result = Vec::new();
@@ -651,13 +718,19 @@ fn preview_item(
     }
 }
 
-fn extend_unique(target: &mut Vec<String>, values: &[String]) {
+fn extend_unique_bounded(target: &mut Vec<String>, values: &[String]) -> ImportEngineResult<()> {
     let mut seen = target.iter().cloned().collect::<HashSet<_>>();
     for value in values {
         if seen.insert(value.clone()) {
+            if target.len() >= MAX_IMPORT_JOB_ITEMS {
+                return Err(ImportEngineError::InvalidInput(format!(
+                    "Import preview exceeds {MAX_IMPORT_JOB_ITEMS} unique items."
+                )));
+            }
             target.push(value.clone());
         }
     }
+    Ok(())
 }
 
 fn stringify_responses<T>(responses: &[T]) -> String
@@ -683,6 +756,57 @@ mod tests {
     use crate::storage::{
         CreateSheetInput, CreateWorkspaceInput, SheetRowsQuery, SqliteWorkspaceStore,
     };
+
+    #[test]
+    fn import_job_rejects_excessive_source_ids_before_mutating_storage() {
+        let mut store = prepared_store();
+        let mut source = FakeImportSource::default();
+        let ids = (0..=MAX_IMPORT_SOURCE_IDS)
+            .map(|index| format!("PID{index}"))
+            .collect::<Vec<_>>();
+        let error = ImportEngine::new(&mut store, &mut source)
+            .create_job(&CreateImportJobPlan {
+                job_id: "oversized-job".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                kind: ImportKind::Bag,
+                ids,
+                mode: ImportMode::Replace,
+            })
+            .expect_err("oversized import is rejected");
+
+        assert!(matches!(
+            error,
+            ImportEngineError::InvalidInput(message) if message.contains("source IDs")
+        ));
+        assert!(store
+            .get_import_job("oversized-job")
+            .expect("job lookup succeeds")
+            .is_none());
+    }
+
+    #[test]
+    fn import_job_rejects_oversized_source_id_before_mutating_storage() {
+        let mut store = prepared_store();
+        let mut source = FakeImportSource::default();
+        let error = ImportEngine::new(&mut store, &mut source)
+            .create_job(&CreateImportJobPlan {
+                job_id: "oversized-id-job".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                kind: ImportKind::Bag,
+                ids: vec!["P".repeat(MAX_IMPORT_SOURCE_ID_BYTES + 1)],
+                mode: ImportMode::Replace,
+            })
+            .expect_err("oversized source ID is rejected");
+
+        assert!(matches!(
+            error,
+            ImportEngineError::InvalidInput(message) if message.contains("source ID")
+        ));
+        assert!(store
+            .get_import_job("oversized-id-job")
+            .expect("job lookup succeeds")
+            .is_none());
+    }
 
     #[tokio::test]
     async fn bag_import_preserves_dotted_ids_and_dedupes_sheet_rows() {
@@ -847,7 +971,7 @@ mod tests {
             );
 
             let second_run = engine
-                .retry_failed_and_run("job-1")
+                .retry_failed_and_run("job-1", 3)
                 .await
                 .expect("failed bag retries");
             assert_eq!(second_run.summary.total_count, 3);
@@ -973,6 +1097,7 @@ mod tests {
                     &["PID_OK".to_string(), "PID_FAIL".to_string()],
                 )
                 .await
+                .expect("bag preview succeeds")
         };
 
         assert_eq!(preview.kind, ImportKind::Bag);
@@ -1023,6 +1148,7 @@ mod tests {
             engine
                 .preview_import_source(ImportKind::Manifest, &["MAN1".to_string()])
                 .await
+                .expect("manifest preview succeeds")
         };
 
         assert_eq!(preview.kind, ImportKind::Manifest);

@@ -17,7 +17,7 @@ type ServiceSettingsWindowProps = {
   onGenerateServiceToken: () => void;
   onRegenerateServiceToken: () => void;
   onCopyServiceEndpoint: (endpoint: string) => void;
-  onCopyServiceToken: (token: string) => void;
+  onCopyServiceToken: () => void;
   onTestExternalTrackingSource: (config: ServiceConfig) => Promise<string>;
   onConfirmSettings: () => Promise<boolean> | boolean;
   onCancelSettings: () => void;
@@ -45,7 +45,6 @@ export function ServiceSettingsWindow({
   onCancelSettings,
   onShowNotice,
 }: ServiceSettingsWindowProps) {
-  const [isTokenVisible, setIsTokenVisible] = useState(false);
   const [isExternalApiTokenVisible, setIsExternalApiTokenVisible] = useState(false);
   const [isRegenerateTokenArmed, setIsRegenerateTokenArmed] = useState(false);
   const [isTestingExternalApi, setIsTestingExternalApi] = useState(false);
@@ -104,7 +103,6 @@ export function ServiceSettingsWindow({
   };
 
   const handleReset = () => {
-    setIsTokenVisible(false);
     setIsExternalApiTokenVisible(false);
     setIsRegenerateTokenArmed(false);
     setIsTestingExternalApi(false);
@@ -195,7 +193,11 @@ export function ServiceSettingsWindow({
                         type={isExternalApiTokenVisible ? "text" : "password"}
                         aria-label="Token API Eksternal"
                         value={serviceConfig.externalApiAuthToken}
-                        placeholder="Token API dari instance ShipFlow lain"
+                        placeholder={
+                          serviceConfig.externalApiAuthTokenConfigured
+                            ? "Token tersimpan; isi untuk mengganti"
+                            : "Token API dari instance ShipFlow lain"
+                        }
                         onChange={(event) => onPreviewExternalApiAuthToken(event.target.value)}
                       />
                     </label>
@@ -214,7 +216,8 @@ export function ServiceSettingsWindow({
                         disabled={
                           isTestingExternalApi ||
                           !serviceConfig.externalApiBaseUrl.trim() ||
-                          !serviceConfig.externalApiAuthToken.trim()
+                          (!serviceConfig.externalApiAuthToken.trim() &&
+                            !serviceConfig.externalApiAuthTokenConfigured)
                         }
                       >
                         {isTestingExternalApi ? "Menguji..." : "Tes Koneksi"}
@@ -228,10 +231,10 @@ export function ServiceSettingsWindow({
                           onPreviewAllowInsecureExternalApiHttp(event.currentTarget.checked)
                         }
                       />
-                      <span>Izinkan HTTP non-TLS</span>
+                      <span>Izinkan HTTP atau host privat tepercaya</span>
                     </label>
                     <div className="settings-field-help settings-field-help-warning">
-                      Aktifkan HTTP non-TLS hanya jika endpoint tidak mendukung HTTPS.
+                      Aktifkan hanya untuk deployment LAN tepercaya. Endpoint metadata dan localhost tetap ditolak.
                     </div>
                     {externalApiTestResult ? (
                       <div
@@ -338,10 +341,13 @@ export function ServiceSettingsWindow({
                   <label className="settings-text-field service-settings-token-field">
                     <span className="settings-input-label">Token API Publik</span>
                     <input
-                      type={isTokenVisible ? "text" : "password"}
+                      type="password"
                       readOnly
                       aria-label="Token API Service"
-                      value={serviceConfig.authToken}
+                      value={
+                        serviceConfig.authToken ||
+                        (serviceConfig.authTokenConfigured ? "configured-token" : "")
+                      }
                       placeholder="Buat token wajib"
                     />
                   </label>
@@ -349,19 +355,14 @@ export function ServiceSettingsWindow({
                     <button
                       type="button"
                       className="sheet-tab-action"
-                      onClick={() => setIsTokenVisible((current) => !current)}
-                    >
-                      {isTokenVisible ? "Sembunyikan" : "Tampilkan"}
-                    </button>
-                    <button
-                      type="button"
-                      className="sheet-tab-action"
-                      onClick={() => onCopyServiceToken(serviceConfig.authToken)}
-                      disabled={!serviceConfig.authToken}
+                      onClick={onCopyServiceToken}
+                      disabled={
+                        !serviceConfig.authTokenConfigured || Boolean(serviceConfig.authToken)
+                      }
                     >
                       Salin
                     </button>
-                    {serviceConfig.authToken ? (
+                    {serviceConfig.authTokenConfigured || serviceConfig.authToken ? (
                       <button
                         type="button"
                         className="sheet-tab-action"

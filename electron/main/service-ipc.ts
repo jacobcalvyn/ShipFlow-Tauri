@@ -3,6 +3,7 @@ import { createConnection } from "node:net";
 
 const PROTOCOL_VERSION = 1;
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+const MAX_UNIX_SOCKET_PATH_BYTES = 100;
 
 type RpcMessage =
   | {
@@ -21,14 +22,26 @@ type RpcMessage =
 export function buildServiceIpcEndpoint(
   platform: NodeJS.Platform,
   identity: string,
+  nonce: string,
+  runtimeDirectory = "/tmp",
 ) {
   const safeIdentity = identity.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 32);
+  const safeNonce = nonce.replace(/[^a-fA-F0-9]/g, "").slice(0, 32);
   if (!safeIdentity) {
     throw new Error("ShipFlow IPC identity is required.");
   }
-  return platform === "win32"
-    ? `\\\\.\\pipe\\shipflow-${safeIdentity}`
-    : `/tmp/shipflow-${safeIdentity}.sock`;
+  if (safeNonce.length < 16) {
+    throw new Error("ShipFlow IPC nonce must contain at least 64 bits of entropy.");
+  }
+  if (platform === "win32") {
+    return `\\\\.\\pipe\\shipflow-${safeIdentity}-${safeNonce}`;
+  }
+
+  const endpoint = `${runtimeDirectory}/shipflow-${safeNonce}.sock`;
+  if (Buffer.byteLength(endpoint) > MAX_UNIX_SOCKET_PATH_BYTES) {
+    throw new Error("ShipFlow Unix IPC endpoint exceeds the safe socket path limit.");
+  }
+  return endpoint;
 }
 
 export async function requestServiceIpc<T>(

@@ -1505,6 +1505,10 @@ describe("App workspace isolation", () => {
         });
       }
 
+      if (command === "authorize_workspace_document_path") {
+        return Promise.resolve(args?.path ?? null);
+      }
+
       if (command === "write_workspace_document") {
         if (args?.path && args.document) {
           persistedWorkspaceDocuments.set(args.path, args.document);
@@ -4260,6 +4264,10 @@ describe("App workspace isolation", () => {
 
       if (command === "test_external_tracking_source") {
         return Promise.resolve("OK");
+      }
+
+      if (command === "authorize_workspace_document_path") {
+        return Promise.resolve(args?.path ?? null);
       }
 
       if (command === "create_workspace_window") {

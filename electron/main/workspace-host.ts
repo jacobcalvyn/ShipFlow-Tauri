@@ -44,6 +44,7 @@ export type ManagedServiceConnection = {
 };
 
 const PROTOCOL_VERSION = 1;
+const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const STARTUP_TIMEOUT_MS = 10_000;
 const QUICK_REQUEST_TIMEOUT_MS = 30_000;
 const LONG_REQUEST_TIMEOUT_MS = 30 * 60_000;
@@ -178,6 +179,14 @@ export class WorkspaceHostClient {
         method,
         params,
       })}\n`;
+    if (Buffer.byteLength(payload) > MAX_FRAME_BYTES) {
+      const pending = this.#pending.get(id);
+      if (pending) {
+        clearTimeout(pending.timeout);
+        this.#pending.delete(id);
+      }
+      throw new Error("ShipFlow Workspace Host request exceeds the maximum frame size.");
+    }
     await new Promise<void>((resolve, reject) => {
       child.stdin.write(payload, (error) => {
         if (error) {

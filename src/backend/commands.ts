@@ -96,6 +96,10 @@ export function loadSavedApiServiceConfig() {
   return invokeCommand<ServiceConfig | null>("load_saved_api_service_config");
 }
 
+export function copyPublicApiToken() {
+  return invokeCommand<boolean>("copy_public_api_token");
+}
+
 export function getApiServiceStatus() {
   return invokeCommand<ApiServiceStatus>("get_api_service_status");
 }
@@ -119,6 +123,13 @@ export function pickWorkspaceDocumentPath(
   return invokeCommand<string | null>("pick_workspace_document_path", {
     mode,
     suggestedName,
+  });
+}
+
+export function authorizeWorkspaceDocumentPath(path: string, mode: "open" | "save") {
+  return invokeCommand<string | null>("authorize_workspace_document_path", {
+    path,
+    mode,
   });
 }
 

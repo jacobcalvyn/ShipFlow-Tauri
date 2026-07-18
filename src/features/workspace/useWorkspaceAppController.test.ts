@@ -150,7 +150,8 @@ describe("useWorkspaceAppController", () => {
       state.activeSheet,
       state.activeSheetId,
       surface.workspaceEngineSyncGeneration,
-      0
+      0,
+      surface.workspaceEngineSyncGeneration
     );
     expect(
       mocks.useWorkspaceInteractionRuntimeControllerMock

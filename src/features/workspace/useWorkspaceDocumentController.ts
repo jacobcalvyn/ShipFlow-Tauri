@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import {
+  authorizeWorkspaceDocumentPath,
   claimCurrentWorkspaceDocument,
   createWorkspaceWindow,
   getCurrentWindowLabel,
@@ -43,7 +44,7 @@ import {
   serializeWorkspaceStateForDocument,
 } from "./persistence";
 import {
-  syncWorkspaceStateToEngine,
+  WorkspaceEngineSyncCoordinator,
   type WorkspaceEngineSyncMode,
 } from "./engine-sync";
 import { createWorkspaceDocumentStateFromEngine } from "./engine-document-snapshot";
@@ -122,6 +123,9 @@ export function useWorkspaceDocumentController({
   const documentAutosaveTimeoutRef = useRef<number | null>(null);
   const documentHydrationKeyRef = useRef<string | null>(null);
   const startupEngineSyncKeyRef = useRef<string | null>(null);
+  const workspaceEngineSyncCoordinatorRef = useRef(
+    new WorkspaceEngineSyncCoordinator()
+  );
   const canUseAutosave = documentMeta.path !== null;
   const isAutosaveActive = canUseAutosave && autosaveEnabled;
   const recentDocumentItems = useMemo(
@@ -137,8 +141,14 @@ export function useWorkspaceDocumentController({
       nextWorkspace: WorkspaceState,
       options?: { mode?: WorkspaceEngineSyncMode }
     ) => {
-      await syncWorkspaceStateToEngine(nextWorkspace, options);
-      setWorkspaceEngineSyncGeneration((current) => current + 1);
+      const isCurrent = await workspaceEngineSyncCoordinatorRef.current.run(
+        nextWorkspace,
+        options
+      );
+      if (isCurrent) {
+        setWorkspaceEngineSyncGeneration((current) => current + 1);
+      }
+      return isCurrent;
     },
     []
   );
@@ -289,8 +299,15 @@ export function useWorkspaceDocumentController({
 
   const saveWorkspaceDocumentToPath = useCallback(
     async (path: string, options?: { silent?: boolean }) => {
-      const trimmedPath = path.trim();
-      if (!trimmedPath || documentSaveInFlightRef.current) {
+      const requestedPath = path.trim();
+      if (!requestedPath || documentSaveInFlightRef.current) {
+        return false;
+      }
+
+      const trimmedPath = options?.silent
+        ? requestedPath
+        : await authorizeWorkspaceDocumentPath(requestedPath, "save");
+      if (!trimmedPath) {
         return false;
       }
 
@@ -386,7 +403,10 @@ export function useWorkspaceDocumentController({
       const normalizedWorkspace = normalizePersistedWorkspaceState(document.workspace, {
         migratePrimarySheetToDefault: false,
       });
-      await syncWorkspaceToEngine(normalizedWorkspace);
+      const isCurrent = await syncWorkspaceToEngine(normalizedWorkspace);
+      if (!isCurrent) {
+        return false;
+      }
       const serializedWorkspace = serializeWorkspaceStateForDocument(normalizedWorkspace);
       documentBaselineRef.current = serializedWorkspace;
       setWorkspaceState(normalizedWorkspace);
@@ -398,6 +418,7 @@ export function useWorkspaceDocumentController({
         persistenceStatus: "idle",
         errorMessage: null,
       });
+      return true;
     },
     [setWorkspaceState, syncWorkspaceToEngine]
   );
@@ -420,19 +441,26 @@ export function useWorkspaceDocumentController({
 
     let isDisposed = false;
 
-    void Promise.resolve(claimCurrentWorkspaceDocumentPath(startupPath))
-      .then((claimResult) => {
+    void Promise.resolve(authorizeWorkspaceDocumentPath(startupPath, "open"))
+      .then(async (authorizedPath) => {
+        if (!authorizedPath) {
+          return null;
+        }
+        const claimResult = await claimCurrentWorkspaceDocumentPath(authorizedPath);
         if (claimResult.status === "alreadyOpen") {
           throw new Error("Dokumen itu sudah terbuka di jendela lain.");
         }
-        return readWorkspaceDocument(startupPath);
+        return readWorkspaceDocument(authorizedPath);
       })
       .then(async (result) => {
-        if (isDisposed || documentMetaRef.current.path !== startupPath) {
+        if (!result || isDisposed || documentMetaRef.current.path !== startupPath) {
           return;
         }
 
-        await applyWorkspaceDocument(result.path, result.document);
+        const didApply = await applyWorkspaceDocument(result.path, result.document);
+        if (!didApply) {
+          return false;
+        }
       })
       .catch((error) => {
         if (isDisposed || documentMetaRef.current.path !== startupPath) {
@@ -460,12 +488,17 @@ export function useWorkspaceDocumentController({
 
   const openWorkspaceDocumentFromPath = useCallback(
     async (path: string) => {
-      const trimmedPath = path.trim();
-      if (!trimmedPath) {
+      const requestedPath = path.trim();
+      if (!requestedPath) {
         return false;
       }
 
       if (!confirmReplaceCurrentDocument("Perubahan belum disimpan. Buka dokumen lain?")) {
+        return false;
+      }
+
+      const trimmedPath = await authorizeWorkspaceDocumentPath(requestedPath, "open");
+      if (!trimmedPath) {
         return false;
       }
 
@@ -484,7 +517,10 @@ export function useWorkspaceDocumentController({
           readWorkspaceDocument(trimmedPath)
         );
 
-        await applyWorkspaceDocument(result.path, result.document);
+        const didApply = await applyWorkspaceDocument(result.path, result.document);
+        if (!didApply) {
+          return false;
+        }
         setRecentWorkspaceDocuments((current) =>
           pushRecentWorkspaceDocument(current, result.path)
         );

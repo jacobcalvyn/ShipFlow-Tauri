@@ -661,7 +661,8 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
 
     const sheet = createDefaultSheetState();
     const { result, rerender } = renderHook(
-      ({ generation }) => useWorkspaceSheetViewModel(sheet, "sheet-1", generation),
+      ({ generation }) =>
+        useWorkspaceSheetViewModel(sheet, "sheet-1", generation, generation, 0),
       {
         initialProps: {
           generation: 0,
@@ -730,6 +731,86 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
     });
     expect(result.current.displayedTableRows[0]).not.toBe(previousRows[0]);
     expect(result.current.displayedTableRows[1]).toBe(previousRows[1]);
+  });
+
+  it("quarantines the previous Rust row window while a replacement document loads", async () => {
+    let resolveReplacement!: (value: unknown) => void;
+    mocks.querySheetRows
+      .mockResolvedValueOnce({
+        type: "sheet_rows",
+        payload: {
+          sheetId: "sheet-1",
+          offset: 0,
+          limit: 500,
+          totalCount: 1,
+          hasMore: false,
+          nextOffset: null,
+          rows: [
+            {
+              rowId: "old-row",
+              position: 0,
+              displayTrackingId: "OLD-DOCUMENT",
+              lookupTrackingId: "OLD-DOCUMENT",
+              rowStatus: "loaded",
+              errorMessage: null,
+              statusJson: { status: "DELIVERED" },
+              detailJson: null,
+              historyJson: null,
+            },
+          ],
+        },
+      })
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveReplacement = resolve;
+        })
+      );
+
+    const sheet = createDefaultSheetState();
+    const { result, rerender } = renderHook(
+      ({ queryGeneration, documentGeneration }) =>
+        useWorkspaceSheetViewModel(
+          sheet,
+          "sheet-1",
+          queryGeneration,
+          0,
+          documentGeneration
+        ),
+      {
+        initialProps: { queryGeneration: 0, documentGeneration: 0 },
+      }
+    );
+
+    await waitFor(() => {
+      expect(result.current.displayedTableRows[0]?.trackingInput).toBe("OLD-DOCUMENT");
+    });
+
+    rerender({ queryGeneration: 1, documentGeneration: 1 });
+
+    await waitFor(() => {
+      expect(mocks.querySheetRows).toHaveBeenCalledTimes(2);
+    });
+    expect(
+      result.current.displayedTableRows.some(
+        (row) => row.trackingInput === "OLD-DOCUMENT"
+      )
+    ).toBe(false);
+    expect(result.current.displayedRowWindow).toBeNull();
+
+    await act(async () => {
+      resolveReplacement({
+        type: "sheet_rows",
+        payload: {
+          sheetId: "sheet-1",
+          offset: 0,
+          limit: 500,
+          totalCount: 0,
+          hasMore: false,
+          nextOffset: null,
+          rows: [],
+        },
+      });
+    });
   });
 
   it("passes value filters into Rust row windows without a React row mirror", async () => {
@@ -1696,7 +1777,8 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
           sheet,
           "sheet-1",
           syncGeneration,
-          cacheGeneration
+          cacheGeneration,
+          0
         ),
       {
         initialProps: {
@@ -1780,7 +1862,8 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
           sheet,
           "sheet-1",
           syncGeneration,
-          cacheGeneration
+          cacheGeneration,
+          0
         ),
       {
         initialProps: {

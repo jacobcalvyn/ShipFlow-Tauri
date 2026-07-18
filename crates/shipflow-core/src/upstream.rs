@@ -30,6 +30,9 @@ const TRACKING_RETRY_BASE_DELAY_MS: u64 = 250;
 const EXTERNAL_API_HEDGE_DELAY_MS: u64 = 2_500;
 const EXTERNAL_API_TOKEN_HEADER: &str = "x-api-token";
 pub const MAX_LOOKUP_ID_LENGTH: usize = 64;
+const MAX_UPSTREAM_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_PARSED_LOOKUP_ITEMS: usize = 10_000;
 
 #[derive(Debug, Deserialize)]
 struct ExternalApiErrorResponse {
@@ -81,6 +84,47 @@ fn format_request_error_details(error: &reqwest::Error) -> String {
     message
 }
 
+async fn read_response_text_limited(
+    mut response: Response,
+    max_bytes: usize,
+    label: &str,
+) -> Result<String, TrackingError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(TrackingError::Upstream(format!(
+            "{label} exceeds the {max_bytes}-byte response limit."
+        )));
+    }
+
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| TrackingError::Upstream(format!("{label} could not be read: {error}")))?
+    {
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(TrackingError::Upstream(format!(
+                "{label} exceeds the {max_bytes}-byte response limit."
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    String::from_utf8(body)
+        .map_err(|error| TrackingError::Upstream(format!("{label} is not valid UTF-8: {error}")))
+}
+
+fn ensure_lookup_item_limit(label: &str, item_count: usize) -> Result<(), TrackingError> {
+    if item_count > MAX_PARSED_LOOKUP_ITEMS {
+        return Err(TrackingError::Upstream(format!(
+            "{label} exceeds {MAX_PARSED_LOOKUP_ITEMS} parsed items."
+        )));
+    }
+    Ok(())
+}
+
 pub fn normalize_and_validate_shipment_id(input: &str) -> Result<String, TrackingError> {
     let normalized = sanitize_shipment_id(input.trim());
 
@@ -113,11 +157,12 @@ pub async fn scrape_pos_tracking(
         )));
     }
 
-    let html = response.text().await.map_err(|error| {
-        TrackingError::Upstream(format!("Tracking response could not be read: {error}"))
-    })?;
-
-    parse_tracking_html(&request_url, &html)
+    let html =
+        read_response_text_limited(response, MAX_UPSTREAM_RESPONSE_BYTES, "Tracking response")
+            .await?;
+    let parsed = parse_tracking_html(&request_url, &html)?;
+    ensure_lookup_item_limit("Tracking history", parsed.history.len())?;
+    Ok(parsed)
 }
 
 pub async fn scrape_pos_tracking_html(
@@ -136,9 +181,12 @@ pub async fn scrape_pos_tracking_html(
         )));
     }
 
-    let html = response.text().await.map_err(|error| {
-        TrackingError::Upstream(format!("Tracking HTML response could not be read: {error}"))
-    })?;
+    let html = read_response_text_limited(
+        response,
+        MAX_UPSTREAM_RESPONSE_BYTES,
+        "Tracking HTML response",
+    )
+    .await?;
 
     Ok(TrackingHtmlResponse {
         url: request_url,
@@ -158,11 +206,11 @@ pub async fn scrape_pos_bag(client: &Client, bag_id: &str) -> Result<BagResponse
         )));
     }
 
-    let html = response.text().await.map_err(|error| {
-        TrackingError::Upstream(format!("Bag response could not be read: {error}"))
-    })?;
-
-    Ok(parse_bag_html(&html, &request_url))
+    let html =
+        read_response_text_limited(response, MAX_UPSTREAM_RESPONSE_BYTES, "Bag response").await?;
+    let parsed = parse_bag_html(&html, &request_url);
+    ensure_lookup_item_limit("Bag response", parsed.items.len())?;
+    Ok(parsed)
 }
 
 pub async fn scrape_pos_manifest(
@@ -180,11 +228,12 @@ pub async fn scrape_pos_manifest(
         )));
     }
 
-    let html = response.text().await.map_err(|error| {
-        TrackingError::Upstream(format!("Manifest response could not be read: {error}"))
-    })?;
-
-    Ok(parse_manifest_html(&html, &request_url))
+    let html =
+        read_response_text_limited(response, MAX_UPSTREAM_RESPONSE_BYTES, "Manifest response")
+            .await?;
+    let parsed = parse_manifest_html(&html, &request_url);
+    ensure_lookup_item_limit("Manifest response", parsed.items.len())?;
+    Ok(parsed)
 }
 
 pub fn validate_tracking_source_config(
@@ -249,14 +298,16 @@ pub async fn resolve_bag_request(
     match source_config.tracking_source {
         TrackingSource::Default => scrape_pos_bag(client, bag_id).await,
         TrackingSource::ExternalApi => {
-            fetch_external_api_bag(
+            let response = fetch_external_api_bag(
                 client,
                 &source_config.external_api_base_url,
                 &source_config.external_api_auth_token,
                 source_config.allow_insecure_external_api_http,
                 bag_id,
             )
-            .await
+            .await?;
+            ensure_lookup_item_limit("External API bag response", response.items.len())?;
+            Ok(response)
         }
     }
 }
@@ -269,14 +320,16 @@ pub async fn resolve_manifest_request(
     match source_config.tracking_source {
         TrackingSource::Default => scrape_pos_manifest(client, manifest_id).await,
         TrackingSource::ExternalApi => {
-            fetch_external_api_manifest(
+            let response = fetch_external_api_manifest(
                 client,
                 &source_config.external_api_base_url,
                 &source_config.external_api_auth_token,
                 source_config.allow_insecure_external_api_http,
                 manifest_id,
             )
-            .await
+            .await?;
+            ensure_lookup_item_limit("External API manifest response", response.items.len())?;
+            Ok(response)
         }
     }
 }
@@ -458,9 +511,12 @@ async fn read_external_api_tracking_response(
     }
 
     let body_read_started_at = Instant::now();
-    let body = response.text().await.map_err(|error| {
-        TrackingError::Upstream(format!("External API response could not be read: {error}"))
-    })?;
+    let body = read_response_text_limited(
+        response,
+        MAX_UPSTREAM_RESPONSE_BYTES,
+        "External API response",
+    )
+    .await?;
     log_external_api_tracking_timing(
         shipment_id,
         "body_read",
@@ -499,9 +555,12 @@ async fn read_external_api_json_response<T>(
         });
     }
 
-    let body = response.text().await.map_err(|error| {
-        TrackingError::Upstream(format!("External API response could not be read: {error}"))
-    })?;
+    let body = read_response_text_limited(
+        response,
+        MAX_UPSTREAM_RESPONSE_BYTES,
+        "External API response",
+    )
+    .await?;
 
     parser(&body)
 }
@@ -566,11 +625,12 @@ async fn read_external_api_status_response(response: Response) -> Result<String,
     }
 
     let response_url = response.url().clone();
-    let body = response.text().await.map_err(|error| {
-        TrackingError::Upstream(format!(
-            "External API status response could not be read: {error}"
-        ))
-    })?;
+    let body = read_response_text_limited(
+        response,
+        MAX_UPSTREAM_RESPONSE_BYTES,
+        "External API status response",
+    )
+    .await?;
 
     let status_payload = parse_external_api_status_response(&body)?;
 
@@ -970,7 +1030,13 @@ fn build_external_api_lookup_url(
 async fn read_external_api_error_message(response: Response) -> String {
     let status = response.status();
 
-    match response.text().await {
+    match read_response_text_limited(
+        response,
+        MAX_ERROR_RESPONSE_BYTES,
+        "External API error response",
+    )
+    .await
+    {
         Ok(body) => {
             if let Ok(parsed) = serde_json::from_str::<ExternalApiErrorResponse>(&body) {
                 if let Some(error) = parsed.error {

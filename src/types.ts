@@ -209,9 +209,11 @@ export type ServiceConfig = {
   mode: ServiceMode;
   port: number;
   authToken: string;
+  authTokenConfigured?: boolean;
   trackingSource: TrackingSource;
   externalApiBaseUrl: string;
   externalApiAuthToken: string;
+  externalApiAuthTokenConfigured?: boolean;
   allowInsecureExternalApiHttp: boolean;
   keepRunningInTray: boolean;
   startAtLogin: boolean;

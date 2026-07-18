@@ -1,13 +1,13 @@
 use std::collections::VecDeque;
 use std::env;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use shipflow_core::model::{BagResponse, ManifestResponse};
-use shipflow_ipc::{RpcError, RpcMessage, RpcRequest};
+use shipflow_ipc::{RpcError, RpcMessage, RpcRequest, MAX_FRAME_BYTES};
 use shipflow_service_client::{track_bag, track_manifest, track_shipment, ServiceConnectionConfig};
 use shipflow_workspace_engine::commands::{
     JobIdRequest, RefreshSheetRowsTrackingRequest, WorkspaceEngineCommand, WorkspaceEngineResponse,
@@ -349,16 +349,41 @@ fn main() {
         std::process::exit(1);
     });
 
-    for line in io::stdin().lock().lines() {
-        let line = match line {
-            Ok(line) if !line.trim().is_empty() => line,
-            Ok(_) => continue,
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+    loop {
+        let mut payload = Vec::new();
+        let read_result = (&mut input)
+            .take((MAX_FRAME_BYTES + 1) as u64)
+            .read_until(b'\n', &mut payload);
+        let bytes_read = match read_result {
+            Ok(0) => break,
+            Ok(bytes_read) => bytes_read,
             Err(error) => {
                 eprintln!("[ShipFlowWorkspaceHost] stdin error: {error}");
                 break;
             }
         };
-        let request = match serde_json::from_str::<RpcRequest>(&line) {
+        if bytes_read > MAX_FRAME_BYTES || payload.len() > MAX_FRAME_BYTES {
+            let _ = send(
+                &output,
+                &RpcMessage::error(
+                    "invalid-request",
+                    RpcError::new(
+                        "frame_too_large",
+                        "Workspace Host request exceeds the maximum frame size.",
+                    ),
+                ),
+            );
+            break;
+        }
+        while matches!(payload.last(), Some(b'\n' | b'\r')) {
+            payload.pop();
+        }
+        if payload.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let request = match serde_json::from_slice::<RpcRequest>(&payload) {
             Ok(request) => request,
             Err(error) => {
                 let _ = send(

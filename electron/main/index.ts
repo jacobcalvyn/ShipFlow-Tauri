@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, realpath } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import {
   app,
   BrowserWindow,
@@ -25,6 +25,10 @@ import {
 import type { WorkspaceDocumentFile } from "../../src/features/workspace/document";
 import type { ServiceConfig } from "../../src/types";
 import {
+  canonicalWorkspaceDocumentPath,
+  DocumentPathCapabilities,
+} from "./document-capabilities";
+import {
   listWorkspaceRecovery,
   readWorkspaceDocument,
   writeCsvExport,
@@ -49,6 +53,7 @@ type WindowRecord = {
   isDirty: boolean;
   closeRequestPending: boolean;
   allowClose: boolean;
+  authorizedDocumentPaths: DocumentPathCapabilities;
 };
 
 const PRODUCT_NAME = "ShipFlow Desktop";
@@ -101,6 +106,7 @@ const COMMON_COMMANDS = new Set<ShipFlowCommand>([
   "check_app_update",
   "install_app_update",
   "load_saved_api_service_config",
+  "copy_public_api_token",
   "get_api_service_status",
   "configure_api_service",
   "validate_tracking_source_config",
@@ -109,6 +115,7 @@ const COMMON_COMMANDS = new Set<ShipFlowCommand>([
 const WORKSPACE_ONLY_COMMANDS = new Set<ShipFlowCommand>([
   "resolve_pod_image",
   "pick_workspace_document_path",
+  "authorize_workspace_document_path",
   "get_current_window_label",
   "set_current_window_title",
   "set_current_window_document_state",
@@ -353,6 +360,11 @@ function createWindow(
     isDirty: false,
     closeRequestPending: false,
     allowClose: false,
+    authorizedDocumentPaths: new DocumentPathCapabilities(
+      options.launchRequest?.documentPath
+        ? [normalizeClaimPath(options.launchRequest.documentPath)]
+        : [],
+    ),
   };
   appLogger.info("Electron", `Creating workspace window ${label}.`);
   windowsByWebContentsId.set(window.webContents.id, record);
@@ -425,13 +437,16 @@ function openWorkspaceSettings(section: "workspace" | "service") {
   return record;
 }
 
-async function normalizeClaimPath(inputPath: string) {
-  const resolved = path.resolve(inputPath.trim());
-  try {
-    return await realpath(resolved);
-  } catch {
-    return resolved;
-  }
+function normalizeClaimPath(inputPath: string) {
+  return canonicalWorkspaceDocumentPath(inputPath);
+}
+
+function authorizeDocumentPath(record: WindowRecord, inputPath: string) {
+  return record.authorizedDocumentPaths.authorize(inputPath);
+}
+
+function requireAuthorizedDocumentPath(record: WindowRecord, inputPath: string) {
+  return record.authorizedDocumentPaths.require(inputPath);
 }
 
 async function claimDocument(record: WindowRecord, inputPath: string | null) {
@@ -442,7 +457,7 @@ async function claimDocument(record: WindowRecord, inputPath: string | null) {
     record.documentPath = null;
     return { status: "claimed", path: null, ownerLabel: null } as const;
   }
-  const normalized = await normalizeClaimPath(inputPath);
+  const normalized = requireAuthorizedDocumentPath(record, inputPath);
   const ownerLabel = documentClaims.get(normalized);
   if (ownerLabel && ownerLabel !== record.label) {
     const owner = windowsByLabel.get(ownerLabel);
@@ -604,6 +619,23 @@ async function handleCommand(
       return installUpdate();
     case "load_saved_api_service_config":
       return serviceAgent.loadFrontendConfig();
+    case "copy_public_api_token": {
+      const result = await dialog.showMessageBox(record.window, {
+        type: "warning",
+        title: "Copy Public API Token",
+        message: "Copy the ShipFlow public API token to the system clipboard?",
+        detail: "Only continue when you intend to share this credential with a trusted client.",
+        buttons: ["Cancel", "Copy Token"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      if (result.response !== 1) {
+        return false;
+      }
+      clipboard.writeText(await serviceAgent.publicApiTokenForNativeAction());
+      return true;
+    }
     case "get_api_service_status":
       return serviceAgent.status();
     case "configure_api_service": {
@@ -627,14 +659,42 @@ async function handleCommand(
           properties: ["openFile"],
           filters: [{ name: "ShipFlow Workspace", extensions: ["shipflow"] }],
         });
-        return result.canceled ? null : result.filePaths[0] ?? null;
+        const selectedPath = result.canceled ? null : result.filePaths[0] ?? null;
+        return selectedPath ? authorizeDocumentPath(record, selectedPath) : null;
       }
       const result = await dialog.showSaveDialog(record.window, {
         defaultPath:
           typeof args.suggestedName === "string" ? args.suggestedName : "Untitled.shipflow",
         filters: [{ name: "ShipFlow Workspace", extensions: ["shipflow"] }],
       });
-      return result.canceled ? null : result.filePath ?? null;
+      const selectedPath = result.canceled ? null : result.filePath ?? null;
+      return selectedPath ? authorizeDocumentPath(record, selectedPath) : null;
+    }
+    case "authorize_workspace_document_path": {
+      const inputPath = requireString(args, "path");
+      const normalized = normalizeClaimPath(inputPath);
+      if (record.authorizedDocumentPaths.has(normalized)) {
+        return normalized;
+      }
+      const mode = requireString(args, "mode");
+      if (mode === "open") {
+        const result = await dialog.showOpenDialog(record.window, {
+          defaultPath: normalized,
+          properties: ["openFile"],
+          filters: [{ name: "ShipFlow Workspace", extensions: ["shipflow"] }],
+        });
+        const selectedPath = result.canceled ? null : result.filePaths[0] ?? null;
+        return selectedPath ? authorizeDocumentPath(record, selectedPath) : null;
+      }
+      if (mode !== "save") {
+        throw new Error("mode must be open or save.");
+      }
+      const result = await dialog.showSaveDialog(record.window, {
+        defaultPath: normalized,
+        filters: [{ name: "ShipFlow Workspace", extensions: ["shipflow"] }],
+      });
+      const selectedPath = result.canceled ? null : result.filePath ?? null;
+      return selectedPath ? authorizeDocumentPath(record, selectedPath) : null;
     }
     case "get_current_window_label":
       return record.label;
@@ -678,11 +738,13 @@ async function handleCommand(
       );
     }
     case "list_workspace_recovery":
-      return listWorkspaceRecovery(requireString(args, "path"));
+      return listWorkspaceRecovery(
+        requireAuthorizedDocumentPath(record, requireString(args, "path")),
+      );
     case "create_workspace_window": {
       const documentPath = typeof args.documentPath === "string" ? args.documentPath : null;
       if (documentPath) {
-        const normalized = await normalizeClaimPath(documentPath);
+        const normalized = requireAuthorizedDocumentPath(record, documentPath);
         const ownerLabel = documentClaims.get(normalized);
         if (ownerLabel) {
           const owner = windowsByLabel.get(ownerLabel);
@@ -692,7 +754,10 @@ async function handleCommand(
         }
       }
       const next = createWindow("workspace", {
-        launchRequest: { documentPath, startFresh: !documentPath },
+        launchRequest: {
+          documentPath: documentPath ? normalizeClaimPath(documentPath) : null,
+          startFresh: !documentPath,
+        },
       });
       if (documentPath) {
         await claimDocument(next, documentPath);
@@ -785,6 +850,7 @@ if (!hasSingleInstanceLock) {
     }
     const existing = focusedWorkspaceRecord();
     if (documentPath && existing) {
+      authorizeDocumentPath(existing, documentPath);
       void claimDocument(existing, documentPath).then((claim) => {
         if (claim.status === "claimed") {
           existing.launchRequest = { documentPath: claim.path, startFresh: false };

@@ -67,6 +67,8 @@ jobs:
         run: npm run package:windows
       - name: Verify package contents
         shell: pwsh
+        env:
+          SHIPFLOW_REQUIRE_WINDOWS_SIGNATURE: ${{ inputs.signed_release }}
         run: |
           npm run package:verify
           $resourceRoot = Get-ChildItem release -Recurse -Directory | Where-Object { $_.FullName -like '*resources\native' } | Select-Object -First 1
