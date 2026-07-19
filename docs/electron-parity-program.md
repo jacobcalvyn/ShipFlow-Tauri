@@ -123,6 +123,11 @@ and expose rollback evidence in logs.
   only in their dedicated packaging step after validation.
 - Artifact upload, release publication, code signing, and notarization are
   separate operations with explicit credentials and permissions.
+- Manual macOS builds publish only the DMG installer. ZIP, update metadata, and
+  blockmap artifacts are reserved for the dedicated updater workflow so GitHub
+  artifacts do not contain two compressed copies of the same application.
+- Electron packages retain only English and Indonesian locales, omit production
+  source maps, and package stripped thin-LTO Rust binaries.
 
 ## Cutover Gates
 

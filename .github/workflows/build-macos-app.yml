@@ -55,7 +55,7 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
           SHIPFLOW_MAC_ADHOC_SIGN: "true"
-        run: npm run package:macos
+        run: npm run package:macos:installer
       - name: Build signed Electron macOS suite
         if: ${{ inputs.signed_release }}
         env:
@@ -65,7 +65,7 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CSC_IDENTITY_AUTO_DISCOVERY: "true"
-        run: npm run package:macos
+        run: npm run package:macos:installer
       - name: Verify package contents
         run: |
           npm run package:verify
@@ -81,7 +81,4 @@ jobs:
           name: shipflow-macos-suite
           path: |
             release/*.dmg
-            release/*.zip
-            release/*latest*.yml
-            release/*.blockmap
           if-no-files-found: error

@@ -9,7 +9,7 @@ export default defineConfig({
         entry: "electron/main/index.ts",
       },
       outDir: "out/main",
-      sourcemap: true,
+      sourcemap: false,
     },
   },
   preload: {
@@ -19,7 +19,7 @@ export default defineConfig({
         entry: "electron/preload/index.ts",
       },
       outDir: "out/preload",
-      sourcemap: true,
+      sourcemap: false,
       rollupOptions: {
         output: {
           format: "cjs",
@@ -33,8 +33,8 @@ export default defineConfig({
     plugins: [react()],
     build: {
       outDir: "out/renderer",
-      emptyOutDir: false,
-      sourcemap: true,
+      emptyOutDir: true,
+      sourcemap: false,
       rollupOptions: {
         input: "index.html",
       },

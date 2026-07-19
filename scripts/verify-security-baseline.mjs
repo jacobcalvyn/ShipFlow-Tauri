@@ -80,7 +80,13 @@ for (const scriptName of [
     errors.push(`package.json must expose script ${scriptName}.`);
   }
 }
-for (const scriptName of ["package", "package:dir", "package:macos", "package:windows"]) {
+for (const scriptName of [
+  "package",
+  "package:dir",
+  "package:macos",
+  "package:macos:installer",
+  "package:windows",
+]) {
   if (!packageJson.scripts?.[scriptName]?.includes("--publish never")) {
     errors.push(`package.json script ${scriptName} must disable implicit publishing.`);
   }
@@ -209,6 +215,8 @@ requireTokens("electron/main/index.ts", [
   "authorize_workspace_document_path",
   "requireAuthorizedDocumentPath",
   "copy_public_api_token",
+  "const webContentsId = window.webContents.id",
+  "windowsByWebContentsId.delete(webContentsId)",
 ]);
 requireTokens("electron/main/service-ipc.ts", [
   "createConnection",
@@ -333,8 +341,20 @@ requireTokens("electron-builder.config.cjs", [
   "useAdHocMacSigning",
   'identity: useAdHocMacSigning ? "-" : undefined',
   "hardenedRuntime: !useAdHocMacSigning",
+  'electronLanguages: ["en", "id"]',
   "target: [\"dmg\", \"zip\"]",
   "target: [\"nsis\"]",
+]);
+requireTokens("electron.vite.config.ts", [
+  "emptyOutDir: true",
+  "sourcemap: false",
+]);
+forbidTokens("electron.vite.config.ts", ["sourcemap: true", "emptyOutDir: false"]);
+requireTokens("Cargo.toml", [
+  "[profile.release]",
+  "codegen-units = 1",
+  'lto = "thin"',
+  'strip = "symbols"',
 ]);
 requireTokens("scripts/verify-electron-package.mjs", [
   "shipflow-service",
@@ -384,8 +404,9 @@ requireTokens(".github/workflows/build-macos-app.yml", [
   'CSC_IDENTITY_AUTO_DISCOVERY: "true"',
   'SHIPFLOW_MAC_ADHOC_SIGN: "true"',
   "codesign --verify --deep --strict --verbose=2",
-  "npm run package:macos",
+  "npm run package:macos:installer",
   "npm run package:verify",
+  "release/*.dmg",
 ]);
 forbidTokens(".github/workflows/build-macos-app.yml", [
   "npm test",
@@ -395,6 +416,9 @@ forbidTokens(".github/workflows/build-macos-app.yml", [
   "secrets.APPLE_ID || ''",
   "secrets.APPLE_PASSWORD || ''",
   "secrets.APPLE_TEAM_ID || ''",
+  "release/*.zip",
+  "release/*latest*.yml",
+  "release/*.blockmap",
 ]);
 requireTokens(".github/workflows/build-windows-exe.yml", [
   "actions: read",

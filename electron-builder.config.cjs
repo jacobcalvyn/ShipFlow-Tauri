@@ -30,6 +30,7 @@ module.exports = {
   productName: "ShipFlow Desktop",
   artifactName: "ShipFlow-${version}-${os}-${arch}.${ext}",
   asar: true,
+  electronLanguages: ["en", "id"],
   directories: {
     output: "release",
   },

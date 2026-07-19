@@ -26,6 +26,7 @@
     "package": "npm run build:native && npm run build && electron-builder --config electron-builder.config.cjs --publish never",
     "package:dir": "npm run build:native && npm run build && electron-builder --config electron-builder.config.cjs --dir --publish never",
     "package:macos": "npm run build:native && npm run build && electron-builder --config electron-builder.config.cjs --mac --publish never",
+    "package:macos:installer": "npm run build:native && npm run build && electron-builder --config electron-builder.config.cjs --mac dmg --publish never",
     "package:windows": "npm run build:native && npm run build && electron-builder --config electron-builder.config.cjs --win --publish never",
     "package:verify": "node scripts/verify-electron-package.mjs",
     "build:service": "cargo build --manifest-path apps/service/Cargo.toml --release",

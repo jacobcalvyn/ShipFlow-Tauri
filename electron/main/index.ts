@@ -366,8 +366,9 @@ function createWindow(
         : [],
     ),
   };
+  const webContentsId = window.webContents.id;
   appLogger.info("Electron", `Creating workspace window ${label}.`);
-  windowsByWebContentsId.set(window.webContents.id, record);
+  windowsByWebContentsId.set(webContentsId, record);
   windowsByLabel.set(label, record);
 
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -397,7 +398,7 @@ function createWindow(
   });
   window.on("closed", () => {
     appLogger.info("Electron", `Closed workspace window ${label}.`);
-    windowsByWebContentsId.delete(window.webContents.id);
+    windowsByWebContentsId.delete(webContentsId);
     windowsByLabel.delete(label);
     workspaceHosts.get(label)?.stop();
     workspaceHosts.delete(label);
