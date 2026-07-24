@@ -89,10 +89,12 @@ Create platform installers with `npm run package:macos` or
 GitHub release implicitly.
 
 The manual macOS and Windows artifact workflows require a successful Quality
-Gate for the exact commit being packaged. Full frontend and Rust test suites
-run only in the Quality Gate; artifact workflows build, verify, and upload the
-installer without repeating those timing-sensitive suites. Publishing a release
-remains a separate, explicit operation with release credentials.
+Gate for the exact commit being packaged. The Quality Gate builds unpacked
+packages on both operating systems and launches each real package to verify
+single-instance behavior, integrated Service settings, API health, and managed
+Service crash recovery. Artifact workflows then build, verify, and upload the
+installer without repeating the full suites. Publishing a release remains a
+separate, explicit operation with release credentials.
 
 Unsigned workflows omit signing credentials entirely and disable certificate
 auto-discovery. Unsigned macOS artifacts receive a complete ad-hoc signature so
@@ -131,11 +133,25 @@ managed suite can start; Electron never adopts it through the public API token.
 Do not use `C:\\ShipFlow\\Data`; that legacy machine-wide location is no longer
 part of the runtime contract.
 
-Runtime diagnostics are written to `shipflow-desktop.log` in Electron's native
-logs directory. The log includes Electron, renderer, managed Service, and
-Workspace Host events, rotates at 5 MiB, keeps one backup, and redacts known
-credential formats. Open the active file from `File > Buka File Log` in the
-workspace or `File > Open Log File` in the native application menu.
+Runtime diagnostics are written to `shipflow-desktop.log` and
+`shipflow-service.log` in Electron's native logs directory. The Service writes
+independently so its HTTP, IPC, backpressure, cache, and memory evidence remains
+available after an Electron crash. Both files rotate at 5 MiB and keep one
+backup. Desktop entries redact known credential formats and include a session
+ID plus sequence. Open the active file from `File > Buka File Log` in the
+workspace or `File > Open Log File` / `File > Open Logs Folder` in the native
+application menu.
+
+Generate a privacy-preserving operational summary with:
+
+```bash
+npm run diagnostics:log -- "/path/to/shipflow-desktop.log"
+```
+
+Use `--fail-on=high` when the report is part of an automated runtime gate.
+
+See [docs/runtime-log-audit.md](./docs/runtime-log-audit.md) for the matching
+macOS and Windows reproduction, collection, and acceptance procedure.
 
 ## Service API
 
@@ -176,6 +192,7 @@ See [docs/service-api-v1.md](./docs/service-api-v1.md) and
 Current completion target is **native runtime readiness before signing**:
 
 - local macOS Electron package and installed-app smoke pass;
+- unpacked macOS and Windows package smoke passes in GitHub Actions;
 - Windows Electron installer build passes in GitHub Actions;
 - quality, Rust, security, and packaged-content gates pass;
 - signing, notarization, signed updater publication, and Windows manual install

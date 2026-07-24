@@ -1,11 +1,16 @@
 use std::{
+    collections::hash_map::DefaultHasher,
     error::Error as StdError,
+    hash::{Hash, Hasher},
     time::{Duration, Instant},
 };
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use reqwest::{header::ACCEPT, Client, RequestBuilder, Response, StatusCode, Url};
+use reqwest::{
+    header::{HeaderMap, ACCEPT, RETRY_AFTER},
+    Client, RequestBuilder, Response, StatusCode, Url,
+};
 use serde::{de::DeserializeOwned, Deserialize};
 
 use crate::bag::parse_bag_html;
@@ -27,6 +32,8 @@ pub const POS_MANIFEST_ENDPOINT: &str =
     "https://pid.posindonesia.co.id/lacak/admin/GetManifestR7_detil.php";
 const TRACKING_MAX_ATTEMPTS: u32 = 3;
 const TRACKING_RETRY_BASE_DELAY_MS: u64 = 250;
+const TRACKING_RETRY_MAX_DELAY_MS: u64 = 10_000;
+const TRACKING_RETRY_AFTER_MAX_SECS: u64 = 30;
 const EXTERNAL_API_HEDGE_DELAY_MS: u64 = 2_500;
 const EXTERNAL_API_TOKEN_HEADER: &str = "x-api-token";
 pub const MAX_LOOKUP_ID_LENGTH: usize = 64;
@@ -84,7 +91,7 @@ fn format_request_error_details(error: &reqwest::Error) -> String {
     message
 }
 
-async fn read_response_text_limited(
+pub async fn read_response_text_limited(
     mut response: Response,
     max_bytes: usize,
     label: &str,
@@ -724,7 +731,7 @@ async fn send_external_api_request_with_hedge(
     tokio::select! {
         result = &mut primary => result,
         _ = tokio::time::sleep(Duration::from_millis(EXTERNAL_API_HEDGE_DELAY_MS)) => {
-            eprintln!(
+            crate::shipflow_log!(
                 "[ShipFlowPerf] external_api_request stage=hedge_start path={} delayMs={}",
                 request_url.path(),
                 EXTERNAL_API_HEDGE_DELAY_MS
@@ -738,11 +745,11 @@ async fn send_external_api_request_with_hedge(
 
             tokio::select! {
                 result = &mut primary => {
-                    eprintln!("[ShipFlowPerf] external_api_request stage=hedge_result winner=primary");
+                    crate::shipflow_log!("[ShipFlowPerf] external_api_request stage=hedge_result winner=primary");
                     result
                 }
                 result = &mut secondary => {
-                    eprintln!("[ShipFlowPerf] external_api_request stage=hedge_result winner=secondary");
+                    crate::shipflow_log!("[ShipFlowPerf] external_api_request stage=hedge_result winner=secondary");
                     result
                 }
             }
@@ -755,6 +762,7 @@ pub async fn fetch_lookup_response(
     request_url: &str,
 ) -> Result<Response, TrackingError> {
     for attempt in 1..=TRACKING_MAX_ATTEMPTS {
+        let mut retry_after = None;
         match client.get(request_url).send().await {
             Ok(response) => {
                 if response.status().is_success() {
@@ -764,6 +772,7 @@ pub async fn fetch_lookup_response(
                 if attempt == TRACKING_MAX_ATTEMPTS || !is_retryable_status(response.status()) {
                     return Ok(response);
                 }
+                retry_after = retry_after_delay(&response);
             }
             Err(error) => {
                 if attempt == TRACKING_MAX_ATTEMPTS {
@@ -784,15 +793,54 @@ pub async fn fetch_lookup_response(
             }
         }
 
-        tokio::time::sleep(Duration::from_millis(
-            TRACKING_RETRY_BASE_DELAY_MS * u64::from(attempt),
-        ))
-        .await;
+        let delay = retry_after.unwrap_or_else(|| retry_backoff_delay(request_url, attempt));
+        crate::shipflow_log!(
+            "[ShipFlowRetry] upstream_lookup idHash={} attempt={} delayMs={}",
+            request_log_hash(request_url),
+            attempt,
+            delay.as_millis()
+        );
+        tokio::time::sleep(delay).await;
     }
 
     Err(TrackingError::Upstream(
         "Lookup request exhausted retries.".into(),
     ))
+}
+
+fn retry_after_delay(response: &Response) -> Option<Duration> {
+    retry_after_delay_from_headers(response.headers())
+}
+
+fn retry_after_delay_from_headers(headers: &HeaderMap) -> Option<Duration> {
+    headers
+        .get(RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| Duration::from_secs(seconds.min(TRACKING_RETRY_AFTER_MAX_SECS)))
+}
+
+fn retry_backoff_delay(request_url: &str, attempt: u32) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(10);
+    let base_delay = TRACKING_RETRY_BASE_DELAY_MS
+        .saturating_mul(1_u64 << exponent)
+        .min(TRACKING_RETRY_MAX_DELAY_MS);
+    let jitter_ceiling = (base_delay / 2).max(1);
+    let mut hasher = DefaultHasher::new();
+    request_url.hash(&mut hasher);
+    attempt.hash(&mut hasher);
+    let jitter = hasher.finish() % jitter_ceiling;
+    Duration::from_millis(
+        base_delay
+            .saturating_add(jitter)
+            .min(TRACKING_RETRY_MAX_DELAY_MS),
+    )
+}
+
+fn request_log_hash(request_url: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    request_url.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 fn normalize_lookup_id(input: &str, kind: LookupKind) -> Result<String, TrackingError> {
@@ -876,6 +924,28 @@ pub fn parse_external_api_base_url(
         ));
     }
 
+    if !parsed.username().is_empty() || parsed.password().is_some() || parsed.fragment().is_some() {
+        return Err(TrackingError::BadRequest(
+            "External API base URL cannot contain credentials or a fragment.".into(),
+        ));
+    }
+
+    if let Some(hostname) = parsed.host_str().map(ToOwned::to_owned) {
+        let canonical_hostname = hostname.trim_end_matches('.');
+        if canonical_hostname.is_empty() {
+            return Err(TrackingError::BadRequest(
+                "External API base URL must include a hostname.".into(),
+            ));
+        }
+        if canonical_hostname != hostname {
+            parsed.set_host(Some(canonical_hostname)).map_err(|_| {
+                TrackingError::BadRequest(
+                    "External API base URL hostname could not be normalized.".into(),
+                )
+            })?;
+        }
+    }
+
     if parsed.scheme() == "http" && !allow_insecure_http {
         return Err(TrackingError::BadRequest(
             "External API base URL must use HTTPS unless insecure HTTP is explicitly allowed."
@@ -893,13 +963,18 @@ pub fn parse_external_api_base_url(
         })
         .unwrap_or_default();
 
-    if path_segments
-        .windows(2)
+    let final_segment = path_segments
         .last()
-        .is_some_and(|segments| segments == ["v1", "openapi.json"])
+        .map(|segment| segment.to_ascii_lowercase());
+    let previous_segment = path_segments
+        .iter()
+        .rev()
+        .nth(1)
+        .map(|segment| segment.to_ascii_lowercase());
+    if previous_segment.as_deref() == Some("v1") && final_segment.as_deref() == Some("openapi.json")
     {
         path_segments.truncate(path_segments.len().saturating_sub(2));
-    } else if path_segments.last().is_some_and(|segment| segment == "v1") {
+    } else if final_segment.as_deref() == Some("v1") {
         path_segments.truncate(path_segments.len().saturating_sub(1));
     }
 
@@ -936,7 +1011,7 @@ fn log_external_api_tracking_timing(
     started_at: Instant,
     detail: impl AsRef<str>,
 ) {
-    eprintln!(
+    crate::shipflow_log!(
         "[ShipFlowPerf] external_api_tracking id={} stage={} durationMs={} {}",
         shipment_id,
         stage,
@@ -1079,10 +1154,44 @@ mod tests {
         parse_external_api_bag_response, parse_external_api_base_url,
         parse_external_api_manifest_response, parse_external_api_status_response,
         parse_external_api_track_response, resolve_tracking_html_request,
-        validate_tracking_source_config, EXTERNAL_API_TOKEN_HEADER, POS_TRACKING_ENDPOINT,
+        retry_after_delay_from_headers, retry_backoff_delay, validate_tracking_source_config,
+        EXTERNAL_API_TOKEN_HEADER, POS_TRACKING_ENDPOINT, TRACKING_RETRY_AFTER_MAX_SECS,
+        TRACKING_RETRY_MAX_DELAY_MS,
     };
     use crate::model::{LookupKind, TrackingError, TrackingSource, TrackingSourceConfig};
-    use reqwest::{header::AUTHORIZATION, Client};
+    use reqwest::{
+        header::{HeaderMap, HeaderValue, AUTHORIZATION, RETRY_AFTER},
+        Client,
+    };
+
+    #[test]
+    fn retry_backoff_is_deterministic_and_bounded() {
+        let url = "https://example.test/track?id=P1";
+        assert_eq!(retry_backoff_delay(url, 1), retry_backoff_delay(url, 1));
+        assert!(retry_backoff_delay(url, 2) >= retry_backoff_delay(url, 1));
+        assert!(
+            retry_backoff_delay(url, u32::MAX)
+                <= std::time::Duration::from_millis(TRACKING_RETRY_MAX_DELAY_MS)
+        );
+    }
+
+    #[test]
+    fn retry_after_accepts_seconds_and_caps_excessive_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("3"));
+        assert_eq!(
+            retry_after_delay_from_headers(&headers),
+            Some(std::time::Duration::from_secs(3))
+        );
+
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("9999"));
+        assert_eq!(
+            retry_after_delay_from_headers(&headers),
+            Some(std::time::Duration::from_secs(
+                TRACKING_RETRY_AFTER_MAX_SECS
+            ))
+        );
+    }
 
     #[test]
     fn build_tracking_url_uses_encoded_pid_id() {
@@ -1238,6 +1347,25 @@ mod tests {
         let v1_root = parse_external_api_base_url("https://scrappid3.example.test/v1", false)
             .expect("v1 URL should normalize");
         assert_eq!(v1_root.as_str(), "https://scrappid3.example.test/");
+
+        let uppercase_v1_root =
+            parse_external_api_base_url("https://scrappid3.example.test/V1", false)
+                .expect("uppercase v1 URL should normalize");
+        assert_eq!(
+            uppercase_v1_root.as_str(),
+            "https://scrappid3.example.test/"
+        );
+    }
+
+    #[test]
+    fn rejects_external_api_urls_with_embedded_credentials() {
+        let error =
+            parse_external_api_base_url("https://operator:secret@scrappid3.example.test/v1", false)
+                .expect_err("embedded credentials should be rejected");
+
+        assert!(
+            matches!(error, TrackingError::BadRequest(message) if message.contains("credentials"))
+        );
     }
 
     #[test]

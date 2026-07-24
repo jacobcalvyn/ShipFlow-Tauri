@@ -41,6 +41,10 @@ rejects remote named-pipe clients on Windows.
 Each Service IPC connection carries exactly one request. If the caller closes
 the connection or reaches its timeout, the Service drops the in-flight lookup
 future so abandoned requests release their upstream concurrency slot.
+The Service accepts at most 128 simultaneous internal IPC connections. Reading
+and writing an IPC frame each has a 10-second limit, while the native client
+allows 130 seconds for the complete request so the Service's 120-second lookup
+deadline remains authoritative.
 
 ## Storage
 
@@ -65,20 +69,50 @@ encrypted with `safeStorage` when OS credential encryption is available.
 If a legacy Service already owns the configured port without the managed IPC
 endpoint, Electron rejects startup with an explicit instruction to stop it.
 Electron never adopts a process through the public token and never kills an
-unverified process by stale PID.
+unverified process by stale PID. The managed native endpoint is deterministic
+for the OS user and Desktop data identity. If a Service survives an unexpected
+Electron exit, the next launch authenticates it through private IPC, asks it to
+stop, waits for the endpoint to close, and starts a fresh supervised process.
+It is never adopted through the public API.
 
 ## Runtime Logs
 
-Electron main owns the suite log and combines lifecycle events, renderer runtime
-errors, Service output, and Workspace Host diagnostics into
-`shipflow-desktop.log`. The file lives in Electron's platform-native logs
-directory and rotates to one bounded `.1` backup after reaching 5 MiB.
-ShipFlow and Authorization token patterns are redacted before persistence.
+Electron main writes lifecycle events, renderer runtime errors, and Workspace
+Host diagnostics to `shipflow-desktop.log`. The managed Rust Service writes
+native HTTP, IPC, backpressure, cache, and memory diagnostics directly to
+`shipflow-service.log` through its own cross-platform rotating writer. Electron
+passes only the destination path, so Service logging and authenticated orphan
+recovery remain functional if Electron crashes. Both files live in Electron's
+platform-native logs directory, rotate during a long-running process, and keep
+one bounded `.1` backup after reaching 5 MiB.
+Each entry includes a per-launch session ID and monotonic sequence. Structured
+events cover application startup and shutdown, windows, renderer termination,
+native child-process lifecycle, IPC duration and result, Service restart, and
+60-second memory snapshots. Individual entries are capped at 32 KiB. ShipFlow,
+Authorization, and common secret-field patterns are redacted before
+persistence.
 
 Users can open the active file from either the native
-`File > Open Log File` menu or the workspace toolbar
+`File > Open Log File` or `File > Open Logs Folder` menu, or the workspace toolbar
 `File > Buka File Log` action. The renderer receives no arbitrary filesystem
 path or direct filesystem access.
+
+Run the privacy-preserving summary analyzer against either active file. It
+automatically includes the adjacent Desktop or Service file and all optional
+rotated backups:
+
+```bash
+npm run diagnostics:log -- "/path/to/shipflow-desktop.log"
+```
+
+The default report prints Electron and native Service event counts, risk
+signals, sessions, error scopes, HTTP 5xx totals, and memory peaks without
+printing raw operational messages. Packaged smoke uses `--fail-on=high` as an
+enforced quality gate. Add `--verbose` only during local investigation. Runtime
+logs can still contain shipment or facility identifiers emitted by native
+components and must be treated as operationally sensitive.
+The cross-platform evidence procedure is documented in
+[runtime-log-audit.md](./runtime-log-audit.md).
 
 ## Lifecycle Rules
 
@@ -88,6 +122,8 @@ path or direct filesystem access.
 4. Closing windows keeps the Service running only when tray persistence is enabled.
 5. Quit and updater installation stop all Workspace Hosts and the managed Service.
 6. A foreign or stale Service occupying the configured port is detected before spawn and reported explicitly.
+7. Unexpected Service exits are restarted after 1, 2, 5, 10, and 30 seconds.
+8. More than five unexpected exits inside a two-minute window stop automatic restart and require an explicit lifecycle action.
 
 Service Settings is not a separate application window. Workspace display,
 tracking source, and public API settings share one modal in the active Desktop
@@ -95,12 +131,21 @@ window. The modal backdrop blocks workspace interaction until the user saves or
 cancels it. Tray, menu, and `--service-settings` entry points all focus the
 Desktop window and select the Service section in that modal.
 
+The managed Service exposes authenticated `/v1/diagnostics` data for uptime,
+current-suite restart count, RSS, cache sizes, and active or queued
+backpressure lanes. HTTP ingress, upstream lookups, public lookups, and contact
+enrichment each have independent bounded lanes. Successful lookup payloads are
+persisted through a single bounded SQLite WAL writer instead of rewriting one
+JSON snapshot per result. A maintenance task prunes the in-memory lookup cache
+and logs a diagnostic snapshot every 60 seconds. These metrics are operational
+signals, not a durable monitoring history.
+
 ## Security Boundary
 
 - renderer Node integration is disabled;
 - context isolation and renderer sandboxing are enabled;
 - navigation and new-window creation are denied;
-- CSP is applied by Electron session headers;
+- CSP is declared in the packaged renderer HTML, which is the supported enforcement path for the local `file://` renderer;
 - OS permissions requested by renderers are denied;
 - Service credentials are stored outside renderer storage;
 - POD URL fetching is validated and size bounded;
@@ -110,10 +155,15 @@ Desktop window and select the Service section in that modal.
 
 Electron Builder creates one platform installer containing Electron,
 `shipflow-service`, `shipflow-workspace-host`, DuckDB runtime files where needed,
-and application icons. CI verifies packaged resources before artifact upload.
+and application icons. CI verifies packaged resources and launches the unpacked
+application on both macOS and Windows. The packaged smoke test verifies the
+integrated settings flow, single-instance behavior, native API health, and
+managed Service crash recovery before artifact upload.
 
 The current release-readiness boundary is runtime readiness before signing.
-Unsigned local macOS packages are smoke-tested as real Electron applications.
-Windows package creation is verified in GitHub Actions. Apple notarization,
-platform signing, signed updater publication, and manual Windows installation
-smoke remain explicit external prerequisites.
+Unsigned macOS and Windows unpacked packages are smoke-tested as real Electron
+applications in GitHub Actions. Apple notarization, platform signing, signed
+updater publication, and manual installer walkthroughs remain explicit external
+prerequisites. Failed Electron smoke jobs upload their Playwright report,
+screenshots, and attached isolated Desktop plus Service runtime logs for 14
+days.

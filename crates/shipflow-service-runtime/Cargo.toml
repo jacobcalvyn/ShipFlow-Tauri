@@ -8,12 +8,22 @@ license = "UNLICENSED"
 [dependencies]
 axum = { workspace = true }
 reqwest = { workspace = true }
+rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 shipflow-core = { path = "../shipflow-core" }
 shipflow-ipc = { path = "../shipflow-ipc" }
 time = { workspace = true }
 tokio = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tower = { workspace = true }

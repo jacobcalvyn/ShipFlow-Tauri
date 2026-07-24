@@ -1,7 +1,10 @@
 use serde_json::{json, Value};
 use shipflow_core::upstream::MAX_LOOKUP_ID_LENGTH;
 
-use crate::{api_contract::REQUEST_ID_HEADER_NAME, FORCE_REFRESH_HEADER_NAME};
+use crate::{
+    api_contract::REQUEST_ID_HEADER_NAME, http_api::SERVICE_LOOKUP_DEADLINE_SECS,
+    FORCE_REFRESH_HEADER_NAME,
+};
 
 pub const OPENAPI_SCHEMA_VERSION: &str = "shipflow.service.openapi.v1";
 
@@ -183,6 +186,7 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                         "401": { "$ref": "#/components/responses/Unauthorized" },
                         "404": { "$ref": "#/components/responses/NotFound" },
                         "429": { "$ref": "#/components/responses/TooManyRequests" },
+                        "503": { "$ref": "#/components/responses/ServiceUnavailable" },
                         "502": { "$ref": "#/components/responses/BadGateway" }
                     }
                 }
@@ -221,6 +225,7 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                         "401": { "$ref": "#/components/responses/Unauthorized" },
                         "404": { "$ref": "#/components/responses/NotFound" },
                         "429": { "$ref": "#/components/responses/TooManyRequests" },
+                        "503": { "$ref": "#/components/responses/ServiceUnavailable" },
                         "502": { "$ref": "#/components/responses/BadGateway" }
                     }
                 }
@@ -259,6 +264,7 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                         "401": { "$ref": "#/components/responses/Unauthorized" },
                         "404": { "$ref": "#/components/responses/NotFound" },
                         "429": { "$ref": "#/components/responses/TooManyRequests" },
+                        "503": { "$ref": "#/components/responses/ServiceUnavailable" },
                         "502": { "$ref": "#/components/responses/BadGateway" }
                     }
                 }
@@ -325,6 +331,12 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                 },
                 "TooManyRequests": {
                     "description": "Too many upstream lookup requests are already in flight or queued",
+                    "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+                },
+                "ServiceUnavailable": {
+                    "description": format!(
+                        "The lookup exceeded the {SERVICE_LOOKUP_DEADLINE_SECS}-second deadline, its queue timed out, or its limiter is unavailable"
+                    ),
                     "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
                 },
                 "PayloadTooLarge": {
@@ -523,9 +535,126 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
     });
 
     document["paths"]["/v1/track/{shipmentId}/html"] = tracking_html_path_document();
+    document["paths"]["/v1/diagnostics"] = diagnostics_path_document();
     document["components"]["schemas"]["TrackingHtmlResponse"] = tracking_html_response_schema();
+    document["components"]["schemas"]["Diagnostics"] = diagnostics_response_schema();
+    document["components"]["schemas"]["CacheDiagnostics"] = cache_diagnostics_schema();
+    document["components"]["schemas"]["ContactCacheDiagnostics"] =
+        contact_cache_diagnostics_schema();
+    document["components"]["schemas"]["BackpressureLaneDiagnostics"] =
+        backpressure_lane_diagnostics_schema();
 
     document
+}
+
+fn diagnostics_path_document() -> Value {
+    json!({
+        "get": {
+            "summary": "Read bounded runtime resource diagnostics",
+            "description": "Returns authenticated process memory, cache occupancy, lookup deadline, uptime, restart count, and backpressure lane metrics. Secrets and filesystem paths are not included.",
+            "operationId": "getDiagnostics",
+            "tags": ["Diagnostics"],
+            "parameters": [{ "$ref": "#/components/parameters/RequestId" }],
+            "responses": {
+                "200": {
+                    "description": "Current ShipFlow Service runtime diagnostics",
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "allOf": [
+                                    { "$ref": "#/components/schemas/EnvelopeBase" },
+                                    {
+                                        "type": "object",
+                                        "required": ["data"],
+                                        "properties": {
+                                            "data": { "$ref": "#/components/schemas/Diagnostics" }
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+                "401": { "$ref": "#/components/responses/Unauthorized" }
+            }
+        }
+    })
+}
+
+fn diagnostics_response_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": [
+            "product",
+            "uptimeSeconds",
+            "restartCount",
+            "rssBytes",
+            "lookupDeadlineSeconds",
+            "lookupCache",
+            "contactCache",
+            "backpressure"
+        ],
+        "properties": {
+            "product": { "type": "string", "const": "shipflow-service" },
+            "uptimeSeconds": { "type": "integer", "minimum": 0 },
+            "restartCount": { "type": "integer", "minimum": 0 },
+            "rssBytes": { "type": ["integer", "null"], "minimum": 0 },
+            "lookupDeadlineSeconds": {
+                "type": "integer",
+                "const": SERVICE_LOOKUP_DEADLINE_SECS
+            },
+            "lookupCache": { "$ref": "#/components/schemas/CacheDiagnostics" },
+            "contactCache": { "$ref": "#/components/schemas/ContactCacheDiagnostics" },
+            "backpressure": {
+                "type": "object",
+                "required": ["ingress", "public", "global", "contact"],
+                "properties": {
+                    "ingress": { "$ref": "#/components/schemas/BackpressureLaneDiagnostics" },
+                    "public": { "$ref": "#/components/schemas/BackpressureLaneDiagnostics" },
+                    "global": { "$ref": "#/components/schemas/BackpressureLaneDiagnostics" },
+                    "contact": { "$ref": "#/components/schemas/BackpressureLaneDiagnostics" }
+                }
+            }
+        }
+    })
+}
+
+fn cache_diagnostics_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["ready", "loading", "capacity"],
+        "properties": {
+            "ready": { "type": "integer", "minimum": 0 },
+            "loading": { "type": "integer", "minimum": 0 },
+            "capacity": { "type": "integer", "minimum": 1 }
+        }
+    })
+}
+
+fn contact_cache_diagnostics_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["entries", "inFlight", "capacity"],
+        "properties": {
+            "entries": { "type": "integer", "minimum": 0 },
+            "inFlight": { "type": "integer", "minimum": 0 },
+            "capacity": { "type": "integer", "minimum": 1 }
+        }
+    })
+}
+
+fn backpressure_lane_diagnostics_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["active", "available", "queued", "maxConcurrent", "maxQueued"],
+        "properties": {
+            "active": { "type": "integer", "minimum": 0 },
+            "available": { "type": "integer", "minimum": 0 },
+            "queued": { "type": "integer", "minimum": 0 },
+            "maxConcurrent": { "type": "integer", "minimum": 1 },
+            "maxQueued": { "type": "integer", "minimum": 0 }
+        }
+    })
 }
 
 fn tracking_html_path_document() -> Value {
@@ -563,6 +692,7 @@ fn tracking_html_path_document() -> Value {
                 "401": { "$ref": "#/components/responses/Unauthorized" },
                 "404": { "$ref": "#/components/responses/NotFound" },
                 "429": { "$ref": "#/components/responses/TooManyRequests" },
+                "503": { "$ref": "#/components/responses/ServiceUnavailable" },
                 "502": { "$ref": "#/components/responses/BadGateway" }
             }
         }
@@ -666,5 +796,43 @@ mod tests {
                 .as_str()
                 .is_some_and(|description| description.contains("srcdoc"))
         );
+    }
+
+    #[test]
+    fn documents_authenticated_runtime_diagnostics() {
+        let document = service_openapi_document(18422, false);
+
+        assert_eq!(
+            document["paths"]["/v1/diagnostics"]["get"]["operationId"],
+            "getDiagnostics"
+        );
+        assert_eq!(
+            document["components"]["schemas"]["Diagnostics"]["properties"]["lookupDeadlineSeconds"]
+                ["const"],
+            super::SERVICE_LOOKUP_DEADLINE_SECS
+        );
+        assert!(document["components"]["schemas"]["BackpressureLaneDiagnostics"].is_object());
+    }
+
+    #[test]
+    fn lookup_routes_document_queue_overload_responses() {
+        let document = service_openapi_document(18422, false);
+
+        for path in [
+            "/v1/track/{shipmentId}",
+            "/v1/track/{shipmentId}/html",
+            "/v1/bag/{bagId}",
+            "/v1/manifest/{manifestId}",
+        ] {
+            let responses = &document["paths"][path]["get"]["responses"];
+            assert_eq!(
+                responses["429"]["$ref"],
+                "#/components/responses/TooManyRequests"
+            );
+            assert_eq!(
+                responses["503"]["$ref"],
+                "#/components/responses/ServiceUnavailable"
+            );
+        }
     }
 }

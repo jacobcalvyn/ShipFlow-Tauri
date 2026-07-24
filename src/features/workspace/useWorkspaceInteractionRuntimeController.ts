@@ -45,6 +45,7 @@ import {
   ImportSourcePreviewResult,
   previewImportSource,
   querySheetRows,
+  type SheetRowProjection,
   type SheetRowsQuery,
   refreshSheetRowsTrackingWithProgress,
   retryImportJobFailedWithProgress,
@@ -386,6 +387,23 @@ function createImportCommitRows({
     position: startPosition + index,
     displayTrackingId,
   }));
+}
+
+function createPendingImportRowProjection(
+  sheetId: string,
+  row: ReturnType<typeof createImportCommitRows>[number]
+): SheetRowProjection {
+  return {
+    rowId: row.rowId,
+    position: row.position,
+    displayTrackingId: row.displayTrackingId,
+    lookupTrackingId: row.displayTrackingId,
+    rowStatus: "pending",
+    errorMessage: null,
+    statusJson: null,
+    detailJson: null,
+    historyJson: null,
+  };
 }
 
 async function queryAllImportCommitRows(sheetId: string) {
@@ -1490,6 +1508,7 @@ export function useWorkspaceInteractionRuntimeController({
         runtimeCommands.invalidateSheetTrackingWork(activeSheetId);
       }
 
+      let committedToSheet = false;
       try {
         let startPosition = 0;
         let rowIdsToRefresh: string[] = [];
@@ -1551,16 +1570,61 @@ export function useWorkspaceInteractionRuntimeController({
         }
 
         rowIdsToRefresh = [...rowIdsToRefresh, ...rows.map((row) => row.rowId)];
-        if (mode === "replace") {
-          onWorkspaceEngineMutation?.(activeSheetId);
-        }
+        committedToSheet = true;
+
+        disarmDeleteAll();
+        disarmDeleteSelected();
+
+        flushSync(() => {
+          updateSheet(activeSheetId, (current) => {
+            const lookupState = current.importSourceLookupStates[kind];
+            return closeImportSourceModalInSheet({
+              ...current,
+              importSourceLookupStates: {
+                ...current.importSourceLookupStates,
+                [kind]: {
+                  ...lookupState,
+                  loading: false,
+                  error: "",
+                },
+              },
+            });
+          });
+        });
+        onWorkspaceEngineMutation?.(activeSheetId);
 
         if (rowIdsToRefresh.length > 0) {
           const trackingRunId = createImportTrackingRunId(activeSheetId, `${kind}-commit`);
           flushSync(() => {
-            updateSheet(activeSheetId, (current) =>
-              startTrackingRunInSheet(current, trackingRunId)
-            );
+            updateSheet(activeSheetId, (current) => {
+              const startedSheet = startTrackingRunInSheet(
+                current,
+                trackingRunId
+              );
+
+              return rows.reduce((nextSheet, row) => {
+                const projection = createPendingImportRowProjection(
+                  activeSheetId,
+                  row
+                );
+                return applyTrackingRefreshProgressToSheet(
+                  nextSheet,
+                  {
+                    sheetId: activeSheetId,
+                    row: projection,
+                    totalCount: rowIdsToRefresh.length,
+                    successCount: 0,
+                    failedCount: 0,
+                    pendingCount: rowIdsToRefresh.length,
+                    runId: trackingRunId,
+                  },
+                  {
+                    createMissingRow: true,
+                    runId: trackingRunId,
+                  }
+                );
+              }, startedSheet);
+            });
           });
           try {
             const refreshResult = await refreshSheetRowsTrackingWithProgress(
@@ -1602,29 +1666,6 @@ export function useWorkspaceInteractionRuntimeController({
           }
         }
 
-        disarmDeleteAll();
-        disarmDeleteSelected();
-
-        flushSync(() => {
-          updateSheet(activeSheetId, (current) => {
-            const lookupState = current.importSourceLookupStates[kind];
-            const settledSheet = {
-              ...current,
-              importSourceLookupStates: {
-                ...current.importSourceLookupStates,
-                [kind]: {
-                  ...lookupState,
-                  loading: false,
-                  error: "",
-                },
-              },
-            };
-
-            return closeImportSourceModalInSheet(
-              settledSheet
-            );
-          });
-        });
         onWorkspaceEngineMutation?.(activeSheetId);
 
         showNotice({
@@ -1640,6 +1681,15 @@ export function useWorkspaceInteractionRuntimeController({
         });
       } catch (error) {
         const message = getRuntimeErrorMessage(error);
+        if (committedToSheet) {
+          onWorkspaceEngineMutation?.(activeSheetId);
+          showNotice({
+            tone: "error",
+            message: `Data ${sourceLabel} sudah masuk ke sheet, tetapi pelacakan awal gagal: ${message}`,
+          });
+          return;
+        }
+
         updateSheet(activeSheetId, (current) => {
           const lookupState = current.importSourceLookupStates[kind];
           return {

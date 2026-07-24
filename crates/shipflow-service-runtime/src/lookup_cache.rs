@@ -17,12 +17,15 @@ use shipflow_core::{
     upstream::{
         build_lacak_mitra_tracking_url, fetch_lookup_response, normalize_and_validate_bag_id,
         normalize_and_validate_manifest_id, normalize_and_validate_shipment_id,
-        resolve_bag_request, resolve_manifest_request, resolve_tracking_request,
+        read_response_text_limited, resolve_bag_request, resolve_manifest_request,
+        resolve_tracking_request,
     },
 };
 use tokio::sync::{futures::OwnedNotified, Notify};
 
-use crate::contact_cache::{ContactCacheEntryStatus, ContactCacheState};
+use crate::contact_cache::{
+    ContactCacheEntry, ContactCacheEntryStatus, ContactCacheState, ContactFetchAction,
+};
 use crate::persistent_store::{persistent_lookup_skip_reason, PersistentLookupStore};
 
 const TRACK_CACHE_TTL_SECS: u64 = 30;
@@ -32,10 +35,17 @@ const ERROR_CACHE_TTL_SECS: u64 = 8;
 const CACHE_SUMMARY_MIN_EVENTS: u64 = 20;
 const CACHE_SUMMARY_MIN_INTERVAL_SECS: u64 = 60;
 const PERSISTENT_SUCCESS_CACHE_TTL_SECS: u64 = 6 * 60 * 60;
+const MAX_CONTACT_RESPONSE_BYTES: usize = 1024 * 1024;
+pub const MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES: usize = 10_000;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LookupRequestOptions {
     pub force_refresh: bool,
+}
+
+pub struct TrackingPermitProviders<Primary, Contact> {
+    pub primary: Primary,
+    pub contact: Contact,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -77,6 +87,13 @@ pub struct LookupCacheState {
     persistent_store: Option<PersistentLookupStore>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LookupCacheSnapshot {
+    pub ready: usize,
+    pub loading: usize,
+    pub capacity: usize,
+}
+
 #[derive(Default)]
 struct LookupCacheInner {
     entries: HashMap<String, LookupCacheSlot>,
@@ -93,6 +110,7 @@ enum LookupCacheSlot {
 #[derive(Clone)]
 struct CachedLookupEntry {
     expires_at: Instant,
+    last_accessed_at: Instant,
     value: CachedLookupValue,
 }
 
@@ -119,6 +137,58 @@ enum LookupCacheAction {
     Return(CachedLookupEntry),
     StartFetch(Arc<Notify>, u64),
     Wait(OwnedNotified),
+    Reject(TrackingError),
+}
+
+struct LookupFetchGuard {
+    state: LookupCacheState,
+    cache_key: String,
+    notify: Arc<Notify>,
+    generation: u64,
+    armed: bool,
+}
+
+impl LookupFetchGuard {
+    fn new(
+        state: LookupCacheState,
+        cache_key: String,
+        notify: Arc<Notify>,
+        generation: u64,
+    ) -> Self {
+        Self {
+            state,
+            cache_key,
+            notify,
+            generation,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for LookupFetchGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        let mut inner = self.state.inner.lock().expect("lookup cache lock poisoned");
+        if inner.generation == self.generation
+            && inner.entries.get(&self.cache_key).is_some_and(|slot| {
+                matches!(
+                    slot,
+                    LookupCacheSlot::Loading(current) if Arc::ptr_eq(current, &self.notify)
+                )
+            })
+        {
+            inner.entries.remove(&self.cache_key);
+        }
+        drop(inner);
+        self.notify.notify_waiters();
+    }
 }
 
 enum LookupLoaderError {
@@ -213,6 +283,35 @@ impl LookupCacheState {
         }
     }
 
+    pub fn snapshot(&self) -> LookupCacheSnapshot {
+        let inner = self.inner.lock().expect("lookup cache lock poisoned");
+        snapshot_lookup_cache(&inner)
+    }
+
+    pub fn flush_persistent_store(&self) {
+        if let Some(store) = &self.persistent_store {
+            store.flush();
+        }
+    }
+
+    pub fn prune_expired_and_over_capacity(&self) -> LookupCacheSnapshot {
+        let (removed, snapshot) = {
+            let mut inner = self.inner.lock().expect("lookup cache lock poisoned");
+            let removed = prune_lookup_cache(&mut inner, Instant::now());
+            (removed, snapshot_lookup_cache(&inner))
+        };
+        if removed > 0 {
+            self.log(
+                "INFO",
+                format!(
+                    "[ShipFlowCache] maintenance removed={removed} ready={} loading={} capacity={}",
+                    snapshot.ready, snapshot.loading, snapshot.capacity
+                ),
+            );
+        }
+        snapshot
+    }
+
     async fn resolve_cached_lookup<T, F, Fut>(
         &self,
         kind: LookupKind,
@@ -277,7 +376,14 @@ impl LookupCacheState {
                 LookupCacheAction::Wait(notified) => {
                     notified.await;
                 }
+                LookupCacheAction::Reject(error) => return Err(error),
                 LookupCacheAction::StartFetch(notify, generation) => {
+                    let mut fetch_guard = LookupFetchGuard::new(
+                        self.clone(),
+                        cache_key.clone(),
+                        notify.clone(),
+                        generation,
+                    );
                     let result = loader
                         .take()
                         .expect("lookup cache loader must only start once")(
@@ -320,6 +426,7 @@ impl LookupCacheState {
                                 inner
                                     .entries
                                     .insert(cache_key.clone(), LookupCacheSlot::Ready(entry));
+                                prune_lookup_cache(&mut inner, Instant::now());
                             } else {
                                 inner.entries.remove(&cache_key);
                             }
@@ -335,6 +442,7 @@ impl LookupCacheState {
                     };
 
                     notify.notify_waiters();
+                    fetch_guard.disarm();
                     if let Some(summary) = metrics_summary {
                         self.log("INFO", summary);
                     }
@@ -360,6 +468,11 @@ impl LookupCacheState {
                 Some(LookupCacheSlot::Ready(entry))
                     if !options.force_refresh && !entry.is_expired(now) =>
                 {
+                    let mut entry = entry;
+                    entry.last_accessed_at = now;
+                    inner
+                        .entries
+                        .insert(cache_key.to_string(), LookupCacheSlot::Ready(entry.clone()));
                     let metrics_summary = inner
                         .metrics
                         .record_event(kind, LookupCacheMetricEvent::Hit);
@@ -409,6 +522,7 @@ impl LookupCacheState {
                         cache_key.to_string(),
                         LookupCacheSlot::Loading(notify.clone()),
                     );
+                    prune_lookup_cache(&mut inner, now);
                     (
                         LookupCacheAction::StartFetch(notify, generation),
                         metrics_summary,
@@ -419,20 +533,35 @@ impl LookupCacheState {
                     let metrics_summary = inner
                         .metrics
                         .record_event(kind, LookupCacheMetricEvent::Miss);
-                    let notify = Arc::new(Notify::new());
-                    let generation = inner.generation;
-                    inner.entries.insert(
-                        cache_key.to_string(),
-                        LookupCacheSlot::Loading(notify.clone()),
-                    );
-                    (
-                        LookupCacheAction::StartFetch(notify, generation),
-                        metrics_summary,
-                        format!(
+                    prune_lookup_cache(&mut inner, now);
+                    if inner.entries.len() >= MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES {
+                        (
+                            LookupCacheAction::Reject(TrackingError::ServiceUnavailable(
+                                "The in-memory lookup cache is at capacity. Please retry shortly."
+                                    .into(),
+                            )),
+                            metrics_summary,
+                            format!(
+                                "[ShipFlowCache] cache_capacity_rejected kind={} id={normalized_id} key={cache_key} capacity={MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES}",
+                                lookup_kind_label(kind)
+                            ),
+                        )
+                    } else {
+                        let notify = Arc::new(Notify::new());
+                        let generation = inner.generation;
+                        inner.entries.insert(
+                            cache_key.to_string(),
+                            LookupCacheSlot::Loading(notify.clone()),
+                        );
+                        (
+                            LookupCacheAction::StartFetch(notify, generation),
+                            metrics_summary,
+                            format!(
                             "[ShipFlowCache] cache_miss kind={} id={normalized_id} key={cache_key}",
                             lookup_kind_label(kind)
                         ),
-                    )
+                        )
+                    }
                 }
             }
         };
@@ -484,47 +613,40 @@ impl LookupCacheState {
             return;
         };
 
-        let kind_label = lookup_kind_label(kind).to_string();
-        let normalized_id = normalized_id.to_string();
-        let cache_key = cache_key.to_string();
-        let log_sink = self.log_sink.clone();
-
         if let Some(reason) = persistent_lookup_skip_reason(payload) {
             let bytes = payload.len();
-            let reason = reason.to_string();
-            tokio::task::spawn_blocking(move || {
-                persistent_store.remove_success(&cache_key);
-                if let Some(log_sink) = log_sink {
-                    log_sink(
-                        "INFO",
-                        format!(
-                            "[ShipFlowCache] persistent_cache_store_skipped kind={kind_label} id={normalized_id} key={cache_key} reason={reason} bytes={bytes}"
-                        ),
-                    );
-                }
-            });
+            persistent_store.enqueue_remove_success(cache_key.to_string());
+            self.log(
+                "INFO",
+                format!(
+                    "[ShipFlowCache] persistent_cache_store_skipped kind={} id={normalized_id} key={cache_key} reason={reason} bytes={bytes}",
+                    lookup_kind_label(kind)
+                ),
+            );
             return;
         }
 
-        let payload = payload.clone();
-        tokio::task::spawn_blocking(move || {
-            if !persistent_store.store_success(
-                cache_key.clone(),
-                payload,
-                Duration::from_secs(PERSISTENT_SUCCESS_CACHE_TTL_SECS),
-            ) {
-                return;
-            }
-
-            if let Some(log_sink) = log_sink {
-                log_sink(
-                    "INFO",
-                    format!(
-                        "[ShipFlowCache] persistent_cache_store kind={kind_label} id={normalized_id} key={cache_key}"
-                    ),
-                );
-            }
-        });
+        if persistent_store.enqueue_store_success(
+            cache_key.to_string(),
+            payload.clone(),
+            Duration::from_secs(PERSISTENT_SUCCESS_CACHE_TTL_SECS),
+        ) {
+            self.log(
+                "INFO",
+                format!(
+                    "[ShipFlowCache] persistent_cache_store_queued kind={} id={normalized_id} key={cache_key}",
+                    lookup_kind_label(kind)
+                ),
+            );
+        } else {
+            self.log(
+                "WARN",
+                format!(
+                    "[ShipFlowCache] persistent_cache_store_dropped kind={} id={normalized_id} key={cache_key} reason=writer_queue_full",
+                    lookup_kind_label(kind)
+                ),
+            );
+        }
     }
 
     fn log(&self, level: &str, message: String) {
@@ -546,21 +668,71 @@ impl LookupCacheState {
 
 impl CachedLookupEntry {
     fn success(kind: LookupKind, payload: String, policy: LookupCachePolicy) -> Self {
+        let now = Instant::now();
         Self {
-            expires_at: Instant::now() + policy.ttl_for(kind),
+            expires_at: now + policy.ttl_for(kind),
+            last_accessed_at: now,
             value: CachedLookupValue::Success(payload),
         }
     }
 
     fn error(_kind: LookupKind, error: &TrackingError, policy: LookupCachePolicy) -> Self {
+        let now = Instant::now();
         Self {
-            expires_at: Instant::now() + policy.error_ttl,
+            expires_at: now + policy.error_ttl,
+            last_accessed_at: now,
             value: CachedLookupValue::Error(CachedLookupError::from_tracking_error(error)),
         }
     }
     fn is_expired(&self, now: Instant) -> bool {
         now >= self.expires_at
     }
+}
+
+fn snapshot_lookup_cache(inner: &LookupCacheInner) -> LookupCacheSnapshot {
+    let mut snapshot = LookupCacheSnapshot {
+        capacity: MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES,
+        ..LookupCacheSnapshot::default()
+    };
+    for slot in inner.entries.values() {
+        match slot {
+            LookupCacheSlot::Ready(_) => snapshot.ready += 1,
+            LookupCacheSlot::Loading(_) => snapshot.loading += 1,
+        }
+    }
+    snapshot
+}
+
+fn prune_lookup_cache(inner: &mut LookupCacheInner, now: Instant) -> usize {
+    let before = inner.entries.len();
+    inner.entries.retain(|_, slot| match slot {
+        LookupCacheSlot::Ready(entry) => !entry.is_expired(now),
+        LookupCacheSlot::Loading(_) => true,
+    });
+
+    let loading = inner
+        .entries
+        .values()
+        .filter(|slot| matches!(slot, LookupCacheSlot::Loading(_)))
+        .count();
+    let allowed_ready = MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES.saturating_sub(loading);
+    let mut ready_entries = inner
+        .entries
+        .iter()
+        .filter_map(|(key, slot)| match slot {
+            LookupCacheSlot::Ready(entry) => Some((key.clone(), entry.last_accessed_at)),
+            LookupCacheSlot::Loading(_) => None,
+        })
+        .collect::<Vec<_>>();
+    if ready_entries.len() > allowed_ready {
+        ready_entries.sort_unstable_by_key(|(_, last_accessed_at)| *last_accessed_at);
+        let remove_count = ready_entries.len() - allowed_ready;
+        for (cache_key, _) in ready_entries.into_iter().take(remove_count) {
+            inner.entries.remove(&cache_key);
+        }
+    }
+
+    before.saturating_sub(inner.entries.len())
 }
 
 impl CachedLookupError {
@@ -769,20 +941,27 @@ fn hash_string(value: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-pub async fn resolve_tracking_request_cached<F, Fut, Permit>(
+pub async fn resolve_tracking_request_cached<F, Fut, Permit, ContactF, ContactFut, ContactPermit>(
     lookup_cache: &LookupCacheState,
     contact_cache: &ContactCacheState,
     client: &reqwest::Client,
     source_config: &TrackingSourceConfig,
     shipment_id: &str,
     options: LookupRequestOptions,
-    acquire_fetch_permit: F,
+    permit_providers: TrackingPermitProviders<F, ContactF>,
 ) -> Result<TrackResponse, TrackingError>
 where
     F: FnOnce() -> Fut + Send,
     Fut: Future<Output = Result<Permit, TrackingError>> + Send,
     Permit: Send,
+    ContactF: Fn() -> ContactFut + Send + Sync,
+    ContactFut: Future<Output = Result<ContactPermit, TrackingError>> + Send,
+    ContactPermit: Send,
 {
+    let TrackingPermitProviders {
+        primary: acquire_fetch_permit,
+        contact: acquire_contact_permit,
+    } = permit_providers;
     let normalized_shipment_id = normalize_and_validate_shipment_id(shipment_id)?;
     let source_fingerprint = source_fingerprint_for_lookup(source_config);
     let lookup_client = client.clone();
@@ -813,17 +992,24 @@ where
         source_config,
         &normalized_shipment_id,
         result,
+        acquire_contact_permit,
     )
     .await
 }
 
-async fn enrich_tracking_contacts(
+async fn enrich_tracking_contacts<ContactF, ContactFut, ContactPermit>(
     contact_cache: &ContactCacheState,
     client: &reqwest::Client,
     source_config: &TrackingSourceConfig,
     shipment_id: &str,
     mut response: TrackResponse,
-) -> Result<TrackResponse, TrackingError> {
+    acquire_contact_permit: ContactF,
+) -> Result<TrackResponse, TrackingError>
+where
+    ContactF: Fn() -> ContactFut + Send + Sync,
+    ContactFut: Future<Output = Result<ContactPermit, TrackingError>> + Send,
+    ContactPermit: Send,
+{
     if source_config.tracking_source != TrackingSource::Default {
         response.contact_enrichment = Some(contact_enrichment_metadata(
             ContactEnrichmentStatus::Skipped,
@@ -842,71 +1028,116 @@ async fn enrich_tracking_contacts(
         return Ok(response);
     }
 
-    if let Some(entry) = contact_cache.get(shipment_id) {
-        merge_contact_enrichment(&mut response, &entry.contact);
-        let status = match entry.status {
-            ContactCacheEntryStatus::Ok => ContactEnrichmentStatus::CacheHit,
-            ContactCacheEntryStatus::Missing => ContactEnrichmentStatus::Missing,
-        };
-        response.contact_enrichment = Some(contact_enrichment_metadata(status, &response));
-        eprintln!(
-            "[ShipFlowContactCache] cache_hit id={} status={:?} sender_phone_present={} recipient_phone_present={}",
-            shipment_id,
-            entry.status,
-            contact_phone_present(&response.detail.actors.pengirim.telepon),
-            contact_phone_present(&response.detail.actors.penerima.telepon)
-        );
-        return Ok(response);
-    }
+    loop {
+        if let Some(entry) = contact_cache.get_async(shipment_id).await {
+            apply_cached_contact(&mut response, shipment_id, &entry);
+            return Ok(response);
+        }
 
+        match contact_cache.begin_fetch(shipment_id) {
+            ContactFetchAction::Wait(waiter) => {
+                waiter.await;
+            }
+            ContactFetchAction::Start(fetch_lease) => {
+                let _fetch_lease = fetch_lease;
+                let permit = match acquire_contact_permit().await {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        contact_cache.store_failure_async(shipment_id).await;
+                        response.contact_enrichment = Some(contact_enrichment_metadata(
+                            ContactEnrichmentStatus::Failed,
+                            &response,
+                        ));
+                        shipflow_core::shipflow_log!(
+                            "[ShipFlowContactCache] permit_failed id={} error={:?}",
+                            shipment_id,
+                            error
+                        );
+                        return Ok(response);
+                    }
+                };
+                let fetch_result = fetch_contact_enrichment(client, shipment_id).await;
+                drop(permit);
+
+                match fetch_result {
+                    Ok(contact) => {
+                        let entry = contact_cache.store_async(shipment_id, contact).await;
+                        merge_contact_enrichment(&mut response, &entry.contact);
+                        let status = match entry.status {
+                            ContactCacheEntryStatus::Ok => ContactEnrichmentStatus::Fetched,
+                            ContactCacheEntryStatus::Missing => ContactEnrichmentStatus::Missing,
+                            ContactCacheEntryStatus::Failed => ContactEnrichmentStatus::Failed,
+                        };
+                        response.contact_enrichment =
+                            Some(contact_enrichment_metadata(status, &response));
+                        shipflow_core::shipflow_log!(
+                            "[ShipFlowContactCache] fetch_ok id={} status={:?} sender_phone_present={} recipient_phone_present={}",
+                            shipment_id,
+                            entry.status,
+                            contact_phone_present(&response.detail.actors.pengirim.telepon),
+                            contact_phone_present(&response.detail.actors.penerima.telepon)
+                        );
+                    }
+                    Err(error) => {
+                        contact_cache.store_failure_async(shipment_id).await;
+                        response.contact_enrichment = Some(contact_enrichment_metadata(
+                            ContactEnrichmentStatus::Failed,
+                            &response,
+                        ));
+                        shipflow_core::shipflow_log!(
+                            "[ShipFlowContactCache] fetch_failed id={} error={:?}",
+                            shipment_id,
+                            error
+                        );
+                    }
+                }
+
+                return Ok(response);
+            }
+        }
+    }
+}
+
+async fn fetch_contact_enrichment(
+    client: &reqwest::Client,
+    shipment_id: &str,
+) -> Result<ContactEnrichment, TrackingError> {
     let url = build_lacak_mitra_tracking_url(shipment_id);
-    let fetch_result = async {
-        let upstream_response = fetch_lookup_response(client, &url).await?;
-        if !upstream_response.status().is_success() {
-            return Err(TrackingError::Upstream(format!(
-                "Lacak Mitra contact endpoint returned HTTP {}.",
-                upstream_response.status()
-            )));
-        }
-        upstream_response.text().await.map_err(|error| {
-            TrackingError::Upstream(format!(
-                "Lacak Mitra contact response could not be read: {error}"
-            ))
-        })
+    let upstream_response = fetch_lookup_response(client, &url).await?;
+    if !upstream_response.status().is_success() {
+        return Err(TrackingError::Upstream(format!(
+            "Lacak Mitra contact endpoint returned HTTP {}.",
+            upstream_response.status()
+        )));
     }
-    .await;
+    let html = read_response_text_limited(
+        upstream_response,
+        MAX_CONTACT_RESPONSE_BYTES,
+        "Lacak Mitra contact response",
+    )
+    .await?;
+    Ok(parse_lacak_mitra_contact_html(&html))
+}
 
-    match fetch_result {
-        Ok(html) => {
-            let contact = parse_lacak_mitra_contact_html(&html);
-            let entry = contact_cache.store(shipment_id, contact);
-            merge_contact_enrichment(&mut response, &entry.contact);
-            let status = match entry.status {
-                ContactCacheEntryStatus::Ok => ContactEnrichmentStatus::Fetched,
-                ContactCacheEntryStatus::Missing => ContactEnrichmentStatus::Missing,
-            };
-            response.contact_enrichment = Some(contact_enrichment_metadata(status, &response));
-            eprintln!(
-                "[ShipFlowContactCache] fetch_ok id={} status={:?} sender_phone_present={} recipient_phone_present={}",
-                shipment_id,
-                entry.status,
-                contact_phone_present(&response.detail.actors.pengirim.telepon),
-                contact_phone_present(&response.detail.actors.penerima.telepon)
-            );
-        }
-        Err(error) => {
-            response.contact_enrichment = Some(contact_enrichment_metadata(
-                ContactEnrichmentStatus::Failed,
-                &response,
-            ));
-            eprintln!(
-                "[ShipFlowContactCache] fetch_failed id={} error={:?}",
-                shipment_id, error
-            );
-        }
-    }
-
-    Ok(response)
+fn apply_cached_contact(
+    response: &mut TrackResponse,
+    shipment_id: &str,
+    entry: &ContactCacheEntry,
+) {
+    merge_contact_enrichment(response, &entry.contact);
+    let status = match entry.status {
+        ContactCacheEntryStatus::Ok => ContactEnrichmentStatus::CacheHit,
+        ContactCacheEntryStatus::Missing => ContactEnrichmentStatus::Missing,
+        ContactCacheEntryStatus::Failed => ContactEnrichmentStatus::Failed,
+    };
+    response.contact_enrichment = Some(contact_enrichment_metadata(status, response));
+    shipflow_core::shipflow_log!(
+        "[ShipFlowContactCache] cache_hit id={} status={:?} sender_phone_present={} recipient_phone_present={}",
+        shipment_id,
+        entry.status,
+        contact_phone_present(&response.detail.actors.pengirim.telepon),
+        contact_phone_present(&response.detail.actors.penerima.telepon)
+    );
 }
 
 fn merge_contact_enrichment(response: &mut TrackResponse, contact: &ContactEnrichment) {
@@ -1015,12 +1246,13 @@ where
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::{
-        source_fingerprint_for_lookup, LookupCacheAction, LookupCacheMetricEvent,
-        LookupCacheMetrics, LookupCachePolicy, LookupCacheState, LookupLoaderError,
-        LookupRequestOptions,
+        source_fingerprint_for_lookup, CachedLookupEntry, CachedLookupValue, LookupCacheAction,
+        LookupCacheMetricEvent, LookupCacheMetrics, LookupCachePolicy, LookupCacheSlot,
+        LookupCacheState, LookupLoaderError, LookupRequestOptions,
+        MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES,
     };
     use shipflow_core::model::{
         BagResponse, LookupKind, TrackingError, TrackingSource, TrackingSourceConfig,
@@ -1290,6 +1522,87 @@ mod tests {
                 .await
                 .expect("registered waiter should observe an earlier notify_waiters call");
         });
+    }
+
+    #[test]
+    fn cancelled_loader_clears_the_loading_slot() {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        runtime.block_on(async {
+            let cache = LookupCacheState::with_policy(create_test_policy());
+            let lookup = cache.resolve_cached_lookup::<BagResponse, _, _>(
+                LookupKind::Bag,
+                "PID-CANCELLED".into(),
+                "pos-bag".into(),
+                LookupRequestOptions::default(),
+                || async { std::future::pending::<Result<BagResponse, LookupLoaderError>>().await },
+            );
+
+            tokio::time::timeout(Duration::from_millis(10), lookup)
+                .await
+                .expect_err("test lookup should be cancelled by its caller deadline");
+
+            assert_eq!(
+                cache.snapshot().loading,
+                0,
+                "cancelled owners must not leave a permanently loading cache slot"
+            );
+        });
+    }
+
+    #[test]
+    fn cache_pruning_enforces_capacity_and_removes_oldest_ready_entries() {
+        let cache = LookupCacheState::with_policy(create_test_policy());
+        let now = Instant::now();
+        {
+            let mut inner = cache.inner.lock().expect("lookup cache lock poisoned");
+            for index in 0..=MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES {
+                inner.entries.insert(
+                    format!("track:P{index}"),
+                    LookupCacheSlot::Ready(CachedLookupEntry {
+                        expires_at: now + Duration::from_secs(60),
+                        last_accessed_at: now + Duration::from_nanos(index as u64),
+                        value: CachedLookupValue::Success("{}".into()),
+                    }),
+                );
+            }
+        }
+
+        let snapshot = cache.prune_expired_and_over_capacity();
+        let inner = cache.inner.lock().expect("lookup cache lock poisoned");
+
+        assert_eq!(snapshot.ready, MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES);
+        assert_eq!(snapshot.loading, 0);
+        assert!(!inner.entries.contains_key("track:P0"));
+        assert!(inner
+            .entries
+            .contains_key(&format!("track:P{MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES}")));
+    }
+
+    #[test]
+    fn cache_rejects_a_new_miss_when_all_capacity_is_loading() {
+        let cache = LookupCacheState::with_policy(create_test_policy());
+        {
+            let mut inner = cache.inner.lock().expect("lookup cache lock poisoned");
+            for index in 0..MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES {
+                inner.entries.insert(
+                    format!("track:P{index}"),
+                    LookupCacheSlot::Loading(Arc::new(tokio::sync::Notify::new())),
+                );
+            }
+        }
+
+        let action = cache.next_action(
+            "track:P-OVERFLOW",
+            LookupKind::Track,
+            "P-OVERFLOW",
+            LookupRequestOptions::default(),
+        );
+
+        assert!(matches!(
+            action,
+            LookupCacheAction::Reject(TrackingError::ServiceUnavailable(_))
+        ));
+        assert_eq!(cache.snapshot().loading, MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES);
     }
 
     #[test]

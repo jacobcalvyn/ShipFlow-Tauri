@@ -33,6 +33,8 @@ jobs:
         run: npm run build
       - name: Run frontend tests
         run: npm test
+      - name: Test runtime log analyzer
+        run: npm run test:diagnostics
       - name: Check Rust format
         run: cargo fmt --all -- --check
       - name: Run Rust tests
@@ -43,6 +45,16 @@ jobs:
         run: npx playwright install-deps chromium
       - name: Run Electron smoke tests
         run: xvfb-run --auto-servernum npm run test:e2e
+      - name: Upload Electron smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: electron-smoke-diagnostics-linux
+          path: |
+            output/playwright-report
+            output/playwright
+          if-no-files-found: ignore
+          retention-days: 14
 
   native-runtime:
     name: Electron Native Runtime (${{ matrix.os }})
@@ -80,6 +92,23 @@ jobs:
         run: npm run package:dir
       - name: Verify packaged Electron suite
         run: npm run package:verify
+      - name: Run packaged Electron smoke on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP_EXECUTABLE="$(find release -type f -path '*/ShipFlow Desktop.app/Contents/MacOS/ShipFlow Desktop' -print -quit)"
+          test -n "$APP_EXECUTABLE"
+          SHIPFLOW_ELECTRON_EXECUTABLE="$APP_EXECUTABLE" npm run test:electron:package
+      - name: Run packaged Electron smoke on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $appExecutable = Get-ChildItem release -Recurse -File -Filter 'ShipFlow Desktop.exe' |
+            Where-Object { $_.FullName -match 'win.*unpacked' } |
+            Select-Object -First 1
+          if ($null -eq $appExecutable) { throw 'Missing packaged ShipFlow Desktop executable' }
+          $env:SHIPFLOW_ELECTRON_EXECUTABLE = $appExecutable.FullName
+          npm run test:electron:package
       - name: Verify packaged native resources on macOS
         if: runner.os == 'macOS'
         shell: bash
@@ -94,3 +123,13 @@ jobs:
           foreach ($file in @('shipflow-service.exe', 'shipflow-workspace-host.exe', 'duckdb.dll')) {
             if (-not (Test-Path (Join-Path $resourceRoot.FullName $file))) { throw "Missing $file" }
           }
+      - name: Upload packaged smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: electron-native-diagnostics-${{ matrix.os }}
+          path: |
+            output/playwright-report
+            output/playwright
+          if-no-files-found: ignore
+          retention-days: 14

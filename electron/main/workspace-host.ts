@@ -3,7 +3,8 @@ import { createInterface } from "node:readline";
 import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { app } from "electron";
-import { appLogger } from "./app-logger";
+import { appLogger, pipeTextStreamToAppLogger } from "./app-logger";
+import { observeChildProcessTermination } from "./child-process-lifecycle";
 
 type PendingRequest = {
   resolve: (value: unknown) => void;
@@ -218,11 +219,16 @@ export class WorkspaceHostClient {
     }
     this.#pending.clear();
     if (child && !child.killed) {
+      appLogger.event("INFO", "WorkspaceHost", "workspace_host_stop_requested", {
+        pid: child.pid,
+        windowLabel: this.#windowLabel,
+      });
       child.kill();
     }
   }
 
   async #spawnAndWaitUntilReady() {
+    const startupStartedAt = Date.now();
     const executable = await resolveWorkspaceHostPath();
     const database = workspaceDatabasePath(this.#windowLabel);
     await mkdir(path.dirname(database), { recursive: true });
@@ -239,24 +245,65 @@ export class WorkspaceHostClient {
       },
     );
     this.#child = child;
-    appLogger.info(
-      "WorkspaceHost",
-      `Started workspace host window=${this.#windowLabel} pid=${child.pid ?? "unknown"}.`,
-    );
-
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => {
-      appLogger.warn(`WorkspaceHost:${this.#windowLabel}`, chunk);
+    appLogger.event("INFO", "WorkspaceHost", "workspace_host_started", {
+      pid: child.pid,
+      windowLabel: this.#windowLabel,
     });
-    child.once("exit", (code, signal) => {
+    let readyResolve: (() => void) | null = null;
+    let readyReject: ((error: Error) => void) | null = null;
+    let readySettled = false;
+    let startupTimeout: NodeJS.Timeout | null = null;
+    const settleReady = (error?: Error) => {
+      if (readySettled) {
+        return;
+      }
+      readySettled = true;
+      if (startupTimeout) {
+        clearTimeout(startupTimeout);
+        startupTimeout = null;
+      }
+      if (error) {
+        readyReject?.(error);
+      } else {
+        readyResolve?.();
+      }
+      readyResolve = null;
+      readyReject = null;
+    };
+    const ready = new Promise<void>((resolve, reject) => {
+      readyResolve = resolve;
+      readyReject = reject;
+    });
+    startupTimeout = setTimeout(() => {
+      settleReady(new Error("ShipFlow Workspace Host startup timed out."));
+      child.kill();
+    }, STARTUP_TIMEOUT_MS);
+    observeChildProcessTermination(child, (termination) => {
+      const detail =
+        termination.kind === "error"
+          ? `spawn error ${String(termination.error)}`
+          : termination.signal
+            ? `signal ${termination.signal}`
+            : `code ${termination.code ?? "unknown"}`;
       if (this.#child === child) {
         this.#child = null;
         this.#readyPromise = null;
       }
-      const detail = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
+      settleReady(new Error(`ShipFlow Workspace Host exited with ${detail}.`));
       appLogger.info(
         "WorkspaceHost",
         `Workspace host window=${this.#windowLabel} exited with ${detail}.`,
+      );
+      appLogger.event(
+        child.killed ? "INFO" : "ERROR",
+        "WorkspaceHost",
+        "workspace_host_exited",
+        {
+          detail,
+          pid: child.pid,
+          uptimeMs: Date.now() - startupStartedAt,
+          windowLabel: this.#windowLabel,
+        },
       );
       for (const pending of this.#pending.values()) {
         clearTimeout(pending.timeout);
@@ -264,18 +311,18 @@ export class WorkspaceHostClient {
       }
       this.#pending.clear();
     });
+    appLogger.info(
+      "WorkspaceHost",
+      `Started workspace host window=${this.#windowLabel} pid=${child.pid ?? "unknown"}.`,
+    );
+
+    pipeTextStreamToAppLogger(
+      child.stderr,
+      `WorkspaceHost:${this.#windowLabel}`,
+      "WARN",
+    );
 
     const lines = createInterface({ input: child.stdout });
-    let readyResolve: (() => void) | null = null;
-    let readyReject: ((error: Error) => void) | null = null;
-    const ready = new Promise<void>((resolve, reject) => {
-      readyResolve = resolve;
-      readyReject = reject;
-    });
-    const timeout = setTimeout(() => {
-      readyReject?.(new Error("ShipFlow Workspace Host startup timed out."));
-      child.kill();
-    }, STARTUP_TIMEOUT_MS);
 
     lines.on("line", (line) => {
       let message: RpcMessage;
@@ -286,11 +333,15 @@ export class WorkspaceHostClient {
           `WorkspaceHost:${this.#windowLabel}`,
           `Invalid JSON: ${String(error)}`,
         );
+        if (!readySettled) {
+          settleReady(new Error("ShipFlow Workspace Host returned invalid startup data."));
+          child.kill();
+        }
         return;
       }
 
       if (message.protocolVersion !== PROTOCOL_VERSION) {
-        readyReject?.(
+        settleReady(
           new Error(
             `Workspace Host protocol mismatch: ${message.protocolVersion} != ${PROTOCOL_VERSION}.`,
           ),
@@ -299,10 +350,12 @@ export class WorkspaceHostClient {
         return;
       }
       if (message.kind === "ready") {
-        clearTimeout(timeout);
-        readyResolve?.();
-        readyResolve = null;
-        readyReject = null;
+        appLogger.event("INFO", "WorkspaceHost", "workspace_host_ready", {
+          pid: message.processId,
+          startupDurationMs: Date.now() - startupStartedAt,
+          windowLabel: this.#windowLabel,
+        });
+        settleReady();
         return;
       }
       if (message.kind === "event") {
@@ -322,10 +375,6 @@ export class WorkspaceHostClient {
       }
     });
 
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      readyReject?.(error);
-    });
     await ready;
   }
 }

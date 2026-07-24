@@ -1,13 +1,29 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { access, chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  mkdir,
+  readFile,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { app, safeStorage } from "electron";
 import type { ApiServiceStatus, ServiceConfig } from "../../src/types";
 import type { ManagedServiceConnection } from "./workspace-host";
 import { appLogger } from "./app-logger";
+import {
+  childProcessHasExited,
+  observeChildProcessTermination,
+  terminateChildProcess,
+  waitForChildProcessExit,
+} from "./child-process-lifecycle";
 import { probeExternalApiAuth } from "./external-api-policy";
 import { buildServiceIpcEndpoint, requestServiceIpc } from "./service-ipc";
+import { ServiceRestartPolicy } from "./service-restart-policy";
 
 type PersistedAgentConfig = {
   version: 2;
@@ -33,13 +49,45 @@ type LegacyTokenVault = {
 const DEFAULT_PORT = 18422;
 const STARTUP_TIMEOUT_MS = 10_000;
 const ENCRYPTED_SECRET_PREFIX = "encrypted:v1:";
+const PACKAGE_SMOKE_TEST_ENV = "SHIPFLOW_ELECTRON_PACKAGE_SMOKE";
 
 function createToken() {
   return `sf_${randomBytes(24).toString("hex")}`;
 }
 
+function isInsideDirectory(candidate: string, parent: string) {
+  const relativePath = path.relative(path.resolve(parent), path.resolve(candidate));
+  return (
+    relativePath !== "" &&
+    relativePath !== ".." &&
+    !relativePath.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relativePath)
+  );
+}
+
+function isIsolatedPackageSmoke() {
+  if (process.env[PACKAGE_SMOKE_TEST_ENV] !== "1") {
+    return false;
+  }
+  const isolatedDirectories = [
+    process.env.SHIPFLOW_USER_DATA_DIR?.trim(),
+    process.env.SHIPFLOW_SERVICE_AGENT_STATE_DIR?.trim(),
+  ];
+  return isolatedDirectories.every((directory) =>
+    directory ? isInsideDirectory(directory, os.tmpdir()) : false,
+  );
+}
+
+function shouldProtectPersistedSecrets() {
+  return !isIsolatedPackageSmoke();
+}
+
 function protectSecret(value: string) {
-  if (!value || !safeStorage.isEncryptionAvailable()) {
+  if (
+    !value ||
+    !shouldProtectPersistedSecrets() ||
+    !safeStorage.isEncryptionAvailable()
+  ) {
     return value;
   }
   return `${ENCRYPTED_SECRET_PREFIX}${safeStorage.encryptString(value).toString("base64")}`;
@@ -48,6 +96,11 @@ function protectSecret(value: string) {
 function revealSecret(value: string | undefined) {
   if (!value?.startsWith(ENCRYPTED_SECRET_PREFIX)) {
     return value?.trim() ?? "";
+  }
+  if (!shouldProtectPersistedSecrets()) {
+    throw new Error(
+      "The packaged smoke-test configuration cannot read encrypted credentials.",
+    );
   }
   try {
     return safeStorage.decryptString(
@@ -78,11 +131,25 @@ function agentConfigPath() {
   return path.join(serviceStateDirectory(), "agent-config.json");
 }
 
+function serviceLogFilePath() {
+  const override = process.env.SHIPFLOW_SERVICE_LOG_FILE?.trim();
+  return override
+    ? path.resolve(override)
+    : path.join(path.dirname(appLogger.filePath), "shipflow-service.log");
+}
+
 function serviceIpcIdentity() {
   return createHash("sha256")
     .update(app.getPath("userData"))
     .digest("hex")
     .slice(0, 20);
+}
+
+function serviceIpcStableNonce() {
+  return createHash("sha256")
+    .update(`managed-service:${serviceIpcIdentity()}`)
+    .digest("hex")
+    .slice(0, 32);
 }
 
 function serviceIpcRuntimeDirectory() {
@@ -201,7 +268,9 @@ async function readLegacyConfig(): Promise<Partial<PersistedAgentConfig>> {
   };
 }
 
-async function persistConfig(config: PersistedAgentConfig) {
+let persistConfigTail: Promise<void> = Promise.resolve();
+
+async function persistConfigImmediately(config: PersistedAgentConfig) {
   const targetPath = agentConfigPath();
   await mkdir(path.dirname(targetPath), { recursive: true });
   const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
@@ -244,6 +313,15 @@ async function persistConfig(config: PersistedAgentConfig) {
   if (movedExistingConfig) {
     await unlink(backupPath).catch(() => undefined);
   }
+}
+
+async function persistConfig(config: PersistedAgentConfig) {
+  const snapshot = { ...config };
+  const operation = persistConfigTail
+    .catch(() => undefined)
+    .then(() => persistConfigImmediately(snapshot));
+  persistConfigTail = operation.catch(() => undefined);
+  await operation;
 }
 
 function asServiceConfig(config: PersistedAgentConfig): ServiceConfig {
@@ -311,6 +389,7 @@ async function readManagedServiceStatus(
     product?: unknown;
     service?: unknown;
     port?: unknown;
+    processId?: unknown;
   }>(config, ipcEndpoint, "service.status", {}, timeoutMs);
   if (status.product !== "shipflow-service" || status.service !== "running") {
     throw new Error("The native IPC endpoint is not a running ShipFlow Service.");
@@ -358,9 +437,13 @@ export class ServiceAgentManager {
   #child: ChildProcess | null = null;
   #shutdownPromise: Promise<void> | null = null;
   #isShuttingDown = false;
+  #restartTimer: NodeJS.Timeout | null = null;
+  #restartCount = 0;
+  readonly #restartPolicy = new ServiceRestartPolicy();
+  readonly #expectedExitPids = new Set<number>();
   readonly #ipcRuntimeDirectory = serviceIpcRuntimeDirectory();
   readonly #ipcEndpoint = createServiceIpcEndpoint(
-    randomBytes(16).toString("hex"),
+    serviceIpcStableNonce(),
     this.#ipcRuntimeDirectory,
   );
 
@@ -403,6 +486,10 @@ export class ServiceAgentManager {
       return this.#startPromise;
     }
     await this.#prepareIpcRuntime();
+    appLogger.event("INFO", "ServiceAgent", "service_connection_requested", {
+      hasActiveChild: Boolean(this.#child && !childProcessHasExited(this.#child)),
+      restartCount: this.#restartCount,
+    });
     this.#startPromise = this.#ensureStarted();
     try {
       return await this.#startPromise;
@@ -464,11 +551,22 @@ export class ServiceAgentManager {
       previous.externalApiAuthToken !== next.externalApiAuthToken ||
       previous.allowInsecureExternalApiHttp !== next.allowInsecureExternalApiHttp;
     if (requiresRestart) {
+      this.#clearScheduledRestart();
+      this.#restartPolicy.reset();
       await this.#stopManagedService(previous, true);
       next.processId = null;
     }
     await persistConfig(next);
     this.#config = next;
+    appLogger.event("INFO", "ServiceAgent", "service_config_saved", {
+      enabled: next.enabled,
+      keepRunningInTray: next.keepRunningInTray,
+      mode: next.mode,
+      port: next.port,
+      requiresRestart,
+      startAtLogin: next.startAtLogin,
+      trackingSource: next.trackingSource,
+    });
     app.setLoginItemSettings({
       openAtLogin: next.startAtLogin,
       args: ["--background"],
@@ -503,12 +601,18 @@ export class ServiceAgentManager {
       return this.#shutdownPromise;
     }
     this.#isShuttingDown = true;
+    this.#clearScheduledRestart();
+    this.#restartPolicy.reset();
     this.#shutdownPromise = (async () => {
+      appLogger.event("INFO", "ServiceAgent", "service_shutdown_started", {
+        hasActiveChild: Boolean(this.#child && !childProcessHasExited(this.#child)),
+      });
       await this.#startPromise?.catch(() => undefined);
       const config = await this.loadConfig();
       await this.#stopManagedService(config, false);
       config.processId = null;
       await persistConfig(config);
+      appLogger.event("INFO", "ServiceAgent", "service_shutdown_completed");
     })();
     try {
       await this.#shutdownPromise;
@@ -525,10 +629,58 @@ export class ServiceAgentManager {
     if (!config.enabled) {
       throw new Error("ShipFlow Service is disabled.");
     }
+    let managedEndpointDetected = false;
     try {
-      await readManagedServiceStatus(config, this.#ipcEndpoint);
-      return connectionFor(config, this.#ipcEndpoint);
-    } catch {
+      const status = await readManagedServiceStatus(config, this.#ipcEndpoint);
+      managedEndpointDetected = true;
+      if (this.#child) {
+        appLogger.event("INFO", "ServiceAgent", "service_reused", {
+          pid: config.processId,
+          port: config.port,
+        });
+        return connectionFor(config, this.#ipcEndpoint);
+      }
+      appLogger.event("WARN", "ServiceAgent", "orphan_service_detected", {
+        pid:
+          typeof status.processId === "number" && Number.isInteger(status.processId)
+            ? status.processId
+            : config.processId,
+        port: config.port,
+      });
+      await requestManagedService(
+        config,
+        this.#ipcEndpoint,
+        "service.shutdown",
+        {},
+        3_000,
+      );
+      const shutdownDeadline = Date.now() + 5_000;
+      while (Date.now() < shutdownDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        try {
+          await readManagedServiceStatus(config, this.#ipcEndpoint, 250);
+        } catch {
+          config.processId = null;
+          await persistConfig(config);
+          appLogger.event("INFO", "ServiceAgent", "orphan_service_stopped", {
+            port: config.port,
+          });
+          break;
+        }
+      }
+      if (config.processId !== null) {
+        throw new Error(
+          "The previous managed ShipFlow Service did not stop within the recovery deadline.",
+        );
+      }
+    } catch (error) {
+      if (managedEndpointDetected) {
+        appLogger.event("ERROR", "ServiceAgent", "orphan_service_recovery_failed", {
+          error: error instanceof Error ? error.message : String(error),
+          port: config.port,
+        });
+        throw error;
+      }
       // No managed IPC endpoint is currently available.
     }
 
@@ -553,6 +705,15 @@ export class ServiceAgentManager {
       "--port",
       String(config.port),
     ];
+    const startupStartedAt = Date.now();
+    const launchId = randomBytes(8).toString("hex");
+    appLogger.event("INFO", "ServiceAgent", "service_spawn_started", {
+      launchId,
+      mode: config.mode,
+      port: config.port,
+      restartCount: this.#restartCount,
+    });
+    const serviceLogPath = serviceLogFilePath();
     const child = spawn(executable, args, {
       detached: false,
       env: {
@@ -565,50 +726,110 @@ export class ServiceAgentManager {
         SHIPFLOW_EXTERNAL_API_TOKEN:
           config.trackingSource === "externalApi" ? config.externalApiAuthToken : "",
         SHIPFLOW_ALLOW_INSECURE_HTTP: String(config.allowInsecureExternalApiHttp),
+        SHIPFLOW_SERVICE_RESTART_COUNT: String(this.#restartCount),
+        SHIPFLOW_NATIVE_LOG_FILE: serviceLogPath,
       },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: "ignore",
       windowsHide: true,
     });
     this.#child = child;
-    appLogger.info("ServiceAgent", `Started managed Service process pid=${child.pid ?? "unknown"}.`);
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => {
-      appLogger.info("Service", chunk);
-    });
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk: string) => {
-      appLogger.info("Service", chunk);
-    });
     config.processId = child.pid ?? null;
-    await persistConfig(config);
-    child.once("exit", (code, signal) => {
-      if (this.#child !== child) {
-        return;
+    let startupFailure: Error | null = null;
+    const handleTermination = (detail: string) => {
+      if (!startupFailure) {
+        startupFailure = new Error(`ShipFlow Service exited during startup with ${detail}.`);
       }
-      this.#child = null;
+      const processId = child.pid;
+      const expectedExit =
+        processId !== undefined && this.#expectedExitPids.delete(processId);
+      const ownsCurrentChild = this.#child === child;
+      if (ownsCurrentChild) {
+        this.#child = null;
+      }
       const currentConfig = this.#config;
-      if (currentConfig && currentConfig.processId === child.pid) {
+      if (currentConfig && currentConfig.processId === processId) {
         currentConfig.processId = null;
         void persistConfig(currentConfig).catch((error) => {
           appLogger.error("ServiceAgent", `Unable to persist Service exit state: ${String(error)}`);
         });
       }
-      const detail = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
       appLogger.info("ServiceAgent", `Managed Service exited with ${detail}.`);
+      appLogger.event(
+        expectedExit ? "INFO" : "ERROR",
+        "ServiceAgent",
+        "service_process_exited",
+        {
+          detail,
+          expected: expectedExit,
+          launchId,
+          pid: processId,
+          uptimeMs: Date.now() - startupStartedAt,
+        },
+      );
+      if (
+        ownsCurrentChild &&
+        !expectedExit &&
+        !this.#isShuttingDown &&
+        currentConfig?.enabled
+      ) {
+        this.#scheduleRestart();
+      }
+    };
+    observeChildProcessTermination(child, (termination) => {
+      handleTermination(
+        termination.kind === "error"
+          ? `spawn error ${String(termination.error)}`
+          : termination.signal
+            ? `signal ${termination.signal}`
+            : `code ${termination.code ?? "unknown"}`,
+      );
     });
+    appLogger.info("ServiceAgent", `Started managed Service process pid=${child.pid ?? "unknown"}.`);
+    appLogger.event("INFO", "ServiceAgent", "service_process_started", {
+      launchId,
+      pid: child.pid,
+      serviceLogPath,
+    });
+    await persistConfig(config);
 
     const deadline = Date.now() + STARTUP_TIMEOUT_MS;
     while (Date.now() < deadline) {
+      if (startupFailure) {
+        throw startupFailure;
+      }
       await new Promise((resolve) => setTimeout(resolve, 150));
+      if (startupFailure) {
+        throw startupFailure;
+      }
       try {
         await readManagedServiceStatus(config, this.#ipcEndpoint, 750);
+        appLogger.event("INFO", "ServiceAgent", "service_ready", {
+          launchId,
+          pid: child.pid,
+          port: config.port,
+          startupDurationMs: Date.now() - startupStartedAt,
+        });
         return connectionFor(config, this.#ipcEndpoint);
       } catch {
         // Continue until the bounded startup deadline.
       }
     }
+    let stopped = true;
+    if (!childProcessHasExited(child)) {
+      this.#markChildExitExpected(child);
+      stopped = await terminateChildProcess(child);
+    }
+    if (this.#child === child) {
+      this.#child = null;
+    }
+    if (config.processId === child.pid) {
+      config.processId = null;
+      await persistConfig(config);
+    }
     throw new Error(
-      "ShipFlow Service did not become ready on its native IPC endpoint.",
+      stopped
+        ? "ShipFlow Service did not become ready on its native IPC endpoint."
+        : "ShipFlow Service did not become ready and its process could not be terminated.",
     );
   }
 
@@ -628,7 +849,10 @@ export class ServiceAgentManager {
       } catch {
         legacyServiceWasReachable = false;
       }
-      if (legacyServiceWasReachable && (!this.#child || this.#child.killed)) {
+      if (
+        legacyServiceWasReachable &&
+        (!this.#child || childProcessHasExited(this.#child))
+      ) {
         const message =
           "A ShipFlow Service without the managed IPC endpoint is still running. Stop that process before restarting Service settings.";
         if (requireStopped) {
@@ -639,7 +863,11 @@ export class ServiceAgentManager {
       }
     }
 
+    const child = this.#child;
     if (managedServiceWasReachable) {
+      if (child) {
+        this.#markChildExitExpected(child);
+      }
       try {
         await requestManagedService(
           config,
@@ -649,7 +877,7 @@ export class ServiceAgentManager {
           3_000,
         );
       } catch (error) {
-        if (!this.#child || this.#child.killed) {
+        if (!child || childProcessHasExited(child)) {
           if (requireStopped) {
             throw new Error(
               `The existing ShipFlow Service cannot be restarted safely: ${String(error)}`,
@@ -660,24 +888,107 @@ export class ServiceAgentManager {
           );
           return;
         }
-        this.#child.kill();
+        await terminateChildProcess(child);
       }
 
-      const deadline = Date.now() + 5_000;
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        try {
-          await readManagedServiceStatus(config, this.#ipcEndpoint, 500);
-        } catch {
-          break;
-        }
+      if (child && !childProcessHasExited(child)) {
+        await waitForChildProcessExit(child, 5_000);
       }
     }
 
-    if (this.#child && !this.#child.killed) {
-      this.#child.kill();
+    if (child && !childProcessHasExited(child)) {
+      this.#markChildExitExpected(child);
+      const stopped = await terminateChildProcess(child);
+      if (!stopped && requireStopped) {
+        throw new Error("ShipFlow Service process could not be terminated safely.");
+      }
     }
-    this.#child = null;
+    if (this.#child === child) {
+      this.#child = null;
+    }
     config.processId = null;
+  }
+
+  #markChildExitExpected(child: ChildProcess) {
+    const processId = child.pid;
+    if (processId !== undefined) {
+      this.#expectedExitPids.add(processId);
+    }
+  }
+
+  #clearScheduledRestart() {
+    if (this.#restartTimer) {
+      clearTimeout(this.#restartTimer);
+      this.#restartTimer = null;
+    }
+  }
+
+  #scheduleRestart() {
+    if (this.#restartTimer || this.#isShuttingDown) {
+      return;
+    }
+    const decision = this.#restartPolicy.registerCrash();
+    if (!decision) {
+      appLogger.error(
+        "ServiceAgent",
+        "Managed Service restart stopped after repeated crashes within two minutes.",
+      );
+      appLogger.event("ERROR", "ServiceAgent", "service_restart_exhausted", {
+        restartCount: this.#restartCount,
+      });
+      return;
+    }
+
+    appLogger.warn(
+      "ServiceAgent",
+      `Managed Service restart scheduled attempt=${decision.attempt} delayMs=${decision.delayMs}.`,
+    );
+    appLogger.event("WARN", "ServiceAgent", "service_restart_scheduled", {
+      attempt: decision.attempt,
+      delayMs: decision.delayMs,
+      restartCount: this.#restartCount,
+    });
+    this.#restartTimer = setTimeout(() => {
+      this.#restartTimer = null;
+      void this.#restartAfterCrash(decision.attempt);
+    }, decision.delayMs);
+  }
+
+  async #restartAfterCrash(attempt: number) {
+    if (this.#isShuttingDown || !(await this.loadConfig()).enabled) {
+      return;
+    }
+    const previousStart = this.#startPromise;
+    if (previousStart) {
+      await previousStart.catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    if (this.#isShuttingDown) {
+      return;
+    }
+
+    this.#restartCount += 1;
+    try {
+      await this.connection();
+      appLogger.info(
+        "ServiceAgent",
+        `Managed Service restart completed attempt=${attempt} restartCount=${this.#restartCount}.`,
+      );
+      appLogger.event("INFO", "ServiceAgent", "service_restart_completed", {
+        attempt,
+        restartCount: this.#restartCount,
+      });
+    } catch (error) {
+      appLogger.error(
+        "ServiceAgent",
+        `Managed Service restart failed attempt=${attempt}: ${String(error)}`,
+      );
+      appLogger.event("ERROR", "ServiceAgent", "service_restart_failed", {
+        attempt,
+        error: error instanceof Error ? error.message : String(error),
+        restartCount: this.#restartCount,
+      });
+      this.#scheduleRestart();
+    }
   }
 }

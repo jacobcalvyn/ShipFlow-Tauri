@@ -15,6 +15,7 @@ use shipflow_ipc::{
 use shipflow_service_runtime::{FORCE_REFRESH_HEADER_NAME, SERVICE_STATUS_PRODUCT};
 
 const SERVICE_STATUS_VERIFICATION_TTL: Duration = Duration::from_secs(10);
+const SERVICE_IPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(130);
 
 static SERVICE_STATUS_VERIFICATION_CACHE: OnceLock<Mutex<HashMap<String, Instant>>> =
     OnceLock::new();
@@ -419,7 +420,7 @@ async fn request_ipc(
             )),
         }
     };
-    tokio::time::timeout(Duration::from_secs(100), operation)
+    tokio::time::timeout(SERVICE_IPC_REQUEST_TIMEOUT, operation)
         .await
         .map_err(|_| ServiceIpcError::transport("ShipFlow Service IPC request timed out."))?
 }

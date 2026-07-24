@@ -149,7 +149,6 @@ requireTokens("electron/main/index.ts", [
   "event.senderFrame !== event.sender.mainFrame",
   "COMMON_COMMANDS",
   "WORKSPACE_ONLY_COMMANDS",
-  "Content-Security-Policy",
   "serviceAgent.shutdown()",
   "SHIPFLOW_USER_DATA_DIR",
   "../preload/index.cjs",
@@ -159,6 +158,13 @@ requireTokens("electron/main/index.ts", [
   "stopAllWorkspaceHosts",
   'type WindowKind = "workspace"',
   'openWorkspaceSettings("service")',
+]);
+requireTokens("index.html", [
+  'http-equiv="Content-Security-Policy"',
+  "default-src 'self'",
+  "object-src 'none'",
+  "frame-src 'none'",
+  "script-src 'self'",
 ]);
 forbidTokens("electron/main/index.ts", [
   "openServiceSettingsWindow",
@@ -199,6 +205,18 @@ requireTokens("electron/main/service-agent.ts", [
   "publicApiTokenForNativeAction",
   "authTokenConfigured",
   "probeExternalApiAuth",
+  "SHIPFLOW_SERVICE_LOG_FILE",
+  "shipflow-service.log",
+  "SHIPFLOW_NATIVE_LOG_FILE",
+  'stdio: "ignore"',
+  "orphan_service_recovery_failed",
+]);
+requireTokens("crates/shipflow-core/src/runtime_log.rs", [
+  "SHIPFLOW_NATIVE_LOG_FILE",
+  "DEFAULT_MAX_FILE_BYTES",
+  "MAX_LOG_ENTRY_BYTES",
+  "rotate_paths",
+  "[REDACTED_TOKEN]",
 ]);
 requireTokens("electron/main/external-api-policy.ts", [
   "isRestrictedNetworkAddress",
@@ -235,6 +253,9 @@ forbidTokens("electron/main/service-agent.ts", [
 requireTokens("crates/shipflow-service-runtime/src/http_api.rs", [
   "with_graceful_shutdown",
   "run_internal_ipc_server",
+  "resolve_external_api_addresses",
+  "is_forbidden_external_address",
+  "resolve_to_addrs",
 ]);
 forbidTokens("crates/shipflow-service-runtime/src/http_api.rs", [
   "/v1/internal/runtime/shutdown",
@@ -268,6 +289,10 @@ requireTokens("electron/main/workspace-host.ts", [
   "clearTimeout(pending.timeout)",
   "child.stdin.write(payload",
   "Buffer.byteLength(payload)",
+  "observeChildProcessTermination",
+]);
+requireTokens("electron/main/service-agent.ts", [
+  "observeChildProcessTermination",
 ]);
 forbidTokens("electron/main/workspace-host.ts", ["--service-url"]);
 requireTokens("apps/workspace-host/src/main.rs", [
@@ -304,7 +329,9 @@ requireTokens("electron/main/pod-preview.ts", [
   "isAllowedPodHostname",
   "POD image source must use HTTPS.",
   "REQUEST_TIMEOUT_MS",
-  "isForbiddenIp",
+  "isRestrictedNetworkAddress",
+  "createPinnedLookupForAddresses",
+  "readStreamLimited",
 ]);
 
 const cargoToml = read("Cargo.toml");
@@ -390,10 +417,32 @@ requireTokens(".github/workflows/build-updater-artifacts.yml", [
 requireTokens(".github/workflows/quality.yml", [
   "npm run build",
   "npm run package:verify",
+  "npm run test:diagnostics",
   "cargo test --workspace --all-targets",
   "cargo clippy --workspace --all-targets -- -D warnings",
   "npx playwright install-deps chromium",
   "xvfb-run --auto-servernum npm run test:e2e",
+  "Upload Electron smoke diagnostics",
+  "Upload packaged smoke diagnostics",
+]);
+requireTokens("electron/main/app-logger.ts", [
+  "MAX_LOG_ENTRY_BYTES",
+  "sessionId = randomUUID()",
+  "pipeTextStreamToAppLogger",
+  "[TRUNCATED]",
+]);
+requireTokens("electron/main/index.ts", [
+  "runtime_heartbeat",
+  "renderer_process_gone",
+  "electron_child_process_gone",
+  "Open Logs Folder",
+]);
+requireTokens("scripts/audit-runtime-log.mjs", [
+  "ShipFlow Runtime Log Audit",
+  "runtimeRiskFindings",
+  "malformed_log_lines",
+  "native_http_5xx",
+  "service_memory_warning",
 ]);
 requireTokens(".github/workflows/build-macos-app.yml", [
   "actions: read",

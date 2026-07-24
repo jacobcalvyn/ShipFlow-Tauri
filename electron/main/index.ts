@@ -1,5 +1,6 @@
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
+import os from "node:os";
 import {
   app,
   BrowserWindow,
@@ -8,7 +9,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
-  session,
+  powerMonitor,
   shell,
   Tray,
   type IpcMainInvokeEvent,
@@ -36,6 +37,7 @@ import {
 } from "./documents";
 import { appLogger, configureAppLogger } from "./app-logger";
 import { resolvePodImage } from "./pod-preview";
+import { isTrustedRendererNavigation } from "./renderer-navigation";
 import { ServiceAgentManager } from "./service-agent";
 import { WorkspaceHostClient } from "./workspace-host";
 
@@ -58,17 +60,6 @@ type WindowRecord = {
 
 const PRODUCT_NAME = "ShipFlow Desktop";
 const APP_IDENTIFIER = "com.shipflow.desktop";
-const CSP = [
-  "default-src 'self'",
-  "base-uri 'self'",
-  "object-src 'none'",
-  "frame-src 'none'",
-  "connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*",
-  "img-src 'self' data: blob: https:",
-  "style-src 'self' 'unsafe-inline'",
-  "script-src 'self'",
-].join("; ");
-
 app.setName(PRODUCT_NAME);
 app.setPath(
   "userData",
@@ -77,7 +68,11 @@ app.setPath(
     : path.join(app.getPath("appData"), APP_IDENTIFIER),
 );
 app.setAppLogsPath();
-configureAppLogger(path.join(app.getPath("logs"), "shipflow-desktop.log"));
+configureAppLogger(
+  process.env.SHIPFLOW_LOG_FILE?.trim()
+    ? path.resolve(process.env.SHIPFLOW_LOG_FILE.trim())
+    : path.join(app.getPath("logs"), "shipflow-desktop.log"),
+);
 app.setAppUserModelId(APP_IDENTIFIER);
 autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = false;
@@ -92,9 +87,13 @@ let workspaceHostGeneration = 0;
 let windowSequence = 0;
 let tray: Tray | null = null;
 let isQuitting = false;
+let sessionSecurityConfigured = false;
 let quitCleanupStarted = false;
 let quitCleanupComplete = false;
 let nativeRuntimesShuttingDown = false;
+let runtimeDiagnosticsTimer: NodeJS.Timeout | null = null;
+
+const RUNTIME_DIAGNOSTICS_INTERVAL_MS = 60_000;
 
 const COMMON_COMMANDS = new Set<ShipFlowCommand>([
   "open_external_url",
@@ -214,11 +213,37 @@ async function openAppLogFile() {
   }
 }
 
+async function openAppLogsFolder() {
+  try {
+    const logPath = await appLogger.ensureFile();
+    const error = await shell.openPath(path.dirname(logPath));
+    if (error) {
+      throw new Error(`Unable to open ShipFlow logs folder: ${error}`);
+    }
+    appLogger.info("Electron", "Opened the application logs folder.");
+  } catch (error) {
+    appLogger.error("Electron", error);
+    dialog.showErrorBox("ShipFlow Desktop", String(error));
+    throw error;
+  }
+}
+
 function logFileMenuItem(): Electron.MenuItemConstructorOptions {
   return {
     label: "Open Log File",
     click: () => {
       void openAppLogFile().catch((error) => {
+        appLogger.error("ElectronMenu", error);
+      });
+    },
+  };
+}
+
+function logFolderMenuItem(): Electron.MenuItemConstructorOptions {
+  return {
+    label: "Open Logs Folder",
+    click: () => {
+      void openAppLogsFolder().catch((error) => {
         appLogger.error("ElectronMenu", error);
       });
     },
@@ -258,6 +283,7 @@ function installApplicationMenu() {
         menuItem("Open in New Window...", "open-document-in-new-window"),
         { type: "separator" },
         logFileMenuItem(),
+        logFolderMenuItem(),
         ...(process.platform === "darwin"
           ? []
           : [{ type: "separator" as const }, { role: "quit" as const }]),
@@ -317,12 +343,16 @@ function rendererUrl(kind: WindowKind, label: string) {
   return url.toString();
 }
 
+function packagedRendererPath() {
+  return path.join(__dirname, "../renderer/index.html");
+}
+
 async function loadRenderer(record: WindowRecord) {
   if (process.env.ELECTRON_RENDERER_URL) {
     await record.window.loadURL(rendererUrl(record.kind, record.label));
     return;
   }
-  await record.window.loadFile(path.join(__dirname, "../renderer/index.html"), {
+  await record.window.loadFile(packagedRendererPath(), {
     query: { windowKind: record.kind, windowLabel: record.label },
   });
 }
@@ -350,6 +380,13 @@ function createWindow(
       allowRunningInsecureContent: false,
     },
   });
+  if (!sessionSecurityConfigured) {
+    window.webContents.session.setPermissionCheckHandler(() => false);
+    window.webContents.session.setPermissionRequestHandler(
+      (_webContents, _permission, callback) => callback(false),
+    );
+    sessionSecurityConfigured = true;
+  }
   const record: WindowRecord = {
     window,
     label,
@@ -368,12 +405,68 @@ function createWindow(
   };
   const webContentsId = window.webContents.id;
   appLogger.info("Electron", `Creating workspace window ${label}.`);
+  appLogger.event("INFO", "Lifecycle", "window_created", {
+    height: 860,
+    webContentsId,
+    width: 1280,
+    windowLabel: label,
+  });
   windowsByWebContentsId.set(webContentsId, record);
   windowsByLabel.set(label, record);
 
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  window.webContents.on("will-navigate", (event) => event.preventDefault());
+  window.webContents.on("will-navigate", (event, targetUrl) => {
+    if (
+      !isTrustedRendererNavigation(
+        targetUrl,
+        process.env.ELECTRON_RENDERER_URL,
+        packagedRendererPath(),
+      )
+    ) {
+      appLogger.warn("Renderer", `Blocked navigation to ${targetUrl}.`);
+      event.preventDefault();
+    }
+  });
+  window.webContents.on(
+    "did-fail-load",
+    (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+      if (isMainFrame) {
+        appLogger.error(
+          "Renderer",
+          `Main frame failed to load ${validatedUrl}: ${errorCode} ${errorDescription}.`,
+        );
+      }
+    },
+  );
+  window.webContents.on("render-process-gone", (_event, details) => {
+    appLogger.event(
+      "ERROR",
+      "Renderer",
+      "renderer_process_gone",
+      {
+        exitCode: details.exitCode,
+        reason: details.reason,
+        windowLabel: label,
+      },
+    );
+  });
+  window.webContents.on("dom-ready", () => {
+    appLogger.info("Renderer", `DOM ready for ${window.webContents.getURL()}.`);
+  });
+  window.webContents.on("did-finish-load", () => {
+    appLogger.info("Renderer", `Finished loading ${window.webContents.getURL()}.`);
+  });
+  window.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    const logLevel = level >= 3 ? "error" : "info";
+    appLogger[logLevel](
+      "RendererConsole",
+      `${message} (${sourceId}:${line})`,
+    );
+  });
   window.once("ready-to-show", () => {
+    appLogger.event("INFO", "Renderer", "window_ready_to_show", {
+      windowLabel: label,
+    });
     window.show();
     if (process.platform === "darwin") {
       app.dock?.show();
@@ -398,6 +491,9 @@ function createWindow(
   });
   window.on("closed", () => {
     appLogger.info("Electron", `Closed workspace window ${label}.`);
+    appLogger.event("INFO", "Lifecycle", "window_closed", {
+      windowLabel: label,
+    });
     windowsByWebContentsId.delete(webContentsId);
     windowsByLabel.delete(label);
     workspaceHosts.get(label)?.stop();
@@ -410,10 +506,18 @@ function createWindow(
       app.dock?.hide();
     }
   });
-  void loadRenderer(record).catch((error) => {
-    appLogger.error("Renderer", error);
-    dialog.showErrorBox("ShipFlow Desktop", `Unable to load the renderer: ${String(error)}`);
-  });
+  appLogger.info(
+    "Renderer",
+    `Loading ${process.env.ELECTRON_RENDERER_URL ?? packagedRendererPath()}.`,
+  );
+  void loadRenderer(record)
+    .then(() => {
+      appLogger.info("Renderer", `loadRenderer resolved for ${label}.`);
+    })
+    .catch((error) => {
+      appLogger.error("Renderer", error);
+      dialog.showErrorBox("ShipFlow Desktop", `Unable to load the renderer: ${String(error)}`);
+    });
   return record;
 }
 
@@ -556,6 +660,9 @@ async function installUpdate() {
 }
 
 async function shutdownNativeRuntimes() {
+  appLogger.event("INFO", "Lifecycle", "native_shutdown_started", {
+    windowCount: windowsByLabel.size,
+  });
   nativeRuntimesShuttingDown = true;
   for (const record of windowsByLabel.values()) {
     record.allowClose = true;
@@ -563,6 +670,42 @@ async function shutdownNativeRuntimes() {
   stopAllWorkspaceHosts();
   await serviceAgent.shutdown();
   stopAllWorkspaceHosts();
+  appLogger.event("INFO", "Lifecycle", "native_shutdown_completed");
+}
+
+function logRuntimeDiagnostics(eventName = "runtime_heartbeat") {
+  const memory = process.memoryUsage();
+  const appMetrics = app.getAppMetrics();
+  const aggregateWorkingSetKb = appMetrics.reduce(
+    (total, metric) => total + (metric.memory?.workingSetSize ?? 0),
+    0,
+  );
+  appLogger.event("INFO", "Diagnostics", eventName, {
+    appProcessCount: appMetrics.length,
+    aggregateWorkingSetKb,
+    freeSystemMemoryBytes: os.freemem(),
+    heapUsedBytes: memory.heapUsed,
+    mainRssBytes: memory.rss,
+    uptimeSec: Math.floor(process.uptime()),
+    windowCount: windowsByLabel.size,
+    workspaceHostCount: workspaceHosts.size,
+  });
+}
+
+function startRuntimeDiagnostics() {
+  logRuntimeDiagnostics("runtime_snapshot");
+  runtimeDiagnosticsTimer = setInterval(
+    () => logRuntimeDiagnostics(),
+    RUNTIME_DIAGNOSTICS_INTERVAL_MS,
+  );
+  runtimeDiagnosticsTimer.unref();
+}
+
+function stopRuntimeDiagnostics() {
+  if (runtimeDiagnosticsTimer) {
+    clearInterval(runtimeDiagnosticsTimer);
+    runtimeDiagnosticsTimer = null;
+  }
 }
 
 async function handleCommand(
@@ -785,10 +928,40 @@ async function handleCommand(
 }
 
 function registerIpc() {
-  ipcMain.handle(SHIPFLOW_INVOKE_CHANNEL, handleCommand);
+  ipcMain.handle(
+    SHIPFLOW_INVOKE_CHANNEL,
+    async (event, command: ShipFlowCommand, args?: Record<string, unknown>) => {
+      const startedAt = Date.now();
+      const windowLabel = windowsByWebContentsId.get(event.sender.id)?.label ?? "unknown";
+      appLogger.event("INFO", "IPC", "command_started", {
+        command: String(command).slice(0, 128),
+        windowLabel,
+      });
+      try {
+        const result = await handleCommand(event, command, args);
+        appLogger.event("INFO", "IPC", "command_completed", {
+          command: String(command).slice(0, 128),
+          durationMs: Date.now() - startedAt,
+          result: "ok",
+          windowLabel,
+        });
+        return result;
+      } catch (error) {
+        appLogger.event("ERROR", "IPC", "command_completed", {
+          command: String(command).slice(0, 128),
+          durationMs: Date.now() - startedAt,
+          error: error instanceof Error ? error.message : String(error),
+          result: "error",
+          windowLabel,
+        });
+        throw error;
+      }
+    },
+  );
   ipcMain.handle(
     SHIPFLOW_WORKSPACE_REQUEST_CHANNEL,
     async (event, request: ShipFlowWorkspaceRequest) => {
+      const startedAt = Date.now();
       if (nativeRuntimesShuttingDown) {
         throw new Error("ShipFlow native runtimes are shutting down.");
       }
@@ -802,31 +975,47 @@ function registerIpc() {
       if (!ALLOWED_WORKSPACE_METHODS.has(request.method)) {
         throw new Error(`Unsupported Workspace Engine method: ${request.method}`);
       }
-      const host = await workspaceHost(record);
-      return host.request(request.method, request.params, (workspaceEvent) => {
-        if (!record.window.isDestroyed()) {
-          record.window.webContents.send(SHIPFLOW_WORKSPACE_EVENT_CHANNEL, {
-            requestId: request.requestId,
-            event: workspaceEvent,
-          });
-        }
+      const auditRequestId = request.requestId.slice(0, 128);
+      appLogger.event("INFO", "WorkspaceIPC", "request_started", {
+        method: request.method,
+        requestId: auditRequestId,
+        windowLabel: record.label,
       });
+      try {
+        const host = await workspaceHost(record);
+        const result = await host.request(
+          request.method,
+          request.params,
+          (workspaceEvent) => {
+            if (!record.window.isDestroyed()) {
+              record.window.webContents.send(SHIPFLOW_WORKSPACE_EVENT_CHANNEL, {
+                requestId: request.requestId,
+                event: workspaceEvent,
+              });
+            }
+          },
+        );
+        appLogger.event("INFO", "WorkspaceIPC", "request_completed", {
+          durationMs: Date.now() - startedAt,
+          method: request.method,
+          requestId: auditRequestId,
+          result: "ok",
+          windowLabel: record.label,
+        });
+        return result;
+      } catch (error) {
+        appLogger.event("ERROR", "WorkspaceIPC", "request_completed", {
+          durationMs: Date.now() - startedAt,
+          error: error instanceof Error ? error.message : String(error),
+          method: request.method,
+          requestId: auditRequestId,
+          result: "error",
+          windowLabel: record.label,
+        });
+        throw error;
+      }
     },
   );
-}
-
-function configureSessionSecurity() {
-  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
-    callback(false);
-  });
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    callback({
-      responseHeaders: {
-        ...details.responseHeaders,
-        "Content-Security-Policy": [CSP],
-      },
-    });
-  });
 }
 
 function workspaceDocumentFromArgs(args: string[]) {
@@ -836,14 +1025,41 @@ function workspaceDocumentFromArgs(args: string[]) {
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   appLogger.warn("Electron", "A second application instance was rejected.");
+  appLogger.event("WARN", "Lifecycle", "secondary_instance_rejected", {
+    pid: process.pid,
+  });
   app.quit();
 } else {
+  appLogger.event("INFO", "Lifecycle", "app_launch", {
+    arch: process.arch,
+    chromeVersion: process.versions.chrome,
+    electronVersion: process.versions.electron,
+    nodeVersion: process.versions.node,
+    osRelease: os.release(),
+    packaged: app.isPackaged,
+    pid: process.pid,
+    platform: process.platform,
+    version: app.getVersion(),
+  });
   process.on("uncaughtExceptionMonitor", (error) =>
     appLogger.error("UncaughtException", error),
   );
   process.on("unhandledRejection", (error) => appLogger.error("UnhandledRejection", error));
+  app.on("child-process-gone", (_event, details) => {
+    appLogger.event("ERROR", "Lifecycle", "electron_child_process_gone", {
+      exitCode: details.exitCode,
+      name: details.name,
+      reason: details.reason,
+      serviceName: details.serviceName,
+      type: details.type,
+    });
+  });
   app.on("second-instance", (_event, argv) => {
     appLogger.info("Electron", "Forwarding a second-instance request to the active application.");
+    appLogger.event("INFO", "Lifecycle", "secondary_instance_forwarded", {
+      hasDocument: Boolean(workspaceDocumentFromArgs(argv)),
+      opensServiceSettings: argv.includes("--service-settings"),
+    });
     const documentPath = workspaceDocumentFromArgs(argv);
     if (argv.includes("--service-settings")) {
       openWorkspaceSettings("service");
@@ -863,16 +1079,33 @@ if (!hasSingleInstanceLock) {
     openOrFocusWorkspace();
   });
 
-  app.whenReady().then(async () => {
+  void app.whenReady().then(async () => {
     appLogger.info(
       "Electron",
       `Application ready version=${app.getVersion()} platform=${process.platform} arch=${process.arch} packaged=${app.isPackaged}.`,
     );
-    configureSessionSecurity();
+    appLogger.event("INFO", "Lifecycle", "app_ready", {
+      arch: process.arch,
+      packaged: app.isPackaged,
+      platform: process.platform,
+      version: app.getVersion(),
+    });
     registerIpc();
+    appLogger.info("Electron", "IPC handlers registered.");
     installApplicationMenu();
+    appLogger.info("Electron", "Application menu installed.");
     installTray();
+    appLogger.info("Electron", "Tray installed.");
     await mkdir(app.getPath("userData"), { recursive: true });
+    appLogger.info("Electron", "User data directory ready.");
+    powerMonitor.on("suspend", () => {
+      appLogger.event("INFO", "Lifecycle", "system_suspend");
+    });
+    powerMonitor.on("resume", () => {
+      appLogger.event("INFO", "Lifecycle", "system_resume");
+      logRuntimeDiagnostics("runtime_resume_snapshot");
+    });
+    startRuntimeDiagnostics();
     const initialDocument = workspaceDocumentFromArgs(process.argv);
     if (process.argv.includes("--service-settings")) {
       openWorkspaceSettings("service");
@@ -887,10 +1120,22 @@ if (!hasSingleInstanceLock) {
     void serviceAgent.connection().catch((error) => {
       appLogger.error("ServiceAgent", error);
     });
+  }).catch(async (error) => {
+    appLogger.event("ERROR", "Lifecycle", "startup_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    appLogger.error("ElectronStartup", error);
+    await appLogger.flush();
+    dialog.showErrorBox("ShipFlow Desktop", `Application startup failed: ${String(error)}`);
+    app.exit(1);
   });
 
-  app.on("activate", () => openOrFocusWorkspace());
+  app.on("activate", () => {
+    appLogger.event("INFO", "Lifecycle", "app_activated");
+    openOrFocusWorkspace();
+  });
   app.on("window-all-closed", () => {
+    appLogger.event("INFO", "Lifecycle", "all_windows_closed");
     void serviceAgent
       .keepRunningInTray()
       .then((keepRunningInTray) => {
@@ -905,6 +1150,10 @@ if (!hasSingleInstanceLock) {
   });
   app.on("before-quit", (event) => {
     isQuitting = true;
+    appLogger.event("INFO", "Lifecycle", "before_quit", {
+      cleanupComplete: quitCleanupComplete,
+      cleanupStarted: quitCleanupStarted,
+    });
     if (quitCleanupComplete) {
       return;
     }
@@ -913,11 +1162,17 @@ if (!hasSingleInstanceLock) {
       return;
     }
     quitCleanupStarted = true;
+    stopRuntimeDiagnostics();
     void shutdownNativeRuntimes()
       .catch((error) => {
         appLogger.error("ServiceAgent", `Service shutdown during quit failed: ${String(error)}`);
       })
-      .then(() => appLogger.flush())
+      .then(() => {
+        appLogger.event("INFO", "Lifecycle", "app_exit", {
+          code: 0,
+        });
+        return appLogger.flush();
+      })
       .finally(() => {
         quitCleanupComplete = true;
         app.exit(0);

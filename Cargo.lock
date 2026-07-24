@@ -2203,7 +2203,9 @@ name = "shipflow-service-runtime"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "libc",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "shipflow-core",
@@ -2211,6 +2213,7 @@ dependencies = [
  "time",
  "tokio",
  "tower",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

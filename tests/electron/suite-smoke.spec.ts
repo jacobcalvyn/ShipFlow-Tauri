@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import net from "node:net";
 import os from "node:os";
@@ -20,7 +20,10 @@ type SmokeRuntime = {
   environment: NodeJS.ProcessEnv;
   executablePath: string;
   executableArguments: string[];
+  logFilePath: string;
+  serviceLogFilePath: string;
   rootDirectory: string;
+  serviceStateDirectory: string;
   servicePort: number;
   publicToken: string;
   internalToken: string;
@@ -67,6 +70,8 @@ async function startSuite(): Promise<SmokeRuntime> {
   const servicePort = await reservePort();
   const publicToken = "sf_electron_smoke_public";
   const internalToken = "sf_electron_smoke_internal";
+  const logFilePath = path.join(rootDirectory, "shipflow-desktop.log");
+  const serviceLogFilePath = path.join(rootDirectory, "shipflow-service.log");
   await mkdir(serviceStateDirectory, { recursive: true });
   await writeFile(
     path.join(serviceStateDirectory, "agent-config.json"),
@@ -93,16 +98,18 @@ async function startSuite(): Promise<SmokeRuntime> {
     "utf8",
   );
 
-  const packagedExecutable = process.env.SHIPFLOW_ELECTRON_EXECUTABLE?.trim();
-  const executablePath = packagedExecutable || developmentElectronPath;
-  const executableArguments = packagedExecutable
-    ? ["--password-store=basic"]
-    : [path.resolve("out/main/index.js"), "--password-store=basic"];
+  const executablePath = developmentElectronPath;
+  const executableArguments = [
+    path.resolve("out/main/index.js"),
+    "--password-store=basic",
+  ];
   const environment = {
     ...process.env,
     ELECTRON_DISABLE_SECURITY_WARNINGS: "true",
     SHIPFLOW_USER_DATA_DIR: userDataDirectory,
     SHIPFLOW_SERVICE_AGENT_STATE_DIR: serviceStateDirectory,
+    SHIPFLOW_LOG_FILE: logFilePath,
+    SHIPFLOW_SERVICE_LOG_FILE: serviceLogFilePath,
   };
   const application = await electron.launch({
     executablePath,
@@ -115,11 +122,21 @@ async function startSuite(): Promise<SmokeRuntime> {
     environment,
     executablePath,
     executableArguments,
+    logFilePath,
+    serviceLogFilePath,
     rootDirectory,
+    serviceStateDirectory,
     servicePort,
     publicToken,
     internalToken,
   };
+}
+
+async function readManagedServicePid(serviceStateDirectory: string) {
+  const config = JSON.parse(
+    await readFile(path.join(serviceStateDirectory, "agent-config.json"), "utf8"),
+  ) as { processId?: unknown };
+  return typeof config.processId === "number" ? config.processId : null;
 }
 
 async function findWindowWithHeading(
@@ -231,8 +248,57 @@ test("Electron suite owns Desktop, integrated Service settings, and single-insta
       { headers: { Authorization: `Bearer ${runtime.publicToken}` } },
     );
     expect(publicAuthResponse.ok).toBe(true);
+
+    const originalServicePid = await readManagedServicePid(
+      runtime.serviceStateDirectory,
+    );
+    expect(originalServicePid).toBeGreaterThan(0);
+    process.kill(originalServicePid!, "SIGKILL");
+
+    await expect
+      .poll(
+        async () => {
+          const replacementPid = await readManagedServicePid(
+            runtime.serviceStateDirectory,
+          ).catch(() => null);
+          const status = await workspace
+            .evaluate(async () => {
+              return window.shipflow?.invoke<{
+                status: string;
+                port: number | null;
+              }>("get_api_service_status");
+            })
+            .catch(() => null);
+          return {
+            replaced:
+              replacementPid !== null && replacementPid !== originalServicePid,
+            status: status?.status ?? null,
+            port: status?.port ?? null,
+          };
+        },
+        { timeout: 20_000 },
+      )
+      .toEqual({
+        replaced: true,
+        status: "running",
+        port: runtime.servicePort,
+      });
   } finally {
     await closeApplication(runtime.application);
+    const runtimeLog = await readFile(runtime.logFilePath).catch(() => null);
+    if (runtimeLog) {
+      await testInfo.attach("shipflow-desktop-runtime-log", {
+        body: runtimeLog,
+        contentType: "text/plain",
+      });
+    }
+    const serviceLog = await readFile(runtime.serviceLogFilePath).catch(() => null);
+    if (serviceLog) {
+      await testInfo.attach("shipflow-service-runtime-log", {
+        body: serviceLog,
+        contentType: "text/plain",
+      });
+    }
     await rm(runtime.rootDirectory, { recursive: true, force: true });
   }
 });

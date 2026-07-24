@@ -1,6 +1,9 @@
 use axum::{
-    extract::{Path, State},
-    http::{header::AUTHORIZATION, HeaderMap, StatusCode},
+    body::Body,
+    extract::{DefaultBodyLimit, Path, State},
+    http::{header::AUTHORIZATION, HeaderMap, HeaderValue, Request, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
@@ -14,21 +17,28 @@ use shipflow_core::{
         BagResponse, ManifestResponse, TrackResponse, TrackingError, TrackingHtmlResponse,
         TrackingSource, TrackingSourceConfig,
     },
-    upstream::resolve_tracking_html_request,
+    upstream::{parse_external_api_base_url, resolve_tracking_html_request},
 };
 use std::{
+    collections::HashSet,
+    future::Future,
+    net::{IpAddr, SocketAddr},
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::Notify;
+use tokio::{
+    sync::Notify,
+    time::{timeout, MissedTickBehavior},
+};
 
 use crate::api_contract::{
     envelope, error_response_v1, generate_request_id, REQUEST_ID_HEADER_NAME,
 };
-use crate::contact_cache::ContactCacheState;
+use crate::contact_cache::{ContactCacheSnapshot, ContactCacheState};
+use crate::diagnostics::process_rss_bytes;
 use crate::lookup_cache::{
     resolve_bag_request_cached, resolve_manifest_request_cached, resolve_tracking_request_cached,
-    LookupCacheState, LookupRequestOptions,
+    LookupCacheSnapshot, LookupCacheState, LookupRequestOptions, TrackingPermitProviders,
 };
 use crate::model::{
     validate_service_runtime_config, ServiceRuntimeConfig, ServiceRuntimeMode,
@@ -36,7 +46,9 @@ use crate::model::{
 };
 use crate::openapi::service_openapi_document;
 use crate::persistent_store::PersistentLookupStore;
-use crate::upstream_backpressure::{UpstreamBackpressure, UpstreamBackpressureError};
+use crate::upstream_backpressure::{
+    UpstreamBackpressure, UpstreamBackpressureError, UpstreamBackpressureSnapshot,
+};
 use crate::FORCE_REFRESH_HEADER_NAME;
 
 const STATUS_SCHEMA_VERSION: &str = "shipflow.service.status.v1";
@@ -49,6 +61,13 @@ const MANIFEST_SCHEMA_VERSION: &str = "shipflow.tracking.manifest.v1";
 const SERVICE_UPSTREAM_CONNECT_TIMEOUT_SECS: u64 = 10;
 const SERVICE_UPSTREAM_READ_TIMEOUT_SECS: u64 = 60;
 const SERVICE_UPSTREAM_REQUEST_TIMEOUT_SECS: u64 = 90;
+pub const SERVICE_LOOKUP_DEADLINE_SECS: u64 = 120;
+const SERVICE_MAINTENANCE_INTERVAL_SECS: u64 = 60;
+const SERVICE_MEMORY_WARNING_BYTES: u64 = 512 * 1024 * 1024;
+const SERVICE_HTTP_BODY_LIMIT_BYTES: usize = 64 * 1024;
+const SERVICE_HTTP_HANDLER_DEADLINE_SECS: u64 = SERVICE_LOOKUP_DEADLINE_SECS + 10;
+const DIAGNOSTICS_SCHEMA_VERSION: &str = "shipflow.service.diagnostics.v1";
+const MAX_REQUEST_ID_BYTES: usize = 128;
 
 #[derive(Clone)]
 pub struct HttpApiState {
@@ -61,8 +80,23 @@ pub struct HttpApiState {
     pub tracking_source: shipflow_core::model::TrackingSourceConfig,
     pub lookup_cache: LookupCacheState,
     pub contact_cache: ContactCacheState,
+    pub public_upstream_backpressure: UpstreamBackpressure,
     pub upstream_backpressure: UpstreamBackpressure,
+    pub contact_backpressure: UpstreamBackpressure,
+    pub http_ingress_backpressure: UpstreamBackpressure,
     pub shutdown_signal: Arc<Notify>,
+    pub started_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LookupTrafficClass {
+    Public,
+    Internal,
+}
+
+struct LookupPermitSet {
+    _public: Option<tokio::sync::OwnedSemaphorePermit>,
+    _global: tokio::sync::OwnedSemaphorePermit,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -93,11 +127,187 @@ struct CapabilitiesResponse {
     routes: Vec<&'static str>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticsResponse {
+    product: &'static str,
+    uptime_seconds: u64,
+    restart_count: u32,
+    rss_bytes: Option<u64>,
+    lookup_deadline_seconds: u64,
+    lookup_cache: CacheDiagnostics,
+    contact_cache: ContactCacheDiagnostics,
+    backpressure: BackpressureDiagnostics,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CacheDiagnostics {
+    ready: usize,
+    loading: usize,
+    capacity: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContactCacheDiagnostics {
+    entries: usize,
+    in_flight: usize,
+    capacity: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackpressureDiagnostics {
+    ingress: BackpressureLaneDiagnostics,
+    public: BackpressureLaneDiagnostics,
+    global: BackpressureLaneDiagnostics,
+    contact: BackpressureLaneDiagnostics,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackpressureLaneDiagnostics {
+    active: usize,
+    available: usize,
+    queued: usize,
+    max_concurrent: usize,
+    max_queued: usize,
+}
+
+fn is_forbidden_external_address(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => {
+            let [first, second, ..] = address.octets();
+            first == 0 || first == 127 || (first == 169 && second == 254) || first >= 224
+        }
+        IpAddr::V6(address) => {
+            if let Some(mapped) = address.to_ipv4_mapped() {
+                return is_forbidden_external_address(IpAddr::V4(mapped));
+            }
+            address.is_unspecified()
+                || address.is_loopback()
+                || address.is_unicast_link_local()
+                || address.is_multicast()
+        }
+    }
+}
+
+fn is_private_external_address(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => {
+            let [first, second, ..] = address.octets();
+            first == 10
+                || (first == 100 && (64..=127).contains(&second))
+                || (first == 172 && (16..=31).contains(&second))
+                || (first == 192 && second == 168)
+                || (first == 198 && (second == 18 || second == 19))
+        }
+        IpAddr::V6(address) => {
+            if let Some(mapped) = address.to_ipv4_mapped() {
+                return is_private_external_address(IpAddr::V4(mapped));
+            }
+            let first_segment = address.segments()[0];
+            first_segment & 0xfe00 == 0xfc00
+        }
+    }
+}
+
+async fn resolve_external_api_addresses(
+    tracking_source: &TrackingSourceConfig,
+) -> Result<Option<(String, Vec<SocketAddr>)>, String> {
+    if tracking_source.tracking_source != TrackingSource::ExternalApi {
+        return Ok(None);
+    }
+
+    let parsed = parse_external_api_base_url(
+        &tracking_source.external_api_base_url,
+        tracking_source.allow_insecure_external_api_http,
+    )
+    .map_err(|error| {
+        let message = match error {
+            TrackingError::BadRequest(message)
+            | TrackingError::NotFound(message)
+            | TrackingError::RateLimited(message)
+            | TrackingError::ServiceUnavailable(message)
+            | TrackingError::Upstream(message) => message,
+        };
+        format!("External API configuration is invalid: {message}")
+    })?;
+    let hostname = parsed
+        .host_str()
+        .ok_or_else(|| "External API URL must include a hostname.".to_string())?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if hostname == "localhost"
+        || hostname.ends_with(".localhost")
+        || hostname == "metadata.google.internal"
+        || hostname == "metadata.google"
+    {
+        return Err("External API destination is reserved and cannot be used.".into());
+    }
+
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| "External API URL must include a valid port.".to_string())?;
+    let resolved = if let Ok(address) = hostname.parse::<IpAddr>() {
+        vec![SocketAddr::new(address, port)]
+    } else {
+        tokio::net::lookup_host((hostname.as_str(), port))
+            .await
+            .map_err(|error| format!("Unable to resolve External API hostname: {error}"))?
+            .collect::<Vec<_>>()
+    };
+    let mut unique = HashSet::new();
+    let addresses = resolved
+        .into_iter()
+        .filter(|address| unique.insert(*address))
+        .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err("External API hostname did not resolve to an address.".into());
+    }
+    if addresses
+        .iter()
+        .any(|address| is_forbidden_external_address(address.ip()))
+    {
+        return Err("External API destination is reserved and cannot be used.".into());
+    }
+    if !tracking_source.allow_insecure_external_api_http
+        && addresses
+            .iter()
+            .any(|address| is_private_external_address(address.ip()))
+    {
+        return Err(
+            "External API resolves to a private address. Enable trusted LAN access only for an intentional private deployment."
+                .into(),
+        );
+    }
+
+    Ok(Some((hostname, addresses)))
+}
+
+async fn build_service_http_client(
+    tracking_source: &TrackingSourceConfig,
+) -> Result<Client, String> {
+    let mut builder = Client::builder()
+        .connect_timeout(Duration::from_secs(SERVICE_UPSTREAM_CONNECT_TIMEOUT_SECS))
+        .read_timeout(Duration::from_secs(SERVICE_UPSTREAM_READ_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(SERVICE_UPSTREAM_REQUEST_TIMEOUT_SECS))
+        .user_agent("ShipFlow Service/0.1");
+    if let Some((hostname, addresses)) = resolve_external_api_addresses(tracking_source).await? {
+        builder = builder.resolve_to_addrs(&hostname, &addresses);
+    }
+    builder
+        .build()
+        .map_err(|error| format!("Unable to create service HTTP client: {error}"))
+}
+
 pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), String> {
     let bind_address = config.mode.bind_address_label().to_string();
     validate_service_runtime_config(&config)?;
 
     let tracking_source = config.tracking_source.clone();
+    let client = build_service_http_client(&tracking_source).await?;
     let socket_addr = std::net::SocketAddr::new(config.mode.bind_address(), config.port);
     let listener = tokio::net::TcpListener::bind(socket_addr)
         .await
@@ -107,14 +317,6 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
                 bind_address, config.port
             )
         })?;
-
-    let client = Client::builder()
-        .connect_timeout(Duration::from_secs(SERVICE_UPSTREAM_CONNECT_TIMEOUT_SECS))
-        .read_timeout(Duration::from_secs(SERVICE_UPSTREAM_READ_TIMEOUT_SECS))
-        .timeout(Duration::from_secs(SERVICE_UPSTREAM_REQUEST_TIMEOUT_SECS))
-        .user_agent("ShipFlow Service/0.1")
-        .build()
-        .map_err(|error| format!("Unable to create service HTTP client: {error}"))?;
 
     let shutdown_signal = Arc::new(Notify::new());
     let app_state = HttpApiState {
@@ -128,10 +330,26 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
         lookup_cache: LookupCacheState::default()
             .with_persistent_store(PersistentLookupStore::open_default()),
         contact_cache: ContactCacheState::default(),
+        public_upstream_backpressure: UpstreamBackpressure::public_default(),
         upstream_backpressure: UpstreamBackpressure::default(),
+        contact_backpressure: UpstreamBackpressure::contact_default(),
+        http_ingress_backpressure: UpstreamBackpressure::http_ingress_default(),
         shutdown_signal: Arc::clone(&shutdown_signal),
+        started_at: Instant::now(),
     };
+    shipflow_core::shipflow_log!(
+        "[ShipFlowLifecycle] service_ready pid={} platform={} arch={} mode={:?} port={} trackingSource={} internalIpc={}",
+        std::process::id(),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        app_state.mode,
+        app_state.port,
+        tracking_source_label(&app_state.tracking_source),
+        config.internal_ipc_endpoint.is_some(),
+    );
+    let shutdown_lookup_cache = app_state.lookup_cache.clone();
     let router = build_router(app_state.clone());
+    let maintenance_handle = tokio::spawn(run_service_maintenance(app_state.clone()));
     let http_shutdown_signal = Arc::clone(&shutdown_signal);
     let http_server = async move {
         axum::serve(listener, router)
@@ -142,14 +360,29 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
             .map_err(|error| format!("API service stopped unexpectedly: {error}"))
     };
 
-    if let Some(endpoint) = config.internal_ipc_endpoint {
+    let result = if let Some(endpoint) = config.internal_ipc_endpoint {
         let ipc_listener = shipflow_ipc::LocalIpcListener::bind(&endpoint)
             .map_err(|error| format!("Unable to start internal IPC service: {error}"))?;
         let ipc_server = crate::internal_ipc::run_internal_ipc_server(ipc_listener, app_state);
         tokio::try_join!(http_server, ipc_server).map(|_| ())
     } else {
         http_server.await
-    }
+    };
+    shipflow_core::shipflow_log!(
+        "[ShipFlowLifecycle] service_stopping pid={} result={}",
+        std::process::id(),
+        if result.is_ok() { "ok" } else { "error" },
+    );
+    maintenance_handle.abort();
+    tokio::task::spawn_blocking(move || shutdown_lookup_cache.flush_persistent_store())
+        .await
+        .map_err(|error| format!("Unable to flush persistent lookup cache: {error}"))?;
+    shipflow_core::shipflow_log!(
+        "[ShipFlowLifecycle] service_stopped pid={} result={}",
+        std::process::id(),
+        if result.is_ok() { "ok" } else { "error" },
+    );
+    result
 }
 
 fn build_router(app_state: HttpApiState) -> Router {
@@ -158,11 +391,162 @@ fn build_router(app_state: HttpApiState) -> Router {
         .route("/v1/auth/check", get(v1_auth_check_handler))
         .route("/v1/openapi.json", get(v1_openapi_handler))
         .route("/v1/capabilities", get(v1_capabilities_handler))
+        .route("/v1/diagnostics", get(v1_diagnostics_handler))
         .route("/v1/track/:shipment_id/html", get(v1_tracking_html_handler))
         .route("/v1/track/:shipment_id", get(v1_track_handler))
         .route("/v1/bag/:bag_id", get(v1_bag_handler))
         .route("/v1/manifest/:manifest_id", get(v1_manifest_handler))
+        .layer(DefaultBodyLimit::max(SERVICE_HTTP_BODY_LIMIT_BYTES))
+        .layer(middleware::from_fn_with_state(
+            app_state.clone(),
+            http_ingress_guard,
+        ))
         .with_state(app_state)
+}
+
+async fn http_ingress_guard(
+    State(state): State<HttpApiState>,
+    mut request: Request<Body>,
+    next: Next,
+) -> Response {
+    let started_at = Instant::now();
+    let method = request.method().as_str().to_string();
+    let route = normalize_http_audit_route(request.uri().path());
+    let request_id = authorize_request_id(request.headers());
+    request.headers_mut().insert(
+        REQUEST_ID_HEADER_NAME,
+        HeaderValue::from_str(&request_id).expect("normalized request id must be a header value"),
+    );
+    shipflow_core::shipflow_log!(
+        "[ShipFlowHttp] request_started requestId={} method={} route={}",
+        request_id,
+        method,
+        route,
+    );
+    let permit = match state
+        .http_ingress_backpressure
+        .acquire(route, "http", &request_id)
+        .await
+    {
+        Ok(permit) => permit,
+        Err(error) => {
+            let mut response = map_tracking_error_v1(
+                tracking_error_from_upstream_backpressure(error),
+                STATUS_SCHEMA_VERSION,
+                request_id.clone(),
+            )
+            .into_response();
+            attach_request_id_header(&mut response, &request_id);
+            shipflow_core::shipflow_log!(
+                "[ShipFlowHttp] request_completed requestId={} method={} route={} status={} durationMs={}",
+                request_id,
+                method,
+                route,
+                response.status().as_u16(),
+                started_at.elapsed().as_millis(),
+            );
+            return response;
+        }
+    };
+
+    let mut response = match timeout(
+        Duration::from_secs(SERVICE_HTTP_HANDLER_DEADLINE_SECS),
+        next.run(request),
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(_) => error_response_v1(
+            StatusCode::GATEWAY_TIMEOUT,
+            STATUS_SCHEMA_VERSION,
+            request_id.clone(),
+            "The ShipFlow Service request exceeded its execution deadline.",
+        )
+        .into_response(),
+    };
+    attach_request_id_header(&mut response, &request_id);
+    drop(permit);
+    shipflow_core::shipflow_log!(
+        "[ShipFlowHttp] request_completed requestId={} method={} route={} status={} durationMs={}",
+        request_id,
+        method,
+        route,
+        response.status().as_u16(),
+        started_at.elapsed().as_millis(),
+    );
+    response
+}
+
+fn normalize_http_audit_route(path: &str) -> &'static str {
+    if path.starts_with("/v1/track/") && path.ends_with("/html") {
+        "/v1/track/:shipment_id/html"
+    } else if path.starts_with("/v1/track/") {
+        "/v1/track/:shipment_id"
+    } else if path.starts_with("/v1/bag/") {
+        "/v1/bag/:bag_id"
+    } else if path.starts_with("/v1/manifest/") {
+        "/v1/manifest/:manifest_id"
+    } else {
+        match path {
+            "/v1/status" => "/v1/status",
+            "/v1/auth/check" => "/v1/auth/check",
+            "/v1/openapi.json" => "/v1/openapi.json",
+            "/v1/capabilities" => "/v1/capabilities",
+            "/v1/diagnostics" => "/v1/diagnostics",
+            _ => "unmatched",
+        }
+    }
+}
+
+fn attach_request_id_header(response: &mut Response, request_id: &str) {
+    response.headers_mut().insert(
+        REQUEST_ID_HEADER_NAME,
+        HeaderValue::from_str(request_id).expect("normalized request id must be a header value"),
+    );
+}
+
+async fn run_service_maintenance(state: HttpApiState) {
+    let mut interval =
+        tokio::time::interval(Duration::from_secs(SERVICE_MAINTENANCE_INTERVAL_SECS));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    interval.tick().await;
+    loop {
+        tokio::select! {
+            _ = state.shutdown_signal.notified() => return,
+            _ = interval.tick() => {
+                let lookup_cache = state.lookup_cache.prune_expired_and_over_capacity();
+                let contact_cache = state.contact_cache.snapshot_async().await;
+                let public = state.public_upstream_backpressure.snapshot();
+                let global = state.upstream_backpressure.snapshot();
+                let contact = state.contact_backpressure.snapshot();
+                let ingress = state.http_ingress_backpressure.snapshot();
+                let rss_bytes = process_rss_bytes();
+                shipflow_core::shipflow_log!(
+                    "[ShipFlowDiagnostics] uptimeSec={} rssBytes={} cacheReady={} cacheLoading={} contactEntries={} contactInFlight={} ingressActive={} ingressQueued={} publicActive={} publicQueued={} globalActive={} globalQueued={} contactActive={} contactQueued={}",
+                    state.started_at.elapsed().as_secs(),
+                    rss_bytes.map_or_else(|| "unavailable".to_string(), |value| value.to_string()),
+                    lookup_cache.ready,
+                    lookup_cache.loading,
+                    contact_cache.entries,
+                    contact_cache.in_flight,
+                    ingress.active,
+                    ingress.queued,
+                    public.active,
+                    public.queued,
+                    global.active,
+                    global.queued,
+                    contact.active,
+                    contact.queued,
+                );
+                if rss_bytes.is_some_and(|value| value >= SERVICE_MEMORY_WARNING_BYTES) {
+                    shipflow_core::shipflow_log!(
+                        "[ShipFlowDiagnostics] memory_warning rssBytes={} thresholdBytes={SERVICE_MEMORY_WARNING_BYTES}",
+                        rss_bytes.unwrap_or_default()
+                    );
+                }
+            }
+        }
+    }
 }
 
 async fn v1_status_handler(
@@ -238,11 +622,56 @@ async fn v1_capabilities_handler(
                 "GET /v1/status",
                 "GET /v1/auth/check",
                 "GET /v1/capabilities",
+                "GET /v1/diagnostics",
                 "GET /v1/track/:shipment_id",
                 "GET /v1/track/:shipment_id/html",
                 "GET /v1/bag/:bag_id",
                 "GET /v1/manifest/:manifest_id",
             ],
+        },
+    ))
+}
+
+async fn v1_diagnostics_handler(
+    State(state): State<HttpApiState>,
+    headers: HeaderMap,
+) -> Result<
+    Json<crate::api_contract::ApiEnvelope<DiagnosticsResponse>>,
+    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
+> {
+    let request_id = authorize_request_id(&headers);
+    authorize_state_request(&headers, &state).map_err(|message| {
+        error_response_v1(
+            StatusCode::UNAUTHORIZED,
+            DIAGNOSTICS_SCHEMA_VERSION,
+            request_id.clone(),
+            &message,
+        )
+    })?;
+    let lookup_cache = state.lookup_cache.snapshot();
+    let contact_cache = state.contact_cache.snapshot_async().await;
+    let public = state.public_upstream_backpressure.snapshot();
+    let global = state.upstream_backpressure.snapshot();
+    let contact = state.contact_backpressure.snapshot();
+    let ingress = state.http_ingress_backpressure.snapshot();
+
+    Ok(envelope(
+        DIAGNOSTICS_SCHEMA_VERSION,
+        request_id,
+        DiagnosticsResponse {
+            product: SERVICE_STATUS_PRODUCT,
+            uptime_seconds: state.started_at.elapsed().as_secs(),
+            restart_count: service_restart_count(),
+            rss_bytes: process_rss_bytes(),
+            lookup_deadline_seconds: SERVICE_LOOKUP_DEADLINE_SECS,
+            lookup_cache: cache_diagnostics(lookup_cache),
+            contact_cache: contact_cache_diagnostics(contact_cache),
+            backpressure: BackpressureDiagnostics {
+                ingress: backpressure_diagnostics(ingress),
+                public: backpressure_diagnostics(public),
+                global: backpressure_diagnostics(global),
+                contact: backpressure_diagnostics(contact),
+            },
         },
     ))
 }
@@ -287,8 +716,15 @@ async fn v1_track_handler(
     let response_request_id = request_id.clone();
     let request_options = read_lookup_request_options(&headers);
     let normalized_id = shipment_id.trim().to_string();
-    let result =
-        resolve_tracking_payload(&state, &normalized_id, request_options, "v1", &request_id).await;
+    let result = resolve_tracking_payload(
+        &state,
+        &normalized_id,
+        request_options,
+        "v1",
+        &request_id,
+        LookupTrafficClass::Public,
+    )
+    .await;
 
     result
         .map(|payload| envelope(TRACK_SCHEMA_VERSION, response_request_id, payload))
@@ -315,17 +751,19 @@ async fn v1_tracking_html_handler(
     })?;
     let response_request_id = request_id.clone();
     let normalized_id = shipment_id.trim().to_string();
-    let _upstream_lookup_permit = acquire_upstream_lookup_permit(
-        &state,
-        TRACK_HTML_SCHEMA_VERSION,
-        &request_id,
-        "v1_html",
-        &normalized_id,
-    )
-    .await?;
-
-    let result =
-        resolve_tracking_html_request(&state.client, &state.tracking_source, &normalized_id).await;
+    let result = with_lookup_deadline("v1_html", &normalized_id, async {
+        let _upstream_lookup_permit = acquire_lookup_permits(
+            state.public_upstream_backpressure.clone(),
+            state.upstream_backpressure.clone(),
+            LookupTrafficClass::Public,
+            "v1_html",
+            &normalized_id,
+            &request_id,
+        )
+        .await?;
+        resolve_tracking_html_request(&state.client, &state.tracking_source, &normalized_id).await
+    })
+    .await;
     log_service_tracking_timing(
         "v1_html",
         &normalized_id,
@@ -366,6 +804,7 @@ async fn v1_bag_handler(
         request_options,
         "v1_bag",
         &request_id,
+        LookupTrafficClass::Public,
     )
     .await
     .map(|payload| envelope(BAG_SCHEMA_VERSION, response_request_id, payload))
@@ -398,6 +837,7 @@ async fn v1_manifest_handler(
         request_options,
         "v1_manifest",
         &request_id,
+        LookupTrafficClass::Public,
     )
     .await
     .map(|payload| envelope(MANIFEST_SCHEMA_VERSION, response_request_id, payload))
@@ -410,25 +850,52 @@ pub(crate) async fn resolve_tracking_payload(
     request_options: LookupRequestOptions,
     route: &'static str,
     request_id: &str,
+    traffic_class: LookupTrafficClass,
 ) -> Result<TrackResponse, TrackingError> {
     let started_at = Instant::now();
     let normalized_id = shipment_id.trim().to_string();
+    let public_backpressure = state.public_upstream_backpressure.clone();
     let backpressure = state.upstream_backpressure.clone();
+    let contact_backpressure = state.contact_backpressure.clone();
     let permit_request_id = request_id.to_string();
     let permit_lookup_id = normalized_id.clone();
-    let result = resolve_tracking_request_cached(
-        &state.lookup_cache,
-        &state.contact_cache,
-        &state.client,
-        &state.tracking_source,
+    let contact_request_id = request_id.to_string();
+    let contact_lookup_id = normalized_id.clone();
+    let result = with_lookup_deadline(
+        route,
         &normalized_id,
-        request_options,
-        move || async move {
-            backpressure
-                .acquire(route, &permit_lookup_id, &permit_request_id)
-                .await
-                .map_err(tracking_error_from_upstream_backpressure)
-        },
+        resolve_tracking_request_cached(
+            &state.lookup_cache,
+            &state.contact_cache,
+            &state.client,
+            &state.tracking_source,
+            &normalized_id,
+            request_options,
+            TrackingPermitProviders {
+                primary: move || async move {
+                    acquire_lookup_permits(
+                        public_backpressure,
+                        backpressure,
+                        traffic_class,
+                        route,
+                        &permit_lookup_id,
+                        &permit_request_id,
+                    )
+                    .await
+                },
+                contact: move || {
+                    let backpressure = contact_backpressure.clone();
+                    let request_id = contact_request_id.clone();
+                    let lookup_id = contact_lookup_id.clone();
+                    async move {
+                        backpressure
+                            .acquire("contact_enrichment", &lookup_id, &request_id)
+                            .await
+                            .map_err(tracking_error_from_upstream_backpressure)
+                    }
+                },
+            },
+        ),
     )
     .await;
     log_service_tracking_timing(
@@ -442,29 +909,68 @@ pub(crate) async fn resolve_tracking_payload(
     result
 }
 
+async fn acquire_lookup_permits(
+    public_backpressure: UpstreamBackpressure,
+    global_backpressure: UpstreamBackpressure,
+    traffic_class: LookupTrafficClass,
+    route: &str,
+    lookup_id: &str,
+    request_id: &str,
+) -> Result<LookupPermitSet, TrackingError> {
+    let public_permit = if traffic_class == LookupTrafficClass::Public {
+        Some(
+            public_backpressure
+                .acquire(route, lookup_id, request_id)
+                .await
+                .map_err(tracking_error_from_upstream_backpressure)?,
+        )
+    } else {
+        None
+    };
+    let global_permit = global_backpressure
+        .acquire(route, lookup_id, request_id)
+        .await
+        .map_err(tracking_error_from_upstream_backpressure)?;
+    Ok(LookupPermitSet {
+        _public: public_permit,
+        _global: global_permit,
+    })
+}
+
 pub(crate) async fn resolve_bag_payload(
     state: &HttpApiState,
     bag_id: &str,
     request_options: LookupRequestOptions,
     route: &'static str,
     request_id: &str,
+    traffic_class: LookupTrafficClass,
 ) -> Result<BagResponse, TrackingError> {
     let normalized_id = bag_id.trim().to_string();
+    let public_backpressure = state.public_upstream_backpressure.clone();
     let backpressure = state.upstream_backpressure.clone();
     let permit_request_id = request_id.to_string();
     let permit_lookup_id = normalized_id.clone();
-    resolve_bag_request_cached(
-        &state.lookup_cache,
-        &state.client,
-        &state.tracking_source,
+    with_lookup_deadline(
+        route,
         &normalized_id,
-        request_options,
-        move || async move {
-            backpressure
-                .acquire(route, &permit_lookup_id, &permit_request_id)
+        resolve_bag_request_cached(
+            &state.lookup_cache,
+            &state.client,
+            &state.tracking_source,
+            &normalized_id,
+            request_options,
+            move || async move {
+                acquire_lookup_permits(
+                    public_backpressure,
+                    backpressure,
+                    traffic_class,
+                    route,
+                    &permit_lookup_id,
+                    &permit_request_id,
+                )
                 .await
-                .map_err(tracking_error_from_upstream_backpressure)
-        },
+            },
+        ),
     )
     .await
 }
@@ -475,25 +981,110 @@ pub(crate) async fn resolve_manifest_payload(
     request_options: LookupRequestOptions,
     route: &'static str,
     request_id: &str,
+    traffic_class: LookupTrafficClass,
 ) -> Result<ManifestResponse, TrackingError> {
     let normalized_id = manifest_id.trim().to_string();
+    let public_backpressure = state.public_upstream_backpressure.clone();
     let backpressure = state.upstream_backpressure.clone();
     let permit_request_id = request_id.to_string();
     let permit_lookup_id = normalized_id.clone();
-    resolve_manifest_request_cached(
-        &state.lookup_cache,
-        &state.client,
-        &state.tracking_source,
+    with_lookup_deadline(
+        route,
         &normalized_id,
-        request_options,
-        move || async move {
-            backpressure
-                .acquire(route, &permit_lookup_id, &permit_request_id)
+        resolve_manifest_request_cached(
+            &state.lookup_cache,
+            &state.client,
+            &state.tracking_source,
+            &normalized_id,
+            request_options,
+            move || async move {
+                acquire_lookup_permits(
+                    public_backpressure,
+                    backpressure,
+                    traffic_class,
+                    route,
+                    &permit_lookup_id,
+                    &permit_request_id,
+                )
                 .await
-                .map_err(tracking_error_from_upstream_backpressure)
-        },
+            },
+        ),
     )
     .await
+}
+
+async fn with_lookup_deadline<T, F>(
+    route: &str,
+    lookup_id: &str,
+    future: F,
+) -> Result<T, TrackingError>
+where
+    F: Future<Output = Result<T, TrackingError>>,
+{
+    with_lookup_deadline_duration(
+        route,
+        lookup_id,
+        Duration::from_secs(SERVICE_LOOKUP_DEADLINE_SECS),
+        future,
+    )
+    .await
+}
+
+async fn with_lookup_deadline_duration<T, F>(
+    route: &str,
+    lookup_id: &str,
+    deadline: Duration,
+    future: F,
+) -> Result<T, TrackingError>
+where
+    F: Future<Output = Result<T, TrackingError>>,
+{
+    match timeout(deadline, future).await {
+        Ok(result) => result,
+        Err(_) => {
+            shipflow_core::shipflow_log!(
+                "[ShipFlowDeadline] lookup_timed_out route={route} id={lookup_id} deadlineMs={}",
+                deadline.as_millis()
+            );
+            Err(TrackingError::ServiceUnavailable(format!(
+                "Lookup exceeded the {}-second service deadline. Please retry.",
+                deadline.as_secs()
+            )))
+        }
+    }
+}
+
+fn service_restart_count() -> u32 {
+    std::env::var("SHIPFLOW_SERVICE_RESTART_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+fn cache_diagnostics(snapshot: LookupCacheSnapshot) -> CacheDiagnostics {
+    CacheDiagnostics {
+        ready: snapshot.ready,
+        loading: snapshot.loading,
+        capacity: snapshot.capacity,
+    }
+}
+
+fn contact_cache_diagnostics(snapshot: ContactCacheSnapshot) -> ContactCacheDiagnostics {
+    ContactCacheDiagnostics {
+        entries: snapshot.entries,
+        in_flight: snapshot.in_flight,
+        capacity: snapshot.capacity,
+    }
+}
+
+fn backpressure_diagnostics(snapshot: UpstreamBackpressureSnapshot) -> BackpressureLaneDiagnostics {
+    BackpressureLaneDiagnostics {
+        active: snapshot.active,
+        available: snapshot.available,
+        queued: snapshot.queued,
+        max_concurrent: snapshot.max_concurrent,
+        max_queued: snapshot.max_queued,
+    }
 }
 
 #[cfg(test)]
@@ -511,7 +1102,7 @@ fn log_service_tracking_timing(
     force_refresh: bool,
     is_success: bool,
 ) {
-    eprintln!(
+    shipflow_core::shipflow_log!(
         "[ShipFlowPerf] service_tracking route={} id={} source={} forceRefresh={} durationMs={} result={}",
         route,
         shipment_id,
@@ -520,52 +1111,6 @@ fn log_service_tracking_timing(
         started_at.elapsed().as_millis(),
         if is_success { "ok" } else { "error" }
     );
-}
-
-async fn acquire_upstream_lookup_permit(
-    state: &HttpApiState,
-    schema_version: &'static str,
-    request_id: &str,
-    route: &str,
-    lookup_id: &str,
-) -> Result<
-    tokio::sync::OwnedSemaphorePermit,
-    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
-> {
-    state
-        .upstream_backpressure
-        .acquire(route, lookup_id, request_id)
-        .await
-        .map_err(|error| map_upstream_backpressure_error(error, schema_version, request_id))
-}
-
-fn map_upstream_backpressure_error(
-    error: UpstreamBackpressureError,
-    schema_version: &'static str,
-    request_id: &str,
-) -> (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>) {
-    match error {
-        UpstreamBackpressureError::QueueFull { depth } => error_response_v1(
-            StatusCode::TOO_MANY_REQUESTS,
-            schema_version,
-            request_id.to_owned(),
-            &format!(
-                "Too many upstream lookup requests are already queued ({depth}). Please retry shortly."
-            ),
-        ),
-        UpstreamBackpressureError::LimiterUnavailable => error_response_v1(
-            StatusCode::SERVICE_UNAVAILABLE,
-            schema_version,
-            request_id.to_owned(),
-            "Upstream lookup limiter is unavailable.",
-        ),
-        UpstreamBackpressureError::Timeout => error_response_v1(
-            StatusCode::SERVICE_UNAVAILABLE,
-            schema_version,
-            request_id.to_owned(),
-            "Upstream lookup queue timed out. Please retry shortly.",
-        ),
-    }
 }
 
 fn tracking_error_from_upstream_backpressure(error: UpstreamBackpressureError) -> TrackingError {
@@ -694,7 +1239,13 @@ fn authorize_request_id(headers: &HeaderMap) -> String {
         .get(REQUEST_ID_HEADER_NAME)
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= MAX_REQUEST_ID_BYTES
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:".contains(&byte))
+        })
         .map(ToOwned::to_owned)
         .unwrap_or_else(generate_request_id)
 }
@@ -719,10 +1270,12 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        authorize_request_message, build_router, external_api_request, read_lookup_request_options,
-        HttpApiState,
+        acquire_lookup_permits, authorize_request_id, authorize_request_message, build_router,
+        external_api_request, is_forbidden_external_address, is_private_external_address,
+        read_lookup_request_options, resolve_external_api_addresses, with_lookup_deadline_duration,
+        HttpApiState, LookupTrafficClass,
     };
-    use std::sync::Arc;
+    use std::{net::IpAddr, sync::Arc, time::Instant};
     use tokio::sync::Notify;
     use tokio::sync::Semaphore;
     use tokio::time::Duration;
@@ -734,6 +1287,50 @@ mod tests {
         upstream_backpressure::{UpstreamBackpressure, MAX_CONCURRENT_UPSTREAM_LOOKUPS},
         FORCE_REFRESH_HEADER_NAME,
     };
+
+    #[test]
+    fn external_api_network_policy_separates_forbidden_and_trusted_lan_addresses() {
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        let metadata: IpAddr = "169.254.169.254".parse().unwrap();
+        let private_lan: IpAddr = "192.168.1.20".parse().unwrap();
+        let public: IpAddr = "8.8.8.8".parse().unwrap();
+
+        assert!(is_forbidden_external_address(loopback));
+        assert!(is_forbidden_external_address(metadata));
+        assert!(!is_forbidden_external_address(private_lan));
+        assert!(is_private_external_address(private_lan));
+        assert!(!is_private_external_address(public));
+    }
+
+    #[tokio::test]
+    async fn external_api_runtime_rejects_loopback_even_with_lan_opt_in() {
+        let error = resolve_external_api_addresses(&TrackingSourceConfig {
+            tracking_source: TrackingSource::ExternalApi,
+            external_api_base_url: "http://127.0.0.1:18422".into(),
+            external_api_auth_token: "sf_token".into(),
+            allow_insecure_external_api_http: true,
+        })
+        .await
+        .expect_err("loopback must remain forbidden");
+
+        assert!(error.contains("reserved"));
+    }
+
+    #[tokio::test]
+    async fn external_api_runtime_allows_explicit_trusted_lan_address() {
+        let destination = resolve_external_api_addresses(&TrackingSourceConfig {
+            tracking_source: TrackingSource::ExternalApi,
+            external_api_base_url: "http://192.168.1.20:18422/v1".into(),
+            external_api_auth_token: "sf_token".into(),
+            allow_insecure_external_api_http: true,
+        })
+        .await
+        .expect("trusted LAN address should be accepted")
+        .expect("external source should resolve");
+
+        assert_eq!(destination.0, "192.168.1.20");
+        assert_eq!(destination.1[0].to_string(), "192.168.1.20:18422");
+    }
 
     #[test]
     fn external_api_requests_include_bearer_and_x_api_token_headers() {
@@ -758,6 +1355,72 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("sf_external_token")
         );
+    }
+
+    #[tokio::test]
+    async fn lookup_deadline_cancels_slow_work() {
+        let result =
+            with_lookup_deadline_duration("test", "P1", Duration::from_millis(10), async {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                Ok::<_, shipflow_core::model::TrackingError>(())
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(shipflow_core::model::TrackingError::ServiceUnavailable(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn internal_lookup_can_use_reserved_capacity_when_public_lane_is_full() {
+        let public_backpressure = UpstreamBackpressure::with_limits(1, 2, Duration::from_secs(1));
+        let global_backpressure = UpstreamBackpressure::with_limits(2, 2, Duration::from_secs(1));
+        let first_public = acquire_lookup_permits(
+            public_backpressure.clone(),
+            global_backpressure.clone(),
+            LookupTrafficClass::Public,
+            "test_public",
+            "P1",
+            "request-1",
+        )
+        .await
+        .expect("first public request should acquire");
+        let waiting_public = tokio::spawn({
+            let public_backpressure = public_backpressure.clone();
+            let global_backpressure = global_backpressure.clone();
+            async move {
+                acquire_lookup_permits(
+                    public_backpressure,
+                    global_backpressure,
+                    LookupTrafficClass::Public,
+                    "test_public",
+                    "P2",
+                    "request-2",
+                )
+                .await
+            }
+        });
+        tokio::task::yield_now().await;
+
+        assert_eq!(public_backpressure.snapshot().queued, 1);
+        let internal = acquire_lookup_permits(
+            public_backpressure,
+            global_backpressure,
+            LookupTrafficClass::Internal,
+            "test_internal",
+            "P3",
+            "request-3",
+        )
+        .await
+        .expect("internal request should use reserved global capacity");
+
+        drop(first_public);
+        drop(internal);
+        waiting_public
+            .await
+            .expect("public waiter should join")
+            .expect("public waiter should acquire after capacity is released");
     }
 
     #[test]
@@ -785,6 +1448,26 @@ mod tests {
         let result = authorize_request_message(&headers, "secret-token");
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_unbounded_or_unsafe_request_ids() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            super::REQUEST_ID_HEADER_NAME,
+            "request id with whitespace".parse().unwrap(),
+        );
+        let unsafe_id = authorize_request_id(&headers);
+        assert_ne!(unsafe_id, "request id with whitespace");
+
+        headers.insert(
+            super::REQUEST_ID_HEADER_NAME,
+            "x".repeat(super::MAX_REQUEST_ID_BYTES + 1).parse().unwrap(),
+        );
+        assert_ne!(
+            authorize_request_id(&headers),
+            "x".repeat(super::MAX_REQUEST_ID_BYTES + 1)
+        );
     }
 
     #[tokio::test]
@@ -860,11 +1543,19 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+        let response_request_id = response
+            .headers()
+            .get(super::REQUEST_ID_HEADER_NAME)
+            .expect("response should expose the correlation id")
+            .to_str()
+            .unwrap()
+            .to_string();
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload["data"]["product"], "shipflow-service");
         assert_eq!(payload["data"]["service"], "running");
+        assert_eq!(payload["meta"]["requestId"], response_request_id);
     }
 
     #[tokio::test]
@@ -928,6 +1619,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn diagnostics_require_auth_and_report_bounded_runtime_state() {
+        let router = build_router(test_state());
+        let unauthenticated = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/diagnostics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let authenticated = router
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/diagnostics")
+                    .header(AUTHORIZATION, "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authenticated.status(), StatusCode::OK);
+
+        let body = to_bytes(authenticated.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            payload["meta"]["schemaVersion"],
+            "shipflow.service.diagnostics.v1"
+        );
+        assert_eq!(payload["data"]["product"], "shipflow-service");
+        assert_eq!(payload["data"]["lookupDeadlineSeconds"], 120);
+        assert_eq!(payload["data"]["lookupCache"]["capacity"], 10_000);
+        assert!(payload["data"]["backpressure"]["global"]["maxConcurrent"].is_number());
+        assert!(payload["data"]["backpressure"]["global"]["maxQueued"].is_number());
+    }
+
+    #[tokio::test]
     async fn capabilities_include_tracking_html_route() {
         let router = build_router(test_state());
         let response = router
@@ -952,6 +1685,7 @@ mod tests {
         assert!(routes
             .iter()
             .any(|route| route == "GET /v1/track/:shipment_id/html"));
+        assert!(routes.iter().any(|route| route == "GET /v1/diagnostics"));
     }
 
     #[tokio::test]
@@ -1018,6 +1752,61 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn http_ingress_rejects_immediately_when_its_queue_is_full() {
+        let limiter = Arc::new(Semaphore::new(1));
+        let held_permit = limiter
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("test permit should acquire");
+        let mut state = test_state();
+        state.http_ingress_backpressure =
+            UpstreamBackpressure::with_limiter(limiter, 1, 0, Duration::from_millis(50));
+
+        let response = build_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        drop(held_permit);
+    }
+
+    #[tokio::test]
+    async fn http_ingress_releases_capacity_across_a_burst() {
+        let mut state = test_state();
+        state.http_ingress_backpressure =
+            UpstreamBackpressure::with_limits(8, 512, Duration::from_secs(1));
+        let router = build_router(state);
+        let mut requests = tokio::task::JoinSet::new();
+
+        for _ in 0..512 {
+            let router = router.clone();
+            requests.spawn(async move {
+                router
+                    .oneshot(
+                        Request::builder()
+                            .uri("/v1/status")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .expect("router should respond")
+                    .status()
+            });
+        }
+
+        while let Some(result) = requests.join_next().await {
+            assert_eq!(result.expect("request task should join"), StatusCode::OK);
+        }
+    }
+
     fn test_state() -> HttpApiState {
         HttpApiState {
             client: reqwest::Client::new(),
@@ -1029,8 +1818,12 @@ mod tests {
             tracking_source: TrackingSourceConfig::default(),
             lookup_cache: LookupCacheState::default(),
             contact_cache: ContactCacheState::default(),
+            public_upstream_backpressure: UpstreamBackpressure::public_default(),
             upstream_backpressure: UpstreamBackpressure::default(),
+            contact_backpressure: UpstreamBackpressure::contact_default(),
+            http_ingress_backpressure: UpstreamBackpressure::http_ingress_default(),
             shutdown_signal: Arc::new(Notify::new()),
+            started_at: Instant::now(),
         }
     }
 

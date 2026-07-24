@@ -129,6 +129,8 @@ Common status codes:
 - `400 Bad Request`: invalid lookup input
 - `401 Unauthorized`: missing or invalid bearer token
 - `404 Not Found`: lookup target was not found
+- `429 Too Many Requests`: the bounded public lookup queue is full
+- `503 Service Unavailable`: the lookup queue timed out, the 120-second end-to-end lookup deadline elapsed, or a limiter is unavailable
 - `502 Bad Gateway`: upstream tracking source failed
 
 ## Status
@@ -205,6 +207,7 @@ Example response:
       "GET /v1/openapi.json",
       "GET /v1/status",
       "GET /v1/capabilities",
+      "GET /v1/diagnostics",
       "GET /v1/track/:shipment_id",
       "GET /v1/track/:shipment_id/html",
       "GET /v1/bag/:bag_id",
@@ -214,6 +217,81 @@ Example response:
   "warnings": []
 }
 ```
+
+## Runtime Diagnostics
+
+```http
+GET /v1/diagnostics
+```
+
+This protected endpoint requires the same bearer token as lookup routes. It
+reports bounded operational state without exposing credentials, shipment
+payloads, or cached contact values:
+
+```json
+{
+  "meta": {
+    "apiVersion": "v1",
+    "schemaVersion": "shipflow.service.diagnostics.v1",
+    "requestId": "sf_req_...",
+    "generatedAt": "2026-07-23T00:00:00.123Z"
+  },
+  "data": {
+    "product": "shipflow-service",
+    "uptimeSeconds": 3600,
+    "restartCount": 1,
+    "rssBytes": 125829120,
+    "lookupDeadlineSeconds": 120,
+    "lookupCache": {
+      "ready": 420,
+      "loading": 12,
+      "capacity": 10000
+    },
+    "contactCache": {
+      "entries": 900,
+      "inFlight": 8,
+      "capacity": 20000
+    },
+    "backpressure": {
+      "ingress": {
+        "active": 32,
+        "available": 96,
+        "queued": 0,
+        "maxConcurrent": 128,
+        "maxQueued": 512
+      },
+      "public": {
+        "active": 20,
+        "available": 4,
+        "queued": 30,
+        "maxConcurrent": 24,
+        "maxQueued": 240
+      },
+      "global": {
+        "active": 26,
+        "available": 4,
+        "queued": 30,
+        "maxConcurrent": 30,
+        "maxQueued": 300
+      },
+      "contact": {
+        "active": 8,
+        "available": 7,
+        "queued": 0,
+        "maxConcurrent": 15,
+        "maxQueued": 150
+      }
+    }
+  },
+  "warnings": []
+}
+```
+
+`rssBytes` can be `null` on unsupported platforms. `restartCount` is the number
+of automatic child-process restarts performed by the current Electron suite
+session, so it resets when Electron exits. Service logs also emit a bounded
+diagnostic snapshot every 60 seconds and report a memory warning when RSS
+reaches 512 MiB.
 
 ## Lookups
 
@@ -286,9 +364,23 @@ curl \
 
 ## Upstream Lookup Backpressure
 
-Bulk tracking is intentionally driven through bounded direct `GET /v1/track/:shipment_id` requests. ShipFlow Service applies a shared 30-permit concurrency gate and a 120-request queue to every Service route that can perform upstream scraping: direct tracking, raw tracking HTML, bag lookup, and manifest lookup. Cached lookup hits and coalesced in-flight waiters do not consume an upstream permit; only the actual upstream fetch does.
+Every HTTP route first passes through a bounded ingress lane with 128 active
+request permits, a 512-request queue, and a five-second queue deadline. Request
+bodies are capped at 64 KiB. Handler execution is capped at 130 seconds, which
+leaves a small response-assembly margin beyond the 120-second lookup deadline.
+Ingress overload returns `429` or `503`; a handler deadline returns `504`.
 
-Additional upstream lookup requests wait for the next Service permit instead of creating extra upstream pressure. Runtime logs include `[ShipFlowBackpressure]` when a request had to wait for an upstream lookup permit.
+Bulk tracking is intentionally driven through bounded direct `GET /v1/track/:shipment_id` requests. ShipFlow Service applies a shared 30-permit concurrency gate and a 300-request queue to every Service route that can perform upstream scraping: direct tracking, raw tracking HTML, bag lookup, and manifest lookup. Public HTTP traffic has an additional 24-permit lane and a 240-request queue, leaving at least six shared permits available to Desktop's internal IPC traffic. Each primary gate has a 60-second wait limit; a public request that must wait at both gates can therefore wait for up to 120 seconds before its upstream request starts.
+
+Every public and internal lookup also has one 120-second end-to-end deadline
+covering queue waits, upstream I/O, parsing, contact enrichment, and response
+assembly. The caller receives `503 Service Unavailable` when this deadline
+expires. Cancellation releases acquired permits and removes an owned in-flight
+cache slot so another request can retry instead of waiting forever.
+
+Phone-number enrichment uses a separate 15-permit gate and a 150-request queue with a 30-second wait limit. Concurrent enrichment requests for the same shipment ID are coalesced into one upstream Lacak Mitra fetch. A contact-enrichment overload does not discard the primary tracking result; the response reports failed enrichment metadata and the contact attempt can be retried after its short failure-cache TTL.
+
+Additional upstream lookup requests wait for the next Service permit instead of creating extra upstream pressure. Runtime logs include `[ShipFlowBackpressure]` when a request waits or is rejected. These queues are bounded in-process queues, not durable jobs: clients should retry `429` and `503` responses with bounded exponential backoff.
 
 ## Cache And Persistence
 
@@ -298,14 +390,32 @@ ShipFlow Service keeps an in-memory lookup cache with:
 - in-flight request coalescing
 - kind-specific TTL behavior
 - short negative-cache protection for repeated failures
+- a hard 10,000-entry capacity shared by ready and in-flight entries
+- least-recently-used eviction for ready entries when capacity is reached
+- periodic expired-entry pruning every 60 seconds
 
-Successful lookup payloads are also persisted into a bounded local user-state lookup store. The persistent store:
+If every cache slot is already an in-flight lookup, a new uncached lookup is
+rejected with `503 Service Unavailable` instead of allowing memory growth beyond
+the configured capacity. Existing lookups and coalesced waiters continue
+normally.
+
+Successful lookup payloads are also persisted into a bounded SQLite WAL database
+in local user state. The persistent lookup store:
 
 - stores successful payloads only
 - ignores expired entries when loading
-- compacts itself to a bounded entry count
+- caps payloads at 128 KiB and excludes embedded image data
+- compacts itself to a bounded 2,000-entry count
 - is used as a warm cache across service restarts
-- writes successful payloads outside the response path so local disk persistence does not delay the client response
+- uses one bounded 1,024-command writer queue and batches up to 128 mutations per transaction
+- writes outside the response path so local persistence does not delay the client response
+- flushes queued mutations during graceful Service shutdown
+
+Existing `lookup-store.json` data is imported automatically into
+`lookup-store.sqlite3`; an in-place JSON migration preserves a
+`lookup-store.legacy.json` backup.
+
+Contact enrichment is persisted separately in SQLite with WAL mode. Existing `contact-store.json` data is migrated automatically, successful and missing-contact entries retain the existing long TTL, and transient failures use a short TTL to avoid immediate retry storms.
 
 Manual refresh flows should send:
 

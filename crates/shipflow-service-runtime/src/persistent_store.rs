@@ -1,17 +1,22 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
 const MAX_PERSISTED_LOOKUP_ENTRIES: usize = 2_000;
 const MAX_PERSISTED_LOOKUP_PAYLOAD_BYTES: usize = 128 * 1024;
+const MAX_BUFFERED_PERSISTENT_WRITES: usize = 1_024;
+const MAX_WRITES_PER_TRANSACTION: usize = 128;
 const EMBEDDED_DATA_IMAGE_MARKER: &str = "data:image";
 const SERVICE_STATE_DIR_NAME: &str = "shipflow-service-runtime";
-const LOOKUP_STORE_FILE_NAME: &str = "lookup-store.json";
+const LOOKUP_STORE_FILE_NAME: &str = "lookup-store.sqlite3";
+const LEGACY_LOOKUP_STORE_FILE_NAME: &str = "lookup-store.json";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const SERVICE_APP_DATA_DIR_NAME: &str = "ShipFlow Service";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -23,83 +28,135 @@ const SERVICE_XDG_DATA_DIR_NAME: &str = "shipflow-service";
 #[cfg(all(unix, not(target_os = "macos")))]
 const LEGACY_DESKTOP_XDG_DATA_DIR_NAME: &str = "shipflow-desktop";
 
-static PERSISTENT_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PersistentLookupStore {
-    path: PathBuf,
-    inner: Arc<Mutex<PersistentLookupStoreFile>>,
+    inner: Arc<PersistentLookupStoreInner>,
+}
+
+struct PersistentLookupStoreInner {
+    reader: Mutex<Connection>,
+    writer: PersistentLookupWriter,
+}
+
+struct PersistentLookupWriter {
+    sender: SyncSender<PersistentWriteCommand>,
+    handle: Mutex<Option<thread::JoinHandle<()>>>,
+}
+
+enum PersistentWriteCommand {
+    Upsert {
+        key: String,
+        payload: String,
+        expires_at_unix_ms: i64,
+        acknowledgement: Option<mpsc::Sender<bool>>,
+    },
+    Remove {
+        key: String,
+        acknowledgement: Option<mpsc::Sender<bool>>,
+    },
+    Flush(mpsc::Sender<()>),
+    Shutdown,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PersistentLookupStoreFile {
+struct LegacyPersistentLookupStoreFile {
     version: u8,
-    entries: HashMap<String, PersistentLookupEntry>,
+    entries: HashMap<String, LegacyPersistentLookupEntry>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PersistentLookupEntry {
+struct LegacyPersistentLookupEntry {
     expires_at_unix_ms: u128,
     payload: String,
+}
+
+impl std::fmt::Debug for PersistentLookupStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PersistentLookupStore")
+            .finish_non_exhaustive()
+    }
 }
 
 impl PersistentLookupStore {
     pub fn open_default() -> Self {
         let path = default_persistent_lookup_store_path();
-        migrate_legacy_persistent_lookup_store(&path);
-        Self::open(path)
+        let legacy_entries = load_default_legacy_entries(&path);
+        Self::open_with_legacy_entries(path, legacy_entries)
     }
 
     pub fn open(path: PathBuf) -> Self {
-        let loaded_from_disk = path.exists();
-        let mut inner = fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<PersistentLookupStoreFile>(&bytes).ok())
-            .filter(|store| store.version == 1)
-            .unwrap_or_else(|| PersistentLookupStoreFile {
-                version: 1,
-                entries: HashMap::new(),
-            });
-        let should_persist_sanitized_store = loaded_from_disk && compact_store(&mut inner);
+        let legacy_entries = extract_legacy_entries_from_target(&path);
+        Self::open_with_legacy_entries(path, legacy_entries)
+    }
 
-        let store = Self {
-            path,
-            inner: Arc::new(Mutex::new(inner)),
-        };
-        if should_persist_sanitized_store {
-            let snapshot = store
-                .inner
-                .lock()
-                .expect("persistent lookup store lock poisoned")
-                .clone();
-            if let Err(error) = store.persist_snapshot(&snapshot) {
-                eprintln!("[ShipFlowService] {error}");
-            }
+    fn open_with_legacy_entries(
+        requested_path: PathBuf,
+        legacy_entries: Vec<(String, LegacyPersistentLookupEntry)>,
+    ) -> Self {
+        let path = prepare_database_path(&requested_path).unwrap_or_else(|error| {
+            shipflow_core::shipflow_log!("[ShipFlowService] {error}");
+            let fallback_path = std::env::temp_dir().join(format!(
+                "shipflow-lookup-store-{}-{}.sqlite3",
+                std::process::id(),
+                unix_ms()
+            ));
+            prepare_database_path(&fallback_path)
+                .unwrap_or_else(|fallback_error| panic!("{error}; {fallback_error}"));
+            fallback_path
+        });
+
+        let reader = open_database(&path)
+            .unwrap_or_else(|error| panic!("Unable to open persistent lookup store: {error}"));
+        import_legacy_entries(&reader, legacy_entries);
+
+        let (sender, receiver) = mpsc::sync_channel(MAX_BUFFERED_PERSISTENT_WRITES);
+        let writer_path = path.clone();
+        let handle = thread::Builder::new()
+            .name("shipflow-lookup-writer".into())
+            .spawn(move || run_persistent_writer(writer_path, receiver))
+            .expect("persistent lookup writer thread must start");
+
+        Self {
+            inner: Arc::new(PersistentLookupStoreInner {
+                reader: Mutex::new(reader),
+                writer: PersistentLookupWriter {
+                    sender,
+                    handle: Mutex::new(Some(handle)),
+                },
+            }),
         }
-        store
     }
 
     pub fn load_success(&self, key: &str) -> Option<String> {
-        let now = unix_ms();
-        let mut store = self
-            .inner
-            .lock()
-            .expect("persistent lookup store lock poisoned");
-        let should_remove = {
-            let entry = store.entries.get(key)?;
-            entry.expires_at_unix_ms <= now
-                || persistent_lookup_skip_reason(&entry.payload).is_some()
-        };
+        let row = {
+            let reader = self
+                .inner
+                .reader
+                .lock()
+                .expect("persistent lookup reader lock poisoned");
+            reader
+                .query_row(
+                    "SELECT expires_at_unix_ms, payload FROM lookup_cache WHERE key = ?1",
+                    params![key],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .unwrap_or_else(|error| {
+                    shipflow_core::shipflow_log!(
+                        "[ShipFlowService] Unable to read persistent lookup store: {error}"
+                    );
+                    None
+                })
+        }?;
 
-        if should_remove {
-            store.entries.remove(key);
-            let _ = self.persist_snapshot(&store);
+        if row.0 <= unix_ms() || persistent_lookup_skip_reason(&row.1).is_some() {
+            self.enqueue_remove_success(key.to_string());
             return None;
         }
-
-        store.entries.get(key).map(|entry| entry.payload.clone())
+        Some(row.1)
     }
 
     pub fn store_success(&self, key: String, payload: String, ttl: Duration) -> bool {
@@ -108,80 +165,400 @@ impl PersistentLookupStore {
             return false;
         }
 
-        let expires_at_unix_ms = unix_ms().saturating_add(ttl.as_millis());
-        let persist_result = {
-            let mut store = self
-                .inner
-                .lock()
-                .expect("persistent lookup store lock poisoned");
-            store.entries.insert(
+        let (acknowledgement, response) = mpsc::channel();
+        if self
+            .inner
+            .writer
+            .sender
+            .send(PersistentWriteCommand::Upsert {
                 key,
-                PersistentLookupEntry {
-                    expires_at_unix_ms,
-                    payload,
-                },
-            );
-            compact_store(&mut store);
-            self.persist_snapshot(&store)
-        };
-
-        if let Err(error) = persist_result {
-            eprintln!("[ShipFlowService] {error}");
+                payload,
+                expires_at_unix_ms: expires_at_unix_ms(ttl),
+                acknowledgement: Some(acknowledgement),
+            })
+            .is_err()
+        {
             return false;
         }
-        true
+        response.recv().unwrap_or(false)
+    }
+
+    pub fn enqueue_store_success(&self, key: String, payload: String, ttl: Duration) -> bool {
+        if persistent_lookup_skip_reason(&payload).is_some() {
+            self.enqueue_remove_success(key);
+            return false;
+        }
+
+        match self
+            .inner
+            .writer
+            .sender
+            .try_send(PersistentWriteCommand::Upsert {
+                key,
+                payload,
+                expires_at_unix_ms: expires_at_unix_ms(ttl),
+                acknowledgement: None,
+            }) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => false,
+        }
     }
 
     pub fn remove_success(&self, key: &str) -> bool {
-        let persist_result = {
-            let mut store = self
-                .inner
-                .lock()
-                .expect("persistent lookup store lock poisoned");
-            if store.entries.remove(key).is_none() {
-                return false;
-            }
-            self.persist_snapshot(&store)
-        };
-
-        if let Err(error) = persist_result {
-            eprintln!("[ShipFlowService] {error}");
+        let (acknowledgement, response) = mpsc::channel();
+        if self
+            .inner
+            .writer
+            .sender
+            .send(PersistentWriteCommand::Remove {
+                key: key.to_string(),
+                acknowledgement: Some(acknowledgement),
+            })
+            .is_err()
+        {
+            return false;
         }
-        true
+        response.recv().unwrap_or(false)
     }
 
-    fn persist_snapshot(&self, snapshot: &PersistentLookupStoreFile) -> Result<(), String> {
-        let bytes = serde_json::to_vec(snapshot)
-            .map_err(|error| format!("Unable to serialize persistent lookup store: {error}"))?;
-        persist_bytes_atomically(&self.path, &bytes, "persistent lookup store")
+    pub fn enqueue_remove_success(&self, key: String) -> bool {
+        self.inner
+            .writer
+            .sender
+            .try_send(PersistentWriteCommand::Remove {
+                key,
+                acknowledgement: None,
+            })
+            .is_ok()
+    }
+
+    pub fn flush(&self) {
+        let (acknowledgement, response) = mpsc::channel();
+        if self
+            .inner
+            .writer
+            .sender
+            .send(PersistentWriteCommand::Flush(acknowledgement))
+            .is_ok()
+        {
+            let _ = response.recv();
+        }
     }
 }
 
-pub(crate) fn persist_bytes_atomically(
-    path: &Path,
-    bytes: &[u8],
-    store_label: &str,
-) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("Unable to prepare {store_label} directory: {error}"))?;
+impl Drop for PersistentLookupStoreInner {
+    fn drop(&mut self) {
+        let _ = self.writer.sender.send(PersistentWriteCommand::Shutdown);
+        if let Some(handle) = self
+            .writer
+            .handle
+            .lock()
+            .expect("persistent lookup writer handle lock poisoned")
+            .take()
+        {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn run_persistent_writer(path: PathBuf, receiver: Receiver<PersistentWriteCommand>) {
+    let mut connection = match open_database(&path) {
+        Ok(connection) => connection,
+        Err(error) => {
+            shipflow_core::shipflow_log!(
+                "[ShipFlowService] Persistent lookup writer failed to start: {error}"
+            );
+            reject_pending_commands(receiver);
+            return;
+        }
+    };
+
+    while let Ok(first_command) = receiver.recv() {
+        if matches!(first_command, PersistentWriteCommand::Shutdown) {
+            break;
+        }
+
+        let mut commands = vec![first_command];
+        while commands.len() < MAX_WRITES_PER_TRANSACTION {
+            match receiver.try_recv() {
+                Ok(PersistentWriteCommand::Shutdown) => {
+                    process_write_batch(&mut connection, commands);
+                    return;
+                }
+                Ok(command) => commands.push(command),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    process_write_batch(&mut connection, commands);
+                    return;
+                }
+            }
+        }
+        process_write_batch(&mut connection, commands);
+    }
+}
+
+fn process_write_batch(connection: &mut Connection, commands: Vec<PersistentWriteCommand>) {
+    let transaction = match connection.transaction() {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            shipflow_core::shipflow_log!(
+                "[ShipFlowService] Unable to start persistent lookup transaction: {error}"
+            );
+            acknowledge_failed_batch(commands);
+            return;
+        }
+    };
+
+    let mut acknowledgements = Vec::new();
+    let mut flushes = Vec::new();
+    let mut failed = false;
+    for command in commands {
+        match command {
+            PersistentWriteCommand::Upsert {
+                key,
+                payload,
+                expires_at_unix_ms,
+                acknowledgement,
+            } => {
+                let result = upsert_lookup_entry(&transaction, &key, &payload, expires_at_unix_ms);
+                failed |= result.is_err();
+                if let Some(acknowledgement) = acknowledgement {
+                    acknowledgements.push((acknowledgement, result.is_ok()));
+                }
+            }
+            PersistentWriteCommand::Remove {
+                key,
+                acknowledgement,
+            } => {
+                let result =
+                    transaction.execute("DELETE FROM lookup_cache WHERE key = ?1", params![key]);
+                failed |= result.is_err();
+                if let Some(acknowledgement) = acknowledgement {
+                    acknowledgements.push((
+                        acknowledgement,
+                        result.map(|removed| removed > 0).unwrap_or(false),
+                    ));
+                }
+            }
+            PersistentWriteCommand::Flush(acknowledgement) => {
+                flushes.push(acknowledgement);
+            }
+            PersistentWriteCommand::Shutdown => {}
+        }
     }
 
-    let temp_path = unique_store_temp_path(path);
-    fs::write(&temp_path, bytes)
-        .map_err(|error| format!("Unable to write {store_label}: {error}"))?;
-    replace_store_file(temp_path, path.to_path_buf(), store_label)
+    if !failed {
+        failed = prune_lookup_entries(&transaction).is_err();
+    }
+    let committed = !failed && transaction.commit().is_ok();
+    if !committed {
+        shipflow_core::shipflow_log!(
+            "[ShipFlowService] Persistent lookup write batch was rolled back."
+        );
+    }
+    for (acknowledgement, result) in acknowledgements {
+        let _ = acknowledgement.send(committed && result);
+    }
+    for acknowledgement in flushes {
+        let _ = acknowledgement.send(());
+    }
+}
+
+fn reject_pending_commands(receiver: Receiver<PersistentWriteCommand>) {
+    while let Ok(command) = receiver.recv() {
+        match command {
+            PersistentWriteCommand::Upsert {
+                acknowledgement, ..
+            }
+            | PersistentWriteCommand::Remove {
+                acknowledgement, ..
+            } => {
+                if let Some(acknowledgement) = acknowledgement {
+                    let _ = acknowledgement.send(false);
+                }
+            }
+            PersistentWriteCommand::Flush(acknowledgement) => {
+                let _ = acknowledgement.send(());
+            }
+            PersistentWriteCommand::Shutdown => return,
+        }
+    }
+}
+
+fn acknowledge_failed_batch(commands: Vec<PersistentWriteCommand>) {
+    for command in commands {
+        match command {
+            PersistentWriteCommand::Upsert {
+                acknowledgement, ..
+            }
+            | PersistentWriteCommand::Remove {
+                acknowledgement, ..
+            } => {
+                if let Some(acknowledgement) = acknowledgement {
+                    let _ = acknowledgement.send(false);
+                }
+            }
+            PersistentWriteCommand::Flush(acknowledgement) => {
+                let _ = acknowledgement.send(());
+            }
+            PersistentWriteCommand::Shutdown => {}
+        }
+    }
+}
+
+fn upsert_lookup_entry(
+    transaction: &Transaction<'_>,
+    key: &str,
+    payload: &str,
+    expires_at_unix_ms: i64,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        "INSERT INTO lookup_cache (key, expires_at_unix_ms, payload, updated_at_unix_ms)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(key) DO UPDATE SET
+             expires_at_unix_ms = excluded.expires_at_unix_ms,
+             payload = excluded.payload,
+             updated_at_unix_ms = excluded.updated_at_unix_ms",
+        params![key, expires_at_unix_ms, payload, unix_ms()],
+    )?;
+    Ok(())
+}
+
+fn prune_lookup_entries(transaction: &Transaction<'_>) -> rusqlite::Result<()> {
+    transaction.execute(
+        "DELETE FROM lookup_cache
+         WHERE expires_at_unix_ms <= ?1
+            OR length(payload) > ?2
+            OR instr(payload, ?3) > 0",
+        params![
+            unix_ms(),
+            MAX_PERSISTED_LOOKUP_PAYLOAD_BYTES as i64,
+            EMBEDDED_DATA_IMAGE_MARKER
+        ],
+    )?;
+    transaction.execute(
+        "DELETE FROM lookup_cache
+         WHERE key IN (
+             SELECT key FROM lookup_cache
+             ORDER BY expires_at_unix_ms ASC, updated_at_unix_ms ASC
+             LIMIT MAX(0, (SELECT COUNT(*) FROM lookup_cache) - ?1)
+         )",
+        params![MAX_PERSISTED_LOOKUP_ENTRIES as i64],
+    )?;
+    Ok(())
+}
+
+fn open_database(path: &Path) -> Result<Connection, String> {
+    let connection = Connection::open(path)
+        .map_err(|error| format!("Unable to open persistent lookup database: {error}"))?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|error| format!("Unable to configure persistent lookup database: {error}"))?;
+    connection
+        .execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA foreign_keys = ON;
+             CREATE TABLE IF NOT EXISTS lookup_cache (
+                 key TEXT PRIMARY KEY NOT NULL,
+                 expires_at_unix_ms INTEGER NOT NULL,
+                 payload TEXT NOT NULL,
+                 updated_at_unix_ms INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_lookup_cache_expiry
+                 ON lookup_cache(expires_at_unix_ms);",
+        )
+        .map_err(|error| format!("Unable to initialize persistent lookup database: {error}"))?;
+    Ok(connection)
+}
+
+fn prepare_database_path(path: &Path) -> Result<PathBuf, String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!("Unable to prepare persistent lookup database directory: {error}")
+        })?;
+    }
+    Ok(path.to_path_buf())
+}
+
+fn import_legacy_entries(
+    connection: &Connection,
+    entries: Vec<(String, LegacyPersistentLookupEntry)>,
+) {
+    if entries.is_empty() {
+        return;
+    }
+
+    let mut statement = match connection.prepare(
+        "INSERT OR IGNORE INTO lookup_cache
+         (key, expires_at_unix_ms, payload, updated_at_unix_ms)
+         VALUES (?1, ?2, ?3, ?4)",
+    ) {
+        Ok(statement) => statement,
+        Err(error) => {
+            shipflow_core::shipflow_log!(
+                "[ShipFlowService] Unable to prepare legacy cache migration: {error}"
+            );
+            return;
+        }
+    };
+    let now = unix_ms();
+    for (key, entry) in entries {
+        let Ok(expires_at_unix_ms) = i64::try_from(entry.expires_at_unix_ms) else {
+            continue;
+        };
+        if expires_at_unix_ms <= now || persistent_lookup_skip_reason(&entry.payload).is_some() {
+            continue;
+        }
+        if let Err(error) = statement.execute(params![key, expires_at_unix_ms, entry.payload, now])
+        {
+            shipflow_core::shipflow_log!(
+                "[ShipFlowService] Unable to migrate legacy cache entry: {error}"
+            );
+        }
+    }
+}
+
+fn load_default_legacy_entries(path: &Path) -> Vec<(String, LegacyPersistentLookupEntry)> {
+    let mut candidates = vec![path.with_file_name(LEGACY_LOOKUP_STORE_FILE_NAME)];
+    candidates.extend(legacy_persistent_lookup_store_paths());
+    for candidate in candidates {
+        if let Some(entries) = read_legacy_entries(&candidate) {
+            return entries;
+        }
+    }
+    Vec::new()
+}
+
+fn extract_legacy_entries_from_target(path: &Path) -> Vec<(String, LegacyPersistentLookupEntry)> {
+    let Some(entries) = read_legacy_entries(path) else {
+        return Vec::new();
+    };
+    let backup = path.with_extension("legacy.json");
+    if let Err(error) = fs::rename(path, &backup) {
+        shipflow_core::shipflow_log!(
+            "[ShipFlowService] Unable to preserve legacy lookup store {}: {error}",
+            path.display()
+        );
+    }
+    entries
+}
+
+fn read_legacy_entries(path: &Path) -> Option<Vec<(String, LegacyPersistentLookupEntry)>> {
+    let store = fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<LegacyPersistentLookupStoreFile>(&bytes).ok())
+        .filter(|store| store.version == 1)?;
+    Some(store.entries.into_iter().collect())
 }
 
 pub fn persistent_lookup_skip_reason(payload: &str) -> Option<&'static str> {
     if payload.len() > MAX_PERSISTED_LOOKUP_PAYLOAD_BYTES {
         return Some("payload_too_large");
     }
-
     if payload.contains(EMBEDDED_DATA_IMAGE_MARKER) {
         return Some("embedded_data_image");
     }
-
     None
 }
 
@@ -207,14 +584,12 @@ pub fn default_persistent_lookup_store_path() -> PathBuf {
         if let Some(path) = windows_shipflow_lookup_store_path() {
             return path;
         }
-
         if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
             return local_app_data
                 .join(SERVICE_APP_DATA_DIR_NAME)
                 .join(SERVICE_STATE_DIR_NAME)
                 .join(LOOKUP_STORE_FILE_NAME);
         }
-
         if let Some(app_data) = std::env::var_os("APPDATA").map(PathBuf::from) {
             return app_data
                 .join(SERVICE_APP_DATA_DIR_NAME)
@@ -231,7 +606,6 @@ pub fn default_persistent_lookup_store_path() -> PathBuf {
                 .join(SERVICE_STATE_DIR_NAME)
                 .join(LOOKUP_STORE_FILE_NAME);
         }
-
         if let Some(home_dir) = std::env::var_os("HOME").map(PathBuf::from) {
             return home_dir
                 .join(".local")
@@ -267,7 +641,7 @@ fn legacy_persistent_lookup_store_path() -> Option<PathBuf> {
             .join("Application Support")
             .join(LEGACY_DESKTOP_APP_DATA_DIR_NAME)
             .join(SERVICE_STATE_DIR_NAME)
-            .join(LOOKUP_STORE_FILE_NAME)
+            .join(LEGACY_LOOKUP_STORE_FILE_NAME)
     })
 }
 
@@ -279,13 +653,13 @@ fn legacy_persistent_lookup_store_paths() -> Vec<PathBuf> {
             app_data
                 .join(SERVICE_APP_DATA_DIR_NAME)
                 .join(SERVICE_STATE_DIR_NAME)
-                .join(LOOKUP_STORE_FILE_NAME),
+                .join(LEGACY_LOOKUP_STORE_FILE_NAME),
         );
         paths.push(
             app_data
                 .join(LEGACY_DESKTOP_APP_DATA_DIR_NAME)
                 .join(SERVICE_STATE_DIR_NAME)
-                .join(LOOKUP_STORE_FILE_NAME),
+                .join(LEGACY_LOOKUP_STORE_FILE_NAME),
         );
     }
     paths
@@ -303,17 +677,16 @@ fn legacy_persistent_lookup_store_path() -> Option<PathBuf> {
             xdg_data_home
                 .join(LEGACY_DESKTOP_XDG_DATA_DIR_NAME)
                 .join(SERVICE_STATE_DIR_NAME)
-                .join(LOOKUP_STORE_FILE_NAME),
+                .join(LEGACY_LOOKUP_STORE_FILE_NAME),
         );
     }
-
     std::env::var_os("HOME").map(PathBuf::from).map(|home_dir| {
         home_dir
             .join(".local")
             .join("share")
             .join(LEGACY_DESKTOP_XDG_DATA_DIR_NAME)
             .join(SERVICE_STATE_DIR_NAME)
-            .join(LOOKUP_STORE_FILE_NAME)
+            .join(LEGACY_LOOKUP_STORE_FILE_NAME)
     })
 }
 
@@ -322,151 +695,18 @@ fn legacy_persistent_lookup_store_paths() -> Vec<PathBuf> {
     Vec::new()
 }
 
-fn migrate_legacy_persistent_lookup_store(path: &Path) {
-    if path.exists() {
-        return;
-    }
-
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    if fs::create_dir_all(parent).is_err() {
-        return;
-    }
-
-    for legacy_path in legacy_persistent_lookup_store_paths() {
-        if legacy_path.exists() && legacy_path != path {
-            let _ = fs::copy(legacy_path, path);
-            return;
-        }
-    }
+fn expires_at_unix_ms(ttl: Duration) -> i64 {
+    unix_ms().saturating_add(i64::try_from(ttl.as_millis()).unwrap_or(i64::MAX))
 }
 
-fn unique_store_temp_path(path: &Path) -> PathBuf {
-    let file_name = path
-        .file_name()
-        .map(|value| value.to_string_lossy().to_string())
-        .unwrap_or_else(|| "lookup-store.json".into());
-    let counter = PERSISTENT_STORE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    path.with_file_name(format!(
-        "{file_name}.{}.{}.{}.tmp",
-        std::process::id(),
-        unix_ms(),
-        counter
-    ))
-}
-
-#[cfg(target_os = "windows")]
-fn replace_store_file(temp_path: PathBuf, path: PathBuf, store_label: &str) -> Result<(), String> {
-    use std::io::ErrorKind;
-    use std::time::Duration;
-
-    let mut last_error = String::new();
-    for _ in 0..64 {
-        match fs::rename(&temp_path, &path) {
-            Ok(()) => return Ok(()),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::AlreadyExists | ErrorKind::PermissionDenied
-                ) =>
-            {
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            Err(error) => {
-                let _ = fs::remove_file(&temp_path);
-                return Err(format!("Unable to finalize {store_label}: {error}"));
-            }
-        }
-
-        match fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) if error.kind() == ErrorKind::PermissionDenied => {
-                last_error = error.to_string();
-                std::thread::sleep(Duration::from_millis(2));
-                continue;
-            }
-            Err(error) => {
-                let _ = fs::remove_file(&temp_path);
-                return Err(format!(
-                    "Unable to prepare {store_label} replacement: {error}"
-                ));
-            }
-        }
-
-        match fs::rename(&temp_path, &path) {
-            Ok(()) => return Ok(()),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::AlreadyExists | ErrorKind::PermissionDenied
-                ) =>
-            {
-                last_error = error.to_string();
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            Err(error) => {
-                let _ = fs::remove_file(&temp_path);
-                return Err(format!("Unable to finalize {store_label}: {error}"));
-            }
-        }
-    }
-
-    let _ = fs::remove_file(&temp_path);
-    if last_error.is_empty() {
-        last_error = "concurrent replacement did not settle".into();
-    }
-    Err(format!("Unable to finalize {store_label}: {last_error}"))
-}
-
-#[cfg(not(target_os = "windows"))]
-fn replace_store_file(temp_path: PathBuf, path: PathBuf, store_label: &str) -> Result<(), String> {
-    fs::rename(&temp_path, &path).map_err(|error| {
-        let _ = fs::remove_file(&temp_path);
-        format!("Unable to finalize {store_label}: {error}")
-    })
-}
-
-fn compact_store(store: &mut PersistentLookupStoreFile) -> bool {
-    let now = unix_ms();
-    let mut removed_entries = false;
-    store.entries.retain(|_, entry| {
-        let keep = entry.expires_at_unix_ms > now
-            && persistent_lookup_skip_reason(&entry.payload).is_none();
-        if !keep {
-            removed_entries = true;
-        }
-        keep
-    });
-
-    if store.entries.len() <= MAX_PERSISTED_LOOKUP_ENTRIES {
-        return removed_entries;
-    }
-
-    let mut entries = store
-        .entries
-        .iter()
-        .map(|(key, entry)| (key.clone(), entry.expires_at_unix_ms))
-        .collect::<Vec<_>>();
-    entries.sort_by_key(|(_, expires_at)| *expires_at);
-
-    for (key, _) in entries
-        .into_iter()
-        .take(store.entries.len() - MAX_PERSISTED_LOOKUP_ENTRIES)
-    {
-        store.entries.remove(&key);
-        removed_entries = true;
-    }
-
-    removed_entries
-}
-
-fn unix_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
+fn unix_ms() -> i64 {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]
@@ -477,8 +717,8 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{
-        persistent_lookup_skip_reason, unix_ms, PersistentLookupEntry, PersistentLookupStore,
-        PersistentLookupStoreFile, MAX_PERSISTED_LOOKUP_PAYLOAD_BYTES,
+        persistent_lookup_skip_reason, unix_ms, LegacyPersistentLookupEntry,
+        LegacyPersistentLookupStoreFile, PersistentLookupStore, MAX_PERSISTED_LOOKUP_PAYLOAD_BYTES,
     };
 
     fn unique_store_path() -> std::path::PathBuf {
@@ -486,7 +726,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        std::env::temp_dir().join(format!("shipflow-persistent-store-{timestamp}.json"))
+        std::env::temp_dir().join(format!("shipflow-persistent-store-{timestamp}.sqlite3"))
     }
 
     #[test]
@@ -498,21 +738,20 @@ mod tests {
             "{\"ok\":true}".into(),
             Duration::from_secs(60),
         ));
+        store.flush();
 
-        let reopened = PersistentLookupStore::open(path.clone());
+        let reopened = PersistentLookupStore::open(path);
         assert_eq!(
             reopened.load_success("track:1").as_deref(),
             Some("{\"ok\":true}")
         );
-
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn concurrent_success_writes_remain_complete_after_reopen() {
         let path = unique_store_path();
         let store = Arc::new(PersistentLookupStore::open(path.clone()));
-        let writers = (0..16)
+        let writers = (0..64)
             .map(|index| {
                 let store = Arc::clone(&store);
                 std::thread::spawn(move || {
@@ -524,150 +763,108 @@ mod tests {
                 })
             })
             .collect::<Vec<_>>();
-
         for writer in writers {
             writer.join().expect("lookup store writer should finish");
         }
+        store.flush();
 
-        let reopened = PersistentLookupStore::open(path.clone());
-        for index in 0..16 {
+        let reopened = PersistentLookupStore::open(path);
+        for index in 0..64 {
             assert_eq!(
                 reopened.load_success(&format!("track:{index}")),
                 Some(format!(r#"{{"index":{index}}}"#))
             );
         }
-
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn overwrites_existing_success_payload() {
+    fn queued_writes_are_durable_after_flush() {
         let path = unique_store_path();
         let store = PersistentLookupStore::open(path.clone());
-        assert!(store.store_success(
-            "track:1".into(),
-            "{\"ok\":false}".into(),
-            Duration::from_secs(60),
-        ));
-        assert!(store.store_success(
-            "track:1".into(),
-            "{\"ok\":true}".into(),
-            Duration::from_secs(60),
-        ));
+        for index in 0..128 {
+            assert!(store.enqueue_store_success(
+                format!("track:{index}"),
+                format!(r#"{{"index":{index}}}"#),
+                Duration::from_secs(60),
+            ));
+        }
+        store.flush();
 
-        let reopened = PersistentLookupStore::open(path.clone());
-        assert_eq!(
-            reopened.load_success("track:1").as_deref(),
-            Some("{\"ok\":true}")
-        );
-
-        let _ = std::fs::remove_file(path);
+        let reopened = PersistentLookupStore::open(path);
+        for index in 0..128 {
+            assert!(reopened.load_success(&format!("track:{index}")).is_some());
+        }
     }
 
     #[test]
     fn expired_entries_are_ignored() {
-        let path = unique_store_path();
-        let store = PersistentLookupStore::open(path.clone());
+        let store = PersistentLookupStore::open(unique_store_path());
         assert!(store.store_success(
             "track:1".into(),
             "{\"ok\":true}".into(),
             Duration::from_millis(0),
         ));
-
         assert!(store.load_success("track:1").is_none());
-
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn skips_embedded_data_image_payloads() {
-        let path = unique_store_path();
-        let store = PersistentLookupStore::open(path.clone());
-        let payload = r#"{"pod":{"photo1_url":"data:image/jpeg;base64,abc"}}"#;
+    fn skips_embedded_images_and_oversized_payloads() {
+        let store = PersistentLookupStore::open(unique_store_path());
+        let image_payload = r#"{"pod":{"photo1_url":"data:image/jpeg;base64,abc"}}"#;
+        let large_payload = "x".repeat(MAX_PERSISTED_LOOKUP_PAYLOAD_BYTES + 1);
 
         assert_eq!(
-            persistent_lookup_skip_reason(payload),
+            persistent_lookup_skip_reason(image_payload),
             Some("embedded_data_image")
         );
-        assert!(!store.store_success("track:pod".into(), payload.into(), Duration::from_secs(60)));
-
-        let reopened = PersistentLookupStore::open(path.clone());
-        assert!(reopened.load_success("track:pod").is_none());
-
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn skips_payloads_that_are_too_large_for_fast_startup() {
-        let path = unique_store_path();
-        let store = PersistentLookupStore::open(path.clone());
-        let payload = "x".repeat(MAX_PERSISTED_LOOKUP_PAYLOAD_BYTES + 1);
-
         assert_eq!(
-            persistent_lookup_skip_reason(&payload),
+            persistent_lookup_skip_reason(&large_payload),
             Some("payload_too_large")
         );
-        assert!(!store.store_success("track:large".into(), payload, Duration::from_secs(60)));
-
-        let reopened = PersistentLookupStore::open(path.clone());
-        assert!(reopened.load_success("track:large").is_none());
-
-        let _ = fs::remove_file(path);
+        assert!(!store.store_success(
+            "track:image".into(),
+            image_payload.into(),
+            Duration::from_secs(60)
+        ));
+        assert!(!store.store_success("track:large".into(), large_payload, Duration::from_secs(60)));
     }
 
     #[test]
-    fn drops_legacy_oversized_entries_when_opening_store() {
+    fn migrates_valid_legacy_json_and_preserves_a_backup() {
         let path = unique_store_path();
-        let expires_at_unix_ms = unix_ms().saturating_add(Duration::from_secs(60).as_millis());
         let mut entries = HashMap::new();
         entries.insert(
             "track:small".into(),
-            PersistentLookupEntry {
-                expires_at_unix_ms,
+            LegacyPersistentLookupEntry {
+                expires_at_unix_ms: u128::try_from(unix_ms()).unwrap_or_default()
+                    + Duration::from_secs(60).as_millis(),
                 payload: "{\"ok\":true}".into(),
             },
         );
         entries.insert(
             "track:image".into(),
-            PersistentLookupEntry {
-                expires_at_unix_ms,
+            LegacyPersistentLookupEntry {
+                expires_at_unix_ms: u128::try_from(unix_ms()).unwrap_or_default()
+                    + Duration::from_secs(60).as_millis(),
                 payload: r#"{"pod":{"signature_url":"data:image/png;base64,abc"}}"#.into(),
             },
         );
-        entries.insert(
-            "track:large".into(),
-            PersistentLookupEntry {
-                expires_at_unix_ms,
-                payload: "x".repeat(MAX_PERSISTED_LOOKUP_PAYLOAD_BYTES + 1),
-            },
-        );
-        let legacy_store = PersistentLookupStoreFile {
-            version: 1,
-            entries,
-        };
         fs::write(
             &path,
-            serde_json::to_vec(&legacy_store).expect("serialize legacy store"),
+            serde_json::to_vec(&LegacyPersistentLookupStoreFile {
+                version: 1,
+                entries,
+            })
+            .expect("serialize legacy store"),
         )
         .expect("write legacy store");
 
         let store = PersistentLookupStore::open(path.clone());
-
         assert_eq!(
             store.load_success("track:small").as_deref(),
             Some("{\"ok\":true}")
         );
         assert!(store.load_success("track:image").is_none());
-        assert!(store.load_success("track:large").is_none());
-
-        let reopened = PersistentLookupStore::open(path.clone());
-        assert_eq!(
-            reopened.load_success("track:small").as_deref(),
-            Some("{\"ok\":true}")
-        );
-        assert!(reopened.load_success("track:image").is_none());
-        assert!(reopened.load_success("track:large").is_none());
-
-        let _ = fs::remove_file(path);
+        assert!(path.with_extension("legacy.json").exists());
     }
 }

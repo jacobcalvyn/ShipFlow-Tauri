@@ -4,14 +4,25 @@ use shipflow_core::model::TrackingError;
 use shipflow_ipc::{
     read_json_frame, write_json_frame, LocalIpcListener, RpcError, RpcMessage, RpcRequest,
 };
-use tokio::io::AsyncReadExt;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::{
+    io::AsyncReadExt,
+    sync::{Semaphore, TryAcquireError},
+    time::timeout,
+};
 
 use crate::http_api::{
     constant_time_token_eq, resolve_bag_payload, resolve_manifest_payload,
-    resolve_tracking_payload, HttpApiState,
+    resolve_tracking_payload, HttpApiState, LookupTrafficClass,
 };
 use crate::lookup_cache::LookupRequestOptions;
 use crate::model::SERVICE_STATUS_PRODUCT;
+
+const MAX_ACTIVE_INTERNAL_IPC_CONNECTIONS: usize = 128;
+const INTERNAL_IPC_FRAME_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,16 +36,30 @@ pub(crate) async fn run_internal_ipc_server(
     listener: LocalIpcListener,
     state: HttpApiState,
 ) -> Result<(), String> {
+    let connection_limiter = Arc::new(Semaphore::new(MAX_ACTIVE_INTERNAL_IPC_CONNECTIONS));
     loop {
         tokio::select! {
             _ = state.shutdown_signal.notified() => return Ok(()),
             accepted = listener.accept() => {
                 let stream = accepted
                     .map_err(|error| format!("Internal IPC listener failed: {error}"))?;
+                let connection_permit = match connection_limiter.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(TryAcquireError::NoPermits) => {
+                        shipflow_core::shipflow_log!(
+                            "[ShipFlowIPC] internal connection rejected reason=capacity limit={MAX_ACTIVE_INTERNAL_IPC_CONNECTIONS}"
+                        );
+                        continue;
+                    }
+                    Err(TryAcquireError::Closed) => {
+                        return Err("Internal IPC connection limiter is unavailable.".into());
+                    }
+                };
                 let connection_state = state.clone();
                 tokio::spawn(async move {
+                    let _connection_permit = connection_permit;
                     if let Err(error) = handle_connection(stream, connection_state).await {
-                        eprintln!("[ShipFlowIPC] internal connection failed: {error}");
+                        shipflow_core::shipflow_log!("[ShipFlowIPC] internal connection failed: {error}");
                     }
                 });
             }
@@ -47,10 +72,26 @@ async fn handle_connection(
     state: HttpApiState,
 ) -> Result<(), String> {
     let (mut reader, mut writer) = tokio::io::split(stream);
-    let request: RpcRequest = read_json_frame(&mut reader)
-        .await
-        .map_err(|error| format!("Unable to read internal IPC request: {error}"))?;
+    let request: RpcRequest = timeout(
+        Duration::from_secs(INTERNAL_IPC_FRAME_TIMEOUT_SECS),
+        read_json_frame(&mut reader),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "Internal IPC request frame timed out after {INTERNAL_IPC_FRAME_TIMEOUT_SECS} seconds."
+        )
+    })?
+    .map_err(|error| format!("Unable to read internal IPC request: {error}"))?;
     let request_id = request.id.clone();
+    let audit_request_id = audit_value(&request.id);
+    let audit_method = audit_value(&request.method);
+    let started_at = Instant::now();
+    shipflow_core::shipflow_log!(
+        "[ShipFlowIPC] request_started requestId={} method={}",
+        audit_request_id,
+        audit_method,
+    );
     let handled = tokio::select! {
         result = handle_request(&state, request) => Some(result),
         disconnected = wait_for_peer_disconnect(&mut reader) => {
@@ -65,13 +106,47 @@ async fn handle_connection(
         Ok(result) => result,
         Err(error) => (RpcMessage::error(request_id, error), false),
     };
-    write_json_frame(&mut writer, &message)
+    let result = if matches!(message, RpcMessage::Error { .. }) {
+        "error"
+    } else {
+        "ok"
+    };
+    timeout(
+        Duration::from_secs(INTERNAL_IPC_FRAME_TIMEOUT_SECS),
+        write_json_frame(&mut writer, &message),
+    )
         .await
+        .map_err(|_| {
+            format!(
+                "Internal IPC response frame timed out after {INTERNAL_IPC_FRAME_TIMEOUT_SECS} seconds."
+            )
+        })?
         .map_err(|error| format!("Unable to write internal IPC response: {error}"))?;
+    shipflow_core::shipflow_log!(
+        "[ShipFlowIPC] request_completed requestId={} method={} result={} durationMs={}",
+        audit_request_id,
+        audit_method,
+        result,
+        started_at.elapsed().as_millis(),
+    );
     if should_shutdown {
         state.shutdown_signal.notify_waiters();
     }
     Ok(())
+}
+
+fn audit_value(value: &str) -> String {
+    value
+        .chars()
+        .take(128)
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || "-_.:".contains(character) {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 async fn wait_for_peer_disconnect<R>(reader: &mut R) -> std::io::Result<()>
@@ -108,6 +183,7 @@ async fn handle_request(
         "service.status" => json!({
             "service": "running",
             "product": SERVICE_STATUS_PRODUCT,
+            "processId": std::process::id(),
             "mode": state.mode.clone(),
             "bindAddress": state.bind_address.clone(),
             "port": state.port,
@@ -129,6 +205,7 @@ async fn handle_request(
                     },
                     "ipc_track",
                     &request_id,
+                    LookupTrafficClass::Internal,
                 )
                 .await,
             )?
@@ -144,6 +221,7 @@ async fn handle_request(
                     },
                     "ipc_bag",
                     &request_id,
+                    LookupTrafficClass::Internal,
                 )
                 .await,
             )?
@@ -159,6 +237,7 @@ async fn handle_request(
                     },
                     "ipc_manifest",
                     &request_id,
+                    LookupTrafficClass::Internal,
                 )
                 .await,
             )?
@@ -276,6 +355,7 @@ mod tests {
         };
         assert_eq!(result["product"], "shipflow-service");
         assert_eq!(result["service"], "running");
+        assert_eq!(result["processId"], std::process::id());
         assert!(!should_shutdown);
     }
 
@@ -290,8 +370,12 @@ mod tests {
             tracking_source: TrackingSourceConfig::default(),
             lookup_cache: LookupCacheState::default(),
             contact_cache: ContactCacheState::default(),
+            public_upstream_backpressure: UpstreamBackpressure::public_default(),
             upstream_backpressure: UpstreamBackpressure::default(),
+            contact_backpressure: UpstreamBackpressure::contact_default(),
+            http_ingress_backpressure: UpstreamBackpressure::http_ingress_default(),
             shutdown_signal: Arc::new(Notify::new()),
+            started_at: std::time::Instant::now(),
         }
     }
 }

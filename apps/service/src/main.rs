@@ -90,9 +90,18 @@ fn parse_args() -> Result<Option<CliConfig>, String> {
 }
 
 fn main() {
+    std::panic::set_hook(Box::new(|panic_info| {
+        shipflow_core::shipflow_log!(
+            "[ShipFlowLifecycle] panic processId={} detail={panic_info}",
+            std::process::id()
+        );
+    }));
+
     let Some(config) = parse_args().unwrap_or_else(|error| {
-        eprintln!("{error}");
-        eprintln!("Run `shipflow-service --help` for usage.");
+        shipflow_core::shipflow_log!("[ShipFlowLifecycle] invalid_arguments error={error:?}");
+        shipflow_core::shipflow_log!(
+            "[ShipFlowLifecycle] invalid_arguments_help command=shipflow-service--help"
+        );
         std::process::exit(2);
     }) else {
         print_help();
@@ -110,10 +119,11 @@ fn main() {
         tracking_source: config.tracking_source,
     };
 
-    eprintln!(
-        "Starting ShipFlow Service on {}:{}",
+    shipflow_core::shipflow_log!(
+        "[ShipFlowLifecycle] service_starting bindAddress={} port={} processId={}",
         runtime_config.mode.bind_address_label(),
-        runtime_config.port
+        runtime_config.port,
+        std::process::id()
     );
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -122,7 +132,10 @@ fn main() {
         .expect("failed to create ShipFlow Service runtime");
 
     if let Err(error) = runtime.block_on(run_service_process(runtime_config)) {
-        eprintln!("{error}");
+        shipflow_core::shipflow_log!(
+            "[ShipFlowLifecycle] service_failed processId={} error={error:?}",
+            std::process::id()
+        );
         std::process::exit(1);
     }
 }

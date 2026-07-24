@@ -1,8 +1,13 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
-import { FileAppLogger } from "./app-logger";
+import {
+  configureAppLogger,
+  FileAppLogger,
+  pipeTextStreamToAppLogger,
+} from "./app-logger";
 
 const temporaryDirectories: string[] = [];
 
@@ -36,6 +41,7 @@ describe("FileAppLogger", () => {
     expect(content).toContain("Authorization: Bearer [REDACTED]");
     expect(content).toContain("\\nrequest failed");
     expect(content).not.toContain("sf_1234567890abcdef1234567890abcdef");
+    expect(content).toMatch(/\| session=[a-f0-9-]+ sequence=1/);
   });
 
   it("rotates a bounded log into a single backup file", async () => {
@@ -49,5 +55,50 @@ describe("FileAppLogger", () => {
     const backup = await readFile(logger.backupPath, "utf8");
     expect(current).toContain("b".repeat(70));
     expect(backup).toContain("a".repeat(70));
+  });
+
+  it("writes structured audit events with stable field ordering and redaction", async () => {
+    const logger = await createLogger();
+
+    logger.event("INFO", "Lifecycle", "app_ready", {
+      platform: "darwin",
+      authToken: "sf_1234567890abcdef1234567890abcdef",
+      packaged: true,
+    });
+    await logger.flush();
+
+    const content = await readFile(logger.filePath, "utf8");
+    expect(content).toContain(
+      'event=app_ready data={"authToken":"[REDACTED]","packaged":true,"platform":"darwin"}',
+    );
+    expect(content).not.toContain("sf_1234567890abcdef1234567890abcdef");
+  });
+
+  it("keeps child-process output line aligned across arbitrary chunks", async () => {
+    const logger = await createLogger();
+    const streamLogger = configureAppLogger(logger.filePath);
+    const stream = new PassThrough();
+    pipeTextStreamToAppLogger(stream, "Service", "WARN");
+
+    stream.write("first");
+    stream.write(" line\nsecond");
+    stream.end(" line\n");
+    await new Promise((resolve) => stream.once("end", resolve));
+    await streamLogger.flush();
+
+    const content = await readFile(logger.filePath, "utf8");
+    expect(content).toContain("[WARN] [Service] first line");
+    expect(content).toContain("[WARN] [Service] second line");
+  });
+
+  it("bounds oversized messages before persisting them", async () => {
+    const logger = await createLogger();
+
+    logger.warn("Frontend", "x".repeat(64 * 1024));
+    await logger.flush();
+
+    const content = await readFile(logger.filePath, "utf8");
+    expect(Buffer.byteLength(content)).toBeLessThan(34 * 1024);
+    expect(content).toContain("[TRUNCATED]");
   });
 });

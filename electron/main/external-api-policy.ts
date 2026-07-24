@@ -1,7 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { isIP } from "node:net";
+import { isIP, type LookupFunction } from "node:net";
 
 const BLOCKED_HOSTNAMES = new Set([
   "localhost",
@@ -16,20 +16,46 @@ function parseIpv4(address: string) {
     : null;
 }
 
+export function isForbiddenNetworkAddress(address: string) {
+  if (isIP(address) === 4) {
+    const [first, second] = parseIpv4(address)!;
+    return (
+      first === 0 ||
+      first === 127 ||
+      (first === 169 && second === 254) ||
+      first >= 224
+    );
+  }
+
+  if (isIP(address) === 6) {
+    const normalized = address.toLowerCase();
+    if (normalized.startsWith("::ffff:")) {
+      return isForbiddenNetworkAddress(normalized.slice("::ffff:".length));
+    }
+    return (
+      normalized === "::" ||
+      normalized === "::1" ||
+      /^fe[89ab]/.test(normalized) ||
+      normalized.startsWith("ff")
+    );
+  }
+
+  return true;
+}
+
 export function isRestrictedNetworkAddress(address: string) {
+  if (isForbiddenNetworkAddress(address)) {
+    return true;
+  }
   if (isIP(address) === 4) {
     const octets = parseIpv4(address)!;
     const [first, second] = octets;
     return (
-      first === 0 ||
       first === 10 ||
-      first === 127 ||
       (first === 100 && second >= 64 && second <= 127) ||
-      (first === 169 && second === 254) ||
       (first === 172 && second >= 16 && second <= 31) ||
       (first === 192 && second === 168) ||
-      (first === 198 && (second === 18 || second === 19)) ||
-      first >= 224
+      (first === 198 && (second === 18 || second === 19))
     );
   }
 
@@ -39,32 +65,75 @@ export function isRestrictedNetworkAddress(address: string) {
       return isRestrictedNetworkAddress(normalized.slice("::ffff:".length));
     }
     return (
-      normalized === "::" ||
-      normalized === "::1" ||
       normalized.startsWith("fc") ||
-      normalized.startsWith("fd") ||
-      /^fe[89ab]/.test(normalized) ||
-      normalized.startsWith("ff")
+      normalized.startsWith("fd")
     );
   }
 
   return true;
 }
 
-type ResolvedExternalApiDestination = {
+export type ResolvedNetworkAddress = {
   address: string;
-  baseUrl: string;
   family: 4 | 6;
 };
+
+type ResolvedExternalApiDestination = {
+  addresses: ResolvedNetworkAddress[];
+  baseUrl: string;
+};
+
+export function createPinnedLookupForAddresses(
+  addresses: ResolvedNetworkAddress[],
+): LookupFunction {
+  if (addresses.length === 0) {
+    throw new Error("At least one pinned network address is required.");
+  }
+  return (_hostname, options, callback) => {
+    if (options.all) {
+      callback(null, addresses);
+      return;
+    }
+    const selected = addresses[0]!;
+    callback(null, selected.address, selected.family);
+  };
+}
+
+export function createPinnedLookup(
+  address: string,
+  family: 4 | 6,
+): LookupFunction {
+  return createPinnedLookupForAddresses([{ address, family }]);
+}
+
+export function normalizeExternalApiBaseUrl(rawBaseUrl: string) {
+  const parsed = new URL(rawBaseUrl.trim());
+  if (parsed.username || parsed.password || parsed.hash) {
+    throw new Error("External API URL cannot contain credentials or a fragment.");
+  }
+  parsed.hostname = parsed.hostname.replace(/\.$/, "");
+
+  const pathSegments = parsed.pathname
+    .split("/")
+    .filter(Boolean);
+  const finalSegment = pathSegments.at(-1)?.toLowerCase();
+  const previousSegment = pathSegments.at(-2)?.toLowerCase();
+  if (previousSegment === "v1" && finalSegment === "openapi.json") {
+    pathSegments.splice(-2);
+  } else if (finalSegment === "v1") {
+    pathSegments.pop();
+  }
+  parsed.pathname = pathSegments.length === 0 ? "/" : `/${pathSegments.join("/")}/`;
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed;
+}
 
 async function resolveExternalApiDestination(
   rawBaseUrl: string,
   allowPrivateOrInsecure: boolean,
 ): Promise<ResolvedExternalApiDestination> {
-  const parsed = new URL(rawBaseUrl.trim().replace(/\/$/, ""));
-  if (parsed.username || parsed.password || parsed.hash) {
-    throw new Error("External API URL cannot contain credentials or a fragment.");
-  }
+  const parsed = normalizeExternalApiBaseUrl(rawBaseUrl);
   if (
     parsed.protocol !== "https:" &&
     !(allowPrivateOrInsecure && parsed.protocol === "http:")
@@ -91,6 +160,9 @@ async function resolveExternalApiDestination(
   if (addresses.length === 0) {
     throw new Error("External API hostname did not resolve to an address.");
   }
+  if (addresses.some(({ address }) => isForbiddenNetworkAddress(address))) {
+    throw new Error("External API destination is reserved and cannot be used.");
+  }
   if (
     !allowPrivateOrInsecure &&
     addresses.some(({ address }) => isRestrictedNetworkAddress(address))
@@ -100,15 +172,9 @@ async function resolveExternalApiDestination(
     );
   }
 
-  const selected = addresses[0];
-  if (!selected || (selected.family !== 4 && selected.family !== 6)) {
-    throw new Error("External API hostname did not resolve to a supported address.");
-  }
-
   return {
-    address: selected.address,
+    addresses,
     baseUrl: parsed.toString().replace(/\/$/, ""),
-    family: selected.family,
   };
 }
 
@@ -137,9 +203,7 @@ export async function probeExternalApiAuth(
       url,
       {
         headers: { Authorization: `Bearer ${authToken}` },
-        lookup: (_hostname, _options, callback) => {
-          callback(null, destination.address, destination.family);
-        },
+        lookup: createPinnedLookupForAddresses(destination.addresses),
         method: "GET",
       },
       (response) => {

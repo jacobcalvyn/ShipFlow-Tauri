@@ -1239,7 +1239,7 @@ describe("useWorkspaceInteractionRuntimeController", () => {
         rows: [],
       },
     });
-    mocks.refreshSheetRowsTrackingMock.mockResolvedValue({
+    const refreshResponse = {
       type: "sheet_rows_tracking_refresh",
       payload: {
         sheetId: "sheet-1",
@@ -1260,7 +1260,9 @@ describe("useWorkspaceInteractionRuntimeController", () => {
           },
         ],
       },
-    });
+    } as const;
+    const refreshDeferred = createDeferred<typeof refreshResponse>();
+    mocks.refreshSheetRowsTrackingMock.mockReturnValue(refreshDeferred.promise);
     mocks.useWorkspaceRuntimeCommandsControllerMock.mockReturnValue({
       fetchRow: vi.fn(),
       copySelectedTrackingIds: vi.fn(),
@@ -1321,6 +1323,31 @@ describe("useWorkspaceInteractionRuntimeController", () => {
     });
 
     await waitFor(() => {
+      expect(mocks.refreshSheetRowsTrackingMock).toHaveBeenCalledTimes(1);
+    });
+
+    expect(onWorkspaceEngineMutation).toHaveBeenCalledTimes(1);
+    expect(
+      workspaceRef.current.sheetsById["sheet-1"].importSourceModalKind
+    ).toBeNull();
+    expect(
+      workspaceRef.current.sheetsById["sheet-1"].rows.find(
+        (row) => row.trackingInput === "P2606020189412.30"
+      )
+    ).toMatchObject({
+      loading: false,
+      queued: true,
+    });
+    expect(showNotice).not.toHaveBeenCalledWith(
+      expect.objectContaining({ tone: "success" })
+    );
+
+    await act(async () => {
+      refreshDeferred.resolve(refreshResponse);
+      await refreshDeferred.promise;
+    });
+
+    await waitFor(() => {
       expect(showNotice).toHaveBeenCalledWith({
         tone: "success",
         message: "1 nomor kiriman dari Bag ditambahkan ke sheet.",
@@ -1355,13 +1382,13 @@ describe("useWorkspaceInteractionRuntimeController", () => {
       }),
       expect.any(Function)
     );
-    expect(onWorkspaceEngineMutation).toHaveBeenCalledTimes(1);
+    expect(onWorkspaceEngineMutation).toHaveBeenCalledTimes(2);
     expect(workspaceRef.current.sheetsById["sheet-1"].importSourceModalKind).toBeNull();
     expect(
       workspaceRef.current.sheetsById["sheet-1"].rows.map(
         (row) => row.trackingInput
       )
-    ).not.toContain("P2606020189412.30");
+    ).toContain("P2606020189412.30");
     expect(workspaceRef.current.sheetsById["sheet-1"].rows[0].trackingInput).toBe(
       "LOCAL-DRAFT"
     );
