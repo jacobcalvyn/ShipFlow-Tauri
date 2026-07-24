@@ -89,6 +89,15 @@ async function readManagedServicePid(serviceStateDirectory: string) {
   return typeof config.processId === "number" ? config.processId : null;
 }
 
+function processIdIsAlive(processId: number) {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 async function startPackagedSuite(): Promise<PackagedRuntime> {
   const executablePath = PACKAGED_EXECUTABLE_PATH!;
   const rootDirectory = await mkdtemp(
@@ -288,23 +297,30 @@ test("packaged Electron suite loads its renderer and owns the native Service lif
             { headers: { Authorization: `Bearer ${runtime.publicToken}` } },
           ).catch(() => null);
           const log = await readFile(runtime.logFilePath, "utf8").catch(() => "");
-          return {
-            orphanRecovered:
-              log.includes("event=orphan_service_detected") &&
-              log.includes("event=orphan_service_stopped"),
-            replaced:
-              replacementPid !== null &&
-              replacementPid !== servicePidBeforeDesktopCrash,
-            reachable: response?.ok ?? false,
-          };
+          const orphanRecovered =
+            log.includes("event=orphan_service_detected") &&
+            log.includes("event=orphan_service_stopped");
+          const replaced =
+            replacementPid !== null &&
+            replacementPid !== servicePidBeforeDesktopCrash;
+          const reachable = response?.ok ?? false;
+          if (!replaced) {
+            return "waiting-for-replacement";
+          }
+          if (!reachable) {
+            return "waiting-for-service";
+          }
+          if (orphanRecovered) {
+            return "orphan-recovered";
+          }
+          if (!processIdIsAlive(servicePidBeforeDesktopCrash!)) {
+            return "service-exited-with-desktop";
+          }
+          return "orphan-still-running";
         },
         { timeout: 20_000 },
       )
-      .toEqual({
-        orphanRecovered: true,
-        replaced: true,
-        reachable: true,
-      });
+      .toMatch(/^(orphan-recovered|service-exited-with-desktop)$/);
   } finally {
     const log = await readFile(runtime.logFilePath, "utf8").catch(() => "");
     const serviceLog = await readFile(runtime.serviceLogFilePath, "utf8").catch(

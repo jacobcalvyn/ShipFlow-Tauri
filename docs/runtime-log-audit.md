@@ -88,8 +88,10 @@ insufficient.
 - no repeated `workspace_host_exited` outside an explicit window close;
 - HTTP request completion uses the same request ID returned in
   `x-shipflow-request-id` and the JSON envelope;
-- a crash-relaunch sequence records `orphan_service_detected` and
-  `orphan_service_stopped` before a replacement `service_ready`;
+- a crash-relaunch sequence either records `orphan_service_detected` and
+  `orphan_service_stopped` before a replacement `service_ready`, or confirms
+  that the prior Service exited with Electron before the replacement becomes
+  ready;
 - no repeated `native_http_5xx`, `native_request_errors`, or
   `service_memory_warning` findings;
 - memory snapshots remain bounded for a repeated workload and return near the
@@ -107,8 +109,9 @@ The Quality Gate executes:
 
 On a smoke failure, GitHub Actions uploads the Playwright report, screenshots,
 and isolated Desktop plus Service runtime logs for 14 days. The packaged smoke
-also kills Electron abruptly and verifies that the surviving Service is
-replaced through authenticated native IPC. The same smoke fails when the
+also kills Electron abruptly and verifies that a surviving Service is replaced
+through authenticated native IPC, or that a Service terminated by the OS with
+its parent is replaced by a healthy process. The same smoke fails when the
 runtime-log analyzer reports a high-severity signal. A passing CI run is source
 and packaged-runtime evidence, not proof of a signed production installer or
 a manual Windows installation.
