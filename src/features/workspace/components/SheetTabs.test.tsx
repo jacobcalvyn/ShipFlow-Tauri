@@ -234,6 +234,41 @@ describe("SheetTabs", () => {
     });
   });
 
+  it("keeps the settings dialog rendered while switching every settings section", async () => {
+    render(
+      <SheetTabs
+        tabs={[{ id: "sheet-1", name: "Sheet 1", color: "slate", icon: "sheet", isActive: true }]}
+        activeSheetId="sheet-1"
+        displayScale="small"
+        onActivateSheet={vi.fn()}
+        onCreateSheet={vi.fn()}
+        onDuplicateSheet={vi.fn()}
+        onRenameSheet={vi.fn()}
+        onDeleteSheet={vi.fn()}
+        onPreviewDisplayScale={vi.fn()}
+        onConfirmSettings={vi.fn()}
+        onCancelSettings={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Setting" }));
+    expect(screen.getByRole("heading", { name: "Ukuran Tampilan" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Sumber Lacak" }));
+    expect(
+      await screen.findByRole("heading", { name: "Sumber Lacak" })
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "API Publik" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "API Publik" }));
+    expect(await screen.findByRole("heading", { name: "API Publik" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Sumber Lacak" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Ukuran Tampilan" }));
+    expect(screen.getByRole("heading", { name: "Ukuran Tampilan" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Pengaturan ShipFlow" })).toBeInTheDocument();
+  });
+
   it("drops dragged selections onto another sheet with copy mode", () => {
     const onDropSelectionToSheet = vi.fn();
 

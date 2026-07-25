@@ -90,6 +90,8 @@ jobs:
         run: cargo test -p shipflow-ipc -p shipflow-service-client
       - name: Build unpacked Electron suite
         run: npm run package:dir
+      - name: Run Electron settings lifecycle smoke
+        run: npx playwright test tests/electron/suite-smoke.spec.ts
       - name: Verify packaged Electron suite
         run: npm run package:verify
       - name: Run packaged Electron smoke on macOS

@@ -299,6 +299,7 @@ export function SheetTabs({
       'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
     const focusFirst = () => {
       const firstTarget =
+        modal?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ??
         modal?.querySelector<HTMLElement>(
           'input[name="display-scale"]:checked, input[name="display-scale"]'
         ) ??
@@ -315,7 +316,12 @@ export function SheetTabs({
 
       const focusable = Array.from(
         modal?.querySelectorAll<HTMLElement>(focusableSelectors) ?? []
-      ).filter((element) => !element.hasAttribute("disabled"));
+      ).filter(
+        (element) =>
+          !element.hasAttribute("disabled") &&
+          !element.closest("[hidden]") &&
+          element.getClientRects().length > 0
+      );
 
       if (focusable.length === 0) {
         event.preventDefault();
@@ -344,7 +350,7 @@ export function SheetTabs({
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [isSettingsOpen]);
+  }, [activeSettingsSection, isSettingsOpen]);
 
   const beginRename = (sheetId: string) => {
     const targetTab = tabs.find((tab) => tab.id === sheetId);

@@ -121,12 +121,17 @@ export function useServiceSettingsController({
     DEFAULT_API_SERVICE_STATUS
   );
   const serviceConfigRef = useRef(serviceConfig);
+  const serviceConfigPreviewRef = useRef(serviceConfigPreview);
   const effectiveServiceConfig = serviceConfigPreview ?? serviceConfig;
   const hasPendingServiceConfigChanges = serviceConfigPreview !== null;
 
   useEffect(() => {
     serviceConfigRef.current = serviceConfig;
   }, [serviceConfig]);
+
+  useEffect(() => {
+    serviceConfigPreviewRef.current = serviceConfigPreview;
+  }, [serviceConfigPreview]);
 
   const syncServiceConfigFromBackend = useCallback(
     async (options?: { preservePreview?: boolean }) => {
@@ -144,7 +149,7 @@ export function useServiceSettingsController({
             };
         const nextConfig = normalizeServiceConfig(baseConfig);
 
-        if (!preservePreview || serviceConfigPreview === null) {
+        if (!preservePreview || serviceConfigPreviewRef.current === null) {
           if (!areServiceConfigsEqual(serviceConfigRef.current, nextConfig)) {
             serviceConfigRef.current = nextConfig;
             setServiceConfig(nextConfig);
@@ -160,7 +165,7 @@ export function useServiceSettingsController({
           authToken: preservedAuthToken,
         };
         const nextFallbackConfig = normalizeServiceConfig(fallbackConfig);
-        if (!preservePreview || serviceConfigPreview === null) {
+        if (!preservePreview || serviceConfigPreviewRef.current === null) {
           if (!areServiceConfigsEqual(serviceConfigRef.current, nextFallbackConfig)) {
             serviceConfigRef.current = nextFallbackConfig;
             setServiceConfig(nextFallbackConfig);
@@ -170,7 +175,7 @@ export function useServiceSettingsController({
         return nextFallbackConfig;
       }
     },
-    [serviceConfigPreview]
+    []
   );
 
   const refreshApiServiceStatus = useCallback(async () => {
@@ -236,7 +241,9 @@ export function useServiceSettingsController({
   const previewServiceConfig = useCallback((updater: (config: ServiceConfig) => ServiceConfig) => {
     setServiceConfigPreview((current) => {
       const base = current ?? serviceConfigRef.current;
-      return normalizeServiceConfig(updater(base));
+      const nextConfig = normalizeServiceConfig(updater(base));
+      serviceConfigPreviewRef.current = nextConfig;
+      return nextConfig;
     });
   }, []);
 
@@ -335,6 +342,7 @@ export function useServiceSettingsController({
   }, [previewServiceConfig]);
 
   const cancelServiceConfigPreview = useCallback(() => {
+    serviceConfigPreviewRef.current = null;
     setServiceConfigPreview(null);
   }, []);
 
@@ -415,6 +423,7 @@ export function useServiceSettingsController({
       }
     }
 
+    serviceConfigPreviewRef.current = null;
     setServiceConfigPreview(null);
     return true;
   }, [applyServiceConfig, serviceConfigPreview, showNotice]);

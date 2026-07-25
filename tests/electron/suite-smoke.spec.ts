@@ -206,6 +206,14 @@ test("Electron suite owns Desktop, integrated Service settings, and single-insta
     await workspace.getByRole("tab", { name: "Sumber Lacak" }).click();
     await expect(workspace.getByRole("heading", { name: "Sumber Lacak" })).toBeVisible();
     await expect(workspace.getByRole("tab", { name: "API Publik" })).toBeVisible();
+    await workspace.getByRole("tab", { name: "API Publik" }).click();
+    await expect(workspace.getByRole("heading", { name: "API Publik" })).toBeVisible();
+    await workspace.getByRole("tab", { name: "Ukuran Tampilan" }).click();
+    await expect(workspace.getByRole("heading", { name: "Ukuran Tampilan" })).toBeVisible();
+    await workspace.getByRole("tab", { name: "Sumber Lacak" }).click();
+    await expect(workspace.getByRole("heading", { name: "Sumber Lacak" })).toBeVisible();
+    await expect(workspace.getByRole("tab", { name: "Workspace" })).toBeVisible();
+    await expect(workspace.locator(".app-runtime-fallback")).toHaveCount(0);
     await expect(workspace.locator("body")).not.toContainText(runtime.internalToken);
     expect(runtime.application.windows().length).toBe(windowCountBeforeSettings);
     await expect

@@ -2252,7 +2252,6 @@ button {
   justify-content: center;
   padding: 20px;
   background: rgba(15, 23, 42, 0.18);
-  backdrop-filter: blur(1px);
 }
 
 .settings-modal {
@@ -2407,10 +2406,6 @@ button {
   border-radius: 0;
   background: transparent;
   box-shadow: none;
-}
-
-.service-settings-pane.is-hidden {
-  display: none;
 }
 
 .service-settings-stack {
