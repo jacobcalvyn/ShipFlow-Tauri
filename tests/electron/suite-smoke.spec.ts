@@ -1,9 +1,10 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import {
   _electron as electron,
   expect,
@@ -14,6 +15,7 @@ import {
 
 const require = createRequire(import.meta.url);
 const developmentElectronPath = require("electron") as string;
+const execFileAsync = promisify(execFile);
 
 type SmokeRuntime = {
   application: ElectronApplication;
@@ -63,29 +65,62 @@ async function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number) {
   });
 }
 
-function hasProcessExited(child: ReturnType<typeof spawn>) {
-  return child.exitCode !== null || child.signalCode !== null;
+function processIdIsAlive(processId: number) {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
 }
 
-async function waitForProcessExit(
-  child: ReturnType<typeof spawn>,
-  timeoutMs: number,
-) {
-  if (hasProcessExited(child)) {
+async function waitForProcessIdExit(processId: number, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processIdIsAlive(processId)) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return !processIdIsAlive(processId);
+}
+
+async function terminateProcessTree(processId: number, label: string) {
+  if (!processIdIsAlive(processId)) {
     return true;
   }
 
-  return new Promise<boolean>((resolve) => {
-    const onExit = () => {
-      clearTimeout(timeout);
-      resolve(true);
-    };
-    const timeout = setTimeout(() => {
-      child.removeListener("exit", onExit);
-      resolve(hasProcessExited(child));
-    }, timeoutMs);
-    child.once("exit", onExit);
-  });
+  console.warn(
+    `[ShipFlowSmokeCleanup] forcing ${label} process tree pid=${processId}`,
+  );
+  if (process.platform === "win32") {
+    await execFileAsync(
+      "taskkill",
+      ["/PID", String(processId), "/T", "/F"],
+      { windowsHide: true },
+    ).catch((error) => {
+      if (processIdIsAlive(processId)) {
+        console.warn(
+          `[ShipFlowSmokeCleanup] taskkill failed for ${label} pid=${processId}: ${String(error)}`,
+        );
+      }
+    });
+  } else {
+    try {
+      process.kill(processId, "SIGTERM");
+    } catch {
+      // The process may have exited between the liveness check and signal.
+    }
+    if (!(await waitForProcessIdExit(processId, 2_000))) {
+      try {
+        process.kill(processId, "SIGKILL");
+      } catch {
+        // The process may have exited between the liveness check and signal.
+      }
+    }
+  }
+
+  return waitForProcessIdExit(processId, 5_000);
 }
 
 async function settleWithin(task: Promise<unknown>, timeoutMs: number) {
@@ -250,35 +285,51 @@ async function dragFieldToZone(
   ).toBeVisible();
 }
 
-async function closeApplication(application: ElectronApplication) {
-  const process = application.process();
-  await settleWithin(
-    application.evaluate(({ app }) => app.quit()),
-    2_000,
+async function closeApplication(runtime: SmokeRuntime) {
+  const applicationProcess = runtime.application.process();
+  const desktopProcessId = applicationProcess.pid;
+  const serviceProcessId = await readManagedServicePid(
+    runtime.serviceStateDirectory,
+  ).catch(() => null);
+  await Promise.all(
+    runtime.application.windows().map((window) =>
+      window
+        .evaluate(async () => {
+          await window.shipflow?.invoke("set_current_window_document_state", {
+            documentName: "Electron smoke workspace",
+            isDirty: false,
+          });
+        })
+        .catch(() => undefined),
+    ),
   );
+  const closeTask = runtime.application.close();
+  const closedGracefully = await settleWithin(closeTask, 20_000);
 
-  if (await waitForProcessExit(process, 10_000)) {
-    await settleWithin(application.close(), 2_000);
-    return;
+  if (!closedGracefully || processIdIsAlive(desktopProcessId)) {
+    await terminateProcessTree(desktopProcessId, "Desktop");
   }
-
-  const closeTask = application.close();
-  await settleWithin(closeTask, 2_000);
-  if (await waitForProcessExit(process, 2_000)) {
-    return;
-  }
-
-  if (!hasProcessExited(process)) {
-    process.kill();
-  }
-  if (await waitForProcessExit(process, 3_000)) {
-    return;
+  if (
+    serviceProcessId !== null &&
+    !(await waitForProcessIdExit(serviceProcessId, 5_000))
+  ) {
+    await terminateProcessTree(serviceProcessId, "Service");
   }
 
-  if (!hasProcessExited(process)) {
-    process.kill("SIGKILL");
+  const closeSettled = closedGracefully || (await settleWithin(closeTask, 5_000));
+  const desktopStopped = await waitForProcessIdExit(desktopProcessId, 2_000);
+  const serviceStopped =
+    serviceProcessId === null ||
+    (await waitForProcessIdExit(serviceProcessId, 2_000));
+
+  console.info(
+    `[ShipFlowSmokeCleanup] complete closeSettled=${closeSettled} desktopPid=${desktopProcessId} desktopStopped=${desktopStopped} servicePid=${serviceProcessId ?? "none"} serviceStopped=${serviceStopped}`,
+  );
+  if (!closeSettled || !desktopStopped || !serviceStopped) {
+    throw new Error(
+      `Electron smoke cleanup incomplete: closeSettled=${closeSettled}, desktopStopped=${desktopStopped}, serviceStopped=${serviceStopped}.`,
+    );
   }
-  await waitForProcessExit(process, 5_000);
 }
 
 test("Electron suite owns Desktop, integrated Service settings, and single-instance lifecycle", async ({}, testInfo) => {
@@ -422,7 +473,12 @@ test("Electron suite owns Desktop, integrated Service settings, and single-insta
         port: runtime.servicePort,
       });
   } finally {
-    await closeApplication(runtime.application);
+    let cleanupError: unknown;
+    try {
+      await closeApplication(runtime);
+    } catch (error) {
+      cleanupError = error;
+    }
     const runtimeLog = await readFile(runtime.logFilePath).catch(() => null);
     if (runtimeLog) {
       await testInfo.attach("shipflow-desktop-runtime-log", {
@@ -437,6 +493,18 @@ test("Electron suite owns Desktop, integrated Service settings, and single-insta
         contentType: "text/plain",
       });
     }
-    await rm(runtime.rootDirectory, { recursive: true, force: true });
+    try {
+      await rm(runtime.rootDirectory, {
+        recursive: true,
+        force: true,
+        maxRetries: process.platform === "win32" ? 20 : 3,
+        retryDelay: 250,
+      });
+    } catch (error) {
+      cleanupError ??= error;
+    }
+    if (cleanupError) {
+      throw cleanupError;
+    }
   }
 });
