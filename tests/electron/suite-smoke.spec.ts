@@ -63,6 +63,47 @@ async function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number) {
   });
 }
 
+function hasProcessExited(child: ReturnType<typeof spawn>) {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+async function waitForProcessExit(
+  child: ReturnType<typeof spawn>,
+  timeoutMs: number,
+) {
+  if (hasProcessExited(child)) {
+    return true;
+  }
+
+  return new Promise<boolean>((resolve) => {
+    const onExit = () => {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+    const timeout = setTimeout(() => {
+      child.removeListener("exit", onExit);
+      resolve(hasProcessExited(child));
+    }, timeoutMs);
+    child.once("exit", onExit);
+  });
+}
+
+async function settleWithin(task: Promise<unknown>, timeoutMs: number) {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<false>((resolve) => {
+    timeout = setTimeout(() => resolve(false), timeoutMs);
+  });
+  const settled = task.then(
+    () => true,
+    () => true,
+  );
+  const result = await Promise.race([settled, timedOut]);
+  if (timeout) {
+    clearTimeout(timeout);
+  }
+  return result;
+}
+
 async function startSuite(): Promise<SmokeRuntime> {
   const rootDirectory = await mkdtemp(path.join(os.tmpdir(), "shipflow-electron-smoke-"));
   const userDataDirectory = path.join(rootDirectory, "desktop");
@@ -211,20 +252,33 @@ async function dragFieldToZone(
 
 async function closeApplication(application: ElectronApplication) {
   const process = application.process();
-  const exited = new Promise<void>((resolve) => process.once("exit", () => resolve()));
-  await application.evaluate(({ app }) => app.quit()).catch(() => undefined);
-  await Promise.race([
-    exited,
-    new Promise((resolve) => setTimeout(resolve, 10_000)),
-  ]);
-  if (process.exitCode === null && !process.killed) {
+  await settleWithin(
+    application.evaluate(({ app }) => app.quit()),
+    2_000,
+  );
+
+  if (await waitForProcessExit(process, 10_000)) {
+    await settleWithin(application.close(), 2_000);
+    return;
+  }
+
+  const closeTask = application.close();
+  await settleWithin(closeTask, 2_000);
+  if (await waitForProcessExit(process, 2_000)) {
+    return;
+  }
+
+  if (!hasProcessExited(process)) {
+    process.kill();
+  }
+  if (await waitForProcessExit(process, 3_000)) {
+    return;
+  }
+
+  if (!hasProcessExited(process)) {
     process.kill("SIGKILL");
   }
-  await Promise.race([
-    exited,
-    new Promise((resolve) => setTimeout(resolve, 5_000)),
-  ]);
-  await application.close().catch(() => undefined);
+  await waitForProcessExit(process, 5_000);
 }
 
 test("Electron suite owns Desktop, integrated Service settings, and single-instance lifecycle", async ({}, testInfo) => {
