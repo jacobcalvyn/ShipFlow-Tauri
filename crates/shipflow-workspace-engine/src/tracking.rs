@@ -230,6 +230,7 @@ where
                 error_message: None,
             },
             &row.lookup_tracking_id,
+            &row.row_generation,
         )?;
         if !updated {
             return Err(TrackingEngineError::MissingSheetRow(row.row_id));
@@ -249,6 +250,7 @@ where
                         error_message: Some(error.message.clone()),
                     },
                     &row.lookup_tracking_id,
+                    &row.row_generation,
                 )?;
                 if !updated {
                     return Err(TrackingEngineError::MissingSheetRow(row.row_id));
@@ -304,7 +306,7 @@ where
         let mut rows_by_lookup_id = Vec::<(String, Vec<SheetRowProjection>)>::new();
         let mut lookup_ids = Vec::new();
         let mut rows = Vec::new();
-        let mut target_rows = Vec::<(String, String)>::new();
+        let mut target_rows = Vec::<(String, String, String)>::new();
         let mut terminal_row_ids = HashSet::new();
         let mut success_count = 0;
         let mut failed_count = 0;
@@ -333,6 +335,7 @@ where
                     error_message: None,
                 },
                 &row.lookup_tracking_id,
+                &row.row_generation,
             )?;
             if !updated {
                 continue;
@@ -340,7 +343,11 @@ where
             let mut row = row;
             row.row_status = SheetRowStatus::Pending;
             row.error_message = None;
-            target_rows.push((row.row_id.clone(), row.lookup_tracking_id.clone()));
+            target_rows.push((
+                row.row_id.clone(),
+                row.lookup_tracking_id.clone(),
+                row.row_generation.clone(),
+            ));
 
             if let Some((_, grouped_rows)) = rows_by_lookup_id
                 .iter_mut()
@@ -568,7 +575,7 @@ where
             }
         }
 
-        for (row_id, lookup_tracking_id) in target_rows {
+        for (row_id, lookup_tracking_id, row_generation) in target_rows {
             if terminal_row_ids.contains(&row_id) {
                 continue;
             }
@@ -576,7 +583,9 @@ where
             let Some(current_row) = self.store.get_sheet_row(&row_id)? else {
                 continue;
             };
-            if current_row.lookup_tracking_id != lookup_tracking_id {
+            if current_row.lookup_tracking_id != lookup_tracking_id
+                || current_row.row_generation != row_generation
+            {
                 continue;
             }
             if !matches!(
@@ -669,6 +678,7 @@ where
                 error_message: None,
             },
             &row.lookup_tracking_id,
+            &row.row_generation,
         )?;
         if !updated {
             continue;
@@ -697,7 +707,7 @@ fn store_successful_tracking_response(
 ) -> TrackingEngineResult<Option<SheetRowProjection>> {
     let record_id = tracking_record_id(&row.lookup_tracking_id);
     let raw_blob_id = store_raw_response_blob(store, blob_root_path, &response)?;
-    store.upsert_tracking_record(&UpsertTrackingRecordInput {
+    let record = UpsertTrackingRecordInput {
         record_id: record_id.clone(),
         display_tracking_id: response
             .detail
@@ -716,8 +726,9 @@ fn store_successful_tracking_response(
         }),
         raw_blob_id,
         source_url: response.url,
-    })?;
-    let attached = store.attach_tracking_record_to_sheet_row_if_lookup_matches(
+    };
+    let attached = store.upsert_tracking_record_and_attach_if_row_matches(
+        &record,
         &AttachTrackingRecordToSheetRowInput {
             row_id: row.row_id.clone(),
             tracking_record_id: record_id,
@@ -725,14 +736,16 @@ fn store_successful_tracking_response(
             error_message: None,
         },
         &row.lookup_tracking_id,
+        &row.row_generation,
     )?;
     if !attached {
         return Ok(None);
     }
 
-    Ok(store
-        .get_sheet_row(&row.row_id)?
-        .filter(|current| current.lookup_tracking_id == row.lookup_tracking_id))
+    Ok(store.get_sheet_row(&row.row_id)?.filter(|current| {
+        current.lookup_tracking_id == row.lookup_tracking_id
+            && current.row_generation == row.row_generation
+    }))
 }
 
 fn store_failed_tracking_lookup(
@@ -747,13 +760,15 @@ fn store_failed_tracking_lookup(
             error_message: Some(error.message.clone()),
         },
         &row.lookup_tracking_id,
+        &row.row_generation,
     )?;
     if !updated {
         return Ok(None);
     }
-    Ok(store
-        .get_sheet_row(&row.row_id)?
-        .filter(|current| current.lookup_tracking_id == row.lookup_tracking_id))
+    Ok(store.get_sheet_row(&row.row_id)?.filter(|current| {
+        current.lookup_tracking_id == row.lookup_tracking_id
+            && current.row_generation == row.row_generation
+    }))
 }
 
 fn store_raw_response_blob(
@@ -1293,6 +1308,91 @@ mod tests {
         assert!(events.is_empty());
         assert_eq!(current.lookup_tracking_id, "PNEW");
         assert_eq!(current.row_status, SheetRowStatus::Empty);
+    }
+
+    #[test]
+    fn stale_success_does_not_overwrite_recreated_row_with_same_lookup() {
+        let mut store = prepared_store();
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "row-1".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 0,
+                display_tracking_id: "P1".to_string(),
+                lookup_tracking_id: "P1".to_string(),
+                row_status: SheetRowStatus::Loading,
+                error_message: None,
+            })
+            .expect("old row is stored");
+        let old_row = store
+            .get_sheet_row("row-1")
+            .expect("row lookup succeeds")
+            .expect("old row exists");
+        store.clear_sheet_rows("sheet-1").expect("rows are cleared");
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "row-1".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 0,
+                display_tracking_id: "P1".to_string(),
+                lookup_tracking_id: "P1".to_string(),
+                row_status: SheetRowStatus::Empty,
+                error_message: None,
+            })
+            .expect("replacement row is stored");
+
+        let stored =
+            store_successful_tracking_response(&mut store, None, &old_row, track_response("P1"))
+                .expect("stale response is fenced");
+        let current = store
+            .get_sheet_row("row-1")
+            .expect("row lookup succeeds")
+            .expect("replacement row exists");
+
+        assert!(stored.is_none());
+        assert_ne!(old_row.row_generation, current.row_generation);
+        assert_eq!(current.row_status, SheetRowStatus::Empty);
+        assert_eq!(current.status_json, None);
+    }
+
+    #[test]
+    fn same_lookup_upsert_preserves_generation_for_active_tracking() {
+        let mut store = prepared_store();
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "row-1".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 0,
+                display_tracking_id: "P1".to_string(),
+                lookup_tracking_id: "P1".to_string(),
+                row_status: SheetRowStatus::Loading,
+                error_message: None,
+            })
+            .expect("row is stored");
+        let active_row = store
+            .get_sheet_row("row-1")
+            .expect("row lookup succeeds")
+            .expect("row exists");
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "row-1".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 1,
+                display_tracking_id: "P1".to_string(),
+                lookup_tracking_id: "P1".to_string(),
+                row_status: SheetRowStatus::Loading,
+                error_message: None,
+            })
+            .expect("same logical row is updated");
+
+        let stored =
+            store_successful_tracking_response(&mut store, None, &active_row, track_response("P1"))
+                .expect("active response is stored")
+                .expect("active row still matches");
+
+        assert_eq!(stored.row_generation, active_row.row_generation);
+        assert_eq!(stored.position, 1);
+        assert_eq!(stored.row_status, SheetRowStatus::Loaded);
     }
 
     #[derive(Default)]

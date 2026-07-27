@@ -331,8 +331,9 @@ export function useWorkspaceDocumentController({
       }));
 
       try {
+        const workspaceAtSaveStart = workspaceRef.current;
         const workspaceForDocument = await createWorkspaceDocumentStateFromEngine(
-          workspaceRef.current
+          workspaceAtSaveStart
         );
 
         const savedAt = new Date().toISOString();
@@ -346,13 +347,16 @@ export function useWorkspaceDocumentController({
           writeWorkspaceDocument(trimmedPath, document)
         );
 
-        workspaceRef.current = workspaceForDocument;
+        const workspaceChangedDuringSave =
+          workspaceRef.current !== workspaceAtSaveStart;
         documentBaselineRef.current = serializedWorkspace;
-        setWorkspaceState(workspaceForDocument);
+        if (!workspaceChangedDuringSave) {
+          setWorkspaceState(workspaceForDocument);
+        }
         setDocumentMeta({
           path: result.path,
           name: getWorkspaceDocumentName(result.path),
-          isDirty: false,
+          isDirty: workspaceChangedDuringSave,
           lastSavedAt: result.savedAt,
           persistenceStatus: "idle",
           errorMessage: null,

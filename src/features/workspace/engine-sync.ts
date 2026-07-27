@@ -1,5 +1,4 @@
 import {
-  clearSheetRows,
   createEngineSheet,
   deleteSheet,
   listEngineSheets,
@@ -92,11 +91,11 @@ export async function syncWorkspaceStateToEngine(
       }
     }
 
-    await clearSheetRows({ sheetId });
-
-    if (rows.length > 0) {
-      await upsertSheetRows({ sheetId, rows });
-    }
+    await upsertSheetRows({
+      sheetId,
+      replaceExisting: true,
+      rows,
+    });
   }
 
   if (mode === "replace") {

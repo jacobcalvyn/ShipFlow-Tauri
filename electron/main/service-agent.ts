@@ -24,6 +24,7 @@ import {
 import { probeExternalApiAuth } from "./external-api-policy";
 import { buildServiceIpcEndpoint, requestServiceIpc } from "./service-ipc";
 import { ServiceRestartPolicy } from "./service-restart-policy";
+import { SingleFlight } from "./single-flight";
 
 type PersistedAgentConfig = {
   version: 2;
@@ -433,7 +434,7 @@ async function isShipFlowServiceListening(config: PersistedAgentConfig) {
 
 export class ServiceAgentManager {
   #config: PersistedAgentConfig | null = null;
-  #startPromise: Promise<ManagedServiceConnection> | null = null;
+  #connectionStart = new SingleFlight<ManagedServiceConnection>();
   #child: ChildProcess | null = null;
   #shutdownPromise: Promise<void> | null = null;
   #isShuttingDown = false;
@@ -482,20 +483,14 @@ export class ServiceAgentManager {
     if (this.#isShuttingDown) {
       throw new Error("ShipFlow Service is shutting down.");
     }
-    if (this.#startPromise) {
-      return this.#startPromise;
-    }
-    await this.#prepareIpcRuntime();
-    appLogger.event("INFO", "ServiceAgent", "service_connection_requested", {
-      hasActiveChild: Boolean(this.#child && !childProcessHasExited(this.#child)),
-      restartCount: this.#restartCount,
+    return this.#connectionStart.run(async () => {
+      await this.#prepareIpcRuntime();
+      appLogger.event("INFO", "ServiceAgent", "service_connection_requested", {
+        hasActiveChild: Boolean(this.#child && !childProcessHasExited(this.#child)),
+        restartCount: this.#restartCount,
+      });
+      return this.#ensureStarted();
     });
-    this.#startPromise = this.#ensureStarted();
-    try {
-      return await this.#startPromise;
-    } finally {
-      this.#startPromise = null;
-    }
   }
 
   async status(): Promise<ApiServiceStatus> {
@@ -607,7 +602,7 @@ export class ServiceAgentManager {
       appLogger.event("INFO", "ServiceAgent", "service_shutdown_started", {
         hasActiveChild: Boolean(this.#child && !childProcessHasExited(this.#child)),
       });
-      await this.#startPromise?.catch(() => undefined);
+      await this.#connectionStart.current?.catch(() => undefined);
       const config = await this.loadConfig();
       await this.#stopManagedService(config, false);
       config.processId = null;
@@ -958,7 +953,7 @@ export class ServiceAgentManager {
     if (this.#isShuttingDown || !(await this.loadConfig()).enabled) {
       return;
     }
-    const previousStart = this.#startPromise;
+    const previousStart = this.#connectionStart.current;
     if (previousStart) {
       await previousStart.catch(() => undefined);
       await new Promise((resolve) => setTimeout(resolve, 0));

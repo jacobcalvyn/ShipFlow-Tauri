@@ -27,7 +27,7 @@ fn is_bag_header(labels: &[String]) -> bool {
     })
 }
 
-pub fn parse_bag_html(html: &str, url: &str) -> BagResponse {
+pub fn parse_bag_html(html: &str, url: &str) -> Result<BagResponse, String> {
     let document = ScraperHtml::parse_document(html);
 
     let table_selector = Selector::parse("table").expect("valid selector");
@@ -50,6 +50,7 @@ pub fn parse_bag_html(html: &str, url: &str) -> BagResponse {
     }
 
     let mut items = Vec::new();
+    let mut found_expected_table = false;
 
     'tables: for table in document.select(&table_selector) {
         let rows: Vec<_> = table.select(&tr_selector).collect();
@@ -78,6 +79,7 @@ pub fn parse_bag_html(html: &str, url: &str) -> BagResponse {
         let Some(header_index) = header_index else {
             continue;
         };
+        found_expected_table = true;
 
         for row in rows.iter().skip(header_index + 1) {
             let cells: Vec<_> = row.select(&cell_selector).collect();
@@ -164,11 +166,18 @@ pub fn parse_bag_html(html: &str, url: &str) -> BagResponse {
         break 'tables;
     }
 
-    BagResponse {
+    if !found_expected_table {
+        return Err(
+            "Bag response does not contain the expected tracking table. The upstream session may have expired or its schema may have changed."
+                .into(),
+        );
+    }
+
+    Ok(BagResponse {
         url: url.to_string(),
         nomor_kantung,
         items,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -200,10 +209,36 @@ mod tests {
         </body></html>
         "##;
 
-        let response = parse_bag_html(html, "https://example.test/bag/BAG-001");
+        let response =
+            parse_bag_html(html, "https://example.test/bag/BAG-001").expect("valid bag response");
         assert_eq!(response.nomor_kantung.as_deref(), Some("BAG-001"));
         assert_eq!(response.items.len(), 1);
         assert_eq!(response.items[0].no_resi.as_deref(), Some("P123"));
         assert_eq!(response.items[0].status.as_deref(), Some("DELIVERED"));
+    }
+
+    #[test]
+    fn rejects_login_or_unrecognized_html() {
+        let html = r#"<html><body><form><input name="username"></form></body></html>"#;
+        let error = parse_bag_html(html, "https://example.test/login")
+            .expect_err("login HTML must not be treated as an empty bag");
+
+        assert!(error.contains("expected tracking table"));
+    }
+
+    #[test]
+    fn accepts_expected_table_without_items() {
+        let html = r#"
+        <table>
+          <tr>
+            <th>No</th><th>No.Resi</th><th>Kantor Kirim</th><th>Tanggal Kirim</th>
+            <th>Status</th>
+          </tr>
+        </table>
+        "#;
+
+        let response = parse_bag_html(html, "https://example.test/bag/EMPTY")
+            .expect("an expected empty table is valid");
+        assert!(response.items.is_empty());
     }
 }

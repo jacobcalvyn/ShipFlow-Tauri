@@ -6,7 +6,6 @@ import {
 } from "./engine-sync";
 import { updateActiveSheetInWorkspace } from "./actions";
 import {
-  clearSheetRows,
   createEngineSheet,
   deleteSheet,
   listEngineSheets,
@@ -15,7 +14,6 @@ import {
 } from "../workspace-engine/client";
 
 vi.mock("../workspace-engine/client", () => ({
-  clearSheetRows: vi.fn(),
   createEngineSheet: vi.fn(),
   deleteSheet: vi.fn(),
   listEngineSheets: vi.fn(),
@@ -23,7 +21,6 @@ vi.mock("../workspace-engine/client", () => ({
   upsertSheetRows: vi.fn(),
 }));
 
-const clearSheetRowsMock = vi.mocked(clearSheetRows);
 const createEngineSheetMock = vi.mocked(createEngineSheet);
 const deleteSheetMock = vi.mocked(deleteSheet);
 const listEngineSheetsMock = vi.mocked(listEngineSheets);
@@ -43,7 +40,6 @@ function createDeferred<T>() {
 describe("workspace engine sync", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    clearSheetRowsMock.mockResolvedValue({ payload: null } as never);
     createEngineSheetMock.mockResolvedValue({ payload: null } as never);
     deleteSheetMock.mockResolvedValue({ payload: null } as never);
     listEngineSheetsMock.mockResolvedValue({
@@ -96,9 +92,9 @@ describe("workspace engine sync", () => {
       name: "Legacy Local",
       position: 0,
     });
-    expect(clearSheetRowsMock).toHaveBeenCalledWith({ sheetId });
     expect(upsertSheetRowsMock).toHaveBeenCalledWith({
       sheetId,
+      replaceExisting: true,
       rows: [
         {
           rowId: "row-1",
@@ -108,9 +104,6 @@ describe("workspace engine sync", () => {
       ],
     });
     expect(createEngineSheetMock.mock.invocationCallOrder[0]).toBeLessThan(
-      clearSheetRowsMock.mock.invocationCallOrder[0]
-    );
-    expect(clearSheetRowsMock.mock.invocationCallOrder[0]).toBeLessThan(
       upsertSheetRowsMock.mock.invocationCallOrder[0]
     );
   });
@@ -126,7 +119,6 @@ describe("workspace engine sync", () => {
       name: "Sheet 1",
       position: 0,
     });
-    expect(clearSheetRowsMock).not.toHaveBeenCalled();
     expect(upsertSheetRowsMock).not.toHaveBeenCalled();
   });
 
@@ -156,9 +148,9 @@ describe("workspace engine sync", () => {
       valueFilters: [],
       sort: [],
     });
-    expect(clearSheetRowsMock).toHaveBeenCalledWith({ sheetId });
     expect(upsertSheetRowsMock).toHaveBeenCalledWith({
       sheetId,
+      replaceExisting: true,
       rows: [
         {
           rowId: "row-legacy",
@@ -218,7 +210,6 @@ describe("workspace engine sync", () => {
       valueFilters: [],
       sort: [],
     });
-    expect(clearSheetRowsMock).not.toHaveBeenCalled();
     expect(upsertSheetRowsMock).not.toHaveBeenCalled();
   });
 

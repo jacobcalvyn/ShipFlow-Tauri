@@ -11,6 +11,7 @@ import {
 import { flushSync } from "react-dom";
 import {
   createSheetInWorkspace,
+  deleteSheetInWorkspace,
 } from "./actions";
 import { WorkspaceState } from "./types";
 import { clearSelectionInSheet, deleteRowsInSheet } from "../sheet/actions";
@@ -193,10 +194,6 @@ export function useSelectionTransferController({
       disarmDeleteSelected();
       setHoveredColumn(null);
 
-      if (mode === "move") {
-        abortRowTrackingWork(activeSheetId, selectedVisibleRowKeys, "selected_rows_deleted");
-      }
-
       const createdWorkspace = createSheetInWorkspace(workspaceRef.current, {
         sourceSheetId: activeSheetId,
       });
@@ -206,10 +203,7 @@ export function useSelectionTransferController({
         targetSheetId
       );
 
-      const nextWorkspaceState =
-        mode === "move"
-          ? removeSelectedRowsFromSource(emptyTargetWorkspace)
-          : emptyTargetWorkspace;
+      setWorkspaceState(emptyTargetWorkspace);
       try {
         const rowIds = await resolveSelectedEngineMutationRowIds();
         const metadata = getEngineSheetMetadata(emptyTargetWorkspace, targetSheetId);
@@ -235,11 +229,20 @@ export function useSelectionTransferController({
               : "Gagal memindahkan ID lewat engine.",
         });
         void deleteSheet({ sheetId: targetSheetId }).catch(() => undefined);
+        setWorkspaceState((current) =>
+          deleteSheetInWorkspace(current, targetSheetId)
+        );
         return;
       }
 
-      workspaceRef.current = nextWorkspaceState;
-      setWorkspaceState(nextWorkspaceState);
+      if (mode === "move") {
+        abortRowTrackingWork(
+          activeSheetId,
+          selectedVisibleRowKeys,
+          "selected_rows_deleted"
+        );
+        setWorkspaceState((current) => removeSelectedRowsFromSource(current));
+      }
 
       showNotice({
         tone: "success",
@@ -303,15 +306,8 @@ export function useSelectionTransferController({
       disarmDeleteAll();
       disarmDeleteSelected();
 
-      if (mode === "move") {
-        abortRowTrackingWork(activeSheetId, selectedVisibleRowKeys, "selected_rows_deleted");
-      }
-
       const currentWorkspace = workspaceRef.current;
       const targetSheetName = currentWorkspace.sheetMetaById[targetSheetId]?.name ?? "Sheet";
-
-      const nextWorkspaceState =
-        mode === "move" ? removeSelectedRowsFromSource(currentWorkspace) : currentWorkspace;
       try {
         const rowIds = await resolveSelectedEngineMutationRowIds();
         await transferSheetRows({
@@ -334,9 +330,13 @@ export function useSelectionTransferController({
         return;
       }
 
-      if (nextWorkspaceState !== currentWorkspace) {
-        workspaceRef.current = nextWorkspaceState;
-        setWorkspaceState(nextWorkspaceState);
+      if (mode === "move") {
+        abortRowTrackingWork(
+          activeSheetId,
+          selectedVisibleRowKeys,
+          "selected_rows_deleted"
+        );
+        setWorkspaceState((current) => removeSelectedRowsFromSource(current));
       }
 
       showNotice({

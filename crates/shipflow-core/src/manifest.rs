@@ -21,7 +21,7 @@ fn is_manifest_header(labels: &[String]) -> bool {
     })
 }
 
-pub fn parse_manifest_html(html: &str, url: &str) -> ManifestResponse {
+pub fn parse_manifest_html(html: &str, url: &str) -> Result<ManifestResponse, String> {
     let document = ScraperHtml::parse_document(html);
 
     let table_selector = Selector::parse("table").expect("valid selector");
@@ -44,6 +44,7 @@ pub fn parse_manifest_html(html: &str, url: &str) -> ManifestResponse {
     }
 
     let mut items = Vec::new();
+    let mut found_expected_table = false;
 
     'tables: for table in document.select(&table_selector) {
         let rows: Vec<_> = table.select(&tr_selector).collect();
@@ -63,6 +64,7 @@ pub fn parse_manifest_html(html: &str, url: &str) -> ManifestResponse {
         let Some(header_index) = header_index else {
             continue;
         };
+        found_expected_table = true;
 
         for row in rows.iter().skip(header_index + 1) {
             let cells: Vec<_> = row.select(&cell_selector).collect();
@@ -116,11 +118,18 @@ pub fn parse_manifest_html(html: &str, url: &str) -> ManifestResponse {
         break 'tables;
     }
 
-    ManifestResponse {
+    if !found_expected_table {
+        return Err(
+            "Manifest response does not contain the expected tracking table. The upstream session may have expired or its schema may have changed."
+                .into(),
+        );
+    }
+
+    Ok(ManifestResponse {
         url: url.to_string(),
         total_berat,
         items,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -150,10 +159,36 @@ mod tests {
         </body></html>
         "##;
 
-        let response = parse_manifest_html(html, "https://example.test/manifest/MAN-001");
+        let response = parse_manifest_html(html, "https://example.test/manifest/MAN-001")
+            .expect("valid manifest response");
         assert_eq!(response.total_berat.as_deref(), Some("10 Kg"));
         assert_eq!(response.items.len(), 1);
         assert_eq!(response.items[0].nomor_kantung.as_deref(), Some("BAG-001"));
         assert_eq!(response.items[0].status.as_deref(), Some("inBag"));
+    }
+
+    #[test]
+    fn rejects_login_or_unrecognized_html() {
+        let html = r#"<html><body><form><input name="password"></form></body></html>"#;
+        let error = parse_manifest_html(html, "https://example.test/login")
+            .expect_err("login HTML must not be treated as an empty manifest");
+
+        assert!(error.contains("expected tracking table"));
+    }
+
+    #[test]
+    fn accepts_expected_table_without_items() {
+        let html = r#"
+        <table>
+          <tr>
+            <th>No</th><th>Nomor Kantung</th><th>Jenis Layanan</th>
+            <th>Berat</th><th>Status</th><th>Lokasi Akhir</th><th>Tanggal</th>
+          </tr>
+        </table>
+        "#;
+
+        let response = parse_manifest_html(html, "https://example.test/manifest/EMPTY")
+            .expect("an expected empty table is valid");
+        assert!(response.items.is_empty());
     }
 }

@@ -11,6 +11,7 @@ use std::{
 use tokio::{
     io::AsyncReadExt,
     sync::{Semaphore, TryAcquireError},
+    task::{JoinError, JoinSet},
     time::timeout,
 };
 
@@ -23,6 +24,7 @@ use crate::model::SERVICE_STATUS_PRODUCT;
 
 const MAX_ACTIVE_INTERNAL_IPC_CONNECTIONS: usize = 128;
 const INTERNAL_IPC_FRAME_TIMEOUT_SECS: u64 = 10;
+const INTERNAL_IPC_DRAIN_TIMEOUT_SECS: u64 = 5;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,12 +39,21 @@ pub(crate) async fn run_internal_ipc_server(
     state: HttpApiState,
 ) -> Result<(), String> {
     let connection_limiter = Arc::new(Semaphore::new(MAX_ACTIVE_INTERNAL_IPC_CONNECTIONS));
-    loop {
+    let mut connections = JoinSet::new();
+    let accept_result = loop {
         tokio::select! {
-            _ = state.shutdown_signal.notified() => return Ok(()),
+            biased;
+            _ = state.shutdown_signal.cancelled() => break Ok(()),
+            completed = connections.join_next(), if !connections.is_empty() => {
+                if let Some(result) = completed {
+                    log_connection_join_result(result);
+                }
+            }
             accepted = listener.accept() => {
-                let stream = accepted
-                    .map_err(|error| format!("Internal IPC listener failed: {error}"))?;
+                let stream = match accepted {
+                    Ok(stream) => stream,
+                    Err(error) => break Err(format!("Internal IPC listener failed: {error}")),
+                };
                 let connection_permit = match connection_limiter.clone().try_acquire_owned() {
                     Ok(permit) => permit,
                     Err(TryAcquireError::NoPermits) => {
@@ -52,16 +63,65 @@ pub(crate) async fn run_internal_ipc_server(
                         continue;
                     }
                     Err(TryAcquireError::Closed) => {
-                        return Err("Internal IPC connection limiter is unavailable.".into());
+                        break Err("Internal IPC connection limiter is unavailable.".into());
                     }
                 };
                 let connection_state = state.clone();
-                tokio::spawn(async move {
+                connections.spawn(async move {
                     let _connection_permit = connection_permit;
                     if let Err(error) = handle_connection(stream, connection_state).await {
                         shipflow_core::shipflow_log!("[ShipFlowIPC] internal connection failed: {error}");
                     }
                 });
+            }
+        }
+    };
+
+    drop(listener);
+    drain_internal_ipc_connections(
+        &mut connections,
+        Duration::from_secs(INTERNAL_IPC_DRAIN_TIMEOUT_SECS),
+    )
+    .await;
+    accept_result
+}
+
+fn log_connection_join_result(result: Result<(), JoinError>) {
+    if let Err(error) = result {
+        shipflow_core::shipflow_log!(
+            "[ShipFlowIPC] internal connection task ended unexpectedly: {error}"
+        );
+    }
+}
+
+async fn drain_internal_ipc_connections(connections: &mut JoinSet<()>, drain_timeout: Duration) {
+    if connections.is_empty() {
+        return;
+    }
+
+    let started_count = connections.len();
+    let drained = timeout(drain_timeout, async {
+        while let Some(result) = connections.join_next().await {
+            log_connection_join_result(result);
+        }
+    })
+    .await;
+    if drained.is_ok() {
+        shipflow_core::shipflow_log!(
+            "[ShipFlowIPC] internal connections drained count={started_count}"
+        );
+        return;
+    }
+
+    let remaining = connections.len();
+    shipflow_core::shipflow_log!(
+        "[ShipFlowIPC] internal connection drain timed out remaining={remaining}; aborting"
+    );
+    connections.abort_all();
+    while let Some(result) = connections.join_next().await {
+        if let Err(error) = result {
+            if !error.is_cancelled() {
+                log_connection_join_result(Err(error));
             }
         }
     }
@@ -130,7 +190,7 @@ async fn handle_connection(
         started_at.elapsed().as_millis(),
     );
     if should_shutdown {
-        state.shutdown_signal.notify_waiters();
+        state.shutdown_signal.cancel();
     }
     Ok(())
 }
@@ -282,17 +342,22 @@ fn rpc_error_from_tracking_error(error: TrackingError) -> RpcError {
 
 #[cfg(test)]
 mod tests {
+    use super::{drain_internal_ipc_connections, handle_request, parse_lookup_params};
+    use crate::{
+        contact_cache::ContactCacheState,
+        http_api::{HttpApiState, ShutdownSignal},
+        lookup_cache::LookupCacheState,
+        model::ServiceRuntimeMode,
+        upstream_backpressure::UpstreamBackpressure,
+    };
     use serde_json::json;
     use shipflow_core::model::TrackingSourceConfig;
     use shipflow_ipc::{RpcMessage, RpcRequest, PROTOCOL_VERSION};
-    use std::sync::Arc;
-    use tokio::sync::Notify;
-
-    use super::{handle_request, parse_lookup_params};
-    use crate::{
-        contact_cache::ContactCacheState, http_api::HttpApiState, lookup_cache::LookupCacheState,
-        model::ServiceRuntimeMode, upstream_backpressure::UpstreamBackpressure,
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
     };
+    use tokio::task::JoinSet;
 
     #[test]
     fn lookup_params_preserve_dotted_shipment_ids() {
@@ -359,6 +424,31 @@ mod tests {
         assert!(!should_shutdown);
     }
 
+    #[tokio::test]
+    async fn bounded_connection_drain_aborts_and_joins_slow_tasks() {
+        struct DropSignal(Arc<AtomicBool>);
+
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let drop_signal = DropSignal(dropped.clone());
+        let mut connections = JoinSet::new();
+        connections.spawn(async move {
+            let _drop_signal = drop_signal;
+            std::future::pending::<()>().await;
+        });
+
+        drain_internal_ipc_connections(&mut connections, std::time::Duration::from_millis(10))
+            .await;
+
+        assert!(connections.is_empty());
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
     fn test_state() -> HttpApiState {
         HttpApiState {
             client: reqwest::Client::new(),
@@ -374,7 +464,7 @@ mod tests {
             upstream_backpressure: UpstreamBackpressure::default(),
             contact_backpressure: UpstreamBackpressure::contact_default(),
             http_ingress_backpressure: UpstreamBackpressure::http_ingress_default(),
-            shutdown_signal: Arc::new(Notify::new()),
+            shutdown_signal: ShutdownSignal::new(),
             started_at: std::time::Instant::now(),
         }
     }

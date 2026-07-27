@@ -189,6 +189,7 @@ export type RefreshSheetRowsTrackingRequest = {
 
 export type UpsertSheetRowsRequest = {
   sheetId: string;
+  replaceExisting?: boolean;
   rows: Array<{
     rowId: string;
     position: number;

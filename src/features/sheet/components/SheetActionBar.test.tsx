@@ -21,7 +21,7 @@ describe("SheetActionBar", () => {
       <SheetActionBar
         loadedCount={12}
         totalShipmentCount={16}
-        loadingCount={4}
+        loadingCount={0}
         retrackableRowsCount={12}
         retryFailedRowsCount={2}
         deleteAllArmed={false}
@@ -70,7 +70,7 @@ describe("SheetActionBar", () => {
       />
     );
 
-    expect(screen.getByText("12/16 kiriman dimuat")).toBeInTheDocument();
+    expect(screen.getByText("Total 12/16 kiriman")).toBeInTheDocument();
     expect(screen.getByText("3 row dipilih")).toBeInTheDocument();
     expect(screen.getByText("Import From")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Bag" })).toBeInTheDocument();
@@ -116,6 +116,54 @@ describe("SheetActionBar", () => {
 
     fireEvent.click(screen.getByText("Filter tersembunyi diabaikan: 1"));
     expect(onClearHiddenFilters).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables tracking actions while another tracking run is active", () => {
+    render(
+      <SheetActionBar
+        loadedCount={12}
+        totalShipmentCount={16}
+        loadingCount={4}
+        retrackableRowsCount={12}
+        retryFailedRowsCount={2}
+        deleteAllArmed={false}
+        exportableRowsCount={12}
+        activeFilterCount={0}
+        selectedRowCount={0}
+        deleteSelectedArmed={false}
+        ignoredHiddenFilterCount={0}
+        columnShortcuts={[]}
+        onRetrackAll={vi.fn()}
+        onRetryFailedRows={vi.fn()}
+        onExportCsv={vi.fn()}
+        onCopyAllIds={vi.fn()}
+        onDeleteAllRows={vi.fn()}
+        onClearSelection={vi.fn()}
+        onTransferSelectedIdsToNewSheet={vi.fn()}
+        targetSheetOptions={[]}
+        onTransferSelectedIdsToSheet={vi.fn()}
+        onClearFilter={vi.fn()}
+        onCopySelectedIds={vi.fn()}
+        onDeleteSelectedRows={vi.fn()}
+        onClearHiddenFilters={vi.fn()}
+        onScrollToColumn={vi.fn()}
+        importSourceModalKind={null}
+        importSourceDrafts={{ bag: "", manifest: "" }}
+        importSourceLookupStates={{
+          bag: { loading: false, rawResponse: "", error: "", trackingIds: [] },
+          manifest: { loading: false, rawResponse: "", error: "", trackingIds: [] },
+        }}
+        onOpenImportSourceModal={vi.fn()}
+        onCloseImportSourceModal={vi.fn()}
+        onSetImportSourceDraft={vi.fn()}
+        onImportBagTrackingIds={vi.fn()}
+        onImportManifestTrackingIds={vi.fn()}
+        onRunImportSourceLookup={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Lacak Ulang" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Retry Gagal" })).toBeDisabled();
   });
 
   it("keeps selection row visible and disabled when nothing is selected", () => {
@@ -387,5 +435,62 @@ describe("SheetActionBar", () => {
     expect(screen.getByRole("button", { name: "Ganti Semua" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Tambah Data" })).toBeEnabled();
     expect(screen.queryByText("Nomor Kantung (2)")).not.toBeInTheDocument();
+  });
+
+  it("prevents closing the import modal while its commit is active", () => {
+    const onCloseImportSourceModal = vi.fn();
+
+    render(
+      <SheetActionBar
+        loadedCount={0}
+        totalShipmentCount={0}
+        loadingCount={0}
+        retrackableRowsCount={0}
+        retryFailedRowsCount={0}
+        deleteAllArmed={false}
+        exportableRowsCount={0}
+        activeFilterCount={0}
+        selectedRowCount={0}
+        deleteSelectedArmed={false}
+        ignoredHiddenFilterCount={0}
+        columnShortcuts={[]}
+        onRetrackAll={vi.fn()}
+        onRetryFailedRows={vi.fn()}
+        onExportCsv={vi.fn()}
+        onCopyAllIds={vi.fn()}
+        onDeleteAllRows={vi.fn()}
+        onClearSelection={vi.fn()}
+        onTransferSelectedIdsToNewSheet={vi.fn()}
+        targetSheetOptions={[]}
+        onTransferSelectedIdsToSheet={vi.fn()}
+        onClearFilter={vi.fn()}
+        onCopySelectedIds={vi.fn()}
+        onDeleteSelectedRows={vi.fn()}
+        onClearHiddenFilters={vi.fn()}
+        onScrollToColumn={vi.fn()}
+        importSourceModalKind="bag"
+        importSourceDrafts={{ bag: "PID-1", manifest: "" }}
+        importSourceLookupStates={{
+          bag: {
+            loading: true,
+            rawResponse: "",
+            error: "",
+            trackingIds: ["TRACK-1"],
+          },
+          manifest: { loading: false, rawResponse: "", error: "", trackingIds: [] },
+        }}
+        onOpenImportSourceModal={vi.fn()}
+        onCloseImportSourceModal={onCloseImportSourceModal}
+        onSetImportSourceDraft={vi.fn()}
+        onImportBagTrackingIds={vi.fn()}
+        onImportManifestTrackingIds={vi.fn()}
+        onRunImportSourceLookup={vi.fn()}
+      />
+    );
+
+    const closeButton = screen.getByRole("button", { name: "Tutup" });
+    expect(closeButton).toBeDisabled();
+    fireEvent.click(closeButton);
+    expect(onCloseImportSourceModal).not.toHaveBeenCalled();
   });
 });

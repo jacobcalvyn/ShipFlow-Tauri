@@ -161,31 +161,29 @@ where
         plan: &CreateImportJobPlan,
     ) -> ImportEngineResult<ImportJobDetail> {
         let source_ids = validate_import_source_ids(&plan.ids)?;
-        if plan.mode == ImportMode::Replace {
-            self.store.clear_sheet_rows(&plan.sheet_id)?;
-        }
-
-        self.store.create_import_job(&CreateImportJobInput {
+        let job_input = CreateImportJobInput {
             job_id: plan.job_id.clone(),
             sheet_id: plan.sheet_id.clone(),
             kind: plan.kind,
             mode: plan.mode,
             total_count: source_ids.len() as u32,
-        })?;
-
-        for (position, source_id) in source_ids.iter().enumerate() {
-            self.store
-                .create_import_job_item(&CreateImportJobItemInput {
-                    item_id: format!("{}:source:{position}", plan.job_id),
-                    job_id: plan.job_id.clone(),
-                    source_item_id: source_id.clone(),
-                    source_item_kind: match plan.kind {
-                        ImportKind::Bag => ImportSourceItemKind::Bag,
-                        ImportKind::Manifest => ImportSourceItemKind::Manifest,
-                    },
-                    position: position as u32,
-                })?;
-        }
+        };
+        let items = source_ids
+            .iter()
+            .enumerate()
+            .map(|(position, source_id)| CreateImportJobItemInput {
+                item_id: format!("{}:source:{position}", plan.job_id),
+                job_id: plan.job_id.clone(),
+                source_item_id: source_id.clone(),
+                source_item_kind: match plan.kind {
+                    ImportKind::Bag => ImportSourceItemKind::Bag,
+                    ImportKind::Manifest => ImportSourceItemKind::Manifest,
+                },
+                position: position as u32,
+            })
+            .collect::<Vec<_>>();
+        self.store
+            .create_import_job_with_items(&job_input, &items)?;
 
         self.store
             .get_import_job(&plan.job_id)?
@@ -475,27 +473,31 @@ where
                     return Ok(());
                 }
                 let raw_blob_id = self.store_raw_response_blob(&response)?;
-
-                for bag_id in &bag_ids {
-                    let position = self.store.next_import_job_item_position(job_id)?;
-                    self.store
-                        .create_import_job_item(&CreateImportJobItemInput {
+                let first_position = self.store.next_import_job_item_position(job_id)?;
+                let bag_items = bag_ids
+                    .iter()
+                    .enumerate()
+                    .map(|(offset, bag_id)| {
+                        let position = first_position + offset as u32;
+                        CreateImportJobItemInput {
                             item_id: format!("{job_id}:manifest-bag:{position}"),
                             job_id: job_id.to_string(),
                             source_item_id: bag_id.clone(),
                             source_item_kind: ImportSourceItemKind::ManifestBag,
                             position,
-                        })?;
-                }
-
-                self.store
-                    .finish_import_attempt(&FinishImportAttemptInput {
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                self.store.finish_manifest_import_attempt_with_items(
+                    &FinishImportAttemptInput {
                         attempt_id: attempt_id.to_string(),
                         status: ImportAttemptStatus::Succeeded,
                         tracking_ids: bag_ids,
                         error_message: None,
                         raw_blob_id,
-                    })?;
+                    },
+                    &bag_items,
+                )?;
             }
             Err(error) => {
                 self.store
@@ -528,18 +530,19 @@ where
                         .filter_map(|bag_item| bag_item.no_resi.as_deref()),
                 );
                 let raw_blob_id = self.store_raw_response_blob(&response)?;
-                let sheet_row_ids = self.append_unique_sheet_rows(sheet_id, &shipment_ids)?;
-
-                self.store
-                    .finish_import_attempt(&FinishImportAttemptInput {
+                let (rows, sheet_row_ids) = self.plan_unique_sheet_rows(sheet_id, &shipment_ids)?;
+                self.store.finish_bag_import_attempt_with_sheet_rows(
+                    &FinishImportAttemptInput {
                         attempt_id: attempt_id.to_string(),
                         status: ImportAttemptStatus::Succeeded,
                         tracking_ids: shipment_ids,
                         error_message: None,
                         raw_blob_id,
-                    })?;
-                self.store
-                    .update_import_job_item_sheet_row_ids(&item.item_id, &sheet_row_ids)?;
+                    },
+                    &item.item_id,
+                    &rows,
+                    &sheet_row_ids,
+                )?;
             }
             Err(error) => {
                 self.store
@@ -577,12 +580,13 @@ where
         Ok(Some(address.id))
     }
 
-    fn append_unique_sheet_rows(
-        &mut self,
+    fn plan_unique_sheet_rows(
+        &self,
         sheet_id: &str,
         display_tracking_ids: &[String],
-    ) -> ImportEngineResult<Vec<String>> {
+    ) -> ImportEngineResult<(Vec<UpsertSheetRowInput>, Vec<String>)> {
         let mut position = self.store.next_sheet_row_position(sheet_id)?;
+        let mut rows = Vec::new();
         let mut sheet_row_ids = Vec::new();
 
         for display_tracking_id in display_tracking_ids {
@@ -596,7 +600,7 @@ where
 
             let resolved = resolve_tracking_id(display_tracking_id);
             let row_id = format!("{sheet_id}:row:{position}");
-            self.store.upsert_sheet_row(&UpsertSheetRowInput {
+            rows.push(UpsertSheetRowInput {
                 row_id: row_id.clone(),
                 sheet_id: sheet_id.to_string(),
                 position,
@@ -604,12 +608,12 @@ where
                 lookup_tracking_id: resolved.lookup_id,
                 row_status: SheetRowStatus::Loaded,
                 error_message: None,
-            })?;
+            });
             sheet_row_ids.push(row_id);
             position += 1;
         }
 
-        Ok(sheet_row_ids)
+        Ok((rows, sheet_row_ids))
     }
 }
 

@@ -151,17 +151,26 @@ impl ContactCacheState {
             }
         }
 
-        let connection = match Connection::open(&path) {
+        let connection = match open_initialized_database(&path) {
             Ok(connection) => connection,
             Err(error) => {
                 shipflow_core::shipflow_log!(
-                    "[ShipFlowContactCache] open_failed path={} error={error}; using in-memory fallback",
+                    "[ShipFlowContactCache] persistent_store_unavailable path={} error={error}; using in-memory fallback",
                     path.display()
                 );
-                Connection::open_in_memory().expect("contact cache in-memory fallback should open")
+                let fallback = Connection::open_in_memory().unwrap_or_else(|fallback_error| {
+                    panic!(
+                        "Contact cache storage is unavailable. Persistent error: {error}; in-memory error: {fallback_error}"
+                    )
+                });
+                initialize_database(&fallback).unwrap_or_else(|fallback_error| {
+                    panic!(
+                        "Contact cache schema is unavailable. Persistent error: {error}; in-memory error: {fallback_error}"
+                    )
+                });
+                fallback
             }
         };
-        initialize_database(&connection);
         if let Some(legacy_path) = legacy_path.as_deref() {
             migrate_legacy_store(&connection, legacy_path);
         }
@@ -448,12 +457,20 @@ impl ContactCacheState {
     }
 }
 
-fn initialize_database(connection: &Connection) {
-    if let Err(error) = connection.busy_timeout(Duration::from_secs(5)) {
-        shipflow_core::shipflow_log!("[ShipFlowContactCache] busy_timeout_failed error={error}");
-    }
-    if let Err(error) = connection.execute_batch(
-        "PRAGMA journal_mode = WAL;
+fn open_initialized_database(path: &Path) -> Result<Connection, String> {
+    let connection = Connection::open(path)
+        .map_err(|error| format!("Unable to open contact cache database: {error}"))?;
+    initialize_database(&connection)?;
+    Ok(connection)
+}
+
+fn initialize_database(connection: &Connection) -> Result<(), String> {
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|error| format!("Unable to configure contact cache database: {error}"))?;
+    connection
+        .execute_batch(
+            "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
          CREATE TABLE IF NOT EXISTS contact_cache (
              shipment_id TEXT PRIMARY KEY NOT NULL,
@@ -465,9 +482,9 @@ fn initialize_database(connection: &Connection) {
          );
          CREATE INDEX IF NOT EXISTS idx_contact_cache_last_used
              ON contact_cache(last_used_at_unix_ms);",
-    ) {
-        shipflow_core::shipflow_log!("[ShipFlowContactCache] initialize_failed error={error}");
-    }
+        )
+        .map_err(|error| format!("Unable to initialize contact cache database: {error}"))?;
+    Ok(())
 }
 
 fn migrate_legacy_store(connection: &Connection, legacy_path: &Path) {
@@ -614,6 +631,37 @@ mod tests {
         MAX_CONTACT_CACHE_ENTRIES,
     };
     use shipflow_core::model::{ContactDetail, ContactEnrichment};
+
+    #[test]
+    fn incompatible_persistent_schema_falls_back_to_initialized_memory_store() {
+        let path = test_path("schema-fallback");
+        let connection = rusqlite::Connection::open(&path).expect("test database should open");
+        connection
+            .execute("CREATE TABLE contact_cache (unexpected TEXT)", [])
+            .expect("conflicting schema should be created");
+        drop(connection);
+
+        let cache = ContactCacheState::open(path.clone());
+        cache.store(
+            "P2606020189412",
+            ContactEnrichment {
+                penerima: ContactDetail {
+                    telepon: Some("628123".into()),
+                    ..ContactDetail::default()
+                },
+                ..ContactEnrichment::default()
+            },
+        );
+
+        assert_eq!(
+            cache
+                .get("P2606020189412")
+                .and_then(|entry| entry.contact.penerima.telepon),
+            Some("628123".into())
+        );
+        drop(cache);
+        cleanup_sqlite(path);
+    }
 
     #[test]
     fn stores_contact_by_exact_shipment_id() {

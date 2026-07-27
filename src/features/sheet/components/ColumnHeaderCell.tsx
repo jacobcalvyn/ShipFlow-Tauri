@@ -26,6 +26,7 @@ const COLUMN_MENU_MARGIN = 12;
 const COLUMN_MENU_GAP = 6;
 const COLUMN_MENU_WIDTH = 390;
 const COLUMN_MENU_WIDE_WIDTH = 520;
+const VALUE_FILTER_OPTION_LIMIT = 1_000;
 
 type ColumnHeaderCellProps = {
   column: ColumnDefinition;
@@ -84,6 +85,8 @@ export const ColumnHeaderCell = memo(function ColumnHeaderCell({
   const isTrackingColumn = column.path === TRACKING_COLUMN_PATH;
   const hasWideFilterMenu = WIDE_FILTER_MENU_PATHS.has(column.path);
   const canUseValueFilter = canUseColumnValueFilter(column);
+  const valueOptionsMayBeTruncated =
+    availableValueOptions.length >= VALUE_FILTER_OPTION_LIMIT;
   const headerCellRef = useRef<HTMLTableCellElement | null>(null);
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [menuLayout, setMenuLayout] = useState<CSSProperties | null>(null);
@@ -255,13 +258,23 @@ export const ColumnHeaderCell = memo(function ColumnHeaderCell({
                     Clear
                   </button>
                 </div>
+                {valueOptionsMayBeTruncated ? (
+                  <span className="column-menu-empty" role="status">
+                    Daftar nilai mencapai batas 1.000 opsi. Filter kecuali
+                    dinonaktifkan agar hasil tidak salah.
+                  </span>
+                ) : null}
                 {availableValueOptions.length > 0 ? (
                   <div className="column-menu-checklist">
                     {availableValueOptions.map((option) => {
                       const optionId = `${column.path}-${option.value}`;
-                      const exceptOptions = availableValueOptions
-                        .filter((currentOption) => currentOption.value !== option.value)
-                        .map((currentOption) => currentOption.value);
+                      const exceptOptions = valueOptionsMayBeTruncated
+                        ? []
+                        : availableValueOptions
+                            .filter(
+                              (currentOption) => currentOption.value !== option.value
+                            )
+                            .map((currentOption) => currentOption.value);
 
                       return (
                         <div key={option.value} className="column-menu-value-option">
@@ -298,7 +311,14 @@ export const ColumnHeaderCell = memo(function ColumnHeaderCell({
                               type="button"
                               className="column-menu-value-action"
                               aria-label={`Filter except ${option.value}`}
-                              disabled={exceptOptions.length === 0}
+                              disabled={
+                                valueOptionsMayBeTruncated || exceptOptions.length === 0
+                              }
+                              title={
+                                valueOptionsMayBeTruncated
+                                  ? "Filter kecuali dinonaktifkan karena daftar nilai mencapai batas 1.000 opsi."
+                                  : undefined
+                              }
                               onClick={(event) => {
                                 event.preventDefault();
                                 event.stopPropagation();

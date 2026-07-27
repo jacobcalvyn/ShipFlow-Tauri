@@ -4063,18 +4063,13 @@ describe("App workspace isolation", () => {
     });
 
     expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("POPEN1");
-    expect(
-      getWorkspaceEngineCommandCalls("clear_sheet_rows").some(
-        ([, args]) =>
-          (args?.command?.payload as { sheetId?: string } | undefined)?.sheetId ===
-          "sheet-opened"
-      )
-    ).toBe(true);
+    expect(getWorkspaceEngineCommandCalls("clear_sheet_rows")).toHaveLength(0);
     expect(
       getWorkspaceEngineCommandCalls("upsert_sheet_rows").some(([, args]) => {
         const payload = args?.command?.payload as
           | {
               sheetId?: string;
+              replaceExisting?: boolean;
               rows?: Array<{
                 rowId?: string;
                 position?: number;
@@ -4084,6 +4079,7 @@ describe("App workspace isolation", () => {
           | undefined;
         return (
           payload?.sheetId === "sheet-opened" &&
+          payload.replaceExisting === true &&
           payload.rows?.some(
             (row) =>
               row.rowId === "row-opened" &&

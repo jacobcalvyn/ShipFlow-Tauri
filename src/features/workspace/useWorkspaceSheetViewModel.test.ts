@@ -860,7 +860,7 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
       valueFilters: [
         {
           field: "detail.billing_detail.cod_info.total_cod",
-          values: ["1000"],
+          values: ["1000", "1000.0"],
         },
         {
           field: "detail.billing_detail.cod_info.is_cod",

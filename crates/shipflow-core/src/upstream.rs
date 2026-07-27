@@ -60,21 +60,6 @@ struct ExternalApiStatusResponse {
     port: Option<u16>,
 }
 
-pub fn sanitize_shipment_id(value: &str) -> String {
-    value
-        .chars()
-        .filter_map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                Some(ch.to_ascii_uppercase())
-            } else if ch == '-' || ch == '.' {
-                Some(ch)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 fn format_request_error_details(error: &reqwest::Error) -> String {
     let mut message = error.to_string();
     let mut source = error.source();
@@ -133,19 +118,7 @@ fn ensure_lookup_item_limit(label: &str, item_count: usize) -> Result<(), Tracki
 }
 
 pub fn normalize_and_validate_shipment_id(input: &str) -> Result<String, TrackingError> {
-    let normalized = sanitize_shipment_id(input.trim());
-
-    if normalized.is_empty() {
-        return Err(TrackingError::BadRequest("Shipment ID is required.".into()));
-    }
-
-    if normalized.len() > MAX_LOOKUP_ID_LENGTH {
-        return Err(TrackingError::BadRequest(format!(
-            "Shipment ID exceeds {MAX_LOOKUP_ID_LENGTH} characters."
-        )));
-    }
-
-    Ok(normalized)
+    normalize_lookup_id(input, LookupKind::Track)
 }
 
 pub async fn scrape_pos_tracking(
@@ -215,7 +188,7 @@ pub async fn scrape_pos_bag(client: &Client, bag_id: &str) -> Result<BagResponse
 
     let html =
         read_response_text_limited(response, MAX_UPSTREAM_RESPONSE_BYTES, "Bag response").await?;
-    let parsed = parse_bag_html(&html, &request_url);
+    let parsed = parse_bag_html(&html, &request_url).map_err(TrackingError::Upstream)?;
     ensure_lookup_item_limit("Bag response", parsed.items.len())?;
     Ok(parsed)
 }
@@ -238,7 +211,7 @@ pub async fn scrape_pos_manifest(
     let html =
         read_response_text_limited(response, MAX_UPSTREAM_RESPONSE_BYTES, "Manifest response")
             .await?;
-    let parsed = parse_manifest_html(&html, &request_url);
+    let parsed = parse_manifest_html(&html, &request_url).map_err(TrackingError::Upstream)?;
     ensure_lookup_item_limit("Manifest response", parsed.items.len())?;
     Ok(parsed)
 }
@@ -844,24 +817,33 @@ fn request_log_hash(request_url: &str) -> String {
 }
 
 fn normalize_lookup_id(input: &str, kind: LookupKind) -> Result<String, TrackingError> {
-    let normalized = sanitize_shipment_id(input.trim());
+    let trimmed = input.trim();
     let label = match kind {
         LookupKind::Track => "Shipment ID",
         LookupKind::Bag => "Bag ID",
         LookupKind::Manifest => "Manifest ID",
     };
 
-    if normalized.is_empty() {
+    if trimmed.is_empty() {
         return Err(TrackingError::BadRequest(format!("{label} is required.")));
     }
 
-    if normalized.len() > MAX_LOOKUP_ID_LENGTH {
+    if trimmed.len() > MAX_LOOKUP_ID_LENGTH {
         return Err(TrackingError::BadRequest(format!(
             "{label} exceeds {MAX_LOOKUP_ID_LENGTH} characters."
         )));
     }
 
-    Ok(normalized)
+    if trimmed
+        .chars()
+        .any(|character| !character.is_ascii_alphanumeric() && character != '-' && character != '.')
+    {
+        return Err(TrackingError::BadRequest(format!(
+            "{label} may only contain letters, numbers, hyphens, and periods."
+        )));
+    }
+
+    Ok(trimmed.to_ascii_uppercase())
 }
 
 pub fn is_retryable_status(status: StatusCode) -> bool {
@@ -1259,6 +1241,14 @@ mod tests {
             normalize_and_validate_shipment_id(&format!("P{}", "1".repeat(80))),
             Err(TrackingError::BadRequest(_))
         ));
+        assert!(matches!(
+            normalize_and_validate_shipment_id("P2606 020189412"),
+            Err(TrackingError::BadRequest(_))
+        ));
+        assert!(matches!(
+            normalize_and_validate_shipment_id("P2606/020189412"),
+            Err(TrackingError::BadRequest(_))
+        ));
     }
 
     #[test]
@@ -1278,6 +1268,14 @@ mod tests {
         ));
         assert!(matches!(
             normalize_and_validate_manifest_id(&format!("M{}", "1".repeat(80))),
+            Err(TrackingError::BadRequest(_))
+        ));
+        assert!(matches!(
+            normalize_and_validate_bag_id("BAG@001"),
+            Err(TrackingError::BadRequest(_))
+        ));
+        assert!(matches!(
+            normalize_and_validate_manifest_id("MANIFEST 001"),
             Err(TrackingError::BadRequest(_))
         ));
     }

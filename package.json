@@ -34,7 +34,7 @@
     "build:bundle:macos": "npm run package:macos",
     "build:bundle:nsis": "npm run package:windows",
     "build:updater": "npm run package",
-    "test": "vitest run --exclude src/features/sheet/components/SheetTable.benchmark.test.tsx --exclude \"tests/e2e/**\" --exclude \"tests/electron/**\"",
+    "test": "vitest run --exclude src/features/sheet/components/SheetTable.benchmark.test.tsx --exclude \"tests/electron/**\"",
     "test:e2e": "npm run build:native:debug && npm run build && playwright test",
     "test:electron:package": "playwright test tests/electron/packaged-smoke.spec.ts",
     "test:diagnostics": "node --test scripts/audit-runtime-log.node-test.mjs",

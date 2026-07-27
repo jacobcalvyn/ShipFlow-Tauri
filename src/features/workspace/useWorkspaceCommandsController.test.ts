@@ -53,6 +53,16 @@ vi.mock("../workspace-engine/client", async () => {
 
 const exportWorkspaceCsvMock = vi.mocked(exportWorkspaceCsv);
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function createRow(): SheetRow {
   return {
     key: "row-1",
@@ -523,6 +533,51 @@ describe("useWorkspaceCommandsController", () => {
     expect(options.setWorkspaceState).toHaveBeenCalledTimes(1);
   });
 
+  it("rolls back only the failed rename without reverting concurrent workspace changes", async () => {
+    const options = buildOptions();
+    workspaceEngineMocks.renameEngineSheet.mockRejectedValueOnce(
+      new Error("database locked")
+    );
+    const { result } = renderHook(() =>
+      useWorkspaceCommandsController(options as never)
+    );
+
+    act(() => {
+      result.current.renameActiveSheet("sheet-1", "Cases");
+    });
+
+    await waitFor(() => {
+      expect(options.setWorkspaceState).toHaveBeenCalledTimes(2);
+    });
+
+    const rollback = vi.mocked(options.setWorkspaceState).mock.calls[1]?.[0];
+    expect(typeof rollback).toBe("function");
+    const concurrentWorkspace: WorkspaceState = {
+      ...options.workspaceRef.current,
+      sheetOrder: ["sheet-1", "sheet-2"],
+      sheetMetaById: {
+        ...options.workspaceRef.current.sheetMetaById,
+        "sheet-1": {
+          ...options.workspaceRef.current.sheetMetaById["sheet-1"],
+          name: "Cases",
+        },
+        "sheet-2": { name: "Concurrent", color: "slate", icon: "sheet" },
+      },
+      sheetsById: {
+        ...options.workspaceRef.current.sheetsById,
+        "sheet-2": createDefaultSheetState(),
+      },
+    };
+    const rolledBack =
+      typeof rollback === "function"
+        ? rollback(concurrentWorkspace)
+        : concurrentWorkspace;
+
+    expect(rolledBack.sheetMetaById["sheet-1"].name).toBe("Sheet 1");
+    expect(rolledBack.sheetMetaById["sheet-2"].name).toBe("Concurrent");
+    expect(rolledBack.sheetOrder).toEqual(["sheet-1", "sheet-2"]);
+  });
+
   it("deletes a sheet through the workspace engine before removing the local tab", async () => {
     const options = buildOptions();
     const { result } = renderHook(() =>
@@ -624,6 +679,63 @@ describe("useWorkspaceCommandsController", () => {
     const targetSheetId = nextWorkspace?.activeSheetId ?? "";
     expect(nextWorkspace?.sheetsById[targetSheetId]?.rows[0]?.trackingInput).toBe("");
     expect(nextWorkspace?.sheetsById[targetSheetId]?.rows[0]?.shipment).toBeNull();
+  });
+
+  it("does not overwrite concurrent workspace changes when duplication finishes", async () => {
+    const options = buildOptions();
+    const copyDeferred = createDeferred<{
+      type: "sheet_rows";
+      payload: {
+        sheetId: string;
+        offset: number;
+        limit: number;
+        totalCount: number;
+        hasMore: boolean;
+        nextOffset: null;
+        rows: [];
+      };
+    }>();
+    workspaceEngineMocks.copySheetRows.mockReturnValue(copyDeferred.promise);
+    const { result } = renderHook(() =>
+      useWorkspaceCommandsController(options as never)
+    );
+
+    let duplicatePromise!: Promise<void>;
+    act(() => {
+      duplicatePromise = result.current.duplicateSheet("sheet-1");
+    });
+
+    await waitFor(() => {
+      expect(options.setWorkspaceState).toHaveBeenCalledTimes(1);
+    });
+    options.workspaceRef.current = {
+      ...options.workspaceRef.current,
+      sheetMetaById: {
+        ...options.workspaceRef.current.sheetMetaById,
+        "sheet-1": {
+          ...options.workspaceRef.current.sheetMetaById["sheet-1"],
+          name: "Concurrent rename",
+        },
+      },
+    };
+
+    await act(async () => {
+      copyDeferred.resolve({
+        type: "sheet_rows",
+        payload: {
+          sheetId: "duplicate",
+          offset: 0,
+          limit: 0,
+          totalCount: 0,
+          hasMore: false,
+          nextOffset: null,
+          rows: [],
+        },
+      });
+      await duplicatePromise;
+    });
+
+    expect(options.setWorkspaceState).toHaveBeenCalledTimes(1);
   });
 
   it("excludes POD and raw history summary columns from exported CSV", async () => {
@@ -949,6 +1061,68 @@ describe("useWorkspaceCommandsController", () => {
     expect(options.showNotice).toHaveBeenLastCalledWith({
       tone: "success",
       message: "Lacak ulang berhasil.",
+    });
+  });
+
+  it("rejects an overlapping Rust tracking command for the same sheet", async () => {
+    const options = buildOptions();
+    options.retryFailedEntries = [
+      {
+        key: "legacy-row-key",
+        value: "RUST-FAILED",
+        engineRowId: "rust-failed-row",
+      },
+    ];
+    options.rustExportRowsQuery = {
+      sheetId: "sheet-1",
+      offset: 0,
+      limit: 1_000,
+      filters: [],
+      sort: [],
+    };
+    const refreshDeferred = createDeferred<{
+      type: "sheet_rows_tracking_refresh";
+      payload: {
+        sheetId: string;
+        runId?: string | null;
+        successCount: number;
+        failedCount: number;
+        rows: [];
+      };
+    }>();
+    workspaceEngineMocks.refreshSheetRowsTracking.mockReturnValue(
+      refreshDeferred.promise
+    );
+
+    const { result } = renderHook(() =>
+      useWorkspaceCommandsController(options as never)
+    );
+
+    act(() => {
+      result.current.retryFailedRows();
+      result.current.retryFailedRows();
+    });
+
+    expect(workspaceEngineMocks.refreshSheetRowsTracking).toHaveBeenCalledTimes(1);
+    expect(options.showNotice).toHaveBeenCalledWith({
+      tone: "info",
+      message: "Proses lacak untuk sheet ini masih berjalan.",
+    });
+
+    const firstCall = workspaceEngineMocks.refreshSheetRowsTracking.mock
+      .calls[0]?.[0];
+    await act(async () => {
+      refreshDeferred.resolve({
+        type: "sheet_rows_tracking_refresh",
+        payload: {
+          sheetId: "sheet-1",
+          runId: firstCall?.runId,
+          successCount: 1,
+          failedCount: 0,
+          rows: [],
+        },
+      });
+      await refreshDeferred.promise;
     });
   });
 

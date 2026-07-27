@@ -95,6 +95,33 @@ export function clearTrackingRunInSheet(
   };
 }
 
+export function failTrackingRunInSheet(
+  sheetState: SheetState,
+  trackingRunId: string,
+  error: string
+) {
+  if (sheetState.activeTrackingRunId !== trackingRunId) {
+    return sheetState;
+  }
+
+  return {
+    ...sheetState,
+    activeTrackingRunId: null,
+    rows: sheetState.rows.map((row) =>
+      row.runtimeTrackingRunId === trackingRunId && (row.loading || row.queued)
+        ? withRuntimeTrackingRunId({
+            ...row,
+            loading: false,
+            queued: false,
+            stale: row.shipment !== null,
+            dirty: row.shipment !== null,
+            error,
+          })
+        : row
+    ),
+  };
+}
+
 export function setSheetAnalyticsSourceScopeInSheet(
   sheetState: SheetState,
   sourceScope: SheetAnalyticsSourceScope
@@ -1035,11 +1062,12 @@ export function setImportSourceLookupErrorInSheet(
   kind: ImportSourceModalKind,
   error: string,
   requestKey: string,
-  sourceItemStates: NonNullable<
+  sourceItemStates?: NonNullable<
     SheetState["importSourceLookupStates"]["manifest"]["sourceItemStates"]
-  > = []
+  >
 ) {
-  if (sheetState.importSourceLookupStates[kind].requestKey !== requestKey) {
+  const currentLookupState = sheetState.importSourceLookupStates[kind];
+  if (currentLookupState.requestKey !== requestKey) {
     return sheetState;
   }
 
@@ -1048,14 +1076,11 @@ export function setImportSourceLookupErrorInSheet(
     importSourceLookupStates: {
       ...sheetState.importSourceLookupStates,
       [kind]: {
+        ...currentLookupState,
         loading: false,
-        rawResponse: "",
         error,
-        trackingIds: [],
-        jobId: sheetState.importSourceLookupStates[kind].jobId ?? null,
         requestKey,
-        sourceItemStates,
-        manifestBagStates: [],
+        sourceItemStates: sourceItemStates ?? currentLookupState.sourceItemStates,
       },
     },
   };

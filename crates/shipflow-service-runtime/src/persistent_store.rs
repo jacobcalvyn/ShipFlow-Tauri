@@ -82,34 +82,51 @@ impl std::fmt::Debug for PersistentLookupStore {
 
 impl PersistentLookupStore {
     pub fn open_default() -> Self {
+        Self::try_open_default().expect("persistent lookup store should open")
+    }
+
+    pub fn try_open_default() -> Result<Self, String> {
         let path = default_persistent_lookup_store_path();
         let legacy_entries = load_default_legacy_entries(&path);
-        Self::open_with_legacy_entries(path, legacy_entries)
+        Self::try_open_with_legacy_entries(path, legacy_entries)
     }
 
     pub fn open(path: PathBuf) -> Self {
-        let legacy_entries = extract_legacy_entries_from_target(&path);
-        Self::open_with_legacy_entries(path, legacy_entries)
+        Self::try_open(path).expect("persistent lookup store should open")
     }
 
-    fn open_with_legacy_entries(
+    pub fn try_open(path: PathBuf) -> Result<Self, String> {
+        let legacy_entries = extract_legacy_entries_from_target(&path);
+        Self::try_open_with_legacy_entries(path, legacy_entries)
+    }
+
+    fn try_open_with_legacy_entries(
         requested_path: PathBuf,
         legacy_entries: Vec<(String, LegacyPersistentLookupEntry)>,
-    ) -> Self {
-        let path = prepare_database_path(&requested_path).unwrap_or_else(|error| {
-            shipflow_core::shipflow_log!("[ShipFlowService] {error}");
-            let fallback_path = std::env::temp_dir().join(format!(
-                "shipflow-lookup-store-{}-{}.sqlite3",
-                std::process::id(),
-                unix_ms()
-            ));
-            prepare_database_path(&fallback_path)
-                .unwrap_or_else(|fallback_error| panic!("{error}; {fallback_error}"));
-            fallback_path
-        });
-
-        let reader = open_database(&path)
-            .unwrap_or_else(|error| panic!("Unable to open persistent lookup store: {error}"));
+    ) -> Result<Self, String> {
+        let (path, reader) = match prepare_database_path(&requested_path)
+            .and_then(|path| open_database(&path).map(|connection| (path, connection)))
+        {
+            Ok(opened) => opened,
+            Err(primary_error) => {
+                shipflow_core::shipflow_log!(
+                    "[ShipFlowService] persistent_lookup_primary_open_failed path={} error={primary_error}",
+                    requested_path.display()
+                );
+                let fallback_path = std::env::temp_dir().join(format!(
+                    "shipflow-lookup-store-{}-{}.sqlite3",
+                    std::process::id(),
+                    unix_ms()
+                ));
+                prepare_database_path(&fallback_path)
+                    .and_then(|path| open_database(&path).map(|connection| (path, connection)))
+                    .map_err(|fallback_error| {
+                        format!(
+                            "Persistent lookup store is unavailable. Primary error: {primary_error}; fallback error: {fallback_error}"
+                        )
+                    })?
+            }
+        };
         import_legacy_entries(&reader, legacy_entries);
 
         let (sender, receiver) = mpsc::sync_channel(MAX_BUFFERED_PERSISTENT_WRITES);
@@ -117,9 +134,9 @@ impl PersistentLookupStore {
         let handle = thread::Builder::new()
             .name("shipflow-lookup-writer".into())
             .spawn(move || run_persistent_writer(writer_path, receiver))
-            .expect("persistent lookup writer thread must start");
+            .map_err(|error| format!("Unable to start persistent lookup writer: {error}"))?;
 
-        Self {
+        Ok(Self {
             inner: Arc::new(PersistentLookupStoreInner {
                 reader: Mutex::new(reader),
                 writer: PersistentLookupWriter {
@@ -127,21 +144,28 @@ impl PersistentLookupStore {
                     handle: Mutex::new(Some(handle)),
                 },
             }),
-        }
+        })
     }
 
     pub fn load_success(&self, key: &str) -> Option<String> {
+        self.load_success_fresh(key, None)
+    }
+
+    pub fn load_success_fresh(&self, key: &str, max_age: Option<Duration>) -> Option<String> {
         let row = {
-            let reader = self
-                .inner
-                .reader
-                .lock()
-                .expect("persistent lookup reader lock poisoned");
+            let reader = self.inner.reader.lock().ok()?;
             reader
                 .query_row(
-                    "SELECT expires_at_unix_ms, payload FROM lookup_cache WHERE key = ?1",
+                    "SELECT expires_at_unix_ms, payload, updated_at_unix_ms
+                     FROM lookup_cache WHERE key = ?1",
                     params![key],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
                 )
                 .optional()
                 .unwrap_or_else(|error| {
@@ -152,11 +176,31 @@ impl PersistentLookupStore {
                 })
         }?;
 
-        if row.0 <= unix_ms() || persistent_lookup_skip_reason(&row.1).is_some() {
+        let now = unix_ms();
+        let too_old = max_age.is_some_and(|max_age| {
+            let max_age_ms = i64::try_from(max_age.as_millis()).unwrap_or(i64::MAX);
+            now.saturating_sub(row.2) > max_age_ms
+        });
+        if row.0 <= now || too_old || persistent_lookup_skip_reason(&row.1).is_some() {
             self.enqueue_remove_success(key.to_string());
             return None;
         }
         Some(row.1)
+    }
+
+    pub async fn load_success_async(&self, key: String, max_age: Duration) -> Option<String> {
+        let store = self.clone();
+        match tokio::task::spawn_blocking(move || store.load_success_fresh(&key, Some(max_age)))
+            .await
+        {
+            Ok(payload) => payload,
+            Err(error) => {
+                shipflow_core::shipflow_log!(
+                    "[ShipFlowService] persistent_lookup_read_task_failed error={error}"
+                );
+                None
+            }
+        }
     }
 
     pub fn store_success(&self, key: String, payload: String, ttl: Duration) -> bool {

@@ -16,7 +16,7 @@ permissions:
 jobs:
   build-macos:
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     if: ${{ !inputs.signed_release || github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@v6
@@ -37,6 +37,7 @@ jobs:
       - name: Verify Quality Gate for commit
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QUALITY_GATE_EVENT: ${{ github.ref == 'refs/heads/main' && 'push' || 'pull_request' }}
         run: node scripts/verify-quality-gate.mjs
       - name: Validate signing credentials
         if: ${{ inputs.signed_release }}

@@ -128,6 +128,8 @@ pub struct RefreshSheetRowsTrackingRequest {
 pub struct UpsertSheetRowsRequest {
     pub sheet_id: String,
     pub rows: Vec<UpsertSheetRowRequest>,
+    #[serde(default)]
+    pub replace_existing: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,6 +204,26 @@ mod tests {
         assert!(json.contains(r#""sheetId":"sheet-1""#));
         assert!(json.contains(r#""kind":"manifest""#));
         assert!(json.contains(r#""mode":"append""#));
+    }
+
+    #[test]
+    fn upsert_rows_contract_defaults_to_append_and_exposes_atomic_replace() {
+        let legacy: UpsertSheetRowsRequest = serde_json::from_value(serde_json::json!({
+            "sheetId": "sheet-1",
+            "rows": []
+        }))
+        .expect("legacy payload deserializes");
+        assert!(!legacy.replace_existing);
+
+        let command = WorkspaceEngineCommand::UpsertSheetRows(UpsertSheetRowsRequest {
+            sheet_id: "sheet-1".to_string(),
+            rows: vec![],
+            replace_existing: true,
+        });
+        let json = serde_json::to_string(&command).expect("command serializes");
+
+        assert!(json.contains(r#""command":"upsert_sheet_rows""#));
+        assert!(json.contains(r#""replaceExisting":true"#));
     }
 
     #[test]

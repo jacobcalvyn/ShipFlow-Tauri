@@ -93,6 +93,36 @@ function parseFormattedDateValue(value: string) {
   ];
 }
 
+function displayValueToRustTextFilter(column: ColumnDefinition, value: string) {
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return "";
+  }
+
+  switch (column.type) {
+    case "currency":
+    case "weight":
+    case "number":
+      return parseFormattedNumberValue(trimmed) ?? trimmed;
+    case "boolean": {
+      const normalized = trimmed.toLowerCase();
+      if (normalized === "ya" || normalized === "true" || normalized === "1") {
+        return "1";
+      }
+      if (normalized === "tidak" || normalized === "false" || normalized === "0") {
+        return "0";
+      }
+      return trimmed;
+    }
+    case "date": {
+      const convertedValues = parseFormattedDateValue(trimmed);
+      return convertedValues[convertedValues.length - 1] ?? trimmed;
+    }
+    default:
+      return trimmed;
+  }
+}
+
 function displayValueToRustValueFilters(column: ColumnDefinition, value: string) {
   const trimmed = value.trim();
   if (trimmed === "" || trimmed === "-") {
@@ -104,7 +134,12 @@ function displayValueToRustValueFilters(column: ColumnDefinition, value: string)
     case "weight":
     case "number": {
       const parsed = parseFormattedNumberValue(trimmed);
-      return parsed === null ? null : [parsed];
+      if (parsed === null) {
+        return null;
+      }
+
+      const numericValue = Number(parsed);
+      return Number.isInteger(numericValue) ? [parsed, `${parsed}.0`] : [parsed];
     }
     case "boolean": {
       const normalized = trimmed.toLowerCase();
@@ -180,7 +215,10 @@ function getVisibleTextFilters(
     .filter(canUseColumnTextFilter)
     .map((column) => ({
       field: column.path,
-      value: sheetState.filters[column.path]?.trim() ?? "",
+      value: displayValueToRustTextFilter(
+        column,
+        sheetState.filters[column.path] ?? ""
+      ),
     }))
     .filter((filter) => filter.value !== "");
 }

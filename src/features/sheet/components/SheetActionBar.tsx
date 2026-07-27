@@ -551,7 +551,7 @@ export function SheetActionBar({
               type="button"
               className="action-button"
               onClick={onRetrackAll}
-              disabled={retrackableRowsCount === 0}
+              disabled={loadingCount > 0 || retrackableRowsCount === 0}
               title="Lacak Ulang"
             >
               <ActionIcon>
@@ -566,7 +566,7 @@ export function SheetActionBar({
               type="button"
               className="action-button"
               onClick={onRetryFailedRows}
-              disabled={retryFailedRowsCount === 0}
+              disabled={loadingCount > 0 || retryFailedRowsCount === 0}
               title="Retry Gagal"
             >
               <ActionIcon>

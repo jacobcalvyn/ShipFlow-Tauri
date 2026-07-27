@@ -40,6 +40,21 @@ import { resolvePodImage } from "./pod-preview";
 import { isTrustedRendererNavigation } from "./renderer-navigation";
 import { ServiceAgentManager } from "./service-agent";
 import { WorkspaceHostClient } from "./workspace-host";
+import {
+  ApplicationQuitCoordinator,
+  type ApplicationQuitReason,
+} from "./application-lifecycle";
+import {
+  applicationLaunchRequestFromArgs,
+  ApplicationLaunchQueue,
+  type ApplicationLaunchRequest,
+} from "./launch-request-queue";
+import {
+  isRecoverableRendererExit,
+  RendererRecoveryPolicy,
+} from "./renderer-recovery";
+import { buildViewMenu } from "./application-menu";
+import { appUpdateStatus } from "./app-update";
 
 const { autoUpdater } = electronUpdater;
 
@@ -55,6 +70,8 @@ type WindowRecord = {
   isDirty: boolean;
   closeRequestPending: boolean;
   allowClose: boolean;
+  rendererRecoveryPolicy: RendererRecoveryPolicy;
+  rendererRecoveryTimer: NodeJS.Timeout | null;
   authorizedDocumentPaths: DocumentPathCapabilities;
 };
 
@@ -92,8 +109,27 @@ let quitCleanupStarted = false;
 let quitCleanupComplete = false;
 let nativeRuntimesShuttingDown = false;
 let runtimeDiagnosticsTimer: NodeJS.Timeout | null = null;
+let updateReadyToInstall = false;
 
 const RUNTIME_DIAGNOSTICS_INTERVAL_MS = 60_000;
+const RENDERER_RECOVERY_DELAY_MS = 250;
+
+const quitCoordinator = new ApplicationQuitCoordinator<WindowRecord>({
+  windows: () => windowsByLabel.values(),
+  requestDecision: requestWindowQuitDecision,
+  finalize: finalizeApplicationQuit,
+});
+const launchQueue = new ApplicationLaunchQueue(async (request) => {
+  try {
+    await handleApplicationLaunch(request);
+  } catch (error) {
+    appLogger.error("ElectronLaunch", error);
+    dialog.showErrorBox(
+      PRODUCT_NAME,
+      `Unable to process the application launch request: ${String(error)}`,
+    );
+  }
+});
 
 const COMMON_COMMANDS = new Set<ShipFlowCommand>([
   "open_external_url",
@@ -161,7 +197,10 @@ function recordForEvent(event: IpcMainInvokeEvent) {
 }
 
 function emitWindowEvent<T>(record: WindowRecord, eventName: string, payload: T) {
-  if (!record.window.isDestroyed()) {
+  if (
+    !record.window.isDestroyed() &&
+    !record.window.webContents.isDestroyed()
+  ) {
     record.window.webContents.send(SHIPFLOW_EVENT_CHANNEL, eventName, payload);
   }
 }
@@ -290,7 +329,10 @@ function installApplicationMenu() {
       ],
     },
     { label: "Edit", submenu: [{ role: "undo" }, { role: "redo" }, { type: "separator" }, { role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" }] },
-    { label: "View", submenu: [{ role: "reload" }, { role: "toggleDevTools" }, { type: "separator" }, { role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }, { type: "separator" }, { role: "togglefullscreen" }] },
+    {
+      label: "View",
+      submenu: buildViewMenu(app.isPackaged),
+    },
     { label: "Window", submenu: [{ role: "minimize" }, { role: "zoom" }, { role: "front" }] },
     {
       label: "Help",
@@ -299,6 +341,7 @@ function installApplicationMenu() {
         menuItem("Service Settings", "show-service-settings"),
         { type: "separator" },
         menuItem("Check for Updates", "check-for-updates"),
+        menuItem("Install Update", "install-app-update"),
       ],
     },
   ];
@@ -326,10 +369,7 @@ function installTray() {
       { type: "separator" },
       {
         label: "Quit ShipFlow Desktop",
-        click: () => {
-          isQuitting = true;
-          app.quit();
-        },
+        click: () => app.quit(),
       },
     ]),
   );
@@ -355,6 +395,52 @@ async function loadRenderer(record: WindowRecord) {
   await record.window.loadFile(packagedRendererPath(), {
     query: { windowKind: record.kind, windowLabel: record.label },
   });
+}
+
+function scheduleRendererRecovery(record: WindowRecord) {
+  if (
+    isQuitting ||
+    nativeRuntimesShuttingDown ||
+    record.window.isDestroyed() ||
+    record.window.webContents.isDestroyed() ||
+    record.rendererRecoveryTimer
+  ) {
+    return;
+  }
+  if (!record.rendererRecoveryPolicy.registerAttempt()) {
+    appLogger.event("ERROR", "Renderer", "renderer_recovery_exhausted", {
+      windowLabel: record.label,
+    });
+    dialog.showErrorBox(
+      PRODUCT_NAME,
+      "The workspace renderer stopped repeatedly. Restart ShipFlow Desktop to recover safely.",
+    );
+    return;
+  }
+  appLogger.event("WARN", "Renderer", "renderer_recovery_scheduled", {
+    delayMs: RENDERER_RECOVERY_DELAY_MS,
+    windowLabel: record.label,
+  });
+  record.rendererRecoveryTimer = setTimeout(() => {
+    record.rendererRecoveryTimer = null;
+    if (
+      isQuitting ||
+      nativeRuntimesShuttingDown ||
+      record.window.isDestroyed() ||
+      record.window.webContents.isDestroyed()
+    ) {
+      return;
+    }
+    void loadRenderer(record)
+      .then(() => {
+        appLogger.event("INFO", "Renderer", "renderer_recovery_completed", {
+          windowLabel: record.label,
+        });
+      })
+      .catch((error) => {
+        appLogger.error("RendererRecovery", error);
+      });
+  }, RENDERER_RECOVERY_DELAY_MS);
 }
 
 function createWindow(
@@ -397,6 +483,8 @@ function createWindow(
     isDirty: false,
     closeRequestPending: false,
     allowClose: false,
+    rendererRecoveryPolicy: new RendererRecoveryPolicy(),
+    rendererRecoveryTimer: null,
     authorizedDocumentPaths: new DocumentPathCapabilities(
       options.launchRequest?.documentPath
         ? [normalizeClaimPath(options.launchRequest.documentPath)]
@@ -449,6 +537,9 @@ function createWindow(
         windowLabel: label,
       },
     );
+    if (isRecoverableRendererExit(details.reason)) {
+      scheduleRendererRecovery(record);
+    }
   });
   window.webContents.on("dom-ready", () => {
     appLogger.info("Renderer", `DOM ready for ${window.webContents.getURL()}.`);
@@ -496,6 +587,11 @@ function createWindow(
     });
     windowsByWebContentsId.delete(webContentsId);
     windowsByLabel.delete(label);
+    quitCoordinator.remove(record);
+    if (record.rendererRecoveryTimer) {
+      clearTimeout(record.rendererRecoveryTimer);
+      record.rendererRecoveryTimer = null;
+    }
     workspaceHosts.get(label)?.stop();
     workspaceHosts.delete(label);
     workspaceHostStarts.delete(label);
@@ -524,6 +620,9 @@ function createWindow(
 function openOrFocusWorkspace() {
   const existing = [...windowsByLabel.values()].find((record) => record.kind === "workspace");
   if (existing) {
+    if (existing.window.webContents.isCrashed()) {
+      scheduleRendererRecovery(existing);
+    }
     existing.window.show();
     existing.window.focus();
     return existing;
@@ -634,15 +733,7 @@ async function checkForUpdates() {
     };
   }
   const result = await autoUpdater.checkForUpdates();
-  const info = result?.updateInfo;
-  const available = Boolean(info && info.version !== app.getVersion());
-  return {
-    available,
-    currentVersion: app.getVersion(),
-    version: available ? info?.version ?? null : null,
-    body: available && typeof info?.releaseNotes === "string" ? info.releaseNotes : null,
-    downloadUrl: null,
-  };
+  return appUpdateStatus(result, app.getVersion());
 }
 
 async function installUpdate() {
@@ -651,12 +742,60 @@ async function installUpdate() {
     return status;
   }
   await autoUpdater.downloadUpdate();
-  isQuitting = true;
-  await shutdownNativeRuntimes();
-  quitCleanupStarted = true;
-  quitCleanupComplete = true;
-  setImmediate(() => autoUpdater.quitAndInstall(false, true));
+  updateReadyToInstall = true;
+  quitCoordinator.request("update");
   return status;
+}
+
+function requestWindowQuitDecision(record: WindowRecord) {
+  if (
+    record.window.isDestroyed() ||
+    record.window.webContents.isDestroyed()
+  ) {
+    quitCoordinator.remove(record);
+    return;
+  }
+  emitWindowEvent(record, "shipflow://window-close-requested", {
+    documentName: record.documentName,
+  });
+  record.window.show();
+  record.window.focus();
+}
+
+async function finalizeApplicationQuit(reason: ApplicationQuitReason) {
+  if (isQuitting) {
+    return;
+  }
+  isQuitting = true;
+  quitCleanupStarted = true;
+  stopRuntimeDiagnostics();
+  appLogger.event("INFO", "Lifecycle", "native_shutdown_started_for_quit", {
+    reason,
+  });
+  try {
+    await shutdownNativeRuntimes();
+  } catch (error) {
+    appLogger.error(
+      "ServiceAgent",
+      `Service shutdown during quit failed: ${String(error)}`,
+    );
+  }
+  appLogger.event("INFO", "Lifecycle", "app_exit", {
+    code: 0,
+    reason,
+  });
+  try {
+    await appLogger.flush();
+  } catch (error) {
+    // A logging failure must not leave the application stuck during shutdown.
+    console.error("Unable to flush ShipFlow logs during shutdown.", error);
+  }
+  quitCleanupComplete = true;
+  if (reason === "update" && updateReadyToInstall) {
+    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    return;
+  }
+  setImmediate(() => app.quit());
 }
 
 async function shutdownNativeRuntimes() {
@@ -915,7 +1054,13 @@ async function handleCommand(
     }
     case "resolve_window_close_request": {
       const action = requireString(args, "action");
+      if (action !== "cancel" && action !== "discard") {
+        throw new Error("action must be cancel or discard.");
+      }
       record.closeRequestPending = false;
+      if (quitCoordinator.resolve(record, action)) {
+        return;
+      }
       if (action === "discard") {
         record.allowClose = true;
         record.window.close();
@@ -1018,8 +1163,54 @@ function registerIpc() {
   );
 }
 
-function workspaceDocumentFromArgs(args: string[]) {
-  return args.find((argument) => argument.toLowerCase().endsWith(".shipflow")) ?? null;
+async function openWorkspaceDocumentFromLaunch(documentPath: string) {
+  const normalized = normalizeClaimPath(documentPath);
+  const ownerLabel = documentClaims.get(normalized);
+  if (ownerLabel) {
+    const owner = windowsByLabel.get(ownerLabel);
+    owner?.window.show();
+    owner?.window.focus();
+    return owner ?? null;
+  }
+
+  const existing = focusedWorkspaceRecord();
+  if (!existing || existing.isDirty) {
+    const next = createWindow("workspace", {
+      label: windowsByLabel.has("main") ? undefined : "main",
+      launchRequest: { documentPath: normalized, startFresh: false },
+    });
+    await claimDocument(next, normalized);
+    return next;
+  }
+
+  authorizeDocumentPath(existing, normalized);
+  const claim = await claimDocument(existing, normalized);
+  if (claim.status !== "claimed") {
+    return windowsByLabel.get(claim.ownerLabel ?? "") ?? existing;
+  }
+  existing.launchRequest = { documentPath: claim.path, startFresh: false };
+  if (existing.window.webContents.isCrashed()) {
+    scheduleRendererRecovery(existing);
+  } else {
+    existing.window.webContents.reload();
+  }
+  existing.window.show();
+  existing.window.focus();
+  return existing;
+}
+
+async function handleApplicationLaunch(request: ApplicationLaunchRequest) {
+  switch (request.kind) {
+    case "service-settings":
+      openWorkspaceSettings("service");
+      return;
+    case "document":
+      await openWorkspaceDocumentFromLaunch(request.documentPath);
+      return;
+    case "workspace":
+      openOrFocusWorkspace();
+      return;
+  }
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -1056,27 +1247,19 @@ if (!hasSingleInstanceLock) {
   });
   app.on("second-instance", (_event, argv) => {
     appLogger.info("Electron", "Forwarding a second-instance request to the active application.");
+    const launchRequest = applicationLaunchRequestFromArgs(argv);
     appLogger.event("INFO", "Lifecycle", "secondary_instance_forwarded", {
-      hasDocument: Boolean(workspaceDocumentFromArgs(argv)),
+      hasDocument: launchRequest.kind === "document",
       opensServiceSettings: argv.includes("--service-settings"),
     });
-    const documentPath = workspaceDocumentFromArgs(argv);
-    if (argv.includes("--service-settings")) {
-      openWorkspaceSettings("service");
-      return;
-    }
-    const existing = focusedWorkspaceRecord();
-    if (documentPath && existing) {
-      authorizeDocumentPath(existing, documentPath);
-      void claimDocument(existing, documentPath).then((claim) => {
-        if (claim.status === "claimed") {
-          existing.launchRequest = { documentPath: claim.path, startFresh: false };
-          existing.window.reload();
-        }
-      });
-      return;
-    }
-    openOrFocusWorkspace();
+    launchQueue.enqueue(launchRequest);
+  });
+  app.on("open-file", (event, documentPath) => {
+    event.preventDefault();
+    appLogger.event("INFO", "Lifecycle", "open_file_forwarded", {
+      documentPath,
+    });
+    launchQueue.enqueue({ kind: "document", documentPath });
   });
 
   void app.whenReady().then(async () => {
@@ -1106,17 +1289,12 @@ if (!hasSingleInstanceLock) {
       logRuntimeDiagnostics("runtime_resume_snapshot");
     });
     startRuntimeDiagnostics();
-    const initialDocument = workspaceDocumentFromArgs(process.argv);
     if (process.argv.includes("--service-settings")) {
-      openWorkspaceSettings("service");
+      launchQueue.enqueue({ kind: "service-settings" });
     } else if (!process.argv.includes("--background")) {
-      createWindow("workspace", {
-        label: "main",
-        launchRequest: initialDocument
-          ? { documentPath: initialDocument, startFresh: false }
-          : null,
-      });
+      launchQueue.enqueue(applicationLaunchRequestFromArgs(process.argv));
     }
+    launchQueue.markReady();
     void serviceAgent.connection().catch((error) => {
       appLogger.error("ServiceAgent", error);
     });
@@ -1132,7 +1310,7 @@ if (!hasSingleInstanceLock) {
 
   app.on("activate", () => {
     appLogger.event("INFO", "Lifecycle", "app_activated");
-    openOrFocusWorkspace();
+    launchQueue.enqueue({ kind: "workspace" });
   });
   app.on("window-all-closed", () => {
     appLogger.event("INFO", "Lifecycle", "all_windows_closed");
@@ -1140,7 +1318,6 @@ if (!hasSingleInstanceLock) {
       .keepRunningInTray()
       .then((keepRunningInTray) => {
         if (!keepRunningInTray) {
-          isQuitting = true;
           app.quit();
         }
       })
@@ -1149,33 +1326,17 @@ if (!hasSingleInstanceLock) {
       });
   });
   app.on("before-quit", (event) => {
-    isQuitting = true;
     appLogger.event("INFO", "Lifecycle", "before_quit", {
       cleanupComplete: quitCleanupComplete,
       cleanupStarted: quitCleanupStarted,
+      dirtyWindowCount: [...windowsByLabel.values()].filter(
+        (record) => record.isDirty && !record.allowClose,
+      ).length,
     });
     if (quitCleanupComplete) {
       return;
     }
     event.preventDefault();
-    if (quitCleanupStarted) {
-      return;
-    }
-    quitCleanupStarted = true;
-    stopRuntimeDiagnostics();
-    void shutdownNativeRuntimes()
-      .catch((error) => {
-        appLogger.error("ServiceAgent", `Service shutdown during quit failed: ${String(error)}`);
-      })
-      .then(() => {
-        appLogger.event("INFO", "Lifecycle", "app_exit", {
-          code: 0,
-        });
-        return appLogger.flush();
-      })
-      .finally(() => {
-        quitCleanupComplete = true;
-        app.exit(0);
-      });
+    quitCoordinator.request("app");
   });
 }

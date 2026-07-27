@@ -34,14 +34,33 @@ type UseWorkspaceStateControllerResult = {
 };
 
 export function useWorkspaceStateController(): UseWorkspaceStateControllerResult {
-  const [workspaceState, setWorkspaceState] = useState(loadWorkspaceState);
+  const [workspaceState, setWorkspaceStateInternal] = useState(loadWorkspaceState);
+  const workspaceRef = useRef(workspaceState);
+  const setWorkspaceState = useCallback<Dispatch<SetStateAction<WorkspaceState>>>(
+    (action) => {
+      const currentWorkspace = workspaceRef.current;
+      const nextWorkspace =
+        typeof action === "function"
+          ? (action as (current: WorkspaceState) => WorkspaceState)(
+              currentWorkspace
+            )
+          : action;
+
+      if (nextWorkspace === currentWorkspace) {
+        return;
+      }
+
+      workspaceRef.current = nextWorkspace;
+      setWorkspaceStateInternal(nextWorkspace);
+    },
+    []
+  );
   const activeSheet = useMemo(() => getActiveSheet(workspaceState), [workspaceState]);
   const activeSheetId = workspaceState.activeSheetId;
   const workspaceTabs = useMemo(
     () => getWorkspaceTabs(workspaceState),
     [workspaceState]
   );
-  const workspaceRef = useRef(workspaceState);
 
   const updateActiveSheet = useCallback(
     (updater: (sheetState: SheetState) => SheetState) => {

@@ -23,11 +23,10 @@ use std::{
     collections::HashSet,
     future::Future,
     net::{IpAddr, SocketAddr},
-    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::{
-    sync::Notify,
+    sync::watch,
     time::{timeout, MissedTickBehavior},
 };
 
@@ -84,8 +83,42 @@ pub struct HttpApiState {
     pub upstream_backpressure: UpstreamBackpressure,
     pub contact_backpressure: UpstreamBackpressure,
     pub http_ingress_backpressure: UpstreamBackpressure,
-    pub shutdown_signal: Arc<Notify>,
+    pub shutdown_signal: ShutdownSignal,
     pub started_at: Instant,
+}
+
+#[derive(Clone, Debug)]
+pub struct ShutdownSignal {
+    sender: watch::Sender<bool>,
+}
+
+impl Default for ShutdownSignal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ShutdownSignal {
+    pub fn new() -> Self {
+        let (sender, _) = watch::channel(false);
+        Self { sender }
+    }
+
+    pub fn cancel(&self) {
+        self.sender.send_replace(true);
+    }
+
+    pub async fn cancelled(&self) {
+        let mut receiver = self.sender.subscribe();
+        if *receiver.borrow() {
+            return;
+        }
+        while receiver.changed().await.is_ok() {
+            if *receiver.borrow() {
+                return;
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,6 +179,8 @@ struct CacheDiagnostics {
     ready: usize,
     loading: usize,
     capacity: usize,
+    bytes: usize,
+    byte_capacity: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -289,17 +324,33 @@ async fn resolve_external_api_addresses(
 async fn build_service_http_client(
     tracking_source: &TrackingSourceConfig,
 ) -> Result<Client, String> {
-    let mut builder = Client::builder()
+    let builder = Client::builder()
         .connect_timeout(Duration::from_secs(SERVICE_UPSTREAM_CONNECT_TIMEOUT_SECS))
         .read_timeout(Duration::from_secs(SERVICE_UPSTREAM_READ_TIMEOUT_SECS))
         .timeout(Duration::from_secs(SERVICE_UPSTREAM_REQUEST_TIMEOUT_SECS))
         .user_agent("ShipFlow Service/0.1");
+    let mut builder = apply_tracking_source_redirect_policy(builder, tracking_source);
     if let Some((hostname, addresses)) = resolve_external_api_addresses(tracking_source).await? {
         builder = builder.resolve_to_addrs(&hostname, &addresses);
     }
     builder
         .build()
         .map_err(|error| format!("Unable to create service HTTP client: {error}"))
+}
+
+fn apply_tracking_source_redirect_policy(
+    builder: reqwest::ClientBuilder,
+    tracking_source: &TrackingSourceConfig,
+) -> reqwest::ClientBuilder {
+    if !tracking_source_redirects_allowed(tracking_source) {
+        builder.redirect(reqwest::redirect::Policy::none())
+    } else {
+        builder
+    }
+}
+
+fn tracking_source_redirects_allowed(tracking_source: &TrackingSourceConfig) -> bool {
+    tracking_source.tracking_source != TrackingSource::ExternalApi
 }
 
 pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), String> {
@@ -318,7 +369,16 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
             )
         })?;
 
-    let shutdown_signal = Arc::new(Notify::new());
+    let shutdown_signal = ShutdownSignal::new();
+    let lookup_cache = match PersistentLookupStore::try_open_default() {
+        Ok(store) => LookupCacheState::default().with_persistent_store(store),
+        Err(error) => {
+            shipflow_core::shipflow_log!(
+                "[ShipFlowLifecycle] persistent_lookup_disabled error={error}"
+            );
+            LookupCacheState::default()
+        }
+    };
     let app_state = HttpApiState {
         client,
         auth_token: config.auth_token.clone(),
@@ -327,14 +387,13 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
         bind_address,
         port: config.port,
         tracking_source,
-        lookup_cache: LookupCacheState::default()
-            .with_persistent_store(PersistentLookupStore::open_default()),
+        lookup_cache,
         contact_cache: ContactCacheState::default(),
         public_upstream_backpressure: UpstreamBackpressure::public_default(),
         upstream_backpressure: UpstreamBackpressure::default(),
         contact_backpressure: UpstreamBackpressure::contact_default(),
         http_ingress_backpressure: UpstreamBackpressure::http_ingress_default(),
-        shutdown_signal: Arc::clone(&shutdown_signal),
+        shutdown_signal: shutdown_signal.clone(),
         started_at: Instant::now(),
     };
     shipflow_core::shipflow_log!(
@@ -350,21 +409,31 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
     let shutdown_lookup_cache = app_state.lookup_cache.clone();
     let router = build_router(app_state.clone());
     let maintenance_handle = tokio::spawn(run_service_maintenance(app_state.clone()));
-    let http_shutdown_signal = Arc::clone(&shutdown_signal);
+    let http_shutdown_signal = shutdown_signal.clone();
+    let os_shutdown_signal = shutdown_signal.clone();
+    let os_signal_handle = tokio::spawn(async move {
+        wait_for_os_shutdown_signal().await;
+        shipflow_core::shipflow_log!("[ShipFlowLifecycle] operating_system_shutdown_received");
+        os_shutdown_signal.cancel();
+    });
     let http_server = async move {
         axum::serve(listener, router)
             .with_graceful_shutdown(async move {
-                http_shutdown_signal.notified().await;
+                http_shutdown_signal.cancelled().await;
             })
             .await
             .map_err(|error| format!("API service stopped unexpectedly: {error}"))
     };
 
     let result = if let Some(endpoint) = config.internal_ipc_endpoint {
-        let ipc_listener = shipflow_ipc::LocalIpcListener::bind(&endpoint)
-            .map_err(|error| format!("Unable to start internal IPC service: {error}"))?;
-        let ipc_server = crate::internal_ipc::run_internal_ipc_server(ipc_listener, app_state);
-        tokio::try_join!(http_server, ipc_server).map(|_| ())
+        match shipflow_ipc::LocalIpcListener::bind(&endpoint) {
+            Ok(ipc_listener) => {
+                let ipc_server =
+                    crate::internal_ipc::run_internal_ipc_server(ipc_listener, app_state);
+                tokio::try_join!(http_server, ipc_server).map(|_| ())
+            }
+            Err(error) => Err(format!("Unable to start internal IPC service: {error}")),
+        }
     } else {
         http_server.await
     };
@@ -374,6 +443,7 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
         if result.is_ok() { "ok" } else { "error" },
     );
     maintenance_handle.abort();
+    os_signal_handle.abort();
     tokio::task::spawn_blocking(move || shutdown_lookup_cache.flush_persistent_store())
         .await
         .map_err(|error| format!("Unable to flush persistent lookup cache: {error}"))?;
@@ -383,6 +453,33 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
         if result.is_ok() { "ok" } else { "error" },
     );
     result
+}
+
+async fn wait_for_os_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = terminate.recv() => {}
+                }
+            }
+            Err(error) => {
+                shipflow_core::shipflow_log!(
+                    "[ShipFlowLifecycle] sigterm_handler_unavailable error={error}"
+                );
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 fn build_router(app_state: HttpApiState) -> Router {
@@ -512,7 +609,7 @@ async fn run_service_maintenance(state: HttpApiState) {
     interval.tick().await;
     loop {
         tokio::select! {
-            _ = state.shutdown_signal.notified() => return,
+            _ = state.shutdown_signal.cancelled() => return,
             _ = interval.tick() => {
                 let lookup_cache = state.lookup_cache.prune_expired_and_over_capacity();
                 let contact_cache = state.contact_cache.snapshot_async().await;
@@ -522,11 +619,13 @@ async fn run_service_maintenance(state: HttpApiState) {
                 let ingress = state.http_ingress_backpressure.snapshot();
                 let rss_bytes = process_rss_bytes();
                 shipflow_core::shipflow_log!(
-                    "[ShipFlowDiagnostics] uptimeSec={} rssBytes={} cacheReady={} cacheLoading={} contactEntries={} contactInFlight={} ingressActive={} ingressQueued={} publicActive={} publicQueued={} globalActive={} globalQueued={} contactActive={} contactQueued={}",
+                    "[ShipFlowDiagnostics] uptimeSec={} rssBytes={} cacheReady={} cacheLoading={} cacheBytes={} cacheByteCapacity={} contactEntries={} contactInFlight={} ingressActive={} ingressQueued={} publicActive={} publicQueued={} globalActive={} globalQueued={} contactActive={} contactQueued={}",
                     state.started_at.elapsed().as_secs(),
                     rss_bytes.map_or_else(|| "unavailable".to_string(), |value| value.to_string()),
                     lookup_cache.ready,
                     lookup_cache.loading,
+                    lookup_cache.bytes,
+                    lookup_cache.byte_capacity,
                     contact_cache.entries,
                     contact_cache.in_flight,
                     ingress.active,
@@ -1066,6 +1165,8 @@ fn cache_diagnostics(snapshot: LookupCacheSnapshot) -> CacheDiagnostics {
         ready: snapshot.ready,
         loading: snapshot.loading,
         capacity: snapshot.capacity,
+        bytes: snapshot.bytes,
+        byte_capacity: snapshot.byte_capacity,
     }
 }
 
@@ -1272,11 +1373,11 @@ mod tests {
     use super::{
         acquire_lookup_permits, authorize_request_id, authorize_request_message, build_router,
         external_api_request, is_forbidden_external_address, is_private_external_address,
-        read_lookup_request_options, resolve_external_api_addresses, with_lookup_deadline_duration,
-        HttpApiState, LookupTrafficClass,
+        read_lookup_request_options, resolve_external_api_addresses,
+        tracking_source_redirects_allowed, with_lookup_deadline_duration, HttpApiState,
+        LookupTrafficClass, ShutdownSignal,
     };
     use std::{net::IpAddr, sync::Arc, time::Instant};
-    use tokio::sync::Notify;
     use tokio::sync::Semaphore;
     use tokio::time::Duration;
 
@@ -1300,6 +1401,31 @@ mod tests {
         assert!(!is_forbidden_external_address(private_lan));
         assert!(is_private_external_address(private_lan));
         assert!(!is_private_external_address(public));
+    }
+
+    #[test]
+    fn external_api_client_redirects_are_disabled() {
+        let source = TrackingSourceConfig {
+            tracking_source: TrackingSource::ExternalApi,
+            external_api_base_url: "https://shipflow.example.test".into(),
+            external_api_auth_token: "secret".into(),
+            allow_insecure_external_api_http: false,
+        };
+
+        assert!(!tracking_source_redirects_allowed(&source));
+        assert!(tracking_source_redirects_allowed(
+            &TrackingSourceConfig::default()
+        ));
+    }
+
+    #[tokio::test]
+    async fn shutdown_signal_is_sticky_for_late_subscribers() {
+        let signal = ShutdownSignal::new();
+        signal.cancel();
+
+        tokio::time::timeout(Duration::from_millis(50), signal.cancelled())
+            .await
+            .expect("late subscribers should observe prior shutdown");
     }
 
     #[tokio::test]
@@ -1656,6 +1782,8 @@ mod tests {
         assert_eq!(payload["data"]["product"], "shipflow-service");
         assert_eq!(payload["data"]["lookupDeadlineSeconds"], 120);
         assert_eq!(payload["data"]["lookupCache"]["capacity"], 10_000);
+        assert!(payload["data"]["lookupCache"]["bytes"].is_number());
+        assert!(payload["data"]["lookupCache"]["byteCapacity"].is_number());
         assert!(payload["data"]["backpressure"]["global"]["maxConcurrent"].is_number());
         assert!(payload["data"]["backpressure"]["global"]["maxQueued"].is_number());
     }
@@ -1822,7 +1950,7 @@ mod tests {
             upstream_backpressure: UpstreamBackpressure::default(),
             contact_backpressure: UpstreamBackpressure::contact_default(),
             http_ingress_backpressure: UpstreamBackpressure::http_ingress_default(),
-            shutdown_signal: Arc::new(Notify::new()),
+            shutdown_signal: ShutdownSignal::new(),
             started_at: Instant::now(),
         }
     }

@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -20,7 +21,7 @@ jobs:
             platform: windows
             package_script: package:windows
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       DUCKDB_DOWNLOAD_LIB: "1"
     steps:
@@ -43,6 +44,11 @@ jobs:
         run: npm ci
       - name: Check security baseline
         run: npm run security:baseline
+      - name: Verify Quality Gate for commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QUALITY_GATE_EVENT: push
+        run: node scripts/verify-quality-gate.mjs
       - name: Validate macOS credentials
         if: runner.os == 'macOS'
         env:

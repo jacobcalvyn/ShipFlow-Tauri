@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 pub const SQLITE_PRAGMAS: &[&str] = &[
     "PRAGMA journal_mode = WAL;",
@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS sheet_rows (
   position INTEGER NOT NULL,
   display_tracking_id TEXT NOT NULL,
   lookup_tracking_id TEXT NOT NULL,
+  row_generation TEXT NOT NULL,
   tracking_record_id TEXT REFERENCES tracking_records(id),
   row_status TEXT NOT NULL,
   error_message TEXT,
@@ -150,6 +151,7 @@ mod tests {
         let required_fragments = [
             "CREATE TABLE IF NOT EXISTS sheets",
             "CREATE TABLE IF NOT EXISTS sheet_rows",
+            "row_generation TEXT NOT NULL",
             "CREATE TABLE IF NOT EXISTS tracking_records",
             "CREATE TABLE IF NOT EXISTS import_jobs",
             "CREATE TABLE IF NOT EXISTS import_job_items",

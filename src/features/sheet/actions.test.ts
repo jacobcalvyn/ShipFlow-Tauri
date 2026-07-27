@@ -6,8 +6,10 @@ import {
   closeImportSourceModalInSheet,
   deleteRowsInSheet,
   forceSelectionToVisibleRowsInSheet,
+  failTrackingRunInSheet,
   openImportSourceModalInSheet,
   setImportSourceJobInSheet,
+  setImportSourceLookupErrorInSheet,
   setSheetAnalyticsChartTypeInSheet,
   setSheetAnalyticsGroupByPathsInSheet,
   setSheetAnalyticsMetricAggregationInSheet,
@@ -16,6 +18,8 @@ import {
   setSheetViewModeInSheet,
   setImportSourceDraftInSheet,
   startImportSourceLookupInSheet,
+  startImportSourceRetryInSheet,
+  startTrackingRunInSheet,
   setRowErrorInSheet,
   setRowLoadingInSheet,
   setRowSuccessInSheet,
@@ -476,5 +480,131 @@ describe("sheet actions", () => {
     expect(attached.importSourceLookupStates.bag.jobId).toBe("job-1");
     expect(stale.importSourceLookupStates.bag.jobId).toBe("job-1");
     expect(restarted.importSourceLookupStates.bag.jobId).toBeNull();
+  });
+
+  it("fails only unresolved rows owned by the active tracking run", () => {
+    const initial = createDefaultSheetState();
+    const firstRow = initial.rows[0];
+    const secondRow = initial.rows[1];
+    const started = startTrackingRunInSheet(initial, "run-1");
+    const queued = setRowsQueuedInSheet(
+      started,
+      [
+        { key: firstRow.key, value: "TRACK-1" },
+        { key: secondRow.key, value: "TRACK-2" },
+      ],
+      { runId: "run-1" }
+    );
+    const completed = setRowSuccessInSheet(
+      queued,
+      firstRow.key,
+      "TRACK-1",
+      {
+        url: "",
+        detail: {
+          shipment_header: {},
+          origin_detail: {},
+          package_detail: { berat_actual: 0, berat_volumetric: 0 },
+          billing_detail: {
+            bea_dasar: 0,
+            nilai_barang: 0,
+            htnb: 0,
+            cod_info: { is_cod: false, total_cod: 0 },
+          },
+          actors: { pengirim: {}, penerima: {} },
+          performance_detail: {},
+        },
+        status_akhir: {},
+        pod: {},
+        history: [],
+        history_summary: {
+          irregularity: [],
+          bagging_unbagging: [],
+          manifest_r7: [],
+          delivery_runsheet: [],
+        },
+      },
+      { runId: "run-1" }
+    );
+
+    const failed = failTrackingRunInSheet(
+      completed,
+      "run-1",
+      "Transport disconnected."
+    );
+
+    expect(failed.activeTrackingRunId).toBeNull();
+    expect(failed.rows[0]).toMatchObject({
+      loading: false,
+      queued: false,
+      error: "",
+    });
+    expect(failed.rows[1]).toMatchObject({
+      loading: false,
+      queued: false,
+      error: "Transport disconnected.",
+    });
+  });
+
+  it("preserves successful import results when a retry transport fails", () => {
+    const initial = startImportSourceLookupInSheet(
+      createDefaultSheetState(),
+      "bag",
+      "request-1",
+      ["PID-1", "PID-2"]
+    );
+    const partial = {
+      ...initial,
+      importSourceLookupStates: {
+        ...initial.importSourceLookupStates,
+        bag: {
+          ...initial.importSourceLookupStates.bag,
+          loading: false,
+          trackingIds: ["TRACK-1"],
+          rawResponse: "partial",
+          sourceItemStates: [
+            {
+              itemId: "PID-1",
+              loading: false,
+              error: "",
+              trackingIds: ["TRACK-1"],
+            },
+            {
+              itemId: "PID-2",
+              loading: false,
+              error: "timeout",
+              trackingIds: [],
+            },
+          ],
+        },
+      },
+    };
+    const retrying = startImportSourceRetryInSheet(
+      partial,
+      "bag",
+      "request-2",
+      ["PID-2"],
+      []
+    );
+
+    const failed = setImportSourceLookupErrorInSheet(
+      retrying,
+      "bag",
+      "Service unavailable.",
+      "request-2"
+    );
+
+    expect(failed.importSourceLookupStates.bag).toMatchObject({
+      loading: false,
+      rawResponse: "partial",
+      trackingIds: ["TRACK-1"],
+      error: "Service unavailable.",
+    });
+    expect(
+      failed.importSourceLookupStates.bag.sourceItemStates?.[0]
+    ).toMatchObject({
+      itemId: "PID-1",
+      trackingIds: ["TRACK-1"],
+    });
   });
 });

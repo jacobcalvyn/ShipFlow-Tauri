@@ -681,18 +681,46 @@ function AnalyticsFieldSourceList({
   );
 }
 
-function createDonutBackground(rows: SheetAnalyticsRow[]) {
+export function selectChartRows(rows: SheetAnalyticsRow[], limit = 12) {
+  return [...rows]
+    .sort((left, right) => {
+      const leftMetricValue = Number.isFinite(left.metricValue) ? left.metricValue : 0;
+      const rightMetricValue = Number.isFinite(right.metricValue) ? right.metricValue : 0;
+      return rightMetricValue - leftMetricValue;
+    })
+    .slice(0, Math.max(0, limit));
+}
+
+export function createDonutBackground(
+  rows: SheetAnalyticsRow[],
+  totalMetricValue: number
+) {
   const activeRows = rows.filter((row) => row.metricValue > 0);
   if (activeRows.length === 0) {
+    return "#e2e8f0";
+  }
+
+  const visibleMetricValue = activeRows.reduce(
+    (total, row) => total + row.metricValue,
+    0
+  );
+  const metricTotal = Math.max(
+    Number.isFinite(totalMetricValue) ? totalMetricValue : 0,
+    visibleMetricValue
+  );
+  if (metricTotal <= 0) {
     return "#e2e8f0";
   }
 
   let cursor = 0;
   const segments = activeRows.map((row, index) => {
     const start = cursor;
-    cursor += row.share;
+    cursor = Math.min(100, cursor + (row.metricValue / metricTotal) * 100);
     return `${CHART_COLORS[index % CHART_COLORS.length]} ${start}% ${cursor}%`;
   });
+  if (cursor < 100) {
+    segments.push(`#e2e8f0 ${cursor}% 100%`);
+  }
 
   return `conic-gradient(${segments.join(", ")})`;
 }
@@ -709,7 +737,7 @@ export function SheetAnalyticsView({
   onMetricAggregationChange,
   onChartTypeChange,
 }: SheetAnalyticsViewProps) {
-  const chartRows = summary.rows.slice(0, 12);
+  const chartRows = selectChartRows(summary.rows);
   const maxMetricValue = Math.max(...chartRows.map((row) => row.metricValue), 0);
   const metricLabel =
     summary.valueMetrics.length > 0
@@ -752,7 +780,7 @@ export function SheetAnalyticsView({
     [activePivotSort, summary.rows]
   );
   const donutStyle: CSSProperties = {
-    background: createDonutBackground(chartRows),
+    background: createDonutBackground(chartRows, summary.totalMetricValue),
   };
   const togglePivotSort = (sortKey: string) => {
     setPivotSort((current) => {

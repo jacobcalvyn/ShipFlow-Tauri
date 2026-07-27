@@ -622,11 +622,13 @@ fn diagnostics_response_schema() -> Value {
 fn cache_diagnostics_schema() -> Value {
     json!({
         "type": "object",
-        "required": ["ready", "loading", "capacity"],
+        "required": ["ready", "loading", "capacity", "bytes", "byteCapacity"],
         "properties": {
             "ready": { "type": "integer", "minimum": 0 },
             "loading": { "type": "integer", "minimum": 0 },
-            "capacity": { "type": "integer", "minimum": 1 }
+            "capacity": { "type": "integer", "minimum": 1 },
+            "bytes": { "type": "integer", "minimum": 0 },
+            "byteCapacity": { "type": "integer", "minimum": 1 }
         }
     })
 }

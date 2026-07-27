@@ -9,6 +9,7 @@ import {
   clearTrackingRunInSheet,
   clearSheetDataPreservingImportStateInSheet,
   closeImportSourceModalInSheet,
+  failTrackingRunInSheet,
   openImportSourceModalInSheet,
   setImportSourceJobInSheet,
   setImportSourceLookupErrorInSheet,
@@ -35,7 +36,6 @@ import { useWorkspaceRuntimeCommandsController } from "./useWorkspaceRuntimeComm
 import { useWorkspaceTableControllers } from "./useWorkspaceTableControllers";
 import { WorkspaceState } from "./types";
 import {
-  clearSheetRows,
   createImportJob,
   getImportJob,
   type ImportJobDetail,
@@ -1009,6 +1009,14 @@ export function useWorkspaceInteractionRuntimeController({
                 ? refreshedRowIds
                 : getImportJobSheetRowIds(completed.payload);
             if (refreshRowIds.length > 0) {
+              if (
+                workspaceRef.current.sheetsById[targetSheetId]
+                  ?.activeTrackingRunId
+              ) {
+                throw new Error(
+                  "Proses lacak lain sedang berjalan pada sheet ini."
+                );
+              }
               const trackingRunId = createImportTrackingRunId(targetSheetId, `${kind}-retry`);
               flushSync(() => {
                 updateSheet(targetSheetId, (current) =>
@@ -1046,6 +1054,12 @@ export function useWorkspaceInteractionRuntimeController({
                     })
                   );
                 }
+              } catch (error) {
+                const message = getRuntimeErrorMessage(error);
+                updateSheet(targetSheetId, (current) =>
+                  failTrackingRunInSheet(current, trackingRunId, message)
+                );
+                throw error;
               } finally {
                 updateSheet(targetSheetId, (current) =>
                   clearTrackingRunInSheet(current, trackingRunId)
@@ -1476,6 +1490,16 @@ export function useWorkspaceInteractionRuntimeController({
         currentLookupState?.trackingIds ?? []
       );
 
+      if (
+        workspaceRef.current.sheetsById[activeSheetId]?.activeTrackingRunId
+      ) {
+        showNotice({
+          tone: "info",
+          message: "Tunggu proses lacak sheet ini selesai sebelum mengimpor data.",
+        });
+        return;
+      }
+
       if (trackingIds.length === 0) {
         showNotice({
           tone: "error",
@@ -1504,21 +1528,12 @@ export function useWorkspaceInteractionRuntimeController({
         };
       });
 
-      if (mode === "replace") {
-        runtimeCommands.invalidateSheetTrackingWork(activeSheetId);
-      }
-
       let committedToSheet = false;
       try {
         let startPosition = 0;
         let rowIdsToRefresh: string[] = [];
         const existingTrackingIdSet = new Set<string>();
-        if (mode === "replace") {
-          await clearSheetRows({ sheetId: activeSheetId });
-          updateSheet(activeSheetId, (current) =>
-            clearSheetDataPreservingImportStateInSheet(current)
-          );
-        } else {
+        if (mode === "append") {
           const existingRows = await queryAllImportCommitRows(activeSheetId);
           startPosition = existingRows.totalCount;
           const existingRowIdsByTrackingId = new Map<string, string>();
@@ -1562,11 +1577,20 @@ export function useWorkspaceInteractionRuntimeController({
           trackingIds: trackingIdsToInsert,
           startPosition,
         });
-        if (rows.length > 0) {
+        if (rows.length > 0 || mode === "replace") {
           await upsertSheetRows({
             sheetId: activeSheetId,
+            ...(mode === "replace" ? { replaceExisting: true } : {}),
             rows,
           });
+          committedToSheet = true;
+        }
+
+        if (mode === "replace") {
+          runtimeCommands.invalidateSheetTrackingWork(activeSheetId);
+          updateSheet(activeSheetId, (current) =>
+            clearSheetDataPreservingImportStateInSheet(current)
+          );
         }
 
         rowIdsToRefresh = [...rowIdsToRefresh, ...rows.map((row) => row.rowId)];
@@ -1594,6 +1618,12 @@ export function useWorkspaceInteractionRuntimeController({
         onWorkspaceEngineMutation?.(activeSheetId);
 
         if (rowIdsToRefresh.length > 0) {
+          if (
+            workspaceRef.current.sheetsById[activeSheetId]
+              ?.activeTrackingRunId
+          ) {
+            throw new Error("Proses lacak lain sedang berjalan pada sheet ini.");
+          }
           const trackingRunId = createImportTrackingRunId(activeSheetId, `${kind}-commit`);
           flushSync(() => {
             updateSheet(activeSheetId, (current) => {
@@ -1659,6 +1689,12 @@ export function useWorkspaceInteractionRuntimeController({
                 })
               );
             }
+          } catch (error) {
+            const message = getRuntimeErrorMessage(error);
+            updateSheet(activeSheetId, (current) =>
+              failTrackingRunInSheet(current, trackingRunId, message)
+            );
+            throw error;
           } finally {
             updateSheet(activeSheetId, (current) =>
               clearTrackingRunInSheet(current, trackingRunId)
@@ -1683,9 +1719,23 @@ export function useWorkspaceInteractionRuntimeController({
         const message = getRuntimeErrorMessage(error);
         if (committedToSheet) {
           onWorkspaceEngineMutation?.(activeSheetId);
+          updateSheet(activeSheetId, (current) => {
+            const lookupState = current.importSourceLookupStates[kind];
+            return {
+              ...current,
+              importSourceLookupStates: {
+                ...current.importSourceLookupStates,
+                [kind]: {
+                  ...lookupState,
+                  loading: false,
+                  error: message,
+                },
+              },
+            };
+          });
           showNotice({
             tone: "error",
-            message: `Data ${sourceLabel} sudah masuk ke sheet, tetapi pelacakan awal gagal: ${message}`,
+            message: `Data ${sourceLabel} sudah masuk ke sheet, tetapi proses lanjutan gagal: ${message}`,
           });
           return;
         }
@@ -1705,6 +1755,10 @@ export function useWorkspaceInteractionRuntimeController({
             },
           };
         });
+        showNotice({
+          tone: "error",
+          message,
+        });
       }
     },
     [
@@ -1720,16 +1774,14 @@ export function useWorkspaceInteractionRuntimeController({
   );
 
   const importBagTrackingIds = useCallback(
-    (mode: "replace" | "append") => {
-      importSourceTrackingIds("bag", mode);
-    },
+    (mode: "replace" | "append") =>
+      importSourceTrackingIds("bag", mode),
     [importSourceTrackingIds]
   );
 
   const importManifestTrackingIds = useCallback(
-    (mode: "replace" | "append") => {
-      importSourceTrackingIds("manifest", mode);
-    },
+    (mode: "replace" | "append") =>
+      importSourceTrackingIds("manifest", mode),
     [importSourceTrackingIds]
   );
 

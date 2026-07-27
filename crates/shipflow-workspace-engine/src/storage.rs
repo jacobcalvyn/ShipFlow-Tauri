@@ -1,9 +1,12 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use rusqlite::types::{Value, ValueRef};
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Transaction};
+use rusqlite::{
+    params, params_from_iter, Connection, OptionalExtension, Transaction, TransactionBehavior,
+};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -30,6 +33,7 @@ pub enum SheetRowStatus {
 #[serde(rename_all = "camelCase")]
 pub struct SheetRowProjection {
     pub row_id: String,
+    pub row_generation: String,
     pub position: u32,
     pub display_tracking_id: String,
     pub lookup_tracking_id: String,
@@ -354,15 +358,34 @@ impl SqliteWorkspaceStore {
             self.connection.execute_batch(statement)?;
         }
         self.connection.execute_batch(SCHEMA_SQL)?;
+        if !self.table_has_column("sheet_rows", "row_generation")? {
+            self.connection.execute(
+                "ALTER TABLE sheet_rows ADD COLUMN row_generation TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        self.connection.execute(
+            r#"
+            UPDATE sheet_rows
+            SET row_generation = id || ':' || created_at
+            WHERE row_generation = ''
+            "#,
+            [],
+        )?;
         Ok(())
     }
 
-    fn invalidate_analytics_cache_for_sheet(&self, sheet_id: &str) -> WorkspaceStoreResult<()> {
-        self.connection.execute(
-            "DELETE FROM analytics_cache WHERE sheet_id = ?1",
-            params![sheet_id],
-        )?;
-        Ok(())
+    fn table_has_column(&self, table: &str, column: &str) -> WorkspaceStoreResult<bool> {
+        let mut statement = self
+            .connection
+            .prepare(&format!("PRAGMA table_info({table})"))?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            if row.get::<_, String>(1)? == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn invalidate_analytics_cache_for_row(&self, row_id: &str) -> WorkspaceStoreResult<()> {
@@ -564,72 +587,39 @@ impl SqliteWorkspaceStore {
     }
 
     pub fn upsert_sheet_row(&mut self, input: &UpsertSheetRowInput) -> WorkspaceStoreResult<()> {
-        let existing_sheet_id = self
-            .connection
-            .query_row(
-                "SELECT sheet_id FROM sheet_rows WHERE id = ?1",
-                params![input.row_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        if let Some(existing_sheet_id) = existing_sheet_id {
-            if existing_sheet_id != input.sheet_id {
-                return Err(WorkspaceStoreError::RowOwnershipConflict {
-                    row_id: input.row_id.clone(),
-                    existing_sheet_id,
-                    requested_sheet_id: input.sheet_id.clone(),
-                });
-            }
+        self.upsert_sheet_rows_atomic(&input.sheet_id, std::slice::from_ref(input), false)
+    }
+
+    pub fn upsert_sheet_rows_atomic(
+        &mut self,
+        sheet_id: &str,
+        inputs: &[UpsertSheetRowInput],
+        replace_existing: bool,
+    ) -> WorkspaceStoreResult<()> {
+        if inputs.iter().any(|input| input.sheet_id != sheet_id) {
+            return Err(WorkspaceStoreError::InvalidValue {
+                field: "sheet_row_sheet_id",
+                value: sheet_id.to_string(),
+            });
         }
-
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if replace_existing {
+            transaction.execute(
+                "DELETE FROM sheet_rows WHERE sheet_id = ?1",
+                params![sheet_id],
+            )?;
+        }
         let now = now_utc_text();
-        self.connection.execute(
-            r#"
-            DELETE FROM sheet_rows
-            WHERE sheet_id = ?1
-              AND position = ?2
-              AND id <> ?3
-            "#,
-            params![input.sheet_id, input.position, input.row_id],
+        for input in inputs {
+            upsert_sheet_row_on(&transaction, input, &now)?;
+        }
+        transaction.execute(
+            "DELETE FROM analytics_cache WHERE sheet_id = ?1",
+            params![sheet_id],
         )?;
-
-        self.connection.execute(
-            r#"
-            INSERT INTO sheet_rows (
-              id,
-              sheet_id,
-              position,
-              display_tracking_id,
-              lookup_tracking_id,
-              row_status,
-              error_message,
-              created_at,
-              updated_at
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
-            ON CONFLICT(id) DO UPDATE SET
-              sheet_id = excluded.sheet_id,
-              position = excluded.position,
-              display_tracking_id = excluded.display_tracking_id,
-              lookup_tracking_id = excluded.lookup_tracking_id,
-              row_status = excluded.row_status,
-              error_message = excluded.error_message,
-              updated_at = excluded.updated_at
-            "#,
-            params![
-                input.row_id,
-                input.sheet_id,
-                input.position,
-                input.display_tracking_id,
-                input.lookup_tracking_id,
-                sheet_row_status_to_db(input.row_status),
-                input.error_message,
-                now
-            ],
-        )?;
-
-        self.invalidate_analytics_cache_for_sheet(&input.sheet_id)?;
-
+        transaction.commit()?;
         Ok(())
     }
 
@@ -687,6 +677,119 @@ impl SqliteWorkspaceStore {
         Ok(())
     }
 
+    pub fn upsert_tracking_record_and_attach_if_row_matches(
+        &mut self,
+        record: &UpsertTrackingRecordInput,
+        attachment: &AttachTrackingRecordToSheetRowInput,
+        expected_lookup_tracking_id: &str,
+        expected_row_generation: &str,
+    ) -> WorkspaceStoreResult<bool> {
+        let status_json = serde_json::to_string(&record.status_json)?;
+        let detail_json = serde_json::to_string(&record.detail_json)?;
+        let history_json = serde_json::to_string(&record.history_json)?;
+        let now = now_utc_text();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let matches = transaction.query_row(
+            r#"
+            SELECT EXISTS(
+              SELECT 1
+              FROM sheet_rows
+              WHERE id = ?1
+                AND lookup_tracking_id = ?2
+                AND row_generation = ?3
+            )
+            "#,
+            params![
+                attachment.row_id,
+                expected_lookup_tracking_id,
+                expected_row_generation
+            ],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !matches {
+            return Ok(false);
+        }
+
+        transaction.execute(
+            r#"
+            INSERT INTO tracking_records (
+              id,
+              display_tracking_id,
+              lookup_tracking_id,
+              normalized_status,
+              status_json,
+              detail_json,
+              history_json,
+              raw_blob_id,
+              fetched_at,
+              source_url
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(id) DO UPDATE SET
+              display_tracking_id = excluded.display_tracking_id,
+              lookup_tracking_id = excluded.lookup_tracking_id,
+              normalized_status = excluded.normalized_status,
+              status_json = excluded.status_json,
+              detail_json = excluded.detail_json,
+              history_json = excluded.history_json,
+              raw_blob_id = excluded.raw_blob_id,
+              fetched_at = excluded.fetched_at,
+              source_url = excluded.source_url
+            "#,
+            params![
+                record.record_id,
+                record.display_tracking_id,
+                record.lookup_tracking_id,
+                record.normalized_status,
+                status_json,
+                detail_json,
+                history_json,
+                record.raw_blob_id,
+                now,
+                record.source_url
+            ],
+        )?;
+        let changed = transaction.execute(
+            r#"
+            UPDATE sheet_rows
+            SET tracking_record_id = ?2,
+                row_status = ?3,
+                error_message = ?4,
+                updated_at = ?5
+            WHERE id = ?1
+              AND lookup_tracking_id = ?6
+              AND row_generation = ?7
+            "#,
+            params![
+                attachment.row_id,
+                attachment.tracking_record_id,
+                sheet_row_status_to_db(attachment.row_status),
+                attachment.error_message,
+                now,
+                expected_lookup_tracking_id,
+                expected_row_generation
+            ],
+        )?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        transaction.execute(
+            r#"
+            DELETE FROM analytics_cache
+            WHERE sheet_id IN (
+              SELECT sheet_id
+              FROM sheet_rows
+              WHERE tracking_record_id = ?1 OR id = ?2
+            )
+            "#,
+            params![record.record_id, attachment.row_id],
+        )?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
     pub fn attach_tracking_record_to_sheet_row(
         &mut self,
         input: &AttachTrackingRecordToSheetRowInput,
@@ -719,6 +822,7 @@ impl SqliteWorkspaceStore {
         &mut self,
         input: &AttachTrackingRecordToSheetRowInput,
         expected_lookup_tracking_id: &str,
+        expected_row_generation: &str,
     ) -> WorkspaceStoreResult<bool> {
         let now = now_utc_text();
         let changed = self.connection.execute(
@@ -730,6 +834,7 @@ impl SqliteWorkspaceStore {
                 updated_at = ?5
             WHERE id = ?1
               AND lookup_tracking_id = ?6
+              AND row_generation = ?7
             "#,
             params![
                 input.row_id,
@@ -737,7 +842,8 @@ impl SqliteWorkspaceStore {
                 sheet_row_status_to_db(input.row_status),
                 input.error_message,
                 now,
-                expected_lookup_tracking_id
+                expected_lookup_tracking_id,
+                expected_row_generation
             ],
         )?;
 
@@ -778,6 +884,7 @@ impl SqliteWorkspaceStore {
         &mut self,
         input: &UpdateSheetRowStatusInput,
         expected_lookup_tracking_id: &str,
+        expected_row_generation: &str,
     ) -> WorkspaceStoreResult<bool> {
         let now = now_utc_text();
         let changed = self.connection.execute(
@@ -788,13 +895,15 @@ impl SqliteWorkspaceStore {
                 updated_at = ?4
             WHERE id = ?1
               AND lookup_tracking_id = ?5
+              AND row_generation = ?6
             "#,
             params![
                 input.row_id,
                 sheet_row_status_to_db(input.row_status),
                 input.error_message,
                 now,
-                expected_lookup_tracking_id
+                expected_lookup_tracking_id,
+                expected_row_generation
             ],
         )?;
 
@@ -876,11 +985,16 @@ impl SqliteWorkspaceStore {
     }
 
     pub fn clear_sheet_rows(&mut self, sheet_id: &str) -> WorkspaceStoreResult<()> {
-        self.connection.execute(
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
             "DELETE FROM sheet_rows WHERE sheet_id = ?1",
             params![sheet_id],
         )?;
-        self.invalidate_analytics_cache_for_sheet(sheet_id)?;
+        transaction.execute(
+            "DELETE FROM analytics_cache WHERE sheet_id = ?1",
+            params![sheet_id],
+        )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -928,8 +1042,11 @@ impl SqliteWorkspaceStore {
             )?;
         }
 
+        transaction.execute(
+            "DELETE FROM analytics_cache WHERE sheet_id = ?1",
+            params![sheet_id],
+        )?;
         transaction.commit()?;
-        self.invalidate_analytics_cache_for_sheet(sheet_id)?;
         Ok(())
     }
 
@@ -1005,13 +1122,14 @@ impl SqliteWorkspaceStore {
                   position,
                   display_tracking_id,
                   lookup_tracking_id,
+                  row_generation,
                   tracking_record_id,
                   row_status,
                   error_message,
                   created_at,
                   updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
                 "#,
                 params![
                     target_row_id,
@@ -1019,6 +1137,7 @@ impl SqliteWorkspaceStore {
                     next_position,
                     display_tracking_id,
                     lookup_tracking_id,
+                    next_row_generation(),
                     tracking_record_id,
                     row_status,
                     error_message,
@@ -1039,11 +1158,17 @@ impl SqliteWorkspaceStore {
             compact_sheet_row_positions(&transaction, &input.source_sheet_id, &now)?;
         }
 
-        transaction.commit()?;
-        self.invalidate_analytics_cache_for_sheet(&input.target_sheet_id)?;
+        transaction.execute(
+            "DELETE FROM analytics_cache WHERE sheet_id = ?1",
+            params![input.target_sheet_id],
+        )?;
         if input.delete_source_rows {
-            self.invalidate_analytics_cache_for_sheet(&input.source_sheet_id)?;
+            transaction.execute(
+                "DELETE FROM analytics_cache WHERE sheet_id = ?1",
+                params![input.source_sheet_id],
+            )?;
         }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -1131,6 +1256,7 @@ impl SqliteWorkspaceStore {
             r#"
             SELECT
               r.id,
+              r.row_generation,
               r.position,
               r.display_tracking_id,
               r.lookup_tracking_id,
@@ -1150,18 +1276,19 @@ impl SqliteWorkspaceStore {
         ))?;
         let rows = statement
             .query_map(params_from_iter(row_bindings.iter()), |row| {
-                let row_status = sheet_row_status_from_db(row.get::<_, String>(4)?.as_str())?;
-                let status_json = parse_optional_json(row.get::<_, Option<String>>(6)?)?;
-                let detail_json = parse_optional_json(row.get::<_, Option<String>>(7)?)?;
-                let history_json = parse_optional_json(row.get::<_, Option<String>>(8)?)?;
+                let row_status = sheet_row_status_from_db(row.get::<_, String>(5)?.as_str())?;
+                let status_json = parse_optional_json(row.get::<_, Option<String>>(7)?)?;
+                let detail_json = parse_optional_json(row.get::<_, Option<String>>(8)?)?;
+                let history_json = parse_optional_json(row.get::<_, Option<String>>(9)?)?;
 
                 Ok(SheetRowProjection {
                     row_id: row.get(0)?,
-                    position: row.get::<_, i64>(1)? as u32,
-                    display_tracking_id: row.get(2)?,
-                    lookup_tracking_id: row.get(3)?,
+                    row_generation: row.get(1)?,
+                    position: row.get::<_, i64>(2)? as u32,
+                    display_tracking_id: row.get(3)?,
+                    lookup_tracking_id: row.get(4)?,
                     row_status,
-                    error_message: row.get(5)?,
+                    error_message: row.get(6)?,
                     status_json,
                     detail_json,
                     history_json,
@@ -1262,6 +1389,7 @@ impl SqliteWorkspaceStore {
             r#"
             SELECT
               r.id,
+              r.row_generation,
               r.position,
               r.display_tracking_id,
               r.lookup_tracking_id,
@@ -1278,18 +1406,19 @@ impl SqliteWorkspaceStore {
 
         let row = statement
             .query_row(params![row_id], |row| {
-                let row_status = sheet_row_status_from_db(row.get::<_, String>(4)?.as_str())?;
-                let status_json = parse_optional_json(row.get::<_, Option<String>>(6)?)?;
-                let detail_json = parse_optional_json(row.get::<_, Option<String>>(7)?)?;
-                let history_json = parse_optional_json(row.get::<_, Option<String>>(8)?)?;
+                let row_status = sheet_row_status_from_db(row.get::<_, String>(5)?.as_str())?;
+                let status_json = parse_optional_json(row.get::<_, Option<String>>(7)?)?;
+                let detail_json = parse_optional_json(row.get::<_, Option<String>>(8)?)?;
+                let history_json = parse_optional_json(row.get::<_, Option<String>>(9)?)?;
 
                 Ok(SheetRowProjection {
                     row_id: row.get(0)?,
-                    position: row.get::<_, i64>(1)? as u32,
-                    display_tracking_id: row.get(2)?,
-                    lookup_tracking_id: row.get(3)?,
+                    row_generation: row.get(1)?,
+                    position: row.get::<_, i64>(2)? as u32,
+                    display_tracking_id: row.get(3)?,
+                    lookup_tracking_id: row.get(4)?,
                     row_status,
-                    error_message: row.get(5)?,
+                    error_message: row.get(6)?,
                     status_json,
                     detail_json,
                     history_json,
@@ -1377,6 +1506,108 @@ impl SqliteWorkspaceStore {
                 now
             ],
         )?;
+
+        self.get_import_job_summary(&input.job_id)?
+            .ok_or_else(|| WorkspaceStoreError::MissingImportJob(input.job_id.clone()))
+    }
+
+    pub fn create_import_job_with_items(
+        &mut self,
+        input: &CreateImportJobInput,
+        items: &[CreateImportJobItemInput],
+    ) -> WorkspaceStoreResult<ImportJobSummary> {
+        if items.iter().any(|item| item.job_id != input.job_id) {
+            return Err(WorkspaceStoreError::InvalidValue {
+                field: "import_job_item_job_id",
+                value: input.job_id.clone(),
+            });
+        }
+
+        let now = now_utc_text();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if input.mode == ImportMode::Replace {
+            transaction.execute(
+                "DELETE FROM sheet_rows WHERE sheet_id = ?1",
+                params![input.sheet_id],
+            )?;
+            transaction.execute(
+                "DELETE FROM analytics_cache WHERE sheet_id = ?1",
+                params![input.sheet_id],
+            )?;
+        }
+        transaction.execute(
+            r#"
+            INSERT INTO import_jobs (
+              id,
+              sheet_id,
+              kind,
+              mode,
+              status,
+              total_count,
+              pending_count,
+              created_at,
+              updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, ?7)
+            ON CONFLICT(id) DO UPDATE SET
+              sheet_id = excluded.sheet_id,
+              kind = excluded.kind,
+              mode = excluded.mode,
+              status = excluded.status,
+              total_count = excluded.total_count,
+              success_count = 0,
+              failed_count = 0,
+              pending_count = excluded.pending_count,
+              completed_at = NULL,
+              cancelled_at = NULL,
+              updated_at = excluded.updated_at
+            "#,
+            params![
+                input.job_id,
+                input.sheet_id,
+                import_kind_to_db(input.kind),
+                import_mode_to_db(input.mode),
+                import_job_status_to_db(ImportJobStatus::Pending),
+                items.len() as u32,
+                now
+            ],
+        )?;
+        transaction.execute(
+            "DELETE FROM import_job_items WHERE job_id = ?1",
+            params![input.job_id],
+        )?;
+        for item in items {
+            transaction.execute(
+                r#"
+                INSERT INTO import_job_items (
+                  id,
+                  job_id,
+                  source_item_id,
+                  source_item_kind,
+                  position,
+                  status,
+                  tracking_ids_json,
+                  sheet_row_ids_json,
+                  created_at,
+                  updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, '[]', '[]', ?7, ?7)
+                "#,
+                params![
+                    item.item_id,
+                    item.job_id,
+                    item.source_item_id,
+                    import_source_item_kind_to_db(item.source_item_kind),
+                    item.position,
+                    import_job_item_status_to_db(ImportJobItemStatus::Pending),
+                    now
+                ],
+            )?;
+        }
+        recompute_import_job_counts_on(&transaction, &input.job_id)?;
+        transaction.commit()?;
 
         self.get_import_job_summary(&input.job_id)?
             .ok_or_else(|| WorkspaceStoreError::MissingImportJob(input.job_id.clone()))
@@ -1503,19 +1734,23 @@ impl SqliteWorkspaceStore {
         &mut self,
         job_id: &str,
     ) -> WorkspaceStoreResult<Option<ImportJobItem>> {
-        let Some(item_id) = self
-            .connection
+        let transaction = self.connection.transaction()?;
+        let Some(item_id) = transaction
             .query_row(
                 r#"
-                SELECT id
-                FROM import_job_items
-                WHERE job_id = ?1 AND status = ?2
-                ORDER BY position ASC, id ASC
+                SELECT i.id
+                FROM import_job_items i
+                JOIN import_jobs j ON j.id = i.job_id
+                WHERE i.job_id = ?1
+                  AND i.status = ?2
+                  AND j.status <> ?3
+                ORDER BY i.position ASC, i.id ASC
                 LIMIT 1
                 "#,
                 params![
                     job_id,
-                    import_job_item_status_to_db(ImportJobItemStatus::Pending)
+                    import_job_item_status_to_db(ImportJobItemStatus::Pending),
+                    import_job_status_to_db(ImportJobStatus::Cancelled)
                 ],
                 |row| row.get::<_, String>(0),
             )
@@ -1525,21 +1760,34 @@ impl SqliteWorkspaceStore {
         };
 
         let now = now_utc_text();
-        self.connection.execute(
+        let changed = transaction.execute(
             r#"
             UPDATE import_job_items
             SET status = ?2,
                 error_message = NULL,
                 updated_at = ?3
             WHERE id = ?1
+              AND status = ?4
+              AND EXISTS (
+                SELECT 1
+                FROM import_jobs
+                WHERE id = import_job_items.job_id
+                  AND status <> ?5
+              )
             "#,
             params![
                 item_id,
                 import_job_item_status_to_db(ImportJobItemStatus::Running),
-                now
+                now,
+                import_job_item_status_to_db(ImportJobItemStatus::Pending),
+                import_job_status_to_db(ImportJobStatus::Cancelled)
             ],
         )?;
-        self.recompute_import_job_counts(job_id)?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        recompute_import_job_counts_on(&transaction, job_id)?;
+        transaction.commit()?;
 
         self.get_import_job_item(&item_id)
     }
@@ -1548,11 +1796,45 @@ impl SqliteWorkspaceStore {
         &mut self,
         input: &StartImportAttemptInput,
     ) -> WorkspaceStoreResult<ImportAttemptRecord> {
-        let job_id = self.job_id_for_item(&input.item_id)?;
-        let attempt_number = self.next_attempt_number(&input.item_id)?;
+        let transaction = self.connection.transaction()?;
+        let (job_id, item_status, job_status) = transaction
+            .query_row(
+                r#"
+                SELECT i.job_id, i.status, j.status
+                FROM import_job_items i
+                JOIN import_jobs j ON j.id = i.job_id
+                WHERE i.id = ?1
+                "#,
+                params![input.item_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| WorkspaceStoreError::InvalidValue {
+                field: "import_job_item",
+                value: input.item_id.clone(),
+            })?;
+        if item_status != import_job_item_status_to_db(ImportJobItemStatus::Running)
+            || job_status == import_job_status_to_db(ImportJobStatus::Cancelled)
+        {
+            return Err(WorkspaceStoreError::InvalidValue {
+                field: "import_attempt_state",
+                value: input.item_id.clone(),
+            });
+        }
+        let attempt_number = transaction.query_row(
+            "SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM import_attempts WHERE job_item_id = ?1",
+            params![input.item_id],
+            |row| row.get::<_, i64>(0),
+        )? as u32;
         let now = now_utc_text();
 
-        self.connection.execute(
+        transaction.execute(
             r#"
             INSERT INTO import_attempts (
               id,
@@ -1573,7 +1855,7 @@ impl SqliteWorkspaceStore {
                 now
             ],
         )?;
-        self.connection.execute(
+        let changed = transaction.execute(
             r#"
             UPDATE import_job_items
             SET status = ?2,
@@ -1581,14 +1863,23 @@ impl SqliteWorkspaceStore {
                 attempt_count = attempt_count + 1,
                 updated_at = ?3
             WHERE id = ?1
+              AND status = ?4
             "#,
             params![
                 input.item_id,
                 import_job_item_status_to_db(ImportJobItemStatus::Running),
-                now
+                now,
+                import_job_item_status_to_db(ImportJobItemStatus::Running)
             ],
         )?;
-        self.recompute_import_job_counts(&job_id)?;
+        if changed == 0 {
+            return Err(WorkspaceStoreError::InvalidValue {
+                field: "import_attempt_state",
+                value: input.item_id.clone(),
+            });
+        }
+        recompute_import_job_counts_on(&transaction, &job_id)?;
+        transaction.commit()?;
 
         self.get_import_attempt(&input.attempt_id)?.ok_or_else(|| {
             WorkspaceStoreError::InvalidValue {
@@ -1602,62 +1893,123 @@ impl SqliteWorkspaceStore {
         &mut self,
         input: &FinishImportAttemptInput,
     ) -> WorkspaceStoreResult<()> {
-        let item_id = self
+        let transaction = self
             .connection
-            .query_row(
-                "SELECT job_item_id FROM import_attempts WHERE id = ?1",
-                params![input.attempt_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .ok_or_else(|| WorkspaceStoreError::InvalidValue {
-                field: "import_attempt",
-                value: input.attempt_id.clone(),
-            })?;
-        let job_id = self.job_id_for_item(&item_id)?;
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if !finish_running_import_attempt_on(&transaction, input)? {
+            return Ok(());
+        }
+        transaction.commit()?;
+
+        Ok(())
+    }
+
+    pub fn finish_manifest_import_attempt_with_items(
+        &mut self,
+        input: &FinishImportAttemptInput,
+        items: &[CreateImportJobItemInput],
+    ) -> WorkspaceStoreResult<bool> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some((_, job_id)) = running_import_attempt_context(&transaction, &input.attempt_id)?
+        else {
+            return Ok(false);
+        };
+        if items.iter().any(|item| item.job_id != job_id) {
+            return Err(WorkspaceStoreError::InvalidValue {
+                field: "import_job_item_job_id",
+                value: job_id,
+            });
+        }
         let now = now_utc_text();
-        let finished_at = (input.status != ImportAttemptStatus::Running).then(|| now.clone());
+        for item in items {
+            transaction.execute(
+                r#"
+                INSERT INTO import_job_items (
+                  id,
+                  job_id,
+                  source_item_id,
+                  source_item_kind,
+                  position,
+                  status,
+                  tracking_ids_json,
+                  sheet_row_ids_json,
+                  created_at,
+                  updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, '[]', '[]', ?7, ?7)
+                ON CONFLICT(job_id, source_item_id, source_item_kind) DO NOTHING
+                "#,
+                params![
+                    item.item_id,
+                    item.job_id,
+                    item.source_item_id,
+                    import_source_item_kind_to_db(item.source_item_kind),
+                    item.position,
+                    import_job_item_status_to_db(ImportJobItemStatus::Pending),
+                    now
+                ],
+            )?;
+        }
+        if !finish_running_import_attempt_on(&transaction, input)? {
+            return Ok(false);
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
 
-        self.connection.execute(
-            r#"
-            UPDATE import_attempts
-            SET status = ?2,
-                error_message = ?3,
-                raw_blob_id = COALESCE(?4, raw_blob_id),
-                finished_at = ?5
-            WHERE id = ?1
-            "#,
-            params![
-                input.attempt_id,
-                import_attempt_status_to_db(input.status),
-                input.error_message,
-                input.raw_blob_id,
-                finished_at
-            ],
-        )?;
+    pub fn finish_bag_import_attempt_with_sheet_rows(
+        &mut self,
+        input: &FinishImportAttemptInput,
+        item_id: &str,
+        rows: &[UpsertSheetRowInput],
+        sheet_row_ids: &[String],
+    ) -> WorkspaceStoreResult<bool> {
+        let sheet_row_ids_json = serde_json::to_string(sheet_row_ids)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some((running_item_id, _)) =
+            running_import_attempt_context(&transaction, &input.attempt_id)?
+        else {
+            return Ok(false);
+        };
+        if running_item_id != item_id {
+            return Err(WorkspaceStoreError::InvalidValue {
+                field: "import_job_item",
+                value: item_id.to_string(),
+            });
+        }
 
-        let item_status = item_status_for_attempt_status(input.status);
-        let tracking_ids_json = serde_json::to_string(&input.tracking_ids)?;
-        self.connection.execute(
+        let now = now_utc_text();
+        for row in rows {
+            upsert_sheet_row_on(&transaction, row, &now)?;
+            transaction.execute(
+                "DELETE FROM analytics_cache WHERE sheet_id = ?1",
+                params![row.sheet_id],
+            )?;
+        }
+        transaction.execute(
             r#"
             UPDATE import_job_items
-            SET status = ?2,
-                tracking_ids_json = ?3,
-                error_message = ?4,
-                updated_at = ?5
+            SET sheet_row_ids_json = ?2,
+                updated_at = ?3
             WHERE id = ?1
+              AND status = ?4
             "#,
             params![
                 item_id,
-                import_job_item_status_to_db(item_status),
-                tracking_ids_json,
-                input.error_message,
-                now
+                sheet_row_ids_json,
+                now,
+                import_job_item_status_to_db(ImportJobItemStatus::Running)
             ],
         )?;
-        self.recompute_import_job_counts(&job_id)?;
-
-        Ok(())
+        if !finish_running_import_attempt_on(&transaction, input)? {
+            return Ok(false);
+        }
+        transaction.commit()?;
+        Ok(true)
     }
 
     pub fn cancel_import_job(&mut self, job_id: &str) -> WorkspaceStoreResult<()> {
@@ -1666,7 +2018,8 @@ impl SqliteWorkspaceStore {
         }
 
         let now = now_utc_text();
-        self.connection.execute(
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
             r#"
             UPDATE import_attempts
             SET status = ?2,
@@ -1682,7 +2035,7 @@ impl SqliteWorkspaceStore {
                 import_attempt_status_to_db(ImportAttemptStatus::Running)
             ],
         )?;
-        self.connection.execute(
+        transaction.execute(
             r#"
             UPDATE import_job_items
             SET status = ?2,
@@ -1700,10 +2053,10 @@ impl SqliteWorkspaceStore {
             ],
         )?;
         let success_count =
-            self.count_import_items_by_status(job_id, ImportJobItemStatus::Succeeded)?;
+            count_import_items_by_status_on(&transaction, job_id, ImportJobItemStatus::Succeeded)?;
         let failed_count =
-            self.count_import_items_by_status(job_id, ImportJobItemStatus::Failed)?;
-        self.connection.execute(
+            count_import_items_by_status_on(&transaction, job_id, ImportJobItemStatus::Failed)?;
+        transaction.execute(
             r#"
             UPDATE import_jobs
             SET status = ?2,
@@ -1722,6 +2075,7 @@ impl SqliteWorkspaceStore {
                 now
             ],
         )?;
+        transaction.commit()?;
 
         Ok(())
     }
@@ -1993,91 +2347,270 @@ impl SqliteWorkspaceStore {
             .map_err(WorkspaceStoreError::from)
     }
 
-    fn job_id_for_item(&self, item_id: &str) -> WorkspaceStoreResult<String> {
-        self.connection
-            .query_row(
-                "SELECT job_id FROM import_job_items WHERE id = ?1",
-                params![item_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .ok_or_else(|| WorkspaceStoreError::InvalidValue {
-                field: "import_job_item",
-                value: item_id.to_string(),
-            })
-    }
-
-    fn next_attempt_number(&self, item_id: &str) -> WorkspaceStoreResult<u32> {
-        Ok(self.connection.query_row(
-            "SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM import_attempts WHERE job_item_id = ?1",
-            params![item_id],
-            |row| row.get::<_, i64>(0),
-        )? as u32)
-    }
-
     fn recompute_import_job_counts(&mut self, job_id: &str) -> WorkspaceStoreResult<()> {
-        let success_count =
-            self.count_import_items_by_status(job_id, ImportJobItemStatus::Succeeded)?;
-        let failed_count =
-            self.count_import_items_by_status(job_id, ImportJobItemStatus::Failed)?;
-        let pending_count = self
-            .count_import_items_by_status(job_id, ImportJobItemStatus::Pending)?
-            + self.count_import_items_by_status(job_id, ImportJobItemStatus::Running)?;
-        let total_count = self.connection.query_row(
-            "SELECT COUNT(*) FROM import_job_items WHERE job_id = ?1",
+        recompute_import_job_counts_on(&self.connection, job_id)
+    }
+}
+
+fn recompute_import_job_counts_on(
+    connection: &Connection,
+    job_id: &str,
+) -> WorkspaceStoreResult<()> {
+    let success_count =
+        count_import_items_by_status_on(connection, job_id, ImportJobItemStatus::Succeeded)?;
+    let failed_count =
+        count_import_items_by_status_on(connection, job_id, ImportJobItemStatus::Failed)?;
+    let pending_count =
+        count_import_items_by_status_on(connection, job_id, ImportJobItemStatus::Pending)?
+            + count_import_items_by_status_on(connection, job_id, ImportJobItemStatus::Running)?;
+    let total_count = connection.query_row(
+        "SELECT COUNT(*) FROM import_job_items WHERE job_id = ?1",
+        params![job_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let current_status = connection
+        .query_row(
+            "SELECT status FROM import_jobs WHERE id = ?1",
             params![job_id],
-            |row| row.get::<_, i64>(0),
-        )?;
-        let status = if pending_count > 0 {
-            ImportJobStatus::Running
-        } else if failed_count > 0 {
-            ImportJobStatus::Failed
-        } else if total_count == success_count as i64 {
-            ImportJobStatus::Completed
-        } else {
-            ImportJobStatus::Pending
-        };
-        let now = now_utc_text();
-        let completed_at = (status == ImportJobStatus::Completed).then(|| now.clone());
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or_else(|| WorkspaceStoreError::MissingImportJob(job_id.to_string()))?;
+    let status = if current_status == import_job_status_to_db(ImportJobStatus::Cancelled) {
+        ImportJobStatus::Cancelled
+    } else if pending_count > 0 {
+        ImportJobStatus::Running
+    } else if failed_count > 0 {
+        ImportJobStatus::Failed
+    } else if total_count == success_count as i64 {
+        ImportJobStatus::Completed
+    } else {
+        ImportJobStatus::Pending
+    };
+    let now = now_utc_text();
+    let completed_at = (status == ImportJobStatus::Completed).then(|| now.clone());
 
-        self.connection.execute(
+    connection.execute(
+        r#"
+        UPDATE import_jobs
+        SET success_count = ?2,
+            failed_count = ?3,
+            pending_count = ?4,
+            total_count = ?5,
+            status = ?6,
+            completed_at = CASE
+              WHEN ?6 = 'cancelled' THEN completed_at
+              ELSE ?7
+            END,
+            updated_at = ?8
+        WHERE id = ?1
+        "#,
+        params![
+            job_id,
+            success_count,
+            failed_count,
+            pending_count,
+            total_count,
+            import_job_status_to_db(status),
+            completed_at,
+            now
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn count_import_items_by_status_on(
+    connection: &Connection,
+    job_id: &str,
+    status: ImportJobItemStatus,
+) -> WorkspaceStoreResult<u32> {
+    Ok(connection.query_row(
+        "SELECT COUNT(*) FROM import_job_items WHERE job_id = ?1 AND status = ?2",
+        params![job_id, import_job_item_status_to_db(status)],
+        |row| row.get::<_, i64>(0),
+    )? as u32)
+}
+
+fn upsert_sheet_row_on(
+    connection: &Connection,
+    input: &UpsertSheetRowInput,
+    now: &str,
+) -> WorkspaceStoreResult<()> {
+    let existing_sheet_id = connection
+        .query_row(
+            "SELECT sheet_id FROM sheet_rows WHERE id = ?1",
+            params![input.row_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if let Some(existing_sheet_id) = existing_sheet_id {
+        if existing_sheet_id != input.sheet_id {
+            return Err(WorkspaceStoreError::RowOwnershipConflict {
+                row_id: input.row_id.clone(),
+                existing_sheet_id,
+                requested_sheet_id: input.sheet_id.clone(),
+            });
+        }
+    }
+    connection.execute(
+        r#"
+        DELETE FROM sheet_rows
+        WHERE sheet_id = ?1
+          AND position = ?2
+          AND id <> ?3
+        "#,
+        params![input.sheet_id, input.position, input.row_id],
+    )?;
+    connection.execute(
+        r#"
+        INSERT INTO sheet_rows (
+          id,
+          sheet_id,
+          position,
+          display_tracking_id,
+          lookup_tracking_id,
+          row_generation,
+          row_status,
+          error_message,
+          created_at,
+          updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+        ON CONFLICT(id) DO UPDATE SET
+          position = excluded.position,
+          display_tracking_id = excluded.display_tracking_id,
+          tracking_record_id = CASE
+            WHEN sheet_rows.lookup_tracking_id <> excluded.lookup_tracking_id THEN NULL
+            ELSE sheet_rows.tracking_record_id
+          END,
+          lookup_tracking_id = excluded.lookup_tracking_id,
+          row_generation = CASE
+            WHEN sheet_rows.lookup_tracking_id <> excluded.lookup_tracking_id
+              THEN excluded.row_generation
+            ELSE sheet_rows.row_generation
+          END,
+          row_status = excluded.row_status,
+          error_message = excluded.error_message,
+          updated_at = excluded.updated_at
+        "#,
+        params![
+            input.row_id,
+            input.sheet_id,
+            input.position,
+            input.display_tracking_id,
+            input.lookup_tracking_id,
+            next_row_generation(),
+            sheet_row_status_to_db(input.row_status),
+            input.error_message,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+fn running_import_attempt_context(
+    connection: &Connection,
+    attempt_id: &str,
+) -> WorkspaceStoreResult<Option<(String, String)>> {
+    let context = connection
+        .query_row(
             r#"
-            UPDATE import_jobs
-            SET success_count = ?2,
-                failed_count = ?3,
-                pending_count = ?4,
-                total_count = ?5,
-                status = ?6,
-                completed_at = ?7,
-                updated_at = ?8
-            WHERE id = ?1
+            SELECT
+              a.job_item_id,
+              i.job_id,
+              a.status,
+              i.status,
+              j.status
+            FROM import_attempts a
+            JOIN import_job_items i ON i.id = a.job_item_id
+            JOIN import_jobs j ON j.id = i.job_id
+            WHERE a.id = ?1
             "#,
-            params![
-                job_id,
-                success_count,
-                failed_count,
-                pending_count,
-                total_count,
-                import_job_status_to_db(status),
-                completed_at,
-                now
-            ],
-        )?;
-
-        Ok(())
+            params![attempt_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((item_id, job_id, attempt_status, item_status, job_status)) = context else {
+        return Err(WorkspaceStoreError::InvalidValue {
+            field: "import_attempt",
+            value: attempt_id.to_string(),
+        });
+    };
+    if attempt_status != import_attempt_status_to_db(ImportAttemptStatus::Running)
+        || item_status != import_job_item_status_to_db(ImportJobItemStatus::Running)
+        || job_status == import_job_status_to_db(ImportJobStatus::Cancelled)
+    {
+        return Ok(None);
     }
+    Ok(Some((item_id, job_id)))
+}
 
-    fn count_import_items_by_status(
-        &self,
-        job_id: &str,
-        status: ImportJobItemStatus,
-    ) -> WorkspaceStoreResult<u32> {
-        Ok(self.connection.query_row(
-            "SELECT COUNT(*) FROM import_job_items WHERE job_id = ?1 AND status = ?2",
-            params![job_id, import_job_item_status_to_db(status)],
-            |row| row.get::<_, i64>(0),
-        )? as u32)
+fn finish_running_import_attempt_on(
+    connection: &Connection,
+    input: &FinishImportAttemptInput,
+) -> WorkspaceStoreResult<bool> {
+    let Some((item_id, job_id)) = running_import_attempt_context(connection, &input.attempt_id)?
+    else {
+        return Ok(false);
+    };
+    let now = now_utc_text();
+    let finished_at = (input.status != ImportAttemptStatus::Running).then(|| now.clone());
+    let attempt_changed = connection.execute(
+        r#"
+        UPDATE import_attempts
+        SET status = ?2,
+            error_message = ?3,
+            raw_blob_id = COALESCE(?4, raw_blob_id),
+            finished_at = ?5
+        WHERE id = ?1
+          AND status = ?6
+        "#,
+        params![
+            input.attempt_id,
+            import_attempt_status_to_db(input.status),
+            input.error_message,
+            input.raw_blob_id,
+            finished_at,
+            import_attempt_status_to_db(ImportAttemptStatus::Running)
+        ],
+    )?;
+    if attempt_changed == 0 {
+        return Ok(false);
     }
+    let tracking_ids_json = serde_json::to_string(&input.tracking_ids)?;
+    let item_changed = connection.execute(
+        r#"
+        UPDATE import_job_items
+        SET status = ?2,
+            tracking_ids_json = ?3,
+            error_message = ?4,
+            updated_at = ?5
+        WHERE id = ?1
+          AND status = ?6
+        "#,
+        params![
+            item_id,
+            import_job_item_status_to_db(item_status_for_attempt_status(input.status)),
+            tracking_ids_json,
+            input.error_message,
+            now,
+            import_job_item_status_to_db(ImportJobItemStatus::Running)
+        ],
+    )?;
+    if item_changed == 0 {
+        return Ok(false);
+    }
+    recompute_import_job_counts_on(connection, &job_id)?;
+    Ok(true)
 }
 
 fn build_sheet_filter_sql(query: &SheetRowsQuery) -> WorkspaceStoreResult<(String, Vec<Value>)> {
@@ -2763,6 +3296,15 @@ fn now_utc_text() -> String {
         .expect("current UTC timestamp formats as RFC3339")
 }
 
+fn next_row_generation() -> String {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{}:{}",
+        OffsetDateTime::now_utc().unix_timestamp_nanos(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2802,6 +3344,75 @@ mod tests {
         assert_eq!(workspace.schema_version, SCHEMA_VERSION);
         assert_eq!(sheet.workspace_id, workspace.workspace_id);
 
+        cleanup_temp_db(&path);
+    }
+
+    #[test]
+    fn existing_schema_backfills_row_generation_without_losing_rows() {
+        let path = temp_db_path("row-generation-migration");
+        {
+            let connection = Connection::open(&path).expect("legacy database opens");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE workspaces (
+                      id TEXT PRIMARY KEY,
+                      name TEXT NOT NULL,
+                      created_at TEXT NOT NULL,
+                      updated_at TEXT NOT NULL,
+                      schema_version INTEGER NOT NULL
+                    );
+                    CREATE TABLE sheets (
+                      id TEXT PRIMARY KEY,
+                      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                      name TEXT NOT NULL,
+                      position INTEGER NOT NULL,
+                      view_mode TEXT NOT NULL DEFAULT 'workspace',
+                      created_at TEXT NOT NULL,
+                      updated_at TEXT NOT NULL
+                    );
+                    CREATE TABLE sheet_rows (
+                      id TEXT PRIMARY KEY,
+                      sheet_id TEXT NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+                      position INTEGER NOT NULL,
+                      display_tracking_id TEXT NOT NULL,
+                      lookup_tracking_id TEXT NOT NULL,
+                      tracking_record_id TEXT,
+                      row_status TEXT NOT NULL,
+                      error_message TEXT,
+                      created_at TEXT NOT NULL,
+                      updated_at TEXT NOT NULL,
+                      UNIQUE(sheet_id, position)
+                    );
+                    INSERT INTO workspaces
+                      (id, name, created_at, updated_at, schema_version)
+                    VALUES
+                      ('workspace-1', 'Workspace', '2026-01-01T00:00:00Z',
+                       '2026-01-01T00:00:00Z', 1);
+                    INSERT INTO sheets
+                      (id, workspace_id, name, position, view_mode, created_at, updated_at)
+                    VALUES
+                      ('sheet-1', 'workspace-1', 'Sheet 1', 0, 'workspace',
+                       '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+                    INSERT INTO sheet_rows
+                      (id, sheet_id, position, display_tracking_id, lookup_tracking_id,
+                       row_status, created_at, updated_at)
+                    VALUES
+                      ('row-1', 'sheet-1', 0, 'P1', 'P1', 'loaded',
+                       '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+                    "#,
+                )
+                .expect("legacy schema is seeded");
+        }
+
+        let store = SqliteWorkspaceStore::open(&path).expect("migration succeeds");
+        let row = store
+            .get_sheet_row("row-1")
+            .expect("legacy row lookup succeeds")
+            .expect("legacy row remains");
+
+        assert_eq!(row.display_tracking_id, "P1");
+        assert_eq!(row.row_generation, "row-1:2026-01-01T00:00:00Z");
         cleanup_temp_db(&path);
     }
 
@@ -3062,6 +3673,79 @@ mod tests {
     }
 
     #[test]
+    fn atomic_replace_rolls_back_all_sheet_rows_when_one_row_fails() {
+        let mut store = prepared_store();
+        store
+            .create_sheet(&CreateSheetInput {
+                sheet_id: "sheet-2".to_string(),
+                workspace_id: "workspace-1".to_string(),
+                name: "Second".to_string(),
+                position: 1,
+            })
+            .expect("second sheet is created");
+        for (row_id, sheet_id, position) in
+            [("old-row", "sheet-1", 0), ("foreign-row", "sheet-2", 0)]
+        {
+            store
+                .upsert_sheet_row(&UpsertSheetRowInput {
+                    row_id: row_id.to_string(),
+                    sheet_id: sheet_id.to_string(),
+                    position,
+                    display_tracking_id: row_id.to_string(),
+                    lookup_tracking_id: row_id.to_string(),
+                    row_status: SheetRowStatus::Empty,
+                    error_message: None,
+                })
+                .expect("seed row is stored");
+        }
+
+        let error = store
+            .upsert_sheet_rows_atomic(
+                "sheet-1",
+                &[
+                    UpsertSheetRowInput {
+                        row_id: "new-row".to_string(),
+                        sheet_id: "sheet-1".to_string(),
+                        position: 0,
+                        display_tracking_id: "PNEW".to_string(),
+                        lookup_tracking_id: "PNEW".to_string(),
+                        row_status: SheetRowStatus::Empty,
+                        error_message: None,
+                    },
+                    UpsertSheetRowInput {
+                        row_id: "foreign-row".to_string(),
+                        sheet_id: "sheet-1".to_string(),
+                        position: 1,
+                        display_tracking_id: "PFOREIGN".to_string(),
+                        lookup_tracking_id: "PFOREIGN".to_string(),
+                        row_status: SheetRowStatus::Empty,
+                        error_message: None,
+                    },
+                ],
+                true,
+            )
+            .expect_err("ownership failure aborts the replace transaction");
+
+        assert!(matches!(
+            error,
+            WorkspaceStoreError::RowOwnershipConflict { row_id, .. }
+                if row_id == "foreign-row"
+        ));
+        assert!(store
+            .get_sheet_row("old-row")
+            .expect("old row lookup succeeds")
+            .is_some());
+        assert!(store
+            .get_sheet_row("new-row")
+            .expect("new row lookup succeeds")
+            .is_none());
+        assert!(store
+            .get_sheet_row("foreign-row")
+            .expect("foreign row lookup succeeds")
+            .is_some());
+    }
+
+    #[test]
     fn conditional_tracking_updates_do_not_touch_reused_row_ids_with_new_lookup() {
         let mut store = prepared_store();
 
@@ -3117,6 +3801,7 @@ mod tests {
                     error_message: None,
                 },
                 "POLD",
+                "stale-generation",
             )
             .expect("conditional attach succeeds");
         let failed = store
@@ -3127,6 +3812,7 @@ mod tests {
                     error_message: Some("old failure".to_string()),
                 },
                 "POLD",
+                "stale-generation",
             )
             .expect("conditional status update succeeds");
         let row = store
@@ -3139,6 +3825,71 @@ mod tests {
         assert_eq!(row.lookup_tracking_id, "PNEW");
         assert_eq!(row.row_status, SheetRowStatus::Empty);
         assert_eq!(row.error_message, None);
+        assert_eq!(row.status_json, None);
+    }
+
+    #[test]
+    fn changing_row_lookup_clears_the_attached_tracking_record() {
+        let mut store = prepared_store();
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "row-1".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 0,
+                display_tracking_id: "POLD".to_string(),
+                lookup_tracking_id: "POLD".to_string(),
+                row_status: SheetRowStatus::Loaded,
+                error_message: None,
+            })
+            .expect("row is stored");
+        store
+            .upsert_tracking_record(&UpsertTrackingRecordInput {
+                record_id: "track-old".to_string(),
+                display_tracking_id: "POLD".to_string(),
+                lookup_tracking_id: "POLD".to_string(),
+                normalized_status: Some("DELIVERED".to_string()),
+                status_json: serde_json::json!({ "status": "DELIVERED" }),
+                detail_json: serde_json::json!({ "shipment_header": { "nomor_kiriman": "POLD" } }),
+                history_json: serde_json::json!({ "history": [] }),
+                raw_blob_id: None,
+                source_url: "https://example.test/old".to_string(),
+            })
+            .expect("tracking record is stored");
+        store
+            .attach_tracking_record_to_sheet_row(&AttachTrackingRecordToSheetRowInput {
+                row_id: "row-1".to_string(),
+                tracking_record_id: "track-old".to_string(),
+                row_status: SheetRowStatus::Loaded,
+                error_message: None,
+            })
+            .expect("tracking record is attached");
+
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "row-1".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 0,
+                display_tracking_id: "PNEW".to_string(),
+                lookup_tracking_id: "PNEW".to_string(),
+                row_status: SheetRowStatus::Empty,
+                error_message: None,
+            })
+            .expect("lookup is replaced");
+
+        let tracking_record_id = store
+            .connection
+            .query_row(
+                "SELECT tracking_record_id FROM sheet_rows WHERE id = 'row-1'",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .expect("tracking attachment is queried");
+        let row = store
+            .get_sheet_row("row-1")
+            .expect("row lookup succeeds")
+            .expect("row exists");
+        assert_eq!(tracking_record_id, None);
+        assert_eq!(row.lookup_tracking_id, "PNEW");
         assert_eq!(row.status_json, None);
     }
 
@@ -3261,6 +4012,159 @@ mod tests {
 
         assert_eq!(analytics_cache_count(&store, "sheet-1"), 0);
         assert_eq!(analytics_cache_count(&store, "sheet-2"), 0);
+    }
+
+    #[test]
+    fn row_deletion_rolls_back_when_cache_invalidation_fails() {
+        let mut store = prepared_store();
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "row-1".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 0,
+                display_tracking_id: "P1".to_string(),
+                lookup_tracking_id: "P1".to_string(),
+                row_status: SheetRowStatus::Loaded,
+                error_message: None,
+            })
+            .expect("row is stored");
+        seed_analytics_cache(&mut store, "sheet-1", "cache-source");
+        store
+            .connection
+            .execute_batch(
+                r#"
+                CREATE TRIGGER reject_cache_invalidation
+                BEFORE DELETE ON analytics_cache
+                BEGIN
+                  SELECT RAISE(ABORT, 'cache invalidation blocked');
+                END;
+                "#,
+            )
+            .expect("failure trigger is installed");
+
+        let result = store.delete_sheet_rows("sheet-1", &["row-1".to_string()]);
+
+        assert!(result.is_err());
+        assert!(store
+            .get_sheet_row("row-1")
+            .expect("row lookup succeeds")
+            .is_some());
+        assert_eq!(analytics_cache_count(&store, "sheet-1"), 1);
+    }
+
+    #[test]
+    fn clear_sheet_rows_rolls_back_when_cache_invalidation_fails() {
+        let mut store = prepared_store();
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "row-1".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 0,
+                display_tracking_id: "P1".to_string(),
+                lookup_tracking_id: "P1".to_string(),
+                row_status: SheetRowStatus::Loaded,
+                error_message: None,
+            })
+            .expect("row is stored");
+        seed_analytics_cache(&mut store, "sheet-1", "cache-source");
+        store
+            .connection
+            .execute_batch(
+                r#"
+                CREATE TRIGGER reject_cache_invalidation
+                BEFORE DELETE ON analytics_cache
+                BEGIN
+                  SELECT RAISE(ABORT, 'cache invalidation blocked');
+                END;
+                "#,
+            )
+            .expect("failure trigger is installed");
+
+        let result = store.clear_sheet_rows("sheet-1");
+
+        assert!(result.is_err());
+        assert!(store
+            .get_sheet_row("row-1")
+            .expect("row lookup succeeds")
+            .is_some());
+        assert_eq!(analytics_cache_count(&store, "sheet-1"), 1);
+    }
+
+    #[test]
+    fn row_transfer_rolls_back_when_cache_invalidation_fails() {
+        let mut store = prepared_store();
+        store
+            .create_sheet(&CreateSheetInput {
+                sheet_id: "sheet-2".to_string(),
+                workspace_id: "workspace-1".to_string(),
+                name: "Sheet 2".to_string(),
+                position: 1,
+            })
+            .expect("target sheet is created");
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "row-1".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 0,
+                display_tracking_id: "P1".to_string(),
+                lookup_tracking_id: "P1".to_string(),
+                row_status: SheetRowStatus::Loaded,
+                error_message: None,
+            })
+            .expect("source row is stored");
+        seed_analytics_cache(&mut store, "sheet-1", "cache-source");
+        seed_analytics_cache(&mut store, "sheet-2", "cache-target");
+        store
+            .connection
+            .execute_batch(
+                r#"
+                CREATE TRIGGER reject_cache_invalidation
+                BEFORE DELETE ON analytics_cache
+                BEGIN
+                  SELECT RAISE(ABORT, 'cache invalidation blocked');
+                END;
+                "#,
+            )
+            .expect("failure trigger is installed");
+
+        let result = store.transfer_sheet_rows(&TransferSheetRowsInput {
+            source_sheet_id: "sheet-1".to_string(),
+            target_sheet_id: "sheet-2".to_string(),
+            row_ids: vec!["row-1".to_string()],
+            delete_source_rows: true,
+        });
+
+        assert!(result.is_err());
+        let source = store
+            .query_sheet_rows(
+                &SheetRowsQuery {
+                    sheet_id: "sheet-1".to_string(),
+                    offset: 0,
+                    limit: 10,
+                    filters: vec![],
+                    value_filters: vec![],
+                    sort: vec![],
+                },
+                250,
+            )
+            .expect("source rows are queried");
+        let target = store
+            .query_sheet_rows(
+                &SheetRowsQuery {
+                    sheet_id: "sheet-2".to_string(),
+                    offset: 0,
+                    limit: 10,
+                    filters: vec![],
+                    value_filters: vec![],
+                    sort: vec![],
+                },
+                250,
+            )
+            .expect("target rows are queried");
+        assert_eq!(source.total_count, 1);
+        assert_eq!(target.total_count, 0);
+        assert_eq!(analytics_cache_count(&store, "sheet-1"), 1);
+        assert_eq!(analytics_cache_count(&store, "sheet-2"), 1);
     }
 
     #[test]
@@ -4122,6 +5026,58 @@ mod tests {
     }
 
     #[test]
+    fn replace_import_creation_rolls_back_sheet_clear_when_item_insert_fails() {
+        let mut store = prepared_store();
+        store
+            .upsert_sheet_row(&UpsertSheetRowInput {
+                row_id: "old-row".to_string(),
+                sheet_id: "sheet-1".to_string(),
+                position: 0,
+                display_tracking_id: "POLD".to_string(),
+                lookup_tracking_id: "POLD".to_string(),
+                row_status: SheetRowStatus::Loaded,
+                error_message: None,
+            })
+            .expect("existing row is stored");
+        let job = CreateImportJobInput {
+            job_id: "job-replace".to_string(),
+            sheet_id: "sheet-1".to_string(),
+            kind: ImportKind::Bag,
+            mode: ImportMode::Replace,
+            total_count: 2,
+        };
+        let duplicate_item_id = [
+            CreateImportJobItemInput {
+                item_id: "duplicate-item".to_string(),
+                job_id: job.job_id.clone(),
+                source_item_id: "BAG-1".to_string(),
+                source_item_kind: ImportSourceItemKind::Bag,
+                position: 0,
+            },
+            CreateImportJobItemInput {
+                item_id: "duplicate-item".to_string(),
+                job_id: job.job_id.clone(),
+                source_item_id: "BAG-2".to_string(),
+                source_item_kind: ImportSourceItemKind::Bag,
+                position: 1,
+            },
+        ];
+
+        store
+            .create_import_job_with_items(&job, &duplicate_item_id)
+            .expect_err("duplicate item primary key aborts the transaction");
+
+        assert!(store
+            .get_sheet_row("old-row")
+            .expect("old row lookup succeeds")
+            .is_some());
+        assert!(store
+            .get_import_job("job-replace")
+            .expect("job lookup succeeds")
+            .is_none());
+    }
+
+    #[test]
     fn import_retry_does_not_requeue_items_at_attempt_limit() {
         let mut store = prepared_store();
         seed_import_job_with_items(
@@ -4308,6 +5264,54 @@ mod tests {
             .expect("attempts load");
         assert_eq!(attempts[0].status, ImportAttemptStatus::Cancelled);
         assert_eq!(attempts[0].error_message.as_deref(), Some("cancelled"));
+
+        store
+            .finish_import_attempt(&FinishImportAttemptInput {
+                attempt_id: "attempt-1".to_string(),
+                status: ImportAttemptStatus::Succeeded,
+                tracking_ids: vec!["PSTALE".to_string()],
+                error_message: None,
+                raw_blob_id: None,
+            })
+            .expect("late completion is ignored");
+        let stale_row = UpsertSheetRowInput {
+            row_id: "sheet-1:row:0".to_string(),
+            sheet_id: "sheet-1".to_string(),
+            position: 0,
+            display_tracking_id: "PSTALE".to_string(),
+            lookup_tracking_id: "PSTALE".to_string(),
+            row_status: SheetRowStatus::Loaded,
+            error_message: None,
+        };
+        let committed = store
+            .finish_bag_import_attempt_with_sheet_rows(
+                &FinishImportAttemptInput {
+                    attempt_id: "attempt-1".to_string(),
+                    status: ImportAttemptStatus::Succeeded,
+                    tracking_ids: vec!["PSTALE".to_string()],
+                    error_message: None,
+                    raw_blob_id: None,
+                },
+                "item-1",
+                &[stale_row],
+                &["sheet-1:row:0".to_string()],
+            )
+            .expect("late bag commit is checked");
+        let detail = store
+            .get_import_job("job-1")
+            .expect("job loads")
+            .expect("job exists");
+        let attempts = store
+            .list_import_attempts_for_item("item-1")
+            .expect("attempts load");
+        assert!(!committed);
+        assert_eq!(detail.summary.status, ImportJobStatus::Cancelled);
+        assert_eq!(detail.items[0].status, ImportJobItemStatus::Cancelled);
+        assert_eq!(attempts[0].status, ImportAttemptStatus::Cancelled);
+        assert!(store
+            .get_sheet_row("sheet-1:row:0")
+            .expect("stale row lookup succeeds")
+            .is_none());
     }
 
     fn prepared_store() -> SqliteWorkspaceStore {

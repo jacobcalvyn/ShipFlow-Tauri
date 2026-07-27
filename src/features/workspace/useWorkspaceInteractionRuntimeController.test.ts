@@ -1394,6 +1394,144 @@ describe("useWorkspaceInteractionRuntimeController", () => {
     );
   });
 
+  it("keeps existing sheet data when an atomic replace commit fails", async () => {
+    const existingRow = {
+      ...createDefaultSheetState().rows[0],
+      key: "existing-row",
+      trackingInput: "EXISTING-ID",
+    };
+    const sheetState: SheetState = {
+      ...createDefaultSheetState(),
+      importSourceModalKind: "bag",
+      importSourceLookupStates: {
+        ...createDefaultSheetState().importSourceLookupStates,
+        bag: {
+          loading: false,
+          rawResponse: "",
+          error: "",
+          trackingIds: ["REPLACEMENT-ID"],
+          jobId: null,
+          requestKey: "bag:preview:replace",
+          sourceItemStates: [],
+          manifestBagStates: [],
+        },
+      },
+      rows: [existingRow, ...createDefaultSheetState().rows.slice(1)],
+    };
+    const workspaceRef: { current: WorkspaceState } = {
+      current: {
+        version: 1,
+        activeSheetId: "sheet-1",
+        sheetOrder: ["sheet-1"],
+        sheetMetaById: {
+          "sheet-1": {
+            name: "Sheet 1",
+            color: "blue",
+            icon: "sheet",
+          },
+        },
+        sheetsById: {
+          "sheet-1": sheetState,
+        },
+      },
+    };
+    const updateSheet = vi.fn(
+      (sheetId: string, updater: (sheet: SheetState) => SheetState) => {
+        const currentSheet = workspaceRef.current.sheetsById[sheetId];
+        workspaceRef.current = {
+          ...workspaceRef.current,
+          sheetsById: {
+            ...workspaceRef.current.sheetsById,
+            [sheetId]: updater(currentSheet),
+          },
+        };
+      }
+    );
+    const invalidateSheetTrackingWork = vi.fn();
+    mocks.upsertSheetRowsMock.mockRejectedValueOnce(
+      new Error("transaction failed")
+    );
+    mocks.useWorkspaceRuntimeCommandsControllerMock.mockReturnValue({
+      fetchRow: vi.fn(),
+      copySelectedTrackingIds: vi.fn(),
+      invalidateSheetTrackingWork,
+    });
+    mocks.useWorkspaceTableControllersMock.mockReturnValue({});
+    const showNotice = vi.fn();
+
+    const { result } = renderHook(() =>
+      useWorkspaceInteractionRuntimeController({
+        activeSheet: sheetState,
+        activeSheetId: "sheet-1",
+        workspaceTabs: [{ id: "sheet-1", name: "Sheet 1" }],
+        workspaceRef,
+        setWorkspaceState: vi.fn(),
+        updateActiveSheet: vi.fn(),
+        updateSheet,
+        setHoveredColumn: vi.fn(),
+        deleteAllTimeoutRef: { current: null },
+        deleteAllArmedSheetIdRef: { current: null },
+        deleteSelectedTimeoutRef: { current: null },
+        deleteSelectedArmedSheetIdRef: { current: null },
+        deleteSelectedArmedSheetId: null,
+        setDeleteSelectedArmedSheetId: vi.fn(),
+        armDeleteAll: vi.fn(),
+        disarmDeleteAll: vi.fn(),
+        armDeleteSelected: vi.fn(),
+        disarmDeleteSelected: vi.fn(),
+        resizeStateRef: { current: null },
+        sheetScrollRef: { current: null },
+        sheetScrollPositionsRef: { current: new Map() },
+        columnMenuRefs: { current: new Map() },
+        highlightedColumnTimeoutRef: { current: null },
+        highlightedColumnSheetIdRef: { current: null },
+        activeFilterCount: 0,
+        allTrackingIds: [],
+        exportableTableRows: [],
+        rustExportRowsQuery: null,
+        retrackableRows: [],
+        retryFailedEntries: [],
+        selectedEngineRowIds: [],
+        selectedTrackingIds: [],
+        selectedVisibleRowKeys: [],
+        visibleColumns: [],
+        visibleColumnPathSet: new Set(),
+        visibleSelectableKeys: [],
+        effectiveColumnWidths: {},
+        pinnedColumnSet: new Set(),
+        allVisibleSelected: false,
+        showNotice,
+      } as never)
+    );
+
+    await act(async () => {
+      await result.current.importBagTrackingIds("replace");
+    });
+
+    expect(mocks.upsertSheetRowsMock).toHaveBeenCalledWith({
+      sheetId: "sheet-1",
+      replaceExisting: true,
+      rows: [
+        expect.objectContaining({
+          position: 0,
+          displayTrackingId: "REPLACEMENT-ID",
+        }),
+      ],
+    });
+    expect(mocks.querySheetRowsMock).not.toHaveBeenCalled();
+    expect(invalidateSheetTrackingWork).not.toHaveBeenCalled();
+    expect(
+      workspaceRef.current.sheetsById["sheet-1"].rows[0].trackingInput
+    ).toBe("EXISTING-ID");
+    expect(
+      workspaceRef.current.sheetsById["sheet-1"].importSourceModalKind
+    ).toBe("bag");
+    expect(showNotice).toHaveBeenLastCalledWith({
+      tone: "error",
+      message: "transaction failed",
+    });
+  });
+
   it("dedupes appended import tracking ids beyond the first Rust row window", async () => {
     const sheetState: SheetState = {
       ...createDefaultSheetState(),

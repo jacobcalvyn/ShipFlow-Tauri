@@ -34,9 +34,10 @@ const MANIFEST_CACHE_TTL_SECS: u64 = 90;
 const ERROR_CACHE_TTL_SECS: u64 = 8;
 const CACHE_SUMMARY_MIN_EVENTS: u64 = 20;
 const CACHE_SUMMARY_MIN_INTERVAL_SECS: u64 = 60;
-const PERSISTENT_SUCCESS_CACHE_TTL_SECS: u64 = 6 * 60 * 60;
 const MAX_CONTACT_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES: usize = 10_000;
+pub const MAX_IN_MEMORY_LOOKUP_CACHE_ENTRY_BYTES: usize = 1024 * 1024;
+pub const MAX_IN_MEMORY_LOOKUP_CACHE_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LookupRequestOptions {
@@ -92,6 +93,8 @@ pub struct LookupCacheSnapshot {
     pub ready: usize,
     pub loading: usize,
     pub capacity: usize,
+    pub bytes: usize,
+    pub byte_capacity: usize,
 }
 
 #[derive(Default)]
@@ -135,7 +138,11 @@ enum CachedLookupErrorKind {
 
 enum LookupCacheAction {
     Return(CachedLookupEntry),
-    StartFetch(Arc<Notify>, u64),
+    StartFetch {
+        notify: Arc<Notify>,
+        generation: u64,
+        allow_persistent: bool,
+    },
     Wait(OwnedNotified),
     Reject(TrackingError),
 }
@@ -304,8 +311,12 @@ impl LookupCacheState {
             self.log(
                 "INFO",
                 format!(
-                    "[ShipFlowCache] maintenance removed={removed} ready={} loading={} capacity={}",
-                    snapshot.ready, snapshot.loading, snapshot.capacity
+                    "[ShipFlowCache] maintenance removed={removed} ready={} loading={} capacity={} bytes={} byteCapacity={}",
+                    snapshot.ready,
+                    snapshot.loading,
+                    snapshot.capacity,
+                    snapshot.bytes,
+                    snapshot.byte_capacity
                 ),
             );
         }
@@ -329,27 +340,6 @@ impl LookupCacheState {
         let mut loader = Some(loader);
 
         loop {
-            if !options.force_refresh {
-                if let Some(payload) =
-                    self.load_persistent_success(kind, &normalized_id, &cache_key)
-                {
-                    match serde_json::from_str::<T>(&payload) {
-                        Ok(value) => return Ok(value),
-                        Err(error) => {
-                            self.log(
-                                "WARN",
-                                format!(
-                                    "[ShipFlowCache] persistent_cache_decode_failed kind={} id={} key={} error={error}",
-                                    lookup_kind_label(kind),
-                                    normalized_id,
-                                    cache_key
-                                ),
-                            );
-                        }
-                    }
-                }
-            }
-
             let action = self.next_action(&cache_key, kind, &normalized_id, options);
 
             match action {
@@ -377,13 +367,69 @@ impl LookupCacheState {
                     notified.await;
                 }
                 LookupCacheAction::Reject(error) => return Err(error),
-                LookupCacheAction::StartFetch(notify, generation) => {
+                LookupCacheAction::StartFetch {
+                    notify,
+                    generation,
+                    allow_persistent,
+                } => {
                     let mut fetch_guard = LookupFetchGuard::new(
                         self.clone(),
                         cache_key.clone(),
                         notify.clone(),
                         generation,
                     );
+                    if allow_persistent && !options.force_refresh {
+                        if let Some(payload) = self
+                            .load_persistent_success(
+                                kind,
+                                &normalized_id,
+                                &cache_key,
+                                self.policy.ttl_for(kind),
+                            )
+                            .await
+                        {
+                            match serde_json::from_str::<T>(&payload) {
+                                Ok(value) => {
+                                    let payload_bytes = payload.len();
+                                    let hydrated = self.resolve_persistent_cache_slot(
+                                        &cache_key, kind, payload, generation, &notify,
+                                    );
+                                    if !hydrated
+                                        && payload_bytes > MAX_IN_MEMORY_LOOKUP_CACHE_ENTRY_BYTES
+                                    {
+                                        self.log(
+                                            "INFO",
+                                            format!(
+                                                "[ShipFlowCache] persistent_cache_hydration_skipped kind={} id={} key={} reason=payload_too_large bytes={} maxBytes={MAX_IN_MEMORY_LOOKUP_CACHE_ENTRY_BYTES}",
+                                                lookup_kind_label(kind),
+                                                normalized_id,
+                                                cache_key,
+                                                payload_bytes
+                                            ),
+                                        );
+                                    }
+                                    notify.notify_waiters();
+                                    fetch_guard.disarm();
+                                    return Ok(value);
+                                }
+                                Err(error) => {
+                                    if let Some(store) = &self.persistent_store {
+                                        store.enqueue_remove_success(cache_key.clone());
+                                    }
+                                    self.log(
+                                        "WARN",
+                                        format!(
+                                            "[ShipFlowCache] persistent_cache_decode_failed kind={} id={} key={} error={error}",
+                                            lookup_kind_label(kind),
+                                            normalized_id,
+                                            cache_key
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+
                     let result = loader
                         .take()
                         .expect("lookup cache loader must only start once")(
@@ -391,11 +437,29 @@ impl LookupCacheState {
                     .await;
                     let cached_entry = match &result {
                         Ok(payload) => match serde_json::to_string(payload) {
-                            Ok(serialized_payload) => Some(CachedLookupEntry::success(
-                                kind,
-                                serialized_payload,
-                                self.policy,
-                            )),
+                            Ok(serialized_payload)
+                                if serialized_payload.len()
+                                    <= MAX_IN_MEMORY_LOOKUP_CACHE_ENTRY_BYTES =>
+                            {
+                                Some(CachedLookupEntry::success(
+                                    kind,
+                                    serialized_payload,
+                                    self.policy,
+                                ))
+                            }
+                            Ok(serialized_payload) => {
+                                self.log(
+                                    "INFO",
+                                    format!(
+                                        "[ShipFlowCache] cache_store_skipped kind={} id={} key={} reason=payload_too_large bytes={} maxBytes={MAX_IN_MEMORY_LOOKUP_CACHE_ENTRY_BYTES}",
+                                        lookup_kind_label(kind),
+                                        normalized_id,
+                                        cache_key,
+                                        serialized_payload.len()
+                                    ),
+                                );
+                                None
+                            }
                             Err(error) => {
                                 self.log(
                                     "WARN",
@@ -524,7 +588,11 @@ impl LookupCacheState {
                     );
                     prune_lookup_cache(&mut inner, now);
                     (
-                        LookupCacheAction::StartFetch(notify, generation),
+                        LookupCacheAction::StartFetch {
+                            notify,
+                            generation,
+                            allow_persistent: false,
+                        },
                         metrics_summary,
                         event_log,
                     )
@@ -554,7 +622,11 @@ impl LookupCacheState {
                             LookupCacheSlot::Loading(notify.clone()),
                         );
                         (
-                            LookupCacheAction::StartFetch(notify, generation),
+                            LookupCacheAction::StartFetch {
+                                notify,
+                                generation,
+                                allow_persistent: true,
+                            },
                             metrics_summary,
                             format!(
                             "[ShipFlowCache] cache_miss kind={} id={normalized_id} key={cache_key}",
@@ -574,21 +646,55 @@ impl LookupCacheState {
         action
     }
 
+    fn resolve_persistent_cache_slot(
+        &self,
+        cache_key: &str,
+        kind: LookupKind,
+        payload: String,
+        generation: u64,
+        notify: &Arc<Notify>,
+    ) -> bool {
+        let mut inner = self.inner.lock().expect("lookup cache lock poisoned");
+        let owns_loading_slot = inner.generation == generation
+            && inner.entries.get(cache_key).is_some_and(|slot| {
+                matches!(
+                    slot,
+                    LookupCacheSlot::Loading(current) if Arc::ptr_eq(current, notify)
+                )
+            });
+        if !owns_loading_slot {
+            return false;
+        }
+
+        if payload.len() > MAX_IN_MEMORY_LOOKUP_CACHE_ENTRY_BYTES {
+            inner.entries.remove(cache_key);
+            return false;
+        }
+
+        inner.entries.insert(
+            cache_key.to_string(),
+            LookupCacheSlot::Ready(CachedLookupEntry::success(kind, payload, self.policy)),
+        );
+        prune_lookup_cache(&mut inner, Instant::now());
+        true
+    }
+
     fn remove_entry(&self, cache_key: &str) {
         let mut inner = self.inner.lock().expect("lookup cache lock poisoned");
         inner.entries.remove(cache_key);
     }
 
-    fn load_persistent_success(
+    async fn load_persistent_success(
         &self,
         kind: LookupKind,
         normalized_id: &str,
         cache_key: &str,
+        max_age: Duration,
     ) -> Option<String> {
-        let payload = self
-            .persistent_store
-            .as_ref()
-            .and_then(|store| store.load_success(cache_key))?;
+        let store = self.persistent_store.as_ref()?.clone();
+        let payload = store
+            .load_success_async(cache_key.to_string(), max_age)
+            .await?;
         self.log(
             "INFO",
             format!(
@@ -629,7 +735,7 @@ impl LookupCacheState {
         if persistent_store.enqueue_store_success(
             cache_key.to_string(),
             payload.clone(),
-            Duration::from_secs(PERSISTENT_SUCCESS_CACHE_TTL_SECS),
+            self.policy.ttl_for(kind),
         ) {
             self.log(
                 "INFO",
@@ -687,16 +793,27 @@ impl CachedLookupEntry {
     fn is_expired(&self, now: Instant) -> bool {
         now >= self.expires_at
     }
+
+    fn estimated_bytes(&self) -> usize {
+        match &self.value {
+            CachedLookupValue::Success(payload) => payload.len(),
+            CachedLookupValue::Error(error) => error.message.len(),
+        }
+    }
 }
 
 fn snapshot_lookup_cache(inner: &LookupCacheInner) -> LookupCacheSnapshot {
     let mut snapshot = LookupCacheSnapshot {
         capacity: MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES,
+        byte_capacity: MAX_IN_MEMORY_LOOKUP_CACHE_BYTES,
         ..LookupCacheSnapshot::default()
     };
     for slot in inner.entries.values() {
         match slot {
-            LookupCacheSlot::Ready(_) => snapshot.ready += 1,
+            LookupCacheSlot::Ready(entry) => {
+                snapshot.ready += 1;
+                snapshot.bytes = snapshot.bytes.saturating_add(entry.estimated_bytes());
+            }
             LookupCacheSlot::Loading(_) => snapshot.loading += 1,
         }
     }
@@ -704,6 +821,20 @@ fn snapshot_lookup_cache(inner: &LookupCacheInner) -> LookupCacheSnapshot {
 }
 
 fn prune_lookup_cache(inner: &mut LookupCacheInner, now: Instant) -> usize {
+    prune_lookup_cache_with_limits(
+        inner,
+        now,
+        MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES,
+        MAX_IN_MEMORY_LOOKUP_CACHE_BYTES,
+    )
+}
+
+fn prune_lookup_cache_with_limits(
+    inner: &mut LookupCacheInner,
+    now: Instant,
+    max_entries: usize,
+    max_bytes: usize,
+) -> usize {
     let before = inner.entries.len();
     inner.entries.retain(|_, slot| match slot {
         LookupCacheSlot::Ready(entry) => !entry.is_expired(now),
@@ -715,20 +846,29 @@ fn prune_lookup_cache(inner: &mut LookupCacheInner, now: Instant) -> usize {
         .values()
         .filter(|slot| matches!(slot, LookupCacheSlot::Loading(_)))
         .count();
-    let allowed_ready = MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES.saturating_sub(loading);
+    let allowed_ready = max_entries.saturating_sub(loading);
     let mut ready_entries = inner
         .entries
         .iter()
         .filter_map(|(key, slot)| match slot {
-            LookupCacheSlot::Ready(entry) => Some((key.clone(), entry.last_accessed_at)),
+            LookupCacheSlot::Ready(entry) => {
+                Some((key.clone(), entry.last_accessed_at, entry.estimated_bytes()))
+            }
             LookupCacheSlot::Loading(_) => None,
         })
         .collect::<Vec<_>>();
-    if ready_entries.len() > allowed_ready {
-        ready_entries.sort_unstable_by_key(|(_, last_accessed_at)| *last_accessed_at);
-        let remove_count = ready_entries.len() - allowed_ready;
-        for (cache_key, _) in ready_entries.into_iter().take(remove_count) {
-            inner.entries.remove(&cache_key);
+    ready_entries.sort_unstable_by_key(|(_, last_accessed_at, _)| *last_accessed_at);
+    let mut ready_count = ready_entries.len();
+    let mut ready_bytes = ready_entries
+        .iter()
+        .fold(0usize, |total, (_, _, bytes)| total.saturating_add(*bytes));
+    for (cache_key, _, bytes) in ready_entries {
+        if ready_count <= allowed_ready && ready_bytes <= max_bytes {
+            break;
+        }
+        if inner.entries.remove(&cache_key).is_some() {
+            ready_count = ready_count.saturating_sub(1);
+            ready_bytes = ready_bytes.saturating_sub(bytes);
         }
     }
 
@@ -1249,11 +1389,13 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        source_fingerprint_for_lookup, CachedLookupEntry, CachedLookupValue, LookupCacheAction,
-        LookupCacheMetricEvent, LookupCacheMetrics, LookupCachePolicy, LookupCacheSlot,
-        LookupCacheState, LookupLoaderError, LookupRequestOptions,
-        MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES,
+        build_cache_key, prune_lookup_cache_with_limits, source_fingerprint_for_lookup,
+        CachedLookupEntry, CachedLookupValue, LookupCacheAction, LookupCacheMetricEvent,
+        LookupCacheMetrics, LookupCachePolicy, LookupCacheSlot, LookupCacheState,
+        LookupLoaderError, LookupRequestOptions, MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES,
+        MAX_IN_MEMORY_LOOKUP_CACHE_ENTRY_BYTES,
     };
+    use crate::persistent_store::PersistentLookupStore;
     use shipflow_core::model::{
         BagResponse, LookupKind, TrackingError, TrackingSource, TrackingSourceConfig,
     };
@@ -1503,7 +1645,7 @@ mod tests {
                 "MAN-RACE",
                 options,
             ) {
-                LookupCacheAction::StartFetch(notify, _) => notify,
+                LookupCacheAction::StartFetch { notify, .. } => notify,
                 _ => panic!("first lookup should start a fetch"),
             };
             let waiter = match cache.next_action(
@@ -1576,6 +1718,154 @@ mod tests {
         assert!(inner
             .entries
             .contains_key(&format!("track:P{MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES}")));
+    }
+
+    #[test]
+    fn cache_pruning_enforces_weighted_byte_budget() {
+        let cache = LookupCacheState::with_policy(create_test_policy());
+        let now = Instant::now();
+        {
+            let mut inner = cache.inner.lock().expect("lookup cache lock poisoned");
+            for index in 0..3 {
+                inner.entries.insert(
+                    format!("track:P{index}"),
+                    LookupCacheSlot::Ready(CachedLookupEntry {
+                        expires_at: now + Duration::from_secs(60),
+                        last_accessed_at: now + Duration::from_nanos(index),
+                        value: CachedLookupValue::Success("x".repeat(10)),
+                    }),
+                );
+            }
+            prune_lookup_cache_with_limits(&mut inner, now, 10, 20);
+        }
+
+        let inner = cache.inner.lock().expect("lookup cache lock poisoned");
+        assert!(!inner.entries.contains_key("track:P0"));
+        assert!(inner.entries.contains_key("track:P1"));
+        assert!(inner.entries.contains_key("track:P2"));
+    }
+
+    #[test]
+    fn oversized_payload_is_returned_but_not_cached() {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        runtime.block_on(async {
+            let cache = LookupCacheState::with_policy(create_test_policy());
+            let response = cache
+                .resolve_cached_lookup(
+                    LookupKind::Bag,
+                    "PID-LARGE".into(),
+                    "pos-bag".into(),
+                    LookupRequestOptions::default(),
+                    || async {
+                        Ok(BagResponse {
+                            url: "x".repeat(MAX_IN_MEMORY_LOOKUP_CACHE_ENTRY_BYTES + 1),
+                            nomor_kantung: Some("PID-LARGE".into()),
+                            ..BagResponse::default()
+                        })
+                    },
+                )
+                .await
+                .expect("large lookup should still be returned");
+
+            assert_eq!(response.nomor_kantung.as_deref(), Some("PID-LARGE"));
+            assert_eq!(cache.snapshot().ready, 0);
+        });
+    }
+
+    #[test]
+    fn oversized_persistent_hydration_clears_its_loading_slot() {
+        let cache = LookupCacheState::with_policy(create_test_policy());
+        let cache_key = "bag:source:PID-PERSISTENT-LARGE";
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let generation = {
+            let mut inner = cache.inner.lock().expect("lookup cache lock poisoned");
+            let generation = inner.generation;
+            inner
+                .entries
+                .insert(cache_key.into(), LookupCacheSlot::Loading(notify.clone()));
+            generation
+        };
+
+        let hydrated = cache.resolve_persistent_cache_slot(
+            cache_key,
+            LookupKind::Bag,
+            "x".repeat(MAX_IN_MEMORY_LOOKUP_CACHE_ENTRY_BYTES + 1),
+            generation,
+            &notify,
+        );
+
+        assert!(!hydrated);
+        assert!(!cache
+            .inner
+            .lock()
+            .expect("lookup cache lock poisoned")
+            .entries
+            .contains_key(cache_key));
+    }
+
+    #[test]
+    fn memory_cache_takes_precedence_over_persistent_cache() {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        runtime.block_on(async {
+            let path = std::env::temp_dir().join(format!(
+                "shipflow-lookup-memory-precedence-{}-{}.sqlite3",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock should be after epoch")
+                    .as_nanos()
+            ));
+            let store = PersistentLookupStore::open(path.clone());
+            let key = build_cache_key(LookupKind::Bag, "pos-bag", "PID-PRECEDENCE");
+            store.store_success(
+                key.clone(),
+                serde_json::to_string(&BagResponse {
+                    nomor_kantung: Some("PERSISTENT".into()),
+                    ..BagResponse::default()
+                })
+                .unwrap(),
+                Duration::from_secs(60),
+            );
+            let cache = LookupCacheState::with_policy(create_test_policy())
+                .with_persistent_store(store.clone());
+            {
+                let mut inner = cache.inner.lock().expect("lookup cache lock poisoned");
+                inner.entries.insert(
+                    key,
+                    LookupCacheSlot::Ready(CachedLookupEntry::success(
+                        LookupKind::Bag,
+                        serde_json::to_string(&BagResponse {
+                            nomor_kantung: Some("MEMORY".into()),
+                            ..BagResponse::default()
+                        })
+                        .unwrap(),
+                        create_test_policy(),
+                    )),
+                );
+            }
+
+            let result: BagResponse = cache
+                .resolve_cached_lookup(
+                    LookupKind::Bag,
+                    "PID-PRECEDENCE".into(),
+                    "pos-bag".into(),
+                    LookupRequestOptions::default(),
+                    || async {
+                        panic!("a ready memory entry must not load persistent or upstream data");
+                        #[allow(unreachable_code)]
+                        Ok::<BagResponse, LookupLoaderError>(BagResponse::default())
+                    },
+                )
+                .await
+                .expect("memory lookup should succeed");
+
+            assert_eq!(result.nomor_kantung.as_deref(), Some("MEMORY"));
+            drop(cache);
+            drop(store);
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(path.with_extension("sqlite3-wal"));
+            let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));
+        });
     }
 
     #[test]

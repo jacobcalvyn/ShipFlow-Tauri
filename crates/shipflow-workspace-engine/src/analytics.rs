@@ -108,6 +108,11 @@ pub struct ChartResult {
 pub enum AnalyticsEngineError {
     DuckDb(duckdb::Error),
     Store(WorkspaceStoreError),
+    SourceRowLimitExceeded {
+        sheet_id: String,
+        total_count: u32,
+        max_source_rows: u32,
+    },
 }
 
 impl Display for AnalyticsEngineError {
@@ -115,6 +120,14 @@ impl Display for AnalyticsEngineError {
         match self {
             Self::DuckDb(error) => write!(formatter, "duckdb error: {error}"),
             Self::Store(error) => write!(formatter, "{error}"),
+            Self::SourceRowLimitExceeded {
+                sheet_id,
+                total_count,
+                max_source_rows,
+            } => write!(
+                formatter,
+                "analytics source for sheet {sheet_id} contains {total_count} rows, exceeding the supported limit of {max_source_rows}"
+            ),
         }
     }
 }
@@ -194,6 +207,13 @@ impl DuckDbAnalyticsEngine {
             },
             self.max_source_rows,
         )?;
+        if window.has_more || window.total_count > self.max_source_rows {
+            return Err(AnalyticsEngineError::SourceRowLimitExceeded {
+                sheet_id: query.sheet_id.clone(),
+                total_count: window.total_count,
+                max_source_rows: self.max_source_rows,
+            });
+        }
 
         if query.source_scope == AnalyticsSourceScope::SelectedRows {
             let selected_row_ids = query
@@ -905,6 +925,7 @@ mod tests {
     fn duckdb_pivot_uses_zero_for_missing_numeric_and_dash_for_missing_text() {
         let rows = vec![SheetRowProjection {
             row_id: "row-1".to_string(),
+            row_generation: String::new(),
             position: 0,
             display_tracking_id: "P1".to_string(),
             lookup_tracking_id: "P1".to_string(),
@@ -1069,6 +1090,55 @@ mod tests {
         assert_eq!(chart.chart_type, ChartType::Bar);
         assert_eq!(chart.source_row_count, 2);
         assert_eq!(chart.series.len(), 2);
+    }
+
+    #[test]
+    fn duckdb_pivot_reports_source_limit_instead_of_returning_partial_results() {
+        let mut store = prepared_store();
+        for position in 0..3 {
+            let tracking_id = format!("P{position}");
+            store
+                .upsert_sheet_row(&UpsertSheetRowInput {
+                    row_id: format!("row-{position}"),
+                    sheet_id: "sheet-1".to_string(),
+                    position,
+                    display_tracking_id: tracking_id.clone(),
+                    lookup_tracking_id: tracking_id,
+                    row_status: SheetRowStatus::Loaded,
+                    error_message: None,
+                })
+                .expect("row is stored");
+        }
+
+        let error = DuckDbAnalyticsEngine::new(2)
+            .query_pivot(
+                &store,
+                &PivotQuery {
+                    sheet_id: "sheet-1".to_string(),
+                    source_scope: AnalyticsSourceScope::AllRows,
+                    filters: vec![],
+                    value_filters: vec![],
+                    selected_row_ids: vec![],
+                    row_fields: vec![],
+                    column_fields: vec![],
+                    values: vec![AnalyticsValue {
+                        field: "detail.shipment_header.nomor_kiriman".to_string(),
+                        aggregation: AnalyticsAggregation::CountUnique,
+                    }],
+                    sort: vec![],
+                    limit: 10,
+                },
+            )
+            .expect_err("oversized source must fail explicitly");
+
+        assert!(matches!(
+            error,
+            AnalyticsEngineError::SourceRowLimitExceeded {
+                sheet_id,
+                total_count: 3,
+                max_source_rows: 2,
+            } if sheet_id == "sheet-1"
+        ));
     }
 
     #[test]
@@ -1306,6 +1376,7 @@ mod tests {
     ) -> SheetRowProjection {
         SheetRowProjection {
             row_id: row_id.to_string(),
+            row_generation: String::new(),
             position: 0,
             display_tracking_id: tracking_id.to_string(),
             lookup_tracking_id: tracking_id.to_string(),

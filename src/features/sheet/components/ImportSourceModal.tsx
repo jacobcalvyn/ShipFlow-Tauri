@@ -508,7 +508,12 @@ export function ImportSourceModal({
           >
             {isBusy ? "Memuat..." : "Ambil Data"}
           </button>
-          <button type="button" className="action-button" onClick={onClose}>
+          <button
+            type="button"
+            className="action-button"
+            onClick={onClose}
+            disabled={isBusy}
+          >
             Tutup
           </button>
         </div>

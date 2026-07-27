@@ -162,6 +162,53 @@ async function findWindowWithHeading(
   throw new Error(`Electron window with heading ${heading} was not found.`);
 }
 
+async function dragFieldToZone(
+  page: Page,
+  fieldLabel: string,
+  zoneLabel: string,
+) {
+  const source = page.getByRole("listitem", { name: `Field ${fieldLabel}` });
+  const target = page.getByRole("list", { name: `${zoneLabel} aktif` });
+
+  await source.scrollIntoViewIfNeeded();
+  await target.scrollIntoViewIfNeeded();
+  await expect(source).toBeVisible();
+  await expect(target).toBeVisible();
+
+  const sourceBox = await source.boundingBox();
+  const targetBox = await target.boundingBox();
+  if (!sourceBox || !targetBox) {
+    throw new Error(
+      `Cannot drag ${fieldLabel}; source or target box is unavailable.`,
+    );
+  }
+
+  await page.mouse.move(
+    sourceBox.x + sourceBox.width / 2,
+    sourceBox.y + sourceBox.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    sourceBox.x + sourceBox.width / 2 + 8,
+    sourceBox.y + sourceBox.height / 2 + 8,
+  );
+  await page.mouse.move(
+    targetBox.x + targetBox.width / 2,
+    targetBox.y + targetBox.height / 2,
+    { steps: 12 },
+  );
+  await expect(
+    target
+      .locator(".analytics-selected-drop-preview")
+      .filter({ hasText: fieldLabel }),
+  ).toBeVisible();
+  await page.mouse.up();
+
+  await expect(
+    page.getByRole("listitem", { name: `${zoneLabel} ${fieldLabel}` }),
+  ).toBeVisible();
+}
+
 async function closeApplication(application: ElectronApplication) {
   const process = application.process();
   const exited = new Promise<void>((resolve) => process.once("exit", () => resolve()));
@@ -200,6 +247,35 @@ test("Electron suite owns Desktop, integrated Service settings, and single-insta
         }),
       )
       .toMatchObject({ status: "running", port: runtime.servicePort });
+
+    await workspace.getByRole("tab", { name: "Pivot/Grafik" }).click();
+    await expect(
+      workspace.getByLabel("Panel Aksi Pivot Grafik"),
+    ).toBeVisible();
+    await expect(
+      workspace.getByLabel("Panel Utama Pivot Grafik"),
+    ).toBeVisible();
+    await expect(workspace.getByLabel("Mode Pivot Grafik")).toHaveValue(
+      "pivot",
+    );
+    await dragFieldToZone(workspace, "Jenis Layanan", "Row");
+    await dragFieldToZone(workspace, "Status Akhir", "Column");
+    await dragFieldToZone(workspace, "Nomor Kiriman", "Value");
+    await expect(
+      workspace.getByLabel("Mode Value Nomor Kiriman"),
+    ).toBeVisible();
+    await expect(
+      workspace.getByRole("region", { name: "Tabel Pivot" }),
+    ).toBeVisible();
+    await workspace.getByLabel("Mode Pivot Grafik").selectOption("bar");
+    await expect(
+      workspace.getByRole("region", { name: "Grafik Pivot" }),
+    ).toBeVisible();
+    await workspace.getByLabel("Mode Pivot Grafik").selectOption("donut");
+    await expect(
+      workspace.getByRole("region", { name: "Grafik Pivot" }),
+    ).toBeVisible();
+    await workspace.getByRole("tab", { name: "Workspace" }).click();
 
     const windowCountBeforeSettings = runtime.application.windows().length;
     await workspace.getByRole("button", { name: "Setting" }).click();

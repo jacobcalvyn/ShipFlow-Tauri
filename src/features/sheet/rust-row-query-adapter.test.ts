@@ -205,7 +205,75 @@ describe("Rust row query adapter", () => {
     expect(query?.valueFilters).toEqual([
       {
         field: "detail.billing_detail.cod_info.total_cod",
-        values: ["1000"],
+        values: ["1000", "1000.0"],
+      },
+    ]);
+  });
+
+  it("maps formatted typed text filters to canonical Rust values", () => {
+    const sheet = createDefaultSheetState();
+    const context = createVisibleColumnContext();
+
+    const query = createRustSheetRowsQuery({
+      sheetId: "sheet-1",
+      sheetState: {
+        ...sheet,
+        filters: {
+          "detail.billing_detail.cod_info.total_cod": "1.000",
+          "detail.package_detail.berat_actual": "1,5 kg",
+          "detail.billing_detail.cod_info.is_cod": "Ya",
+          "detail.origin_detail.tanggal_input": "27/05/2026",
+        },
+      },
+      nonEmptyRows: [],
+      ...context,
+    });
+
+    expect(query?.filters).toEqual([
+      {
+        field: "detail.origin_detail.tanggal_input",
+        value: "2026-05-27",
+      },
+      {
+        field: "detail.package_detail.berat_actual",
+        value: "1.5",
+      },
+      {
+        field: "detail.billing_detail.cod_info.is_cod",
+        value: "1",
+      },
+      {
+        field: "detail.billing_detail.cod_info.total_cod",
+        value: "1000",
+      },
+    ]);
+  });
+
+  it("keeps partial or unrecognized typed filters unchanged", () => {
+    const sheet = createDefaultSheetState();
+    const context = createVisibleColumnContext();
+
+    const query = createRustSheetRowsQuery({
+      sheetId: "sheet-1",
+      sheetState: {
+        ...sheet,
+        filters: {
+          "detail.billing_detail.cod_info.is_cod": "mungkin",
+          "detail.origin_detail.tanggal_input": "27/05",
+        },
+      },
+      nonEmptyRows: [],
+      ...context,
+    });
+
+    expect(query?.filters).toEqual([
+      {
+        field: "detail.origin_detail.tanggal_input",
+        value: "27/05",
+      },
+      {
+        field: "detail.billing_detail.cod_info.is_cod",
+        value: "mungkin",
       },
     ]);
   });
@@ -268,7 +336,7 @@ describe("Rust row query adapter", () => {
       },
       {
         field: "detail.billing_detail.cod_info.total_cod",
-        values: ["1000"],
+        values: ["1000", "1000.0"],
       },
       {
         field: "detail.billing_detail.cod_info.is_cod",

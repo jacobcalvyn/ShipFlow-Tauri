@@ -9,6 +9,8 @@ import {
   clearSelectionInSheet,
   clearTrackingRunInSheet,
   deleteRowsInSheet,
+  failTrackingRunInSheet,
+  setRowsQueuedInSheet,
   startTrackingRunInSheet,
 } from "../sheet/actions";
 import {
@@ -17,7 +19,6 @@ import {
   type SheetTableRow,
   type SheetTableRowTrackingEntry,
 } from "../sheet/table-row-view";
-import { createDefaultSheetState } from "../sheet/default-state";
 import { buildCsvValue } from "../sheet/utils";
 import { SheetState } from "../sheet/types";
 import {
@@ -264,6 +265,7 @@ export function useWorkspaceCommandsController({
 }: UseWorkspaceCommandsControllerOptions) {
   const trackingProgressEngineSyncTimeoutRef = useRef<number | null>(null);
   const trackingProgressEngineSyncSheetIdsRef = useRef<Set<string>>(new Set());
+  const trackingCommandSheetIdsRef = useRef<Set<string>>(new Set());
 
   const updateSheetById = useCallback(
     (sheetId: string, updater: (sheetState: SheetState) => SheetState) => {
@@ -289,6 +291,29 @@ export function useWorkspaceCommandsController({
     },
     [setWorkspaceState]
   );
+
+  const startTrackingCommand = useCallback(
+    (sheetId: string) => {
+      if (
+        trackingCommandSheetIdsRef.current.has(sheetId) ||
+        workspaceRef.current.sheetsById[sheetId]?.activeTrackingRunId
+      ) {
+        showNotice({
+          tone: "info",
+          message: "Proses lacak untuk sheet ini masih berjalan.",
+        });
+        return false;
+      }
+
+      trackingCommandSheetIdsRef.current.add(sheetId);
+      return true;
+    },
+    [showNotice, workspaceRef]
+  );
+
+  const finishTrackingCommand = useCallback((sheetId: string) => {
+    trackingCommandSheetIdsRef.current.delete(sheetId);
+  }, []);
 
   const scheduleTrackingProgressEngineSync = useCallback(
     (sheetId: string) => {
@@ -343,6 +368,7 @@ export function useWorkspaceCommandsController({
         trackingProgressEngineSyncTimeoutRef.current = null;
       }
       trackingProgressEngineSyncSheetIdsRef.current.clear();
+      trackingCommandSheetIdsRef.current.clear();
     },
     []
   );
@@ -414,9 +440,12 @@ export function useWorkspaceCommandsController({
     }
 
     disarmDeleteAll();
+    const targetSheetId = activeSheetId;
+    if (!startTrackingCommand(targetSheetId)) {
+      return;
+    }
 
     if (rustExportRowsQuery) {
-      const targetSheetId = activeSheetId;
       const trackingRunId = createWorkspaceTrackingRunId(targetSheetId, "retry");
       const retryRowIds = retryFailedEntries
         .map((entry) => entry.engineRowId?.trim() ?? "")
@@ -427,6 +456,7 @@ export function useWorkspaceCommandsController({
           tone: "error",
           message: "Lacak ulang gagal: target row Rust belum lengkap.",
         });
+        finishTrackingCommand(targetSheetId);
         return;
       }
 
@@ -436,7 +466,11 @@ export function useWorkspaceCommandsController({
       });
       flushSync(() => {
         updateSheetById(targetSheetId, (current) =>
-          startTrackingRunInSheet(current, trackingRunId)
+          setRowsQueuedInSheet(
+            startTrackingRunInSheet(current, trackingRunId),
+            retryFailedEntries,
+            { runId: trackingRunId }
+          )
         );
       });
 
@@ -491,16 +525,21 @@ export function useWorkspaceCommandsController({
           });
         })
         .catch((error) => {
+          const message =
+            error instanceof Error ? error.message : "Lacak ulang gagal.";
+          updateSheetById(targetSheetId, (current) =>
+            failTrackingRunInSheet(current, trackingRunId, message)
+          );
           showNotice({
             tone: "error",
-            message:
-              error instanceof Error ? error.message : "Lacak ulang gagal.",
+            message,
           });
         })
         .finally(() => {
           updateSheetById(targetSheetId, (current) =>
             clearTrackingRunInSheet(current, trackingRunId)
           );
+          finishTrackingCommand(targetSheetId);
         });
       return;
     }
@@ -510,18 +549,29 @@ export function useWorkspaceCommandsController({
       message: "Proses lacak ulang dimulai.",
     });
 
-    void refreshTrackingRows(activeSheetId, retryFailedEntries, {
+    void refreshTrackingRows(targetSheetId, retryFailedEntries, {
       forceRefresh: true,
-    });
+    })
+      .catch((error) => {
+        showNotice({
+          tone: "error",
+          message: error instanceof Error ? error.message : "Lacak ulang gagal.",
+        });
+      })
+      .finally(() => {
+        finishTrackingCommand(targetSheetId);
+      });
   }, [
     activeSheetId,
     disarmDeleteAll,
+    finishTrackingCommand,
     retryFailedEntries,
     refreshTrackingRows,
     flushTrackingProgressEngineSync,
     rustExportRowsQuery,
     scheduleTrackingProgressEngineSync,
     showNotice,
+    startTrackingCommand,
     updateSheetById,
   ]);
 
@@ -696,6 +746,9 @@ export function useWorkspaceCommandsController({
     }
 
     const targetSheetId = activeSheetId;
+    if (!startTrackingCommand(targetSheetId)) {
+      return;
+    }
 
     showNotice({
       tone: "info",
@@ -773,16 +826,21 @@ export function useWorkspaceCommandsController({
           });
         })
         .catch((error) => {
+          const message =
+            error instanceof Error ? error.message : "Lacak ulang gagal.";
+          updateSheetById(targetSheetId, (current) =>
+            failTrackingRunInSheet(current, trackingRunId, message)
+          );
           showNotice({
             tone: "error",
-            message:
-              error instanceof Error ? error.message : "Lacak ulang gagal.",
+            message,
           });
         })
         .finally(() => {
           updateSheetById(targetSheetId, (current) =>
             clearTrackingRunInSheet(current, trackingRunId)
           );
+          finishTrackingCommand(targetSheetId);
         });
       return;
     }
@@ -790,26 +848,39 @@ export function useWorkspaceCommandsController({
     const retrackableKeySet = new Set(retrackableRows.map((row) => row.key));
     void refreshTrackingRows(targetSheetId, retrackableRows, {
       forceRefresh: true,
-    }).then(() => {
-      const refreshedRows =
-        workspaceRef.current.sheetsById[targetSheetId]?.rows.filter((row) =>
-          retrackableKeySet.has(row.key)
-        ) ?? [];
-      const failedCount = refreshedRows.filter((row) => row.error).length;
+    })
+      .then(() => {
+        const refreshedRows =
+          workspaceRef.current.sheetsById[targetSheetId]?.rows.filter((row) =>
+            retrackableKeySet.has(row.key)
+          ) ?? [];
+        const failedCount = refreshedRows.filter((row) => row.error).length;
 
-      showNotice({
-        tone: failedCount > 0 ? "error" : "success",
-        message: failedCount > 0 ? "Lacak ulang gagal." : "Lacak ulang berhasil.",
+        showNotice({
+          tone: failedCount > 0 ? "error" : "success",
+          message:
+            failedCount > 0 ? "Lacak ulang gagal." : "Lacak ulang berhasil.",
+        });
+      })
+      .catch((error) => {
+        showNotice({
+          tone: "error",
+          message: error instanceof Error ? error.message : "Lacak ulang gagal.",
+        });
+      })
+      .finally(() => {
+        finishTrackingCommand(targetSheetId);
       });
-    });
   }, [
     activeSheetId,
     retrackableRows,
     refreshTrackingRows,
+    finishTrackingCommand,
     flushTrackingProgressEngineSync,
     rustExportRowsQuery,
     scheduleTrackingProgressEngineSync,
     showNotice,
+    startTrackingCommand,
     updateSheetById,
     workspaceRef,
   ]);
@@ -885,6 +956,7 @@ export function useWorkspaceCommandsController({
         });
         return;
       }
+      setWorkspaceState(nextWorkspace);
       try {
         await createEngineSheet(metadata);
         await copySheetRows({
@@ -892,25 +964,6 @@ export function useWorkspaceCommandsController({
           targetSheetId,
         });
         onWorkspaceEngineMutation?.([sheetId, targetSheetId]);
-        const targetSheet = nextWorkspace.sheetsById[targetSheetId];
-        const nextTargetSheet = targetSheet
-          ? {
-              ...targetSheet,
-              rows: createDefaultSheetState().rows,
-              selectedRowKeys: [],
-              selectionFollowsVisibleRows: false,
-            }
-          : targetSheet;
-
-        setWorkspaceState({
-          ...nextWorkspace,
-          sheetsById: nextTargetSheet
-            ? {
-                ...nextWorkspace.sheetsById,
-                [targetSheetId]: nextTargetSheet,
-              }
-            : nextWorkspace.sheetsById,
-        });
       } catch (error) {
         showNotice({
           tone: "error",
@@ -918,6 +971,9 @@ export function useWorkspaceCommandsController({
             error instanceof Error ? error.message : "Gagal menduplikasi sheet.",
         });
         void deleteSheet({ sheetId: targetSheetId }).catch(() => undefined);
+        setWorkspaceState((current) =>
+          deleteSheetInWorkspace(current, targetSheetId)
+        );
       }
     },
     [
@@ -942,7 +998,8 @@ export function useWorkspaceCommandsController({
         return;
       }
 
-      const previousWorkspace = workspaceRef.current;
+      const previousName =
+        workspaceRef.current.sheetMetaById[sheetId]?.name ?? "";
       const nextWorkspace = renameSheetInWorkspace(workspaceRef.current, sheetId, name);
       const meta = nextWorkspace.sheetMetaById[sheetId];
       if (!meta) {
@@ -959,7 +1016,12 @@ export function useWorkspaceCommandsController({
           message:
             error instanceof Error ? error.message : "Gagal mengganti nama sheet.",
         });
-        setWorkspaceState(previousWorkspace);
+        setWorkspaceState((current) => {
+          if (current.sheetMetaById[sheetId]?.name !== meta.name) {
+            return current;
+          }
+          return renameSheetInWorkspace(current, sheetId, previousName);
+        });
       });
     },
     [setWorkspaceState, showNotice, workspaceRef]
@@ -967,6 +1029,16 @@ export function useWorkspaceCommandsController({
 
   const deleteActiveSheet = useCallback(
     async (sheetId: string) => {
+      setHoveredColumn(null);
+      try {
+        await deleteSheet({ sheetId });
+      } catch (error) {
+        showNotice({
+          tone: "error",
+          message: error instanceof Error ? error.message : "Gagal menghapus sheet.",
+        });
+        return;
+      }
       invalidateSheetTrackingWork(sheetId);
       forgetSheetTrackingRuntime(sheetId);
       sheetScrollPositionsRef.current.delete(sheetId);
@@ -994,17 +1066,6 @@ export function useWorkspaceCommandsController({
         }
         deleteSelectedArmedSheetIdRef.current = null;
         setDeleteSelectedArmedSheetId(null);
-      }
-
-      setHoveredColumn(null);
-      try {
-        await deleteSheet({ sheetId });
-      } catch (error) {
-        showNotice({
-          tone: "error",
-          message: error instanceof Error ? error.message : "Gagal menghapus sheet.",
-        });
-        return;
       }
       setWorkspaceState((current) => deleteSheetInWorkspace(current, sheetId));
     },

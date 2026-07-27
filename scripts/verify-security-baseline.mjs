@@ -152,7 +152,9 @@ requireTokens("electron/main/index.ts", [
   "serviceAgent.shutdown()",
   "SHIPFLOW_USER_DATA_DIR",
   "../preload/index.cjs",
-  "app.exit(0)",
+  'quitCoordinator.request("app")',
+  "finalizeApplicationQuit",
+  "app.quit()",
   "nativeRuntimesShuttingDown",
   "workspaceHostStarts",
   "stopAllWorkspaceHosts",
@@ -397,6 +399,14 @@ requireTokens("scripts/verify-quality-gate.mjs", [
   "actions/workflows/",
   "head_sha",
   'conclusion === "success"',
+  "findLatestRelevantQualityRun",
+  "TRANSIENT_HTTP_STATUSES",
+  "DEFAULT_POLL_INTERVAL_MS",
+  "DEFAULT_TIMEOUT_MS",
+  "ACTIVE_RUN_STATUSES",
+  "QUALITY_GATE_EVENT",
+  "QUALITY_GATE_POLL_INTERVAL_MS",
+  "QUALITY_GATE_TIMEOUT_MS",
   "GITHUB_REPOSITORY",
   "GITHUB_SHA",
   "GITHUB_TOKEN",
@@ -412,6 +422,9 @@ for (const workflow of [
   forbidTokens(workflow, ["tauri", "shipflow-tauri-runtime", "ShipFlow Service.app"]);
 }
 requireTokens(".github/workflows/build-updater-artifacts.yml", [
+  "actions: read",
+  "node scripts/verify-quality-gate.mjs",
+  "QUALITY_GATE_EVENT: push",
   "SHIPFLOW_REQUIRE_WINDOWS_SIGNATURE",
 ]);
 requireTokens(".github/workflows/quality.yml", [
@@ -424,6 +437,13 @@ requireTokens(".github/workflows/quality.yml", [
   "xvfb-run --auto-servernum npm run test:e2e",
   "Upload Electron smoke diagnostics",
   "Upload packaged smoke diagnostics",
+]);
+requireTokens("tests/electron/suite-smoke.spec.ts", [
+  "Panel Aksi Pivot Grafik",
+  "Panel Utama Pivot Grafik",
+  "Mode Value Nomor Kiriman",
+  'selectOption("bar")',
+  'selectOption("donut")',
 ]);
 requireTokens("electron/main/app-logger.ts", [
   "MAX_LOG_ENTRY_BYTES",
@@ -447,6 +467,7 @@ requireTokens("scripts/audit-runtime-log.mjs", [
 requireTokens(".github/workflows/build-macos-app.yml", [
   "actions: read",
   "node scripts/verify-quality-gate.mjs",
+  "QUALITY_GATE_EVENT:",
   "Build unsigned Electron macOS suite",
   "Build signed Electron macOS suite",
   'CSC_IDENTITY_AUTO_DISCOVERY: "false"',
@@ -472,6 +493,7 @@ forbidTokens(".github/workflows/build-macos-app.yml", [
 requireTokens(".github/workflows/build-windows-exe.yml", [
   "actions: read",
   "node scripts/verify-quality-gate.mjs",
+  "QUALITY_GATE_EVENT:",
   "Build unsigned Electron Windows suite",
   "Build signed Electron Windows suite",
   'CSC_IDENTITY_AUTO_DISCOVERY: "false"',

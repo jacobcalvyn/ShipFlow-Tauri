@@ -27,6 +27,7 @@ use crate::tracking::{
 };
 
 const DEFAULT_MAX_SHEET_ROW_WINDOW: u32 = 1_000;
+const DEFAULT_MAX_ANALYTICS_SOURCE_ROWS: u32 = 100_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -230,7 +231,7 @@ where
         blob_root_path: Option<PathBuf>,
     ) -> Self {
         Self {
-            analytics_engine: DuckDbAnalyticsEngine::new(DEFAULT_MAX_SHEET_ROW_WINDOW),
+            analytics_engine: DuckDbAnalyticsEngine::new(DEFAULT_MAX_ANALYTICS_SOURCE_ROWS),
             config,
             store,
             import_source,
@@ -495,23 +496,28 @@ where
         request: UpsertSheetRowsRequest,
     ) -> WorkspaceEngineRuntimeResult<SheetRowWindow> {
         self.ensure_sheet_exists(&request.sheet_id)?;
-        for row in request.rows {
-            let display_tracking_id = row.display_tracking_id.trim();
-            if display_tracking_id.is_empty() {
-                continue;
-            }
-
-            let resolved = resolve_tracking_id(display_tracking_id);
-            self.store.upsert_sheet_row(&UpsertSheetRowInput {
-                row_id: row.row_id,
-                sheet_id: request.sheet_id.clone(),
-                position: row.position,
-                display_tracking_id: resolved.display_id,
-                lookup_tracking_id: resolved.lookup_id,
-                row_status: SheetRowStatus::Empty,
-                error_message: None,
-            })?;
-        }
+        let rows = request
+            .rows
+            .into_iter()
+            .filter_map(|row| {
+                let display_tracking_id = row.display_tracking_id.trim();
+                if display_tracking_id.is_empty() {
+                    return None;
+                }
+                let resolved = resolve_tracking_id(display_tracking_id);
+                Some(UpsertSheetRowInput {
+                    row_id: row.row_id,
+                    sheet_id: request.sheet_id.clone(),
+                    position: row.position,
+                    display_tracking_id: resolved.display_id,
+                    lookup_tracking_id: resolved.lookup_id,
+                    row_status: SheetRowStatus::Empty,
+                    error_message: None,
+                })
+            })
+            .collect::<Vec<_>>();
+        self.store
+            .upsert_sheet_rows_atomic(&request.sheet_id, &rows, request.replace_existing)?;
 
         self.query_first_sheet_row_window(request.sheet_id)
     }
@@ -906,6 +912,7 @@ mod tests {
             .handle_command(WorkspaceEngineCommand::UpsertSheetRows(
                 UpsertSheetRowsRequest {
                     sheet_id: "sheet-1".to_string(),
+                    replace_existing: false,
                     rows: vec![
                         UpsertSheetRowRequest {
                             row_id: "ui-row-1".to_string(),
@@ -941,6 +948,36 @@ mod tests {
         assert_eq!(rows.total_count, 2);
         assert_eq!(rows.rows[0].display_tracking_id, "P2606020189412.30");
         assert_eq!(rows.rows[0].lookup_tracking_id, "P2606020189412");
+
+        let previous_generation = rows.rows[0].row_generation.clone();
+        let replacement = runtime
+            .handle_command(WorkspaceEngineCommand::UpsertSheetRows(
+                UpsertSheetRowsRequest {
+                    sheet_id: "sheet-1".to_string(),
+                    replace_existing: true,
+                    rows: vec![UpsertSheetRowRequest {
+                        row_id: "ui-row-1".to_string(),
+                        position: 0,
+                        display_tracking_id: "P2606020189412.30".to_string(),
+                    }],
+                },
+            ))
+            .await
+            .expect("atomic replace command succeeds");
+
+        match replacement {
+            WorkspaceEngineResponse::SheetRows(window) => {
+                assert_eq!(window.total_count, 1);
+                assert_eq!(window.rows[0].row_id, "ui-row-1");
+                assert_ne!(window.rows[0].row_generation, previous_generation);
+            }
+            response => panic!("unexpected response: {response:?}"),
+        }
+        assert!(runtime
+            .store()
+            .get_sheet_row("ui-row-2")
+            .expect("replaced row lookup succeeds")
+            .is_none());
     }
 
     #[tokio::test]
@@ -951,6 +988,7 @@ mod tests {
             .handle_command(WorkspaceEngineCommand::UpsertSheetRows(
                 UpsertSheetRowsRequest {
                     sheet_id: "sheet-1".to_string(),
+                    replace_existing: false,
                     rows: vec![UpsertSheetRowRequest {
                         row_id: "ui-row-1".to_string(),
                         position: 0,
@@ -1066,6 +1104,7 @@ mod tests {
             .handle_command(WorkspaceEngineCommand::UpsertSheetRows(
                 UpsertSheetRowsRequest {
                     sheet_id: "sheet-2".to_string(),
+                    replace_existing: false,
                     rows: vec![UpsertSheetRowRequest {
                         row_id: "ui-row-1".to_string(),
                         position: 0,
@@ -1119,6 +1158,7 @@ mod tests {
             .handle_command(WorkspaceEngineCommand::UpsertSheetRows(
                 UpsertSheetRowsRequest {
                     sheet_id: "sheet-1".to_string(),
+                    replace_existing: false,
                     rows: vec![
                         UpsertSheetRowRequest {
                             row_id: "ui-row-1".to_string(),
@@ -1379,6 +1419,104 @@ mod tests {
                     pivot.rows[0]["metrics"]["detail.shipment_header.nomor_kiriman__count_unique"],
                     1
                 );
+            }
+            response => panic!("unexpected response: {response:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_default_analytics_reads_rows_beyond_the_table_window() {
+        let source = FakeImportSource::default();
+        let mut runtime = prepared_runtime(source);
+        for position in 0..1_001 {
+            let tracking_id = format!("P{position:013}");
+            runtime
+                .store_mut()
+                .upsert_sheet_row(&crate::storage::UpsertSheetRowInput {
+                    row_id: format!("row-{position}"),
+                    sheet_id: "sheet-1".to_string(),
+                    position,
+                    display_tracking_id: tracking_id.clone(),
+                    lookup_tracking_id: tracking_id,
+                    row_status: crate::storage::SheetRowStatus::Loaded,
+                    error_message: None,
+                })
+                .expect("row is stored");
+        }
+
+        let all_rows_query = crate::analytics::PivotQuery {
+            sheet_id: "sheet-1".to_string(),
+            source_scope: crate::analytics::AnalyticsSourceScope::AllRows,
+            filters: vec![],
+            value_filters: vec![],
+            selected_row_ids: vec![],
+            row_fields: vec![],
+            column_fields: vec![],
+            values: vec![crate::analytics::AnalyticsValue {
+                field: "detail.shipment_header.nomor_kiriman".to_string(),
+                aggregation: crate::analytics::AnalyticsAggregation::CountUnique,
+            }],
+            sort: vec![],
+            limit: 10,
+        };
+        let pivot = runtime
+            .handle_command(WorkspaceEngineCommand::QueryPivot(all_rows_query.clone()))
+            .await
+            .expect("default runtime pivot succeeds");
+        match pivot {
+            WorkspaceEngineResponse::Pivot(pivot) => {
+                assert_eq!(pivot.source_row_count, 1_001);
+                assert_eq!(
+                    pivot.rows[0]["metrics"]["detail.shipment_header.nomor_kiriman__count_unique"],
+                    1_001
+                );
+            }
+            response => panic!("unexpected response: {response:?}"),
+        }
+
+        let chart = runtime
+            .handle_command(WorkspaceEngineCommand::QueryChart(
+                crate::analytics::ChartQuery {
+                    pivot_query: all_rows_query,
+                    chart_type: crate::analytics::ChartType::Bar,
+                },
+            ))
+            .await
+            .expect("default runtime chart succeeds");
+        match chart {
+            WorkspaceEngineResponse::Chart(chart) => {
+                assert_eq!(chart.source_row_count, 1_001);
+                assert_eq!(
+                    chart.series[0]["metrics"]
+                        ["detail.shipment_header.nomor_kiriman__count_unique"],
+                    1_001
+                );
+            }
+            response => panic!("unexpected response: {response:?}"),
+        }
+
+        let selected = runtime
+            .handle_command(WorkspaceEngineCommand::QueryPivot(
+                crate::analytics::PivotQuery {
+                    sheet_id: "sheet-1".to_string(),
+                    source_scope: crate::analytics::AnalyticsSourceScope::SelectedRows,
+                    filters: vec![],
+                    value_filters: vec![],
+                    selected_row_ids: vec!["row-1000".to_string()],
+                    row_fields: vec!["detail.shipment_header.nomor_kiriman".to_string()],
+                    column_fields: vec![],
+                    values: vec![],
+                    sort: vec![],
+                    limit: 10,
+                },
+            ))
+            .await
+            .expect("selected row beyond the table window is available");
+        match selected {
+            WorkspaceEngineResponse::Pivot(pivot) => {
+                assert_eq!(pivot.source_row_count, 1);
+                assert_eq!(pivot.rows.len(), 1);
+                assert_eq!(pivot.rows[0]["rowValues"][0], "P0000000001000");
             }
             response => panic!("unexpected response: {response:?}"),
         }
