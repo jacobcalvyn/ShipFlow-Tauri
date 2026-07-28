@@ -176,6 +176,7 @@ requireTokens("electron/main/index.ts", [
   "stopAllWorkspaceHosts",
   'type WindowKind = "workspace" | "service-settings"',
   "openOrFocusServiceSettings",
+  '"shipflow-service-settings"',
   'createWindow("service-settings"',
   'partition: "persist:shipflow-service-settings"',
   'record.kind === "service-settings"',

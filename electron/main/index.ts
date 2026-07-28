@@ -302,8 +302,14 @@ function focusedWorkspaceRecord() {
   return [...windowsByLabel.values()].find((record) => record.kind === "workspace");
 }
 
-function menuItem(label: string, command: string, accelerator?: string) {
+function menuItem(
+  label: string,
+  command: string,
+  accelerator?: string,
+  id?: string,
+) {
   return {
+    id,
     label,
     accelerator,
     click: () => {
@@ -466,7 +472,12 @@ function installApplicationMenu() {
       label: "Help",
       submenu: [
         menuItem("Workspace Settings", "show-settings"),
-        menuItem("Service Settings", "show-service-settings"),
+        menuItem(
+          "Service Settings",
+          "show-service-settings",
+          undefined,
+          "shipflow-service-settings",
+        ),
         { type: "separator" },
         menuItem("Check for Updates", "check-for-updates"),
         menuItem("Install Update", "install-app-update"),

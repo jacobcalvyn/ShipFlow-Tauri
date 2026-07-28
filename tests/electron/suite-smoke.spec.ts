@@ -65,6 +65,38 @@ async function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number) {
   });
 }
 
+async function openServiceSettingsWindow(runtime: SmokeRuntime) {
+  const serviceSettingsWindowPromise =
+    runtime.application.waitForEvent("window");
+
+  if (process.platform === "linux") {
+    await runtime.application.evaluate(
+      ({ Menu }, menuItemId) => {
+        const menuItem = Menu.getApplicationMenu()?.getMenuItemById(menuItemId);
+        if (!menuItem) {
+          throw new Error(
+            `Application menu item ${menuItemId} is not available.`,
+          );
+        }
+        menuItem.click();
+      },
+      "shipflow-service-settings",
+    );
+  } else {
+    const serviceSettingsLaunch = spawn(
+      runtime.executablePath,
+      [...runtime.executableArguments, "--service-settings"],
+      {
+        env: runtime.environment,
+        stdio: "ignore",
+      },
+    );
+    await waitForExit(serviceSettingsLaunch, 10_000);
+  }
+
+  return serviceSettingsWindowPromise;
+}
+
 function processIdIsAlive(processId: number) {
   try {
     process.kill(processId, 0);
@@ -402,18 +434,7 @@ test("Electron suite owns Desktop, isolated Service settings, and single-instanc
     expect(runtime.application.windows().length).toBe(windowCountBeforeSettings);
     await workspace.getByRole("button", { name: "Batal" }).click();
 
-    const serviceSettingsWindowPromise =
-      runtime.application.waitForEvent("window");
-    const serviceSettingsLaunch = spawn(
-      runtime.executablePath,
-      [...runtime.executableArguments, "--service-settings"],
-      {
-        env: runtime.environment,
-        stdio: "ignore",
-      },
-    );
-    await waitForExit(serviceSettingsLaunch, 10_000);
-    const serviceSettings = await serviceSettingsWindowPromise;
+    const serviceSettings = await openServiceSettingsWindow(runtime);
     await serviceSettings.waitForLoadState("domcontentloaded");
     await expect(
       serviceSettings.getByRole("heading", { name: "ShipFlow Service" }),
