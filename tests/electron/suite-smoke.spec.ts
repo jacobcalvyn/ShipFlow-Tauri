@@ -432,13 +432,17 @@ test("Electron suite owns Desktop, isolated Service settings, and single-instanc
     await expect(workspace.locator(".app-runtime-fallback")).toHaveCount(0);
     await expect(workspace.locator("body")).not.toContainText(runtime.internalToken);
     expect(runtime.application.windows().length).toBe(windowCountBeforeSettings);
-    await workspace.getByRole("button", { name: "Batal" }).click();
+    await workspace.getByRole("button", { name: "Tutup" }).click();
 
     const serviceSettings = await openServiceSettingsWindow(runtime);
     await serviceSettings.waitForLoadState("domcontentloaded");
     await expect(
       serviceSettings.getByRole("heading", { name: "ShipFlow Service" }),
+    ).toHaveCount(0);
+    await expect(
+      serviceSettings.getByRole("heading", { name: "Umum" }),
     ).toBeVisible();
+    await serviceSettings.getByRole("tab", { name: "Sumber Lacak" }).click();
     await expect(
       serviceSettings.getByRole("heading", { name: "Sumber Lacak" }),
     ).toBeVisible();
@@ -461,7 +465,7 @@ test("Electron suite owns Desktop, isolated Service settings, and single-instanc
       path: settingsScreenshotPath,
       contentType: "image/png",
     });
-    await serviceSettings.getByRole("button", { name: "Batal" }).click();
+    await serviceSettings.getByRole("button", { name: "Tutup" }).click();
     await expect
       .poll(() => runtime.application.windows().length)
       .toBe(windowCountBeforeSettings);
