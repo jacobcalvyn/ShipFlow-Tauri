@@ -22,7 +22,9 @@ use crate::storage::{
 };
 use crate::tracking::resolve_tracking_id;
 
-const IMPORT_SOURCE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(30);
+// Keep the import preview deadline above the Service lookup deadline (120s)
+// and below the local IPC request timeout (130s).
+const IMPORT_SOURCE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(125);
 pub const MAX_IMPORT_SOURCE_IDS: usize = 10_000;
 pub const MAX_IMPORT_JOB_ITEMS: usize = 100_000;
 pub const MAX_IMPORT_SOURCE_ID_BYTES: usize = 64;
@@ -1204,6 +1206,15 @@ mod tests {
         assert_eq!(
             ImportLookupFailure::from(TrackingError::Upstream("timeout".to_string())).message,
             "upstream: timeout"
+        );
+    }
+
+    #[test]
+    fn import_lookup_timeout_matches_service_and_ipc_deadlines() {
+        assert_eq!(IMPORT_SOURCE_LOOKUP_TIMEOUT, Duration::from_secs(125));
+        assert_eq!(
+            import_lookup_timeout_message(),
+            "Timeout ambil data setelah 125 detik."
         );
     }
 

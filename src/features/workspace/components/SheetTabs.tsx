@@ -264,6 +264,32 @@ export function SheetTabs({
   }, [isSettingsOpen]);
 
   useEffect(() => {
+    if (!isSettingsOpen) {
+      return;
+    }
+
+    document.documentElement.dataset.settingsOpen = "true";
+    console.info(
+      `[ShipFlowRuntime] settings_modal_open section=${activeSettingsSection}`,
+    );
+
+    return () => {
+      delete document.documentElement.dataset.settingsOpen;
+      console.info("[ShipFlowRuntime] settings_modal_closed");
+    };
+  }, [isSettingsOpen]);
+
+  useEffect(() => {
+    if (!isSettingsOpen) {
+      return;
+    }
+
+    console.info(
+      `[ShipFlowRuntime] settings_section_changed section=${activeSettingsSection}`,
+    );
+  }, [activeSettingsSection, isSettingsOpen]);
+
+  useEffect(() => {
     if (settingsOpenRequestToken === 0) {
       return;
     }

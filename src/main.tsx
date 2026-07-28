@@ -4,6 +4,10 @@ import App from "./App";
 import { logFrontendRuntimeEvent } from "./backend/commands";
 import "./styles.css";
 
+const rendererSearchParams = new URLSearchParams(window.location.search);
+document.documentElement.dataset.rendererSafeMode =
+  rendererSearchParams.get("rendererSafeMode") === "true" ? "true" : "false";
+
 async function logFrontendRuntime(level: "info" | "error", message: string) {
   try {
     await logFrontendRuntimeEvent(level, message);

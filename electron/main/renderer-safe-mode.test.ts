@@ -12,6 +12,7 @@ import {
   registerRendererAccessViolation,
   resetRendererSafeModeState,
   shouldDisableHardwareAcceleration,
+  shouldStopAutomaticRendererRecovery,
 } from "./renderer-safe-mode";
 
 const temporaryDirectories: string[] = [];
@@ -86,6 +87,31 @@ describe("renderer safe mode", () => {
         "1",
       ),
     ).toBe(true);
+  });
+
+  it("stops automatic recovery when compatibility mode also crashes", () => {
+    const activeState = activateRendererSafeMode(
+      defaultRendererSafeModeState(1_000),
+      1_000,
+    );
+
+    expect(
+      shouldStopAutomaticRendererRecovery(
+        "win32",
+        activeState,
+        -1_073_741_819,
+      ),
+    ).toBe(true);
+    expect(
+      shouldStopAutomaticRendererRecovery("win32", activeState, 1),
+    ).toBe(false);
+    expect(
+      shouldStopAutomaticRendererRecovery(
+        "darwin",
+        activeState,
+        -1_073_741_819,
+      ),
+    ).toBe(false);
   });
 
   it("bootstraps compatibility mode from multiple recent Crashpad reports", () => {

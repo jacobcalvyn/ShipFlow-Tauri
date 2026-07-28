@@ -207,7 +207,7 @@ describe("SheetTabs", () => {
   });
 
   it("opens service settings inside the desktop settings dialog", async () => {
-    render(
+    const view = render(
       <SheetTabs
         tabs={[{ id: "sheet-1", name: "Sheet 1", color: "slate", icon: "sheet", isActive: true }]}
         activeSheetId="sheet-1"
@@ -224,6 +224,7 @@ describe("SheetTabs", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
+    expect(document.documentElement.dataset.settingsOpen).toBe("true");
     expect(screen.queryByLabelText("URL Service ShipFlow")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("ShipFlow Service Bearer Token")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "Sumber Lacak" }));
@@ -232,6 +233,9 @@ describe("SheetTabs", () => {
       expect(screen.getByRole("dialog", { name: "Pengaturan ShipFlow" })).toBeInTheDocument();
       expect(screen.getByRole("heading", { name: "Sumber Lacak" })).toBeInTheDocument();
     });
+
+    view.unmount();
+    expect(document.documentElement.dataset.settingsOpen).toBeUndefined();
   });
 
   it("keeps the settings dialog rendered while switching every settings section", async () => {

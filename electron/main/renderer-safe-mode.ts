@@ -42,6 +42,18 @@ export function isWindowsAccessViolationExitCode(exitCode: number) {
   return exitCode === -1_073_741_819 || exitCode === 3_221_225_477;
 }
 
+export function shouldStopAutomaticRendererRecovery(
+  platform: NodeJS.Platform,
+  state: RendererSafeModeState,
+  exitCode: number,
+) {
+  return (
+    platform === "win32" &&
+    state.hardwareAccelerationDisabled &&
+    isWindowsAccessViolationExitCode(exitCode)
+  );
+}
+
 export function loadRendererSafeModeState(
   filePath: string,
   now = Date.now(),

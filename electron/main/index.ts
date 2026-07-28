@@ -69,6 +69,7 @@ import {
   registerRendererAccessViolation,
   resetRendererSafeModeState,
   shouldDisableHardwareAcceleration,
+  shouldStopAutomaticRendererRecovery,
   type RendererSafeModeState,
 } from "./renderer-safe-mode";
 
@@ -507,6 +508,10 @@ function rendererUrl(kind: WindowKind, label: string) {
   const url = new URL(process.env.ELECTRON_RENDERER_URL!);
   url.searchParams.set("windowKind", kind);
   url.searchParams.set("windowLabel", label);
+  url.searchParams.set(
+    "rendererSafeMode",
+    String(rendererSafeModeState.hardwareAccelerationDisabled),
+  );
   return url.toString();
 }
 
@@ -520,7 +525,13 @@ async function loadRenderer(record: WindowRecord) {
     return;
   }
   await record.window.loadFile(packagedRendererPath(), {
-    query: { windowKind: record.kind, windowLabel: record.label },
+    query: {
+      windowKind: record.kind,
+      windowLabel: record.label,
+      rendererSafeMode: String(
+        rendererSafeModeState.hardwareAccelerationDisabled,
+      ),
+    },
   });
 }
 
@@ -616,6 +627,11 @@ function registerRendererSafeModeCrash(
   if (process.platform !== "win32") {
     return false;
   }
+  const safeModeAlreadyFailed = shouldStopAutomaticRendererRecovery(
+    process.platform,
+    rendererSafeModeState,
+    exitCode,
+  );
   const update = registerRendererAccessViolation(
     rendererSafeModeState,
     exitCode,
@@ -649,8 +665,20 @@ function registerRendererSafeModeCrash(
       },
     );
     installApplicationMenu();
+  } else if (safeModeAlreadyFailed) {
+    appLogger.event(
+      "ERROR",
+      "Renderer",
+      "renderer_safe_mode_recovery_stopped",
+      {
+        crashCount: update.crashCount,
+        exitCode,
+        statePath: rendererSafeModePath,
+        windowLabel: record.label,
+      },
+    );
   }
-  return update.activated;
+  return update.activated || safeModeAlreadyFailed;
 }
 
 function logRendererCrashDiagnostics(record: WindowRecord) {
