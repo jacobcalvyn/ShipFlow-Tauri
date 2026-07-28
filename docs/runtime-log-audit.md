@@ -104,7 +104,7 @@ The Quality Gate executes:
 
 - source-level TypeScript, Vitest, Rust, Clippy, and security checks on Linux;
 - unpacked packaged smoke tests on `macos-latest` and `windows-latest`;
-- single-instance, integrated Service settings, native API health, and Service
+- single-instance, isolated Service settings, native API health, and Service
   crash-recovery checks.
 
 On a smoke failure, GitHub Actions uploads the Playwright report, screenshots,

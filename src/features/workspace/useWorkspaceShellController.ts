@@ -12,7 +12,6 @@ type AppMenuCommand =
   | "new-window"
   | "open-document-in-new-window"
   | "show-settings"
-  | "show-service-settings"
   | "check-for-updates"
   | "install-app-update";
 
@@ -58,7 +57,6 @@ export function useWorkspaceShellController({
   showNotice,
 }: UseWorkspaceShellControllerOptions) {
   const [settingsOpenRequestToken, setSettingsOpenRequestToken] = useState(0);
-  const [serviceSettingsOpenRequestToken, setServiceSettingsOpenRequestToken] = useState(0);
   const [displayScale, setDisplayScale] = useState<DisplayScale>(() => {
     if (!isBrowserReady()) {
       return "small";
@@ -161,9 +159,6 @@ export function useWorkspaceShellController({
           case "show-settings":
             setSettingsOpenRequestToken((current) => current + 1);
             break;
-          case "show-service-settings":
-            setServiceSettingsOpenRequestToken((current) => current + 1);
-            break;
           case "check-for-updates":
             void handleCheckForUpdates();
             break;
@@ -206,7 +201,6 @@ export function useWorkspaceShellController({
     displayScale,
     effectiveDisplayScale,
     previewDisplayScale,
-    serviceSettingsOpenRequestToken,
     settingsOpenRequestToken,
   };
 }

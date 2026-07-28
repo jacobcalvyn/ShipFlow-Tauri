@@ -9,6 +9,7 @@ export type ShipFlowCommand =
   | "copy_to_clipboard"
   | "read_from_clipboard"
   | "open_app_log"
+  | "close_current_window"
   | "log_frontend_runtime_event"
   | "get_release_health"
   | "check_app_update"

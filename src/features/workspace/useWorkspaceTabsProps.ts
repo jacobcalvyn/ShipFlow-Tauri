@@ -6,7 +6,6 @@ type UseWorkspaceTabsPropsOptions = {
   activeSheetId: string;
   effectiveDisplayScale: ComponentProps<typeof SheetTabs>["displayScale"];
   settingsOpenRequestToken: number;
-  serviceSettingsOpenRequestToken: number;
   recentDocumentItems: NonNullable<ComponentProps<typeof SheetTabs>["recentDocuments"]>;
   canUseAutosave: boolean;
   isAutosaveActive: boolean;
@@ -36,7 +35,6 @@ export function useWorkspaceTabsProps({
   activeSheetId,
   effectiveDisplayScale,
   settingsOpenRequestToken,
-  serviceSettingsOpenRequestToken,
   recentDocumentItems,
   canUseAutosave,
   isAutosaveActive,
@@ -65,7 +63,6 @@ export function useWorkspaceTabsProps({
     activeSheetId,
     displayScale: effectiveDisplayScale,
     settingsOpenRequestToken,
-    serviceSettingsOpenRequestToken,
     recentDocuments: recentDocumentItems,
     canUseAutosave,
     isAutosaveEnabled: isAutosaveActive,

@@ -15,6 +15,7 @@ import {
   shell,
   Tray,
   type IpcMainInvokeEvent,
+  type Session,
 } from "electron";
 import electronUpdater from "electron-updater";
 import {
@@ -75,7 +76,7 @@ import {
 
 const { autoUpdater } = electronUpdater;
 
-type WindowKind = "workspace";
+type WindowKind = "workspace" | "service-settings";
 type WindowLaunchRequest = { documentPath: string | null; startFresh: boolean };
 type WindowRecord = {
   window: BrowserWindow;
@@ -181,7 +182,7 @@ let rendererIpcActivitySequence = 0;
 let windowSequence = 0;
 let tray: Tray | null = null;
 let isQuitting = false;
-let sessionSecurityConfigured = false;
+const securedSessions = new WeakSet<Session>();
 let quitCleanupStarted = false;
 let quitCleanupComplete = false;
 let nativeRuntimesShuttingDown = false;
@@ -218,6 +219,9 @@ const COMMON_COMMANDS = new Set<ShipFlowCommand>([
   "get_release_health",
   "check_app_update",
   "install_app_update",
+]);
+const SERVICE_SETTINGS_ONLY_COMMANDS = new Set<ShipFlowCommand>([
+  "close_current_window",
   "load_saved_api_service_config",
   "copy_public_api_token",
   "get_api_service_status",
@@ -303,13 +307,15 @@ function menuItem(label: string, command: string, accelerator?: string) {
     label,
     accelerator,
     click: () => {
+      if (command === "show-service-settings") {
+        openOrFocusServiceSettings();
+        return;
+      }
       const record = focusedWorkspaceRecord();
       if (record) {
         sendMenuCommand(record, command);
       } else if (command === "show-settings") {
-        openWorkspaceSettings("workspace");
-      } else if (command === "show-service-settings") {
-        openWorkspaceSettings("service");
+        openWorkspaceSettings();
       }
     },
   };
@@ -493,7 +499,7 @@ function installTray() {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "Open ShipFlow Desktop", click: () => openOrFocusWorkspace() },
-      { label: "Service Settings", click: () => openWorkspaceSettings("service") },
+      { label: "Service Settings", click: () => openOrFocusServiceSettings() },
       { type: "separator" },
       {
         label: "Quit ShipFlow Desktop",
@@ -510,7 +516,10 @@ function rendererUrl(kind: WindowKind, label: string) {
   url.searchParams.set("windowLabel", label);
   url.searchParams.set(
     "rendererSafeMode",
-    String(rendererSafeModeState.hardwareAccelerationDisabled),
+    String(
+      kind === "workspace" &&
+        rendererSafeModeState.hardwareAccelerationDisabled,
+    ),
   );
   return url.toString();
 }
@@ -529,7 +538,8 @@ async function loadRenderer(record: WindowRecord) {
       windowKind: record.kind,
       windowLabel: record.label,
       rendererSafeMode: String(
-        rendererSafeModeState.hardwareAccelerationDisabled,
+        record.kind === "workspace" &&
+          rendererSafeModeState.hardwareAccelerationDisabled,
       ),
     },
   });
@@ -585,16 +595,22 @@ async function showRendererRecoveryFallback(record: WindowRecord) {
   }
   record.rendererFallbackActive = true;
   try {
+    const isWorkspace = record.kind === "workspace";
     const result = await dialog.showMessageBox(record.window, {
       buttons: ["Restart ShipFlow Desktop", "Open Logs Folder", "Close"],
       cancelId: 2,
       defaultId: 0,
       detail:
+        isWorkspace &&
         process.platform === "win32" &&
         rendererSafeModeState.hardwareAccelerationDisabled
           ? "Automatic display recovery was stopped to avoid a crash loop. Restarting will use Windows display compatibility mode. Unsaved workspace changes will still be checked before the application exits."
-          : "Automatic display recovery was stopped to avoid a crash loop. Workspace data remains managed by the local engine.",
-      message: "The workspace display stopped repeatedly.",
+          : isWorkspace
+            ? "Automatic display recovery was stopped to avoid a crash loop. Workspace data remains managed by the local engine."
+            : "Automatic display recovery was stopped for Service Settings. Workspace windows remain available.",
+      message: isWorkspace
+        ? "The workspace display stopped repeatedly."
+        : "The Service Settings display stopped repeatedly.",
       noLink: true,
       title: PRODUCT_NAME,
       type: "error",
@@ -720,13 +736,18 @@ function createWindow(
   options: { label?: string; launchRequest?: WindowLaunchRequest | null } = {},
 ) {
   windowSequence += 1;
-  const label = options.label ?? `workspace-${windowSequence}`;
+  const isServiceSettings = kind === "service-settings";
+  const label =
+    options.label ??
+    (isServiceSettings ? "service-settings" : `workspace-${windowSequence}`);
+  const width = isServiceSettings ? 960 : 1280;
+  const height = isServiceSettings ? 720 : 860;
   const window = new BrowserWindow({
-    title: PRODUCT_NAME,
-    width: 1280,
-    height: 860,
-    minWidth: 900,
-    minHeight: 640,
+    title: isServiceSettings ? "ShipFlow Service" : PRODUCT_NAME,
+    width,
+    height,
+    minWidth: isServiceSettings ? 760 : 900,
+    minHeight: isServiceSettings ? 560 : 640,
     show: false,
     backgroundColor: "#f8fafc",
     webPreferences: {
@@ -736,14 +757,18 @@ function createWindow(
       sandbox: true,
       webSecurity: true,
       allowRunningInsecureContent: false,
+      ...(isServiceSettings
+        ? { partition: "persist:shipflow-service-settings" }
+        : {}),
     },
   });
-  if (!sessionSecurityConfigured) {
-    window.webContents.session.setPermissionCheckHandler(() => false);
-    window.webContents.session.setPermissionRequestHandler(
+  const rendererSession = window.webContents.session;
+  if (!securedSessions.has(rendererSession)) {
+    rendererSession.setPermissionCheckHandler(() => false);
+    rendererSession.setPermissionRequestHandler(
       (_webContents, _permission, callback) => callback(false),
     );
-    sessionSecurityConfigured = true;
+    securedSessions.add(rendererSession);
   }
   const record: WindowRecord = {
     window,
@@ -768,11 +793,12 @@ function createWindow(
     ),
   };
   const webContentsId = window.webContents.id;
-  appLogger.info("Electron", `Creating workspace window ${label}.`);
+  appLogger.info("Electron", `Creating ${kind} window ${label}.`);
   appLogger.event("INFO", "Lifecycle", "window_created", {
-    height: 860,
+    height,
+    kind,
     webContentsId,
-    width: 1280,
+    width,
     windowLabel: label,
   });
   windowsByWebContentsId.set(webContentsId, record);
@@ -819,10 +845,10 @@ function createWindow(
       // Diagnostics must never prevent the renderer recovery path.
       appLogger.error("CrashReporter", error);
     }
-    const safeModeActivated = registerRendererSafeModeCrash(
-      record,
-      details.exitCode,
-    );
+    const safeModeActivated =
+      kind === "workspace"
+        ? registerRendererSafeModeCrash(record, details.exitCode)
+        : false;
     if (isRecoverableRendererExit(details.reason)) {
       if (safeModeActivated) {
         void showRendererRecoveryFallback(record);
@@ -871,8 +897,9 @@ function createWindow(
     }
   });
   window.on("closed", () => {
-    appLogger.info("Electron", `Closed workspace window ${label}.`);
+    appLogger.info("Electron", `Closed ${kind} window ${label}.`);
     appLogger.event("INFO", "Lifecycle", "window_closed", {
+      kind,
       windowLabel: label,
     });
     windowsByWebContentsId.delete(webContentsId);
@@ -882,9 +909,11 @@ function createWindow(
       clearTimeout(record.rendererRecoveryTimer);
       record.rendererRecoveryTimer = null;
     }
-    workspaceHosts.get(label)?.stop();
-    workspaceHosts.delete(label);
-    workspaceHostStarts.delete(label);
+    if (kind === "workspace") {
+      workspaceHosts.get(label)?.stop();
+      workspaceHosts.delete(label);
+      workspaceHostStarts.delete(label);
+    }
     if (record.documentPath && documentClaims.get(record.documentPath) === label) {
       documentClaims.delete(record.documentPath);
     }
@@ -920,9 +949,22 @@ function openOrFocusWorkspace() {
   return createWindow("workspace", { label: "main" });
 }
 
-function openWorkspaceSettings(section: "workspace" | "service") {
+function openOrFocusServiceSettings() {
+  const existing = windowsByLabel.get("service-settings");
+  if (existing && existing.kind === "service-settings") {
+    if (existing.window.webContents.isCrashed()) {
+      scheduleRendererRecovery(existing);
+    }
+    existing.window.show();
+    existing.window.focus();
+    return existing;
+  }
+  return createWindow("service-settings", { label: "service-settings" });
+}
+
+function openWorkspaceSettings() {
   const record = openOrFocusWorkspace();
-  const command = section === "service" ? "show-service-settings" : "show-settings";
+  const command = "show-settings";
   if (record.window.webContents.isLoadingMainFrame()) {
     record.window.webContents.once("did-finish-load", () => sendMenuCommand(record, command));
   } else {
@@ -1148,6 +1190,10 @@ async function handleCommand(
   const record = recordForEvent(event);
   if (
     !COMMON_COMMANDS.has(command) &&
+    !(
+      record.kind === "service-settings" &&
+      SERVICE_SETTINGS_ONLY_COMMANDS.has(command)
+    ) &&
     !(record.kind === "workspace" && WORKSPACE_ONLY_COMMANDS.has(command))
   ) {
     throw new Error(`Command ${command} is not allowed for ${record.kind} windows.`);
@@ -1171,6 +1217,10 @@ async function handleCommand(
       return clipboard.readText();
     case "open_app_log":
       return openAppLogFile();
+    case "close_current_window":
+      record.allowClose = true;
+      record.window.close();
+      return;
     case "log_frontend_runtime_event":
       if (args.level === "error") {
         appLogger.error("Frontend", args.message ?? "");
@@ -1522,7 +1572,7 @@ async function openWorkspaceDocumentFromLaunch(documentPath: string) {
 async function handleApplicationLaunch(request: ApplicationLaunchRequest) {
   switch (request.kind) {
     case "service-settings":
-      openWorkspaceSettings("service");
+      openOrFocusServiceSettings();
       return;
     case "document":
       await openWorkspaceDocumentFromLaunch(request.documentPath);

@@ -7,7 +7,6 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { IntegratedServiceSettings } from "../../service/components/IntegratedServiceSettings";
 import { SheetFileMenu } from "./SheetFileMenu";
 
 type SheetTabItem = {
@@ -23,7 +22,6 @@ type SheetTabsProps = {
   activeSheetId: string;
   displayScale: "small" | "medium" | "large";
   settingsOpenRequestToken?: number;
-  serviceSettingsOpenRequestToken?: number;
   recentDocuments?: Array<{ path: string; name: string }>;
   canUseAutosave?: boolean;
   isAutosaveEnabled?: boolean;
@@ -96,7 +94,6 @@ export function SheetTabs({
   activeSheetId,
   displayScale,
   settingsOpenRequestToken = 0,
-  serviceSettingsOpenRequestToken = 0,
   recentDocuments = [],
   canUseAutosave = false,
   isAutosaveEnabled = false,
@@ -130,9 +127,6 @@ export function SheetTabs({
     left: number;
   } | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [activeSettingsSection, setActiveSettingsSection] = useState<
-    "display" | "service-runtime" | "service-api"
-  >("display");
   const [isConfirmingSettings, setIsConfirmingSettings] = useState(false);
   const [isFileMenuOpen, setIsFileMenuOpen] = useState(false);
   const [dropTargetSheetId, setDropTargetSheetId] = useState<string | null>(null);
@@ -269,25 +263,13 @@ export function SheetTabs({
     }
 
     document.documentElement.dataset.settingsOpen = "true";
-    console.info(
-      `[ShipFlowRuntime] settings_modal_open section=${activeSettingsSection}`,
-    );
+    console.info("[ShipFlowRuntime] settings_modal_open section=display");
 
     return () => {
       delete document.documentElement.dataset.settingsOpen;
       console.info("[ShipFlowRuntime] settings_modal_closed");
     };
   }, [isSettingsOpen]);
-
-  useEffect(() => {
-    if (!isSettingsOpen) {
-      return;
-    }
-
-    console.info(
-      `[ShipFlowRuntime] settings_section_changed section=${activeSettingsSection}`,
-    );
-  }, [activeSettingsSection, isSettingsOpen]);
 
   useEffect(() => {
     if (settingsOpenRequestToken === 0) {
@@ -298,22 +280,8 @@ export function SheetTabs({
     setSheetMenuPosition(null);
     setDeleteArmedSheetId(null);
     setIsFileMenuOpen(false);
-    setActiveSettingsSection("display");
     setIsSettingsOpen(true);
   }, [settingsOpenRequestToken]);
-
-  useEffect(() => {
-    if (serviceSettingsOpenRequestToken === 0) {
-      return;
-    }
-
-    setOpenSheetMenuSheetId(null);
-    setSheetMenuPosition(null);
-    setDeleteArmedSheetId(null);
-    setIsFileMenuOpen(false);
-    setActiveSettingsSection("service-runtime");
-    setIsSettingsOpen(true);
-  }, [serviceSettingsOpenRequestToken]);
 
   useEffect(() => {
     if (!isSettingsOpen) {
@@ -376,7 +344,7 @@ export function SheetTabs({
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [activeSettingsSection, isSettingsOpen]);
+  }, [isSettingsOpen]);
 
   const beginRename = (sheetId: string) => {
     const targetTab = tabs.find((tab) => tab.id === sheetId);
@@ -495,7 +463,6 @@ export function SheetTabs({
     setOpenSheetMenuSheetId(null);
     setSheetMenuPosition(null);
     setDeleteArmedSheetId(null);
-    setActiveSettingsSection("display");
     setIsSettingsOpen(true);
   };
 
@@ -898,140 +865,85 @@ export function SheetTabs({
                 <div className="settings-modal-header">
                   <h3>Pengaturan</h3>
                 </div>
-                <div className="settings-layout settings-layout-tabs">
-                  <div
-                    className="settings-sidebar"
-                    role="tablist"
-                    aria-label="Bagian pengaturan"
-                    aria-orientation="vertical"
+                <div className="settings-content settings-content-single">
+                  <section
+                    className="settings-pane"
+                    aria-label="Ukuran Tampilan"
                   >
-                    <button
-                      type="button"
-                      id="desktop-settings-display-tab"
-                      className={`settings-nav-button ${activeSettingsSection === "display" ? "is-active" : ""}`}
-                      role="tab"
-                      aria-selected={activeSettingsSection === "display"}
-                      aria-controls="desktop-settings-display-panel"
-                      onClick={() => setActiveSettingsSection("display")}
+                    <div className="settings-pane-header">
+                      <h4>Ukuran Tampilan</h4>
+                      <p>Pilih ukuran workspace sesuai kenyamanan kerja di desktop.</p>
+                    </div>
+                    <div
+                      className="settings-scale-options"
+                      role="radiogroup"
+                      aria-label="Ukuran Tampilan"
                     >
-                      Ukuran Tampilan
-                    </button>
-                    <button
-                      type="button"
-                      id="service-settings-runtime-tab"
-                      className={`settings-nav-button ${activeSettingsSection === "service-runtime" ? "is-active" : ""}`}
-                      role="tab"
-                      aria-selected={activeSettingsSection === "service-runtime"}
-                      aria-controls="service-settings-runtime-panel"
-                      onClick={() => setActiveSettingsSection("service-runtime")}
-                    >
-                      Sumber Lacak
-                    </button>
-                    <button
-                      type="button"
-                      id="service-settings-api-tab"
-                      className={`settings-nav-button ${activeSettingsSection === "service-api" ? "is-active" : ""}`}
-                      role="tab"
-                      aria-selected={activeSettingsSection === "service-api"}
-                      aria-controls="service-settings-api-panel"
-                      onClick={() => setActiveSettingsSection("service-api")}
-                    >
-                      API Publik
-                    </button>
-                  </div>
-                  <div className="settings-content">
-                    {activeSettingsSection === "display" ? (
-                      <section
-                        id="desktop-settings-display-panel"
-                        className="settings-pane"
-                        role="tabpanel"
-                        aria-labelledby="desktop-settings-display-tab"
+                      <button
+                        type="button"
+                        className={[
+                          "settings-scale-option",
+                          displayScale === "small" ? "is-active" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        role="radio"
+                        aria-checked={displayScale === "small"}
+                        onClick={() => onPreviewDisplayScale("small")}
                       >
-                        <div className="settings-pane-header">
-                          <h4>Ukuran Tampilan</h4>
-                          <p>Pilih ukuran workspace sesuai kenyamanan kerja di desktop.</p>
-                        </div>
-                        <div
-                          className="settings-scale-options"
-                          role="radiogroup"
-                          aria-label="Ukuran Tampilan"
-                        >
-                          <button
-                            type="button"
-                            className={[
-                              "settings-scale-option",
-                              displayScale === "small" ? "is-active" : "",
-                            ]
-                              .filter(Boolean)
-                              .join(" ")}
-                            role="radio"
-                            aria-checked={displayScale === "small"}
-                            onClick={() => onPreviewDisplayScale("small")}
-                          >
-                            Kecil
-                          </button>
-                          <button
-                            type="button"
-                            className={[
-                              "settings-scale-option",
-                              displayScale === "medium" ? "is-active" : "",
-                            ]
-                              .filter(Boolean)
-                              .join(" ")}
-                            role="radio"
-                            aria-checked={displayScale === "medium"}
-                            onClick={() => onPreviewDisplayScale("medium")}
-                          >
-                            Sedang
-                          </button>
-                          <button
-                            type="button"
-                            className={[
-                              "settings-scale-option",
-                              displayScale === "large" ? "is-active" : "",
-                            ]
-                              .filter(Boolean)
-                              .join(" ")}
-                            role="radio"
-                            aria-checked={displayScale === "large"}
-                            onClick={() => onPreviewDisplayScale("large")}
-                          >
-                            Besar
-                          </button>
-                        </div>
-                      </section>
-                    ) : (
-                      <IntegratedServiceSettings
-                        activeView={
-                          activeSettingsSection === "service-api" ? "api" : "runtime"
-                        }
-                        onClose={() => setIsSettingsOpen(false)}
-                      />
-                    )}
-                  </div>
+                        Kecil
+                      </button>
+                      <button
+                        type="button"
+                        className={[
+                          "settings-scale-option",
+                          displayScale === "medium" ? "is-active" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        role="radio"
+                        aria-checked={displayScale === "medium"}
+                        onClick={() => onPreviewDisplayScale("medium")}
+                      >
+                        Sedang
+                      </button>
+                      <button
+                        type="button"
+                        className={[
+                          "settings-scale-option",
+                          displayScale === "large" ? "is-active" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        role="radio"
+                        aria-checked={displayScale === "large"}
+                        onClick={() => onPreviewDisplayScale("large")}
+                      >
+                        Besar
+                      </button>
+                    </div>
+                  </section>
                 </div>
-                {activeSettingsSection === "display" ? (
-                  <div className="settings-modal-footer">
-                    <button
-                      type="button"
-                      className="sheet-tab-action settings-modal-cancel"
-                      onClick={closeSettings}
-                      disabled={isConfirmingSettings}
-                    >
-                      Batal
-                    </button>
-                    <button
-                      type="button"
-                      className="sheet-tab-action settings-modal-ok"
-                      onClick={() => {
-                        void confirmSettings();
-                      }}
-                      disabled={isConfirmingSettings}
-                    >
-                      {isConfirmingSettings ? "Menyimpan..." : "Simpan"}
-                    </button>
-                  </div>
-                ) : null}
+                <div className="settings-modal-footer">
+                  <button
+                    type="button"
+                    className="sheet-tab-action settings-modal-cancel"
+                    onClick={closeSettings}
+                    disabled={isConfirmingSettings}
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="button"
+                    className="sheet-tab-action settings-modal-ok"
+                    onClick={() => {
+                      void confirmSettings();
+                    }}
+                    disabled={isConfirmingSettings}
+                  >
+                    {isConfirmingSettings ? "Menyimpan..." : "Simpan"}
+                  </button>
+                </div>
               </div>
             </div>,
             document.body

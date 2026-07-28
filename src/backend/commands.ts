@@ -76,6 +76,10 @@ export function openAppLog() {
   return invokeCommand<void>("open_app_log");
 }
 
+export function closeCurrentWindow() {
+  return invokeCommand<void>("close_current_window");
+}
+
 export function logFrontendRuntimeEvent(level: "info" | "error", message: string) {
   return invokeCommand<void>("log_frontend_runtime_event", { level, message });
 }

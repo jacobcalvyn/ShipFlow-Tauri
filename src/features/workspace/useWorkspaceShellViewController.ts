@@ -119,7 +119,6 @@ export function useWorkspaceShellViewController({
     activeSheetId,
     effectiveDisplayScale: surface.effectiveDisplayScale,
     settingsOpenRequestToken: surface.settingsOpenRequestToken,
-    serviceSettingsOpenRequestToken: surface.serviceSettingsOpenRequestToken,
     recentDocumentItems: surface.recentDocumentItems,
     canUseAutosave: surface.canUseAutosave,
     isAutosaveActive: surface.isAutosaveActive,

@@ -32,6 +32,22 @@ function forbidTokens(relativePath, tokens) {
   }
 }
 
+function readSetMembers(relativePath, setName) {
+  const source = read(relativePath);
+  const match = source.match(
+    new RegExp(
+      `const ${setName} = new Set<[^>]+>\\(\\[([\\s\\S]*?)\\]\\);`,
+    ),
+  );
+  if (!match) {
+    errors.push(`${relativePath} must declare ${setName} as an explicit Set.`);
+    return new Set();
+  }
+  return new Set(
+    [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]),
+  );
+}
+
 function walk(relativeDirectory, extensions) {
   const absoluteDirectory = path.join(rootDir, relativeDirectory);
   if (!existsSync(absoluteDirectory)) {
@@ -114,7 +130,6 @@ for (const legacyPath of [
   "docs/native-runtime-release-smoke-checklist.md",
   "docs/refactor-audit.md",
   "docs/rust-core-engine-big-bang.md",
-  "src/features/service/ServiceSettingsApp.tsx",
   "scripts/build-updater-artifacts.mjs",
   "scripts/create-release-build-config.mjs",
   "scripts/generate-release-evidence.mjs",
@@ -148,6 +163,7 @@ requireTokens("electron/main/index.ts", [
   "app.requestSingleInstanceLock()",
   "event.senderFrame !== event.sender.mainFrame",
   "COMMON_COMMANDS",
+  "SERVICE_SETTINGS_ONLY_COMMANDS",
   "WORKSPACE_ONLY_COMMANDS",
   "serviceAgent.shutdown()",
   "SHIPFLOW_USER_DATA_DIR",
@@ -158,9 +174,40 @@ requireTokens("electron/main/index.ts", [
   "nativeRuntimesShuttingDown",
   "workspaceHostStarts",
   "stopAllWorkspaceHosts",
-  'type WindowKind = "workspace"',
-  'openWorkspaceSettings("service")',
+  'type WindowKind = "workspace" | "service-settings"',
+  "openOrFocusServiceSettings",
+  'createWindow("service-settings"',
+  'partition: "persist:shipflow-service-settings"',
+  'record.kind === "service-settings"',
+  "SERVICE_SETTINGS_ONLY_COMMANDS.has(command)",
+  'kind === "workspace"',
+  "The Service Settings display stopped repeatedly.",
 ]);
+const commonCommands = readSetMembers("electron/main/index.ts", "COMMON_COMMANDS");
+const serviceSettingsCommands = readSetMembers(
+  "electron/main/index.ts",
+  "SERVICE_SETTINGS_ONLY_COMMANDS",
+);
+for (const command of [
+  "close_current_window",
+  "load_saved_api_service_config",
+  "copy_public_api_token",
+  "get_api_service_status",
+  "configure_api_service",
+  "validate_tracking_source_config",
+  "test_external_tracking_source",
+]) {
+  if (!serviceSettingsCommands.has(command)) {
+    errors.push(
+      `electron/main/index.ts must scope ${command} to SERVICE_SETTINGS_ONLY_COMMANDS.`,
+    );
+  }
+  if (commonCommands.has(command)) {
+    errors.push(
+      `electron/main/index.ts must not expose ${command} through COMMON_COMMANDS.`,
+    );
+  }
+}
 requireTokens("index.html", [
   'http-equiv="Content-Security-Policy"',
   "default-src 'self'",
@@ -168,15 +215,23 @@ requireTokens("index.html", [
   "frame-src 'none'",
   "script-src 'self'",
 ]);
-forbidTokens("electron/main/index.ts", [
-  "openServiceSettingsWindow",
-  'createWindow("service-settings"',
-]);
+forbidTokens("electron/main/index.ts", ['openWorkspaceSettings("service")']);
 forbidTokens("src/backend/bridge-contract.ts", ["open_shipflow_service_app"]);
-requireTokens("src/features/workspace/components/SheetTabs.tsx", [
+forbidTokens("src/features/workspace/components/SheetTabs.tsx", [
   "IntegratedServiceSettings",
-  'aria-label="Pengaturan ShipFlow"',
   "serviceSettingsOpenRequestToken",
+]);
+requireTokens("src/features/workspace/components/SheetTabs.tsx", [
+  'aria-label="Pengaturan ShipFlow"',
+]);
+requireTokens("src/features/service/ServiceSettingsApp.tsx", [
+  "IntegratedServiceSettings",
+  'aria-label="Pengaturan ShipFlow Service"',
+  "closeCurrentWindow",
+]);
+requireTokens("src/main.tsx", [
+  'rendererWindowKind === "service-settings"',
+  "<ServiceSettingsApp />",
 ]);
 requireTokens("electron/preload/index.ts", [
   "contextBridge.exposeInMainWorld",

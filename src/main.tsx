@@ -2,11 +2,15 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { logFrontendRuntimeEvent } from "./backend/commands";
+import { ServiceSettingsApp } from "./features/service/ServiceSettingsApp";
 import "./styles.css";
 
 const rendererSearchParams = new URLSearchParams(window.location.search);
+const rendererWindowKind = rendererSearchParams.get("windowKind");
 document.documentElement.dataset.rendererSafeMode =
   rendererSearchParams.get("rendererSafeMode") === "true" ? "true" : "false";
+document.documentElement.dataset.windowKind =
+  rendererWindowKind === "service-settings" ? "service-settings" : "workspace";
 
 async function logFrontendRuntime(level: "info" | "error", message: string) {
   try {
@@ -79,7 +83,11 @@ window.addEventListener("unhandledrejection", (event) => {
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <AppErrorBoundary>
-      <App />
+      {rendererWindowKind === "service-settings" ? (
+        <ServiceSettingsApp />
+      ) : (
+        <App />
+      )}
     </AppErrorBoundary>
   </React.StrictMode>
 );

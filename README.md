@@ -5,8 +5,8 @@ with native Rust engines.
 
 The shipped suite contains:
 
-- one Electron application for the workspace, integrated Service settings, tray, menus,
-  file integration, and updates;
+- one Electron application with isolated workspace and Service Settings
+  windows, plus tray, menus, file integration, and updates;
 - `shipflow-service`, a headless Rust HTTP agent for tracking, Bag, Manifest,
   caching, concurrency, and third-party API access;
 - `shipflow-workspace-host`, a per-window Rust sidecar for SQLite workspace
@@ -33,9 +33,10 @@ The private suite credential is generated and encrypted by Electron and is not
 shown in the UI. The public API token shown in Service Settings is only for
 third-party clients.
 
-Service Settings lives in the same modal as Desktop display settings. Opening
-it from the application menu, tray, or command line focuses the existing
-Desktop window; it never creates a second user-facing application window.
+Service Settings uses a dedicated Electron window, renderer, and persistent
+session partition. It remains part of the same installed application and
+controls the same managed Rust Service process, but a renderer failure cannot
+take down or reload the workspace renderer.
 
 ## Requirements
 
@@ -91,7 +92,7 @@ GitHub release implicitly.
 The manual macOS and Windows artifact workflows require a successful Quality
 Gate for the exact commit being packaged. The Quality Gate builds unpacked
 packages on both operating systems and launches each real package to verify
-single-instance behavior, integrated Service settings, API health, and managed
+single-instance behavior, isolated Service settings, API health, and managed
 Service crash recovery. Artifact workflows then build, verify, and upload the
 installer without repeating the full suites. Publishing a release remains a
 separate, explicit operation with release credentials.

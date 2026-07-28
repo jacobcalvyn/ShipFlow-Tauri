@@ -28,7 +28,7 @@ Owns:
 - menus, file dialogs, clipboard, and external navigation
 - secure preload IPC
 - renderer lifecycle and React UI
-- service settings and external API-key management surfaces
+- isolated Service Settings renderer and external API-key management surfaces
 - packaged suite updates
 
 Does not own:

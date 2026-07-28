@@ -71,7 +71,6 @@ describe("useWorkspaceShellViewController", () => {
       actionNotices: [{ tone: "info", message: "Ready" }],
       effectiveDisplayScale: "small",
       settingsOpenRequestToken: 3,
-      serviceSettingsOpenRequestToken: 2,
       recentDocumentItems: [{ path: "/tmp/demo.shipflow", name: "demo.shipflow" }],
       canUseAutosave: true,
       isAutosaveActive: true,

@@ -215,6 +215,24 @@ async function readManagedServicePid(serviceStateDirectory: string) {
   return typeof config.processId === "number" ? config.processId : null;
 }
 
+async function readServiceStatus(runtime: SmokeRuntime) {
+  const response = await fetch(
+    `http://127.0.0.1:${runtime.servicePort}/v1/status`,
+  );
+  if (!response.ok) {
+    return null;
+  }
+
+  const body = (await response.json()) as {
+    data?: { service?: unknown; port?: unknown };
+  };
+  return {
+    status:
+      typeof body.data?.service === "string" ? body.data.service : null,
+    port: typeof body.data?.port === "number" ? body.data.port : null,
+  };
+}
+
 async function findWindowWithHeading(
   application: ElectronApplication,
   heading: string,
@@ -332,7 +350,7 @@ async function closeApplication(runtime: SmokeRuntime) {
   }
 }
 
-test("Electron suite owns Desktop, integrated Service settings, and single-instance lifecycle", async ({}, testInfo) => {
+test("Electron suite owns Desktop, isolated Service settings, and single-instance lifecycle", async ({}, testInfo) => {
   const runtime = await startSuite();
   try {
     const workspace = await runtime.application.firstWindow();
@@ -343,14 +361,7 @@ test("Electron suite owns Desktop, integrated Service settings, and single-insta
       .toBe(true);
 
     await expect
-      .poll(() =>
-        workspace.evaluate(async () => {
-          return window.shipflow?.invoke<{
-            status: string;
-            port: number | null;
-          }>("get_api_service_status");
-        }),
-      )
+      .poll(() => readServiceStatus(runtime).catch(() => null))
       .toMatchObject({ status: "running", port: runtime.servicePort });
 
     await workspace.getByRole("tab", { name: "Pivot/Grafik" }).click();
@@ -384,39 +395,55 @@ test("Electron suite owns Desktop, integrated Service settings, and single-insta
 
     const windowCountBeforeSettings = runtime.application.windows().length;
     await workspace.getByRole("button", { name: "Setting" }).click();
-    await workspace.getByRole("tab", { name: "Sumber Lacak" }).click();
-    await expect(workspace.getByRole("heading", { name: "Sumber Lacak" })).toBeVisible();
-    await expect(workspace.getByRole("tab", { name: "API Publik" })).toBeVisible();
-    await workspace.getByRole("tab", { name: "API Publik" }).click();
-    await expect(workspace.getByRole("heading", { name: "API Publik" })).toBeVisible();
-    await workspace.getByRole("tab", { name: "Ukuran Tampilan" }).click();
     await expect(workspace.getByRole("heading", { name: "Ukuran Tampilan" })).toBeVisible();
-    await workspace.getByRole("tab", { name: "Sumber Lacak" }).click();
-    await expect(workspace.getByRole("heading", { name: "Sumber Lacak" })).toBeVisible();
-    await expect(workspace.getByRole("tab", { name: "Workspace" })).toBeVisible();
+    await expect(workspace.getByRole("tab", { name: "Sumber Lacak" })).toHaveCount(0);
     await expect(workspace.locator(".app-runtime-fallback")).toHaveCount(0);
     await expect(workspace.locator("body")).not.toContainText(runtime.internalToken);
     expect(runtime.application.windows().length).toBe(windowCountBeforeSettings);
-    await expect
-      .poll(() =>
-        workspace.getByRole("tab", { name: "Workspace" }).evaluate((element) => {
-          const bounds = element.getBoundingClientRect();
-          const topElement = document.elementFromPoint(
-            bounds.left + bounds.width / 2,
-            bounds.top + bounds.height / 2,
-          );
-          return Boolean(topElement?.closest(".settings-modal-backdrop"));
-        }),
-      )
-      .toBe(true);
-    const settingsScreenshotPath = testInfo.outputPath(
-      "integrated-service-settings.png",
+    await workspace.getByRole("button", { name: "Batal" }).click();
+
+    const serviceSettingsWindowPromise =
+      runtime.application.waitForEvent("window");
+    const serviceSettingsLaunch = spawn(
+      runtime.executablePath,
+      [...runtime.executableArguments, "--service-settings"],
+      {
+        env: runtime.environment,
+        stdio: "ignore",
+      },
     );
-    await workspace.screenshot({ path: settingsScreenshotPath });
-    await testInfo.attach("integrated-service-settings", {
+    await waitForExit(serviceSettingsLaunch, 10_000);
+    const serviceSettings = await serviceSettingsWindowPromise;
+    await serviceSettings.waitForLoadState("domcontentloaded");
+    await expect(
+      serviceSettings.getByRole("heading", { name: "ShipFlow Service" }),
+    ).toBeVisible();
+    await expect(
+      serviceSettings.getByRole("heading", { name: "Sumber Lacak" }),
+    ).toBeVisible();
+    await serviceSettings.getByRole("tab", { name: "API Publik" }).click();
+    await expect(
+      serviceSettings.getByRole("heading", { name: "API Publik" }),
+    ).toBeVisible();
+    await expect(serviceSettings.locator(".app-runtime-fallback")).toHaveCount(0);
+    await expect(serviceSettings.locator("body")).not.toContainText(
+      runtime.internalToken,
+    );
+    expect(runtime.application.windows().length).toBe(
+      windowCountBeforeSettings + 1,
+    );
+    const settingsScreenshotPath = testInfo.outputPath(
+      "isolated-service-settings.png",
+    );
+    await serviceSettings.screenshot({ path: settingsScreenshotPath });
+    await testInfo.attach("isolated-service-settings", {
       path: settingsScreenshotPath,
       contentType: "image/png",
     });
+    await serviceSettings.getByRole("button", { name: "Batal" }).click();
+    await expect
+      .poll(() => runtime.application.windows().length)
+      .toBe(windowCountBeforeSettings);
 
     const windowCountBeforeSecondLaunch = runtime.application.windows().length;
     const secondInstance = spawn(
@@ -450,14 +477,7 @@ test("Electron suite owns Desktop, integrated Service settings, and single-insta
           const replacementPid = await readManagedServicePid(
             runtime.serviceStateDirectory,
           ).catch(() => null);
-          const status = await workspace
-            .evaluate(async () => {
-              return window.shipflow?.invoke<{
-                status: string;
-                port: number | null;
-              }>("get_api_service_status");
-            })
-            .catch(() => null);
+          const status = await readServiceStatus(runtime).catch(() => null);
           return {
             replaced:
               replacementPid !== null && replacementPid !== originalServicePid,

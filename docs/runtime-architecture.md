@@ -9,7 +9,7 @@ Electron process owns user-facing lifecycle. Rust owns data and network work.
 | --- | --- |
 | Electron main | workspace windows, tray, menus, single instance, updates, file dialogs, native process supervision |
 | Electron preload | narrow, context-isolated, allowlisted IPC |
-| React renderer | visual state, user interaction, visible row windows |
+| React renderers | isolated workspace and Service Settings presentation |
 | ShipFlow Service | public HTTP API, native internal IPC, scraping, cache, source selection, request concurrency and backpressure |
 | Workspace Host | SQLite workspace mutations, import jobs, progress events, DuckDB pivot/chart queries |
 
@@ -117,7 +117,7 @@ The cross-platform evidence procedure is documented in
 ## Lifecycle Rules
 
 1. Only one Electron suite instance may run per OS user.
-2. A second launch focuses the existing workspace and may open its integrated Service Settings modal.
+2. A second launch focuses the existing workspace or opens the dedicated Service Settings window.
 3. The tray belongs to Electron, never to a Rust child process.
 4. Closing windows keeps the Service running only when tray persistence is enabled.
 5. Quit and updater installation stop all Workspace Hosts and the managed Service.
@@ -125,11 +125,15 @@ The cross-platform evidence procedure is documented in
 7. Unexpected Service exits are restarted after 1, 2, 5, 10, and 30 seconds.
 8. More than five unexpected exits inside a two-minute window stop automatic restart and require an explicit lifecycle action.
 
-Service Settings is not a separate application window. Workspace display,
-tracking source, and public API settings share one modal in the active Desktop
-window. The modal backdrop blocks workspace interaction until the user saves or
-cancels it. Tray, menu, and `--service-settings` entry points all focus the
-Desktop window and select the Service section in that modal.
+Service Settings is a dedicated application window with its own renderer and
+persistent Electron session partition. It belongs to the same single-instance
+application and controls the same managed Service process. Workspace display
+settings remain in the workspace window. Tray, menu, and
+`--service-settings` entry points focus the existing Service Settings window or
+create exactly one when none exists. Service Settings has no Workspace Engine
+access, while workspace renderers no longer mount Service configuration UI.
+On Windows, renderer crash-loop accounting is scoped to workspace windows;
+a Service Settings renderer failure cannot enable workspace hardware safe mode.
 
 The managed Service exposes authenticated `/v1/diagnostics` data for uptime,
 current-suite restart count, RSS, cache sizes, and active or queued
@@ -157,7 +161,7 @@ Electron Builder creates one platform installer containing Electron,
 `shipflow-service`, `shipflow-workspace-host`, DuckDB runtime files where needed,
 and application icons. CI verifies packaged resources and launches the unpacked
 application on both macOS and Windows. The packaged smoke test verifies the
-integrated settings flow, single-instance behavior, native API health, and
+isolated settings flow, single-instance behavior, native API health, and
 managed Service crash recovery before artifact upload.
 
 The current release-readiness boundary is runtime readiness before signing.
