@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { closeCurrentWindow } from "../../backend/commands";
 import { IntegratedServiceSettings } from "./components/IntegratedServiceSettings";
-
-type ServiceSettingsView = "runtime" | "api";
+import type { ServiceSettingsView } from "./components/ServiceSettingsWindow";
 
 export function ServiceSettingsApp() {
-  const [activeView, setActiveView] = useState<ServiceSettingsView>("runtime");
+  const [activeView, setActiveView] = useState<ServiceSettingsView>("general");
 
   const closeWindow = useCallback(() => {
     void closeCurrentWindow();
@@ -28,12 +27,6 @@ export function ServiceSettingsApp() {
         className="service-window-panel"
         aria-label="Pengaturan ShipFlow Service"
       >
-        <header className="service-window-header">
-          <span className="service-window-eyebrow">SERVICE</span>
-          <h1>ShipFlow Service</h1>
-          <p>Atur sumber lacak dan API publik untuk aplikasi pihak ketiga.</p>
-        </header>
-
         <div className="service-window-layout">
           <nav
             className="settings-sidebar service-window-sidebar"
@@ -41,6 +34,17 @@ export function ServiceSettingsApp() {
             aria-label="Bagian pengaturan Service"
             aria-orientation="vertical"
           >
+            <button
+              type="button"
+              id="service-settings-general-tab"
+              className={`settings-nav-button ${activeView === "general" ? "is-active" : ""}`}
+              role="tab"
+              aria-selected={activeView === "general"}
+              aria-controls="service-settings-general-panel"
+              onClick={() => setActiveView("general")}
+            >
+              Umum
+            </button>
             <button
               type="button"
               id="service-settings-runtime-tab"

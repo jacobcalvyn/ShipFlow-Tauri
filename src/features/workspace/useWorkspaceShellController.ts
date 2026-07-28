@@ -67,6 +67,8 @@ export function useWorkspaceShellController({
   });
   const [displayScalePreview, setDisplayScalePreview] = useState<DisplayScale | null>(null);
   const effectiveDisplayScale = displayScalePreview ?? displayScale;
+  const hasPendingSettingsChanges =
+    displayScalePreview !== null && displayScalePreview !== displayScale;
 
   useEffect(() => {
     if (!isBrowserReady()) {
@@ -200,6 +202,7 @@ export function useWorkspaceShellController({
     confirmSettings,
     displayScale,
     effectiveDisplayScale,
+    hasPendingSettingsChanges,
     previewDisplayScale,
     settingsOpenRequestToken,
   };

@@ -169,8 +169,9 @@ describe("SheetTabs", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Setting" }));
+    expect(screen.getByRole("button", { name: "Simpan" })).toBeDisabled();
     fireEvent.click(screen.getAllByRole("radio")[1]);
-    fireEvent.click(screen.getByRole("button", { name: "Batal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Tutup" }));
 
     expect(onPreviewDisplayScale).toHaveBeenCalledWith("medium");
     expect(onCancelSettings).toHaveBeenCalledTimes(1);
@@ -193,6 +194,7 @@ describe("SheetTabs", () => {
         onPreviewDisplayScale={onPreviewDisplayScale}
         onConfirmSettings={onConfirmSettings}
         onCancelSettings={vi.fn()}
+        hasPendingSettingsChanges
       />
     );
 

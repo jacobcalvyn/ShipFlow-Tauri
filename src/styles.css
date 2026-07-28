@@ -2285,6 +2285,22 @@ html[data-renderer-safe-mode="true"] .settings-modal * {
   overflow: hidden;
 }
 
+.workspace-settings-modal {
+  width: min(620px, calc(100vw - 48px));
+  height: auto;
+  max-height: calc(100vh - 48px);
+  padding: 20px;
+}
+
+.workspace-settings-modal .settings-content-single {
+  flex: 0 1 auto;
+  overflow: visible;
+}
+
+.workspace-settings-modal .settings-pane {
+  overflow: visible;
+}
+
 .settings-modal-header {
   display: flex;
   align-items: center;
@@ -2378,34 +2394,6 @@ html[data-renderer-safe-mode="true"] .settings-modal * {
   min-height: 100vh;
   overflow: hidden;
   background: #ffffff;
-}
-
-.service-window-header {
-  flex: 0 0 auto;
-  padding: 22px 24px 18px;
-  border-bottom: 1px solid #e2e8f0;
-}
-
-.service-window-eyebrow {
-  display: block;
-  margin-bottom: 7px;
-  color: #2563eb;
-  font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: 0;
-}
-
-.service-window-header h1 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 1.45rem;
-  font-weight: 800;
-}
-
-.service-window-header p {
-  margin: 7px 0 0;
-  color: #64748b;
-  font-size: 0.88rem;
 }
 
 .service-window-layout {
@@ -3061,7 +3049,7 @@ html[data-renderer-safe-mode="true"] .settings-modal * {
   box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.18);
 }
 
-.settings-modal-cancel {
+.settings-modal-footer .settings-modal-cancel {
   min-width: 82px;
   justify-content: center;
 }
@@ -3071,13 +3059,13 @@ html[data-renderer-safe-mode="true"] .settings-modal * {
   justify-content: center;
 }
 
-.settings-modal-cancel:hover:not(:disabled) {
+.settings-modal-footer .settings-modal-cancel:hover:not(:disabled) {
   border-color: #cbd5e1;
   background: #f8fafc;
   color: #0f172a;
 }
 
-.settings-modal-ok {
+.settings-modal-footer .settings-modal-ok {
   min-width: 82px;
   justify-content: center;
   border-color: #2563eb;
@@ -3085,18 +3073,36 @@ html[data-renderer-safe-mode="true"] .settings-modal * {
   color: #ffffff;
 }
 
-.settings-modal-ok:hover:not(:disabled),
-.settings-modal-ok:focus-visible {
+.settings-modal-footer .settings-modal-ok:hover:not(:disabled),
+.settings-modal-footer .settings-modal-ok:focus-visible {
   border-color: #1d4ed8;
   background: #1d4ed8;
   color: #ffffff;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
 }
 
-.settings-modal-ok:active:not(:disabled) {
+.settings-modal-footer .settings-modal-ok:active:not(:disabled) {
   border-color: #1e40af;
   background: #1e40af;
   color: #ffffff;
+}
+
+.service-settings-footer {
+  gap: 10px;
+  margin-top: auto;
+  padding-top: 14px;
+}
+
+.service-settings-footer .sheet-tab-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 92px;
+  min-height: 36px;
+  padding: 0 18px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 700;
 }
 
 @media (max-width: 860px) {

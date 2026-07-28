@@ -85,7 +85,22 @@ describe("ServiceSettingsApp", () => {
     expect(
       screen.getByRole("region", { name: "Pengaturan ShipFlow Service" }),
     ).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "Sumber Lacak" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "ShipFlow Service" })).not.toBeInTheDocument();
+    expect(screen.queryByText("SERVICE")).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Umum" })).toBeInTheDocument();
+    expect(screen.getByText("Siklus Aplikasi")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(
+        "Biarkan ShipFlow Service tetap aktif di menu bar / system tray",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Jalankan ShipFlow Service saat login")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Tutup" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Simpan" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Batal" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Sumber Lacak" }));
+
     expect(screen.getByRole("radio", { name: "Internal ShipFlow" })).toBeChecked();
     expect(screen.getByRole("radio", { name: "API ShipFlow Eksternal" })).toBeInTheDocument();
     expect(screen.queryByLabelText("URL Service ShipFlow")).not.toBeInTheDocument();
@@ -98,6 +113,8 @@ describe("ServiceSettingsApp", () => {
     expect(
       (screen.getByLabelText("Token API Service") as HTMLInputElement).value,
     ).toMatch(/^sf_[a-f0-9]+$/);
+    expect(screen.queryByText("Siklus Aplikasi")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Jalankan ShipFlow Service saat login")).not.toBeInTheDocument();
     expect(callsFor("load_saved_api_service_config")).toHaveLength(1);
   });
 
@@ -111,6 +128,7 @@ describe("ServiceSettingsApp", () => {
     };
 
     render(<ServiceSettingsApp />);
+    fireEvent.click(screen.getByRole("tab", { name: "Sumber Lacak" }));
 
     expect(
       await screen.findByRole("radio", { name: "API ShipFlow Eksternal" }),
@@ -121,13 +139,15 @@ describe("ServiceSettingsApp", () => {
     expect(screen.getByLabelText("Token API Eksternal")).toHaveValue("");
   });
 
-  it("keeps changes local until save and persists the explicit lifecycle choices", async () => {
+  it("keeps changes local until save, persists them, and keeps the window open", async () => {
     render(<ServiceSettingsApp />);
     fireEvent.click(screen.getByRole("tab", { name: "API Publik" }));
 
     const port = await screen.findByLabelText("Port");
     fireEvent.change(port, { target: { value: "19422" } });
     fireEvent.click(screen.getByLabelText("LAN / Jaringan Lokal"));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Umum" }));
     fireEvent.click(screen.getByLabelText("Jalankan ShipFlow Service saat login"));
     fireEvent.click(
       screen.getByLabelText(
@@ -151,7 +171,10 @@ describe("ServiceSettingsApp", () => {
       });
       expect(persistedServiceConfig?.authToken).toMatch(/^sf_[a-f0-9]+$/);
       expect(persistedServiceConfig?.lastUpdatedAt).toBeTruthy();
-      expect(callsFor("close_current_window")).toHaveLength(1);
+      expect(callsFor("close_current_window")).toHaveLength(0);
+      expect(screen.getByText("Pengaturan service tersimpan.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Simpan" })).toBeDisabled();
+      expect(screen.queryByRole("button", { name: "Batal" })).not.toBeInTheDocument();
     });
   });
 
@@ -162,7 +185,7 @@ describe("ServiceSettingsApp", () => {
       target: { value: "19422" },
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Batal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Tutup" }));
 
     expect(callsFor("configure_api_service")).toHaveLength(0);
     expect(callsFor("close_current_window")).toHaveLength(1);
@@ -173,6 +196,7 @@ describe("ServiceSettingsApp", () => {
 
   it("tests an external tracking source from the isolated Service renderer", async () => {
     render(<ServiceSettingsApp />);
+    fireEvent.click(screen.getByRole("tab", { name: "Sumber Lacak" }));
     const externalSource = await screen.findByRole("radio", {
       name: "API ShipFlow Eksternal",
     });

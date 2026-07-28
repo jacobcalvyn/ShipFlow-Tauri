@@ -1,5 +1,14 @@
-export type ApplicationQuitReason = "app" | "relaunch" | "update";
+export type ApplicationQuitReason =
+  | "explicit_quit"
+  | "last_window_closed"
+  | "relaunch"
+  | "system_shutdown"
+  | "update_restart";
 export type ApplicationQuitDecision = "cancel" | "discard";
+
+export function shouldQuitAfterAllWindowsClosed(keepRunningInTray: boolean) {
+  return !keepRunningInTray;
+}
 
 export type QuitAwareWindow = {
   label: string;

@@ -21,6 +21,7 @@ type SheetTabsProps = {
   tabs: SheetTabItem[];
   activeSheetId: string;
   displayScale: "small" | "medium" | "large";
+  hasPendingSettingsChanges?: boolean;
   settingsOpenRequestToken?: number;
   recentDocuments?: Array<{ path: string; name: string }>;
   canUseAutosave?: boolean;
@@ -93,6 +94,7 @@ export function SheetTabs({
   tabs,
   activeSheetId,
   displayScale,
+  hasPendingSettingsChanges = false,
   settingsOpenRequestToken = 0,
   recentDocuments = [],
   canUseAutosave = false,
@@ -857,7 +859,7 @@ export function SheetTabs({
             <div className="settings-modal-backdrop">
               <div
                 ref={settingsModalRef}
-                className="settings-modal"
+                className="settings-modal workspace-settings-modal"
                 role="dialog"
                 aria-modal="true"
                 aria-label="Pengaturan ShipFlow"
@@ -931,7 +933,7 @@ export function SheetTabs({
                     onClick={closeSettings}
                     disabled={isConfirmingSettings}
                   >
-                    Batal
+                    Tutup
                   </button>
                   <button
                     type="button"
@@ -939,7 +941,10 @@ export function SheetTabs({
                     onClick={() => {
                       void confirmSettings();
                     }}
-                    disabled={isConfirmingSettings}
+                    disabled={
+                      !hasPendingSettingsChanges ||
+                      isConfirmingSettings
+                    }
                   >
                     {isConfirmingSettings ? "Menyimpan..." : "Simpan"}
                   </button>

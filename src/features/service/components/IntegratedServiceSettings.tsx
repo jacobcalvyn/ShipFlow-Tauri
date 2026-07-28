@@ -2,10 +2,13 @@ import { writeClipboardText } from "../../clipboard";
 import { ActionNoticeStack } from "../../components/ActionNoticeStack";
 import { useActionNotices } from "../../useActionNotices";
 import { useServiceSettingsController } from "../useServiceSettingsController";
-import { ServiceSettingsWindow } from "./ServiceSettingsWindow";
+import {
+  ServiceSettingsWindow,
+  type ServiceSettingsView,
+} from "./ServiceSettingsWindow";
 
 type IntegratedServiceSettingsProps = {
-  activeView: "runtime" | "api";
+  activeView: ServiceSettingsView;
   onClose: () => void;
 };
 
@@ -43,13 +46,7 @@ export function IntegratedServiceSettings({
     onClose();
   };
 
-  const confirmSettings = async () => {
-    const didSave = await confirmServiceConfig();
-    if (didSave !== false) {
-      onClose();
-    }
-    return didSave;
-  };
+  const confirmSettings = () => confirmServiceConfig();
 
   if (!hasLoadedServiceConfig) {
     return (
@@ -63,14 +60,14 @@ export function IntegratedServiceSettings({
             className="sheet-tab-action settings-modal-cancel"
             onClick={onClose}
           >
-            Batal
+            Tutup
           </button>
           <button
             type="button"
             className="sheet-tab-action settings-modal-ok"
             disabled
           >
-            Memuat...
+            Simpan
           </button>
         </div>
       </>

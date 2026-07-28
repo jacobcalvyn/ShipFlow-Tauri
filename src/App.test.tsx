@@ -4280,7 +4280,7 @@ describe("App workspace isolation", () => {
       expect(document.querySelector("main.shell")).toHaveClass("display-scale-large");
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Batal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Tutup" }));
 
     await waitFor(() => {
       expect(document.querySelector("main.shell")).toHaveClass("display-scale-small");

@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import type { ServiceConfig, ServiceMode, TrackingSource } from "../../../types";
 import type { ServiceSettingsNotice } from "../useServiceSettingsController";
 
+export type ServiceSettingsView = "general" | "runtime" | "api";
+
 type ServiceSettingsWindowProps = {
-  activeView: "runtime" | "api";
+  activeView: ServiceSettingsView;
   serviceConfig: ServiceConfig;
   hasPendingServiceConfigChanges: boolean;
   onPreviewServiceMode: (mode: ServiceMode) => void;
@@ -22,6 +24,25 @@ type ServiceSettingsWindowProps = {
   onConfirmSettings: () => Promise<boolean> | boolean;
   onCancelSettings: () => void;
   onShowNotice?: (notice: ServiceSettingsNotice) => void;
+};
+
+const viewContent: Record<
+  ServiceSettingsView,
+  { title: string; description: string }
+> = {
+  general: {
+    title: "Umum",
+    description: "Atur perilaku ShipFlow Service saat aplikasi ditutup atau sistem dimulai.",
+  },
+  runtime: {
+    title: "Sumber Lacak",
+    description: "Pilih scrap internal atau API eksternal sebagai sumber data service.",
+  },
+  api: {
+    title: "API Publik",
+    description:
+      "Atur akses API untuk klien pihak ketiga. Desktop memakai koneksi internal otomatis.",
+  },
 };
 
 export function ServiceSettingsWindow({
@@ -45,6 +66,7 @@ export function ServiceSettingsWindow({
   onCancelSettings,
   onShowNotice,
 }: ServiceSettingsWindowProps) {
+  const activeViewContent = viewContent[activeView];
   const [isExternalApiTokenVisible, setIsExternalApiTokenVisible] = useState(false);
   const [isRegenerateTokenArmed, setIsRegenerateTokenArmed] = useState(false);
   const [isTestingExternalApi, setIsTestingExternalApi] = useState(false);
@@ -132,13 +154,48 @@ export function ServiceSettingsWindow({
     <>
       <div className="service-settings-layout">
         <div className="service-settings-section-header">
-          <h3>{activeView === "runtime" ? "Sumber Lacak" : "API Publik"}</h3>
-          <p>
-            {activeView === "runtime"
-              ? "Pilih scrap internal atau API eksternal sebagai sumber data service."
-              : "Atur akses API untuk klien pihak ketiga. Desktop memakai koneksi internal otomatis."}
-          </p>
+          <h3>{activeViewContent.title}</h3>
+          <p>{activeViewContent.description}</p>
         </div>
+
+        {activeView === "general" ? (
+          <section
+            id="service-settings-general-panel"
+            className="settings-pane service-settings-pane"
+            role="tabpanel"
+            aria-labelledby="service-settings-general-tab"
+          >
+            <div className="service-settings-stack">
+              <div className="settings-field-block">
+                <span className="settings-input-label">Siklus Aplikasi</span>
+                <div className="service-settings-network-stack">
+                  <label className="settings-checkbox-option service-settings-checkbox-row">
+                    <input
+                      type="checkbox"
+                      aria-label="Biarkan ShipFlow Service tetap aktif di menu bar / system tray"
+                      checked={serviceConfig.keepRunningInTray}
+                      onChange={(event) =>
+                        onPreviewKeepRunningInTray(event.currentTarget.checked)
+                      }
+                    />
+                    <span>Biarkan ShipFlow tetap aktif di menu bar / system tray</span>
+                  </label>
+                  <label className="settings-checkbox-option service-settings-checkbox-row">
+                    <input
+                      type="checkbox"
+                      aria-label="Jalankan ShipFlow Service saat login"
+                      checked={serviceConfig.startAtLogin}
+                      onChange={(event) =>
+                        onPreviewStartAtLogin(event.currentTarget.checked)
+                      }
+                    />
+                    <span>Jalankan ShipFlow otomatis saat login</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
 
         {activeView === "runtime" ? (
           <section
@@ -266,34 +323,6 @@ export function ServiceSettingsWindow({
               </div>
 
               <div className="settings-field-block">
-                <span className="settings-input-label">Siklus Aplikasi</span>
-                <div className="service-settings-network-stack">
-                  <label className="settings-checkbox-option service-settings-checkbox-row">
-                    <input
-                      type="checkbox"
-                      aria-label="Biarkan ShipFlow Service tetap aktif di menu bar / system tray"
-                      checked={serviceConfig.keepRunningInTray}
-                      onChange={(event) =>
-                        onPreviewKeepRunningInTray(event.currentTarget.checked)
-                      }
-                    />
-                    <span>Biarkan ShipFlow tetap aktif di menu bar / system tray</span>
-                  </label>
-                  <label className="settings-checkbox-option service-settings-checkbox-row">
-                    <input
-                      type="checkbox"
-                      aria-label="Jalankan ShipFlow Service saat login"
-                      checked={serviceConfig.startAtLogin}
-                      onChange={(event) =>
-                        onPreviewStartAtLogin(event.currentTarget.checked)
-                      }
-                    />
-                    <span>Jalankan ShipFlow otomatis saat login</span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="settings-field-block">
                 <span className="settings-input-label">Akses Jaringan</span>
                 <div className="service-settings-network-stack">
                   <div className="service-settings-always-on-row">
@@ -408,12 +437,13 @@ export function ServiceSettingsWindow({
               </div>
             </div>
 
-            {hasPendingServiceConfigChanges ? (
-              <div className="settings-field-help settings-field-help-info">
-                Perubahan belum diterapkan. Klik Simpan untuk menyimpan.
-              </div>
-            ) : null}
           </section>
+        ) : null}
+
+        {hasPendingServiceConfigChanges ? (
+          <div className="settings-field-help settings-field-help-info">
+            Perubahan belum diterapkan. Klik Simpan untuk menyimpan.
+          </div>
         ) : null}
       </div>
 
@@ -424,13 +454,19 @@ export function ServiceSettingsWindow({
           onClick={handleReset}
           disabled={isSaving}
         >
-          Batal
+          Tutup
         </button>
         <button
           type="button"
           className="sheet-tab-action settings-modal-ok"
-          onClick={() => void handleSave()}
-          disabled={!isPortValid || isSaving}
+          onClick={() => {
+            void handleSave();
+          }}
+          disabled={
+            !hasPendingServiceConfigChanges ||
+            !isPortValid ||
+            isSaving
+          }
         >
           {isSaving ? "Menyimpan..." : "Simpan"}
         </button>

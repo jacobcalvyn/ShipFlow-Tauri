@@ -7,6 +7,10 @@ import "./styles.css";
 
 const rendererSearchParams = new URLSearchParams(window.location.search);
 const rendererWindowKind = rendererSearchParams.get("windowKind");
+document.title =
+  rendererWindowKind === "service-settings"
+    ? "ShipFlow Service"
+    : "ShipFlow Desktop";
 document.documentElement.dataset.rendererSafeMode =
   rendererSearchParams.get("rendererSafeMode") === "true" ? "true" : "false";
 document.documentElement.dataset.windowKind =

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   ApplicationQuitCoordinator,
+  shouldQuitAfterAllWindowsClosed,
   type QuitAwareWindow,
 } from "./application-lifecycle";
 
@@ -22,10 +23,10 @@ describe("ApplicationQuitCoordinator", () => {
       finalize,
     });
 
-    coordinator.request("app");
+    coordinator.request("explicit_quit");
     await Promise.resolve();
 
-    expect(finalize).toHaveBeenCalledWith("app");
+    expect(finalize).toHaveBeenCalledWith("explicit_quit");
   });
 
   it("preserves the relaunch reason through dirty-window confirmation", async () => {
@@ -56,7 +57,7 @@ describe("ApplicationQuitCoordinator", () => {
       finalize,
     });
 
-    coordinator.request("update");
+    coordinator.request("update_restart");
     expect(requestDecision).toHaveBeenNthCalledWith(1, first);
     expect(second.closeRequestPending).toBe(false);
 
@@ -67,7 +68,7 @@ describe("ApplicationQuitCoordinator", () => {
     expect(coordinator.resolve(second, "discard")).toBe(true);
     await Promise.resolve();
 
-    expect(finalize).toHaveBeenCalledWith("update");
+    expect(finalize).toHaveBeenCalledWith("update_restart");
     expect(first.allowClose).toBe(true);
     expect(second.allowClose).toBe(true);
   });
@@ -82,7 +83,7 @@ describe("ApplicationQuitCoordinator", () => {
       finalize,
     });
 
-    coordinator.request("app");
+    coordinator.request("explicit_quit");
     coordinator.resolve(first, "discard");
     coordinator.resolve(second, "cancel");
     await Promise.resolve();
@@ -103,12 +104,22 @@ describe("ApplicationQuitCoordinator", () => {
       finalize,
     });
 
-    coordinator.request("app");
+    coordinator.request("system_shutdown");
     coordinator.remove(first);
     expect(requestDecision).toHaveBeenLastCalledWith(second);
     coordinator.resolve(second, "discard");
     await Promise.resolve();
 
-    expect(finalize).toHaveBeenCalledWith("app");
+    expect(finalize).toHaveBeenCalledWith("system_shutdown");
+  });
+});
+
+describe("shouldQuitAfterAllWindowsClosed", () => {
+  it("keeps the background Service alive when tray lifecycle is enabled", () => {
+    expect(shouldQuitAfterAllWindowsClosed(true)).toBe(false);
+  });
+
+  it("quits the suite when the last window closes and tray lifecycle is disabled", () => {
+    expect(shouldQuitAfterAllWindowsClosed(false)).toBe(true);
   });
 });

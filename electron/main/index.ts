@@ -45,6 +45,7 @@ import { ServiceAgentManager } from "./service-agent";
 import { WorkspaceHostClient } from "./workspace-host";
 import {
   ApplicationQuitCoordinator,
+  shouldQuitAfterAllWindowsClosed,
   type ApplicationQuitReason,
 } from "./application-lifecycle";
 import {
@@ -181,11 +182,13 @@ let workspaceHostGeneration = 0;
 let rendererIpcActivitySequence = 0;
 let windowSequence = 0;
 let tray: Tray | null = null;
+let trayServiceActionPending = false;
 let isQuitting = false;
 const securedSessions = new WeakSet<Session>();
 let quitCleanupStarted = false;
 let quitCleanupComplete = false;
 let nativeRuntimesShuttingDown = false;
+let systemShutdownDetected = false;
 let runtimeDiagnosticsTimer: NodeJS.Timeout | null = null;
 let updateReadyToInstall = false;
 
@@ -209,6 +212,13 @@ const launchQueue = new ApplicationLaunchQueue(async (request) => {
     );
   }
 });
+
+function requestApplicationQuit(reason: ApplicationQuitReason) {
+  appLogger.event("INFO", "Lifecycle", "application_quit_requested", {
+    reason,
+  });
+  quitCoordinator.request(reason);
+}
 
 const COMMON_COMMANDS = new Set<ShipFlowCommand>([
   "open_external_url",
@@ -423,6 +433,14 @@ function resetRendererSafeModeMenuItem(): Electron.MenuItemConstructorOptions {
   };
 }
 
+function quitApplicationMenuItem(): Electron.MenuItemConstructorOptions {
+  return {
+    label: "Keluar ShipFlow",
+    accelerator: "CmdOrCtrl+Q",
+    click: () => requestApplicationQuit("explicit_quit"),
+  };
+}
+
 function installApplicationMenu() {
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(process.platform === "darwin"
@@ -438,7 +456,7 @@ function installApplicationMenu() {
               { role: "hideOthers" as const },
               { role: "unhide" as const },
               { type: "separator" as const },
-              { role: "quit" as const },
+              quitApplicationMenuItem(),
             ],
           },
         ]
@@ -459,7 +477,7 @@ function installApplicationMenu() {
         logFolderMenuItem(),
         ...(process.platform === "darwin"
           ? []
-          : [{ type: "separator" as const }, { role: "quit" as const }]),
+          : [{ type: "separator" as const }, quitApplicationMenuItem()]),
       ],
     },
     { label: "Edit", submenu: [{ role: "undo" }, { role: "redo" }, { type: "separator" }, { role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" }] },
@@ -500,6 +518,67 @@ function trayIconPath() {
     : path.join(app.getAppPath(), "assets", "icons", fileName);
 }
 
+function setTrayContextMenu(serviceEnabled: boolean) {
+  if (!tray) {
+    return;
+  }
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: "Buka ShipFlow Desktop", click: () => openOrFocusWorkspace() },
+      { label: "Buka Pengaturan Service", click: () => openOrFocusServiceSettings() },
+      { type: "separator" },
+      {
+        label: serviceEnabled ? "Hentikan Service" : "Mulai Service",
+        enabled: !trayServiceActionPending,
+        click: () => {
+          if (trayServiceActionPending) {
+            return;
+          }
+          trayServiceActionPending = true;
+          setTrayContextMenu(serviceEnabled);
+          appLogger.event("INFO", "Lifecycle", "tray_service_action_requested", {
+            action: serviceEnabled ? "stop" : "start",
+          });
+          void serviceAgent
+            .setEnabled(!serviceEnabled)
+            .then(() => {
+              stopAllWorkspaceHosts();
+            })
+            .catch((error) => {
+              appLogger.error("ServiceAgent", error);
+              dialog.showErrorBox(
+                PRODUCT_NAME,
+                `Unable to ${serviceEnabled ? "stop" : "start"} ShipFlow Service: ${String(error)}`,
+              );
+            })
+            .finally(() => {
+              trayServiceActionPending = false;
+              void refreshTrayContextMenu();
+            });
+        },
+      },
+      { type: "separator" },
+      {
+        label: "Keluar ShipFlow",
+        click: () => requestApplicationQuit("explicit_quit"),
+      },
+    ]),
+  );
+}
+
+async function refreshTrayContextMenu() {
+  if (!tray) {
+    return;
+  }
+  try {
+    const config = await serviceAgent.loadFrontendConfig();
+    setTrayContextMenu(config.enabled);
+  } catch (error) {
+    appLogger.error("ServiceAgent", `Unable to refresh tray menu: ${String(error)}`);
+    setTrayContextMenu(false);
+  }
+}
+
 function installTray() {
   if (tray) {
     return;
@@ -507,17 +586,8 @@ function installTray() {
   const image = nativeImage.createFromPath(trayIconPath());
   tray = new Tray(process.platform === "darwin" ? image.resize({ width: 18, height: 18 }) : image);
   tray.setToolTip(PRODUCT_NAME);
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: "Open ShipFlow Desktop", click: () => openOrFocusWorkspace() },
-      { label: "Service Settings", click: () => openOrFocusServiceSettings() },
-      { type: "separator" },
-      {
-        label: "Quit ShipFlow Desktop",
-        click: () => app.quit(),
-      },
-    ]),
-  );
+  setTrayContextMenu(true);
+  void refreshTrayContextMenu();
   tray.on("double-click", () => openOrFocusWorkspace());
 }
 
@@ -636,7 +706,7 @@ async function showRendererRecoveryFallback(record: WindowRecord) {
       windowLabel: record.label,
     });
     if (result.response === 0) {
-      quitCoordinator.request("relaunch");
+      requestApplicationQuit("relaunch");
     } else if (result.response === 1) {
       await openAppLogsFolder();
     }
@@ -753,6 +823,9 @@ function createWindow(
     (isServiceSettings ? "service-settings" : `workspace-${windowSequence}`);
   const width = isServiceSettings ? 960 : 1280;
   const height = isServiceSettings ? 720 : 860;
+  const parentWindow = isServiceSettings
+    ? focusedWorkspaceRecord()?.window
+    : undefined;
   const window = new BrowserWindow({
     title: isServiceSettings ? "ShipFlow Service" : PRODUCT_NAME,
     width,
@@ -760,6 +833,12 @@ function createWindow(
     minWidth: isServiceSettings ? 760 : 900,
     minHeight: isServiceSettings ? 560 : 640,
     show: false,
+    ...(parentWindow
+      ? {
+          parent: parentWindow,
+          modal: true,
+        }
+      : {}),
     backgroundColor: "#f8fafc",
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.cjs"),
@@ -816,6 +895,12 @@ function createWindow(
   windowsByLabel.set(label, record);
 
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("page-title-updated", (event) => {
+    if (isServiceSettings) {
+      event.preventDefault();
+      window.setTitle("ShipFlow Service");
+    }
+  });
   window.webContents.on("will-navigate", (event, targetUrl) => {
     if (
       !isTrustedRendererNavigation(
@@ -891,6 +976,13 @@ function createWindow(
     }
   });
   window.on("close", (event) => {
+    appLogger.event("INFO", "Lifecycle", "window_close_requested", {
+      allowClose: record.allowClose,
+      dirty: record.isDirty,
+      isQuitting,
+      kind,
+      windowLabel: label,
+    });
     if (
       kind !== "workspace" ||
       isQuitting ||
@@ -1086,7 +1178,7 @@ async function installUpdate() {
   }
   await autoUpdater.downloadUpdate();
   updateReadyToInstall = true;
-  quitCoordinator.request("update");
+  requestApplicationQuit("update_restart");
   return status;
 }
 
@@ -1134,7 +1226,7 @@ async function finalizeApplicationQuit(reason: ApplicationQuitReason) {
     console.error("Unable to flush ShipFlow logs during shutdown.", error);
   }
   quitCleanupComplete = true;
-  if (reason === "update" && updateReadyToInstall) {
+  if (reason === "update_restart" && updateReadyToInstall) {
     setImmediate(() => autoUpdater.quitAndInstall(false, true));
     return;
   }
@@ -1278,6 +1370,7 @@ async function handleCommand(
     case "configure_api_service": {
       const status = await serviceAgent.configure(args.config as ServiceConfig);
       stopAllWorkspaceHosts();
+      void refreshTrayContextMenu();
       return status;
     }
     case "validate_tracking_source_config": {
@@ -1675,6 +1768,10 @@ if (!hasSingleInstanceLock) {
       appLogger.event("INFO", "Lifecycle", "system_resume");
       logRuntimeDiagnostics("runtime_resume_snapshot");
     });
+    powerMonitor.on("shutdown", () => {
+      systemShutdownDetected = true;
+      appLogger.event("INFO", "Lifecycle", "system_shutdown_detected");
+    });
     startRuntimeDiagnostics();
     if (process.argv.includes("--service-settings")) {
       launchQueue.enqueue({ kind: "service-settings" });
@@ -1700,12 +1797,25 @@ if (!hasSingleInstanceLock) {
     launchQueue.enqueue({ kind: "workspace" });
   });
   app.on("window-all-closed", () => {
-    appLogger.event("INFO", "Lifecycle", "all_windows_closed");
+    if (isQuitting || quitCleanupStarted) {
+      return;
+    }
     void serviceAgent
       .keepRunningInTray()
       .then((keepRunningInTray) => {
-        if (!keepRunningInTray) {
-          app.quit();
+        const shouldQuit = shouldQuitAfterAllWindowsClosed(keepRunningInTray);
+        appLogger.event("INFO", "Lifecycle", "all_windows_closed", {
+          keepRunningInTray,
+          resolution: shouldQuit ? "quit_suite" : "keep_service_running",
+        });
+        if (shouldQuit) {
+          requestApplicationQuit("last_window_closed");
+        } else {
+          appLogger.event(
+            "INFO",
+            "Lifecycle",
+            "service_continues_after_window_close",
+          );
         }
       })
       .catch((error) => {
@@ -1724,6 +1834,8 @@ if (!hasSingleInstanceLock) {
       return;
     }
     event.preventDefault();
-    quitCoordinator.request("app");
+    requestApplicationQuit(
+      systemShutdownDetected ? "system_shutdown" : "explicit_quit",
+    );
   });
 }

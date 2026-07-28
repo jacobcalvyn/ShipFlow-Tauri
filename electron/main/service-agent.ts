@@ -479,6 +479,20 @@ export class ServiceAgentManager {
     return (await this.loadConfig()).keepRunningInTray;
   }
 
+  async setEnabled(enabled: boolean) {
+    const current = await this.loadFrontendConfig();
+    if (current.enabled === enabled) {
+      if (enabled) {
+        await this.connection();
+      }
+      return this.status();
+    }
+    return this.configure({
+      ...current,
+      enabled,
+    });
+  }
+
   async connection() {
     if (this.#isShuttingDown) {
       throw new Error("ShipFlow Service is shutting down.");
