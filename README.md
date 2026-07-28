@@ -33,10 +33,11 @@ The private suite credential is generated and encrypted by Electron and is not
 shown in the UI. The public API token shown in Service Settings is only for
 third-party clients.
 
-Service Settings uses a dedicated Electron window, renderer, and persistent
-session partition. It remains part of the same installed application and
-controls the same managed Rust Service process, but a renderer failure cannot
-take down or reload the workspace renderer.
+Service Settings uses a dedicated Electron window, HTML entry, renderer bundle,
+and persistent session partition. It remains part of the same installed
+application and controls the same managed Rust Service process, but it does not
+load workspace UI code and a renderer failure cannot take down or reload the
+workspace renderer.
 
 ## Requirements
 

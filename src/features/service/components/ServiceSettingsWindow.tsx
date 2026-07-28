@@ -247,7 +247,14 @@ export function ServiceSettingsWindow({
                   <label className="settings-text-field">
                     <span className="settings-input-label">Token</span>
                     <input
-                      type={isExternalApiTokenVisible ? "text" : "password"}
+                      type="text"
+                      autoComplete="off"
+                      spellCheck={false}
+                      className={
+                        isExternalApiTokenVisible
+                          ? undefined
+                          : "settings-sensitive-text"
+                      }
                       aria-label="Token API Eksternal"
                       value={serviceConfig.externalApiAuthToken}
                       placeholder={
@@ -347,10 +354,10 @@ export function ServiceSettingsWindow({
                 <label className="settings-text-field settings-text-field-port">
                   <span className="settings-input-label">Port</span>
                   <input
-                    type="number"
-                    min={1}
-                    max={65_535}
+                    type="text"
                     inputMode="numeric"
+                    pattern="[0-9]*"
+                    autoComplete="off"
                     aria-label="Port"
                     value={portDraft}
                     onChange={(event) => handlePortDraftChange(event.target.value)}
@@ -371,19 +378,19 @@ export function ServiceSettingsWindow({
               ) : null}
 
               <div className="service-settings-field-row">
-                <label className="settings-text-field service-settings-token-field">
+                <div className="settings-text-field service-settings-token-field">
                   <span className="settings-input-label">Token API Publik</span>
-                  <input
-                    type="password"
-                    readOnly
+                  <div
+                    className="service-settings-token-display"
+                    role="textbox"
+                    aria-readonly="true"
                     aria-label="Token API Service"
-                    value={
-                      serviceConfig.authToken ||
-                      (serviceConfig.authTokenConfigured ? "configured-token" : "")
-                    }
-                    placeholder="Buat token wajib"
-                  />
-                </label>
+                  >
+                    {serviceConfig.authToken || serviceConfig.authTokenConfigured
+                      ? "Token siap digunakan"
+                      : "Token belum dibuat"}
+                  </div>
+                </div>
                 <div className="settings-inline-actions service-settings-field-actions">
                   <button
                     type="button"

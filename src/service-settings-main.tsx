@@ -1,23 +1,21 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App";
+import { ServiceSettingsApp } from "./features/service/ServiceSettingsApp";
 import {
   AppErrorBoundary,
   installFrontendRuntimeLogging,
 } from "./renderer-runtime";
 import "./styles.css";
 
-const rendererSearchParams = new URLSearchParams(window.location.search);
-document.title = "ShipFlow Desktop";
-document.documentElement.dataset.rendererSafeMode =
-  rendererSearchParams.get("rendererSafeMode") === "true" ? "true" : "false";
-document.documentElement.dataset.windowKind = "workspace";
+document.title = "ShipFlow Service";
+document.documentElement.dataset.rendererSafeMode = "false";
+document.documentElement.dataset.windowKind = "service-settings";
 installFrontendRuntimeLogging();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <AppErrorBoundary>
-      <App />
+      <ServiceSettingsApp />
     </AppErrorBoundary>
   </React.StrictMode>,
 );

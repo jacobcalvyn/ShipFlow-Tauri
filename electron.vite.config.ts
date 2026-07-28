@@ -36,7 +36,10 @@ export default defineConfig({
       emptyOutDir: true,
       sourcemap: false,
       rollupOptions: {
-        input: "index.html",
+        input: {
+          workspace: "index.html",
+          serviceSettings: "service-settings.html",
+        },
       },
     },
   },

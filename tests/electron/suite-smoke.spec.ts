@@ -435,6 +435,10 @@ test("Electron suite owns Desktop, isolated Service settings, and single-instanc
     await workspace.getByRole("button", { name: "Tutup" }).click();
 
     const serviceSettings = await openServiceSettingsWindow(runtime);
+    let serviceSettingsCrashCount = 0;
+    serviceSettings.on("crash", () => {
+      serviceSettingsCrashCount += 1;
+    });
     await serviceSettings.waitForLoadState("domcontentloaded");
     await expect(
       serviceSettings.getByRole("heading", { name: "ShipFlow Service" }),
@@ -447,6 +451,11 @@ test("Electron suite owns Desktop, isolated Service settings, and single-instanc
       serviceSettings.getByRole("heading", { name: "Sumber Lacak" }),
     ).toBeVisible();
     await serviceSettings.getByRole("tab", { name: "API Publik" }).click();
+    await expect(
+      serviceSettings.getByRole("heading", { name: "API Publik" }),
+    ).toBeVisible();
+    await serviceSettings.waitForTimeout(5_000);
+    expect(serviceSettingsCrashCount).toBe(0);
     await expect(
       serviceSettings.getByRole("heading", { name: "API Publik" }),
     ).toBeVisible();

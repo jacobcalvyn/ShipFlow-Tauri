@@ -71,6 +71,10 @@ describe("ServiceSettingsApp", () => {
         return undefined;
       }
 
+      if (command === "log_frontend_runtime_event") {
+        return undefined;
+      }
+
       throw new Error(`Unexpected command: ${command}`);
     });
   });
@@ -108,14 +112,22 @@ describe("ServiceSettingsApp", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "API Publik" }));
 
-    expect(await screen.findByLabelText("Port")).toHaveValue(18422);
+    expect(await screen.findByLabelText("Port")).toHaveValue("18422");
     expect(screen.getByText("Localhost aktif untuk Desktop")).toBeInTheDocument();
-    expect(
-      (screen.getByLabelText("Token API Service") as HTMLInputElement).value,
-    ).toMatch(/^sf_[a-f0-9]+$/);
+    expect(screen.getByLabelText("Token API Service")).toHaveTextContent(
+      "Token siap digunakan",
+    );
     expect(screen.queryByText("Siklus Aplikasi")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Jalankan ShipFlow Service saat login")).not.toBeInTheDocument();
     expect(callsFor("load_saved_api_service_config")).toHaveLength(1);
+    expect(callsFor("log_frontend_runtime_event")).toEqual(
+      expect.arrayContaining([
+        ["log_frontend_runtime_event", {
+          level: "info",
+          message: "Service settings section changed: api",
+        }],
+      ]),
+    );
   });
 
   it("restores an external tracking source without inventing a persisted token", async () => {
@@ -156,7 +168,7 @@ describe("ServiceSettingsApp", () => {
     );
 
     expect(callsFor("configure_api_service")).toHaveLength(0);
-    expect(port).toHaveValue(19422);
+    expect(port).toHaveValue("19422");
 
     fireEvent.click(screen.getByRole("button", { name: "Simpan" }));
 

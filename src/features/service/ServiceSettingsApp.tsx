@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { closeCurrentWindow } from "../../backend/commands";
+import {
+  closeCurrentWindow,
+  logFrontendRuntimeEvent,
+} from "../../backend/commands";
 import { IntegratedServiceSettings } from "./components/IntegratedServiceSettings";
 import type { ServiceSettingsView } from "./components/ServiceSettingsWindow";
 
@@ -20,6 +23,15 @@ export function ServiceSettingsApp() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [closeWindow]);
+
+  useEffect(() => {
+    void logFrontendRuntimeEvent(
+      "info",
+      `Service settings section changed: ${activeView}`,
+    ).catch(() => {
+      // Diagnostics must not affect settings navigation.
+    });
+  }, [activeView]);
 
   return (
     <main className="service-window-shell">

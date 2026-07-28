@@ -125,10 +125,11 @@ The cross-platform evidence procedure is documented in
 7. Unexpected Service exits are restarted after 1, 2, 5, 10, and 30 seconds.
 8. More than five unexpected exits inside a two-minute window stop automatic restart and require an explicit lifecycle action.
 
-Service Settings is a dedicated application window with its own renderer and
-persistent Electron session partition. It belongs to the same single-instance
-application and controls the same managed Service process. Workspace display
-settings remain in the workspace window. Tray, menu, and
+Service Settings is a dedicated application window with its own HTML entry,
+renderer bundle, and persistent Electron session partition. It does not import
+or evaluate the workspace application bundle. It belongs to the same
+single-instance application and controls the same managed Service process.
+Workspace display settings remain in the workspace window. Tray, menu, and
 `--service-settings` entry points focus the existing Service Settings window or
 create exactly one when none exists. Service Settings has no Workspace Engine
 access, while workspace renderers no longer mount Service configuration UI.

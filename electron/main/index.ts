@@ -593,6 +593,9 @@ function installTray() {
 
 function rendererUrl(kind: WindowKind, label: string) {
   const url = new URL(process.env.ELECTRON_RENDERER_URL!);
+  if (kind === "service-settings") {
+    url.pathname = "/service-settings.html";
+  }
   url.searchParams.set("windowKind", kind);
   url.searchParams.set("windowLabel", label);
   url.searchParams.set(
@@ -605,8 +608,13 @@ function rendererUrl(kind: WindowKind, label: string) {
   return url.toString();
 }
 
-function packagedRendererPath() {
-  return path.join(__dirname, "../renderer/index.html");
+function packagedRendererPath(kind: WindowKind = "workspace") {
+  return path.join(
+    __dirname,
+    kind === "service-settings"
+      ? "../renderer/service-settings.html"
+      : "../renderer/index.html",
+  );
 }
 
 async function loadRenderer(record: WindowRecord) {
@@ -614,7 +622,7 @@ async function loadRenderer(record: WindowRecord) {
     await record.window.loadURL(rendererUrl(record.kind, record.label));
     return;
   }
-  await record.window.loadFile(packagedRendererPath(), {
+  await record.window.loadFile(packagedRendererPath(record.kind), {
     query: {
       windowKind: record.kind,
       windowLabel: record.label,
@@ -906,7 +914,7 @@ function createWindow(
       !isTrustedRendererNavigation(
         targetUrl,
         process.env.ELECTRON_RENDERER_URL,
-        packagedRendererPath(),
+        packagedRendererPath(kind),
       )
     ) {
       appLogger.warn("Renderer", `Blocked navigation to ${targetUrl}.`);
@@ -1026,7 +1034,10 @@ function createWindow(
   });
   appLogger.info(
     "Renderer",
-    `Loading ${process.env.ELECTRON_RENDERER_URL ?? packagedRendererPath()}.`,
+    `Loading ${
+      process.env.ELECTRON_RENDERER_URL ??
+      packagedRendererPath(kind)
+    }.`,
   );
   void loadRenderer(record)
     .then(() => {

@@ -219,6 +219,18 @@ requireTokens("index.html", [
   "frame-src 'none'",
   "script-src 'self'",
 ]);
+requireTokens("service-settings.html", [
+  'http-equiv="Content-Security-Policy"',
+  "default-src 'self'",
+  "object-src 'none'",
+  "frame-src 'none'",
+  "script-src 'self'",
+  'src="/src/service-settings-main.tsx"',
+]);
+requireTokens("electron.vite.config.ts", [
+  'workspace: "index.html"',
+  'serviceSettings: "service-settings.html"',
+]);
 forbidTokens("electron/main/index.ts", ['openWorkspaceSettings("service")']);
 forbidTokens("src/backend/bridge-contract.ts", ["open_shipflow_service_app"]);
 forbidTokens("src/features/workspace/components/SheetTabs.tsx", [
@@ -233,9 +245,13 @@ requireTokens("src/features/service/ServiceSettingsApp.tsx", [
   'aria-label="Pengaturan ShipFlow Service"',
   "closeCurrentWindow",
 ]);
-requireTokens("src/main.tsx", [
-  'rendererWindowKind === "service-settings"',
+requireTokens("src/service-settings-main.tsx", [
   "<ServiceSettingsApp />",
+  'dataset.windowKind = "service-settings"',
+]);
+forbidTokens("src/main.tsx", [
+  "ServiceSettingsApp",
+  'rendererWindowKind === "service-settings"',
 ]);
 requireTokens("electron/preload/index.ts", [
   "contextBridge.exposeInMainWorld",
