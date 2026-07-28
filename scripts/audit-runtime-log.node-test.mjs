@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   auditExceedsThreshold,
+  existingLogPaths,
   parseRuntimeLog,
   runtimeRiskFindings,
   summarizeRuntimeLogs,
@@ -90,6 +94,50 @@ test("flags an unrequested workspace host exit", () => {
   assert.deepEqual(runtimeRiskFindings(summary), [
     { severity: "MEDIUM", event: "workspace_host_exited", count: 1 },
   ]);
+});
+
+test("does not flag an expected managed Service shutdown", () => {
+  const parsed = parseRuntimeLog(
+    [
+      '[2026-07-24T00:00:00.000Z] [INFO] [ServiceAgent] event=service_process_exited data={"detail":"code 0","expected":true,"pid":42} | session=11111111-1111-4111-8111-111111111111 sequence=1',
+      '[2026-07-24T00:00:01.000Z] [ERROR] [ServiceAgent] event=service_process_exited data={"detail":"code 1","expected":false,"pid":43} | session=11111111-1111-4111-8111-111111111111 sequence=2',
+    ].join("\n"),
+  );
+  const summary = summarizeRuntimeLogs([parsed]);
+
+  assert.equal(summary.totals.expectedServiceProcessExits, 1);
+  assert.equal(summary.totals.unexpectedServiceProcessExits, 1);
+  assert.deepEqual(runtimeRiskFindings(summary), [
+    { severity: "MEDIUM", event: "service_process_exited", count: 1 },
+  ]);
+});
+
+test("keeps multiple explicit log inputs isolated from sibling discovery", async () => {
+  const directory = await mkdtemp(
+    path.join(os.tmpdir(), "shipflow-log-audit-"),
+  );
+  try {
+    const selectedDesktop = path.join(directory, "shipflow-desktop-2.log");
+    const selectedService = path.join(directory, "shipflow-service.log");
+    const staleDesktop = path.join(directory, "shipflow-desktop.log");
+    await Promise.all([
+      writeFile(selectedDesktop, "selected desktop"),
+      writeFile(selectedService, "selected service"),
+      writeFile(staleDesktop, "stale desktop"),
+    ]);
+
+    const resolved = await existingLogPaths([
+      selectedDesktop,
+      selectedService,
+    ]);
+
+    assert.deepEqual(resolved.sort(), [
+      selectedDesktop,
+      selectedService,
+    ].sort());
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
 });
 
 test("fails only when a finding reaches the requested quality-gate threshold", () => {

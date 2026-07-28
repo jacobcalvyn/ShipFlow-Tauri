@@ -1,4 +1,4 @@
-export type ApplicationQuitReason = "app" | "update";
+export type ApplicationQuitReason = "app" | "relaunch" | "update";
 export type ApplicationQuitDecision = "cancel" | "discard";
 
 export type QuitAwareWindow = {

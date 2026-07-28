@@ -28,6 +28,23 @@ describe("ApplicationQuitCoordinator", () => {
     expect(finalize).toHaveBeenCalledWith("app");
   });
 
+  it("preserves the relaunch reason through dirty-window confirmation", async () => {
+    const dirty = windowState("dirty");
+    const finalize = vi.fn();
+    const coordinator = new ApplicationQuitCoordinator({
+      windows: () => [dirty],
+      requestDecision: vi.fn(),
+      finalize,
+    });
+
+    coordinator.request("relaunch");
+    expect(finalize).not.toHaveBeenCalled();
+    coordinator.resolve(dirty, "discard");
+    await Promise.resolve();
+
+    expect(finalize).toHaveBeenCalledWith("relaunch");
+  });
+
   it("requests dirty-window decisions sequentially before finalizing", async () => {
     const first = windowState("first");
     const second = windowState("second");

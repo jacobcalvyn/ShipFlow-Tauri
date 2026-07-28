@@ -137,6 +137,8 @@ export function summarizeRuntimeLogs(parsedLogs) {
   let nativeHttpServerErrors = 0;
   let expectedWorkspaceHostExits = 0;
   let unexpectedWorkspaceHostExits = 0;
+  let expectedServiceProcessExits = 0;
+  let unexpectedServiceProcessExits = 0;
   const requestedWorkspaceHostStops = new Set();
 
   for (const parsed of parsedLogs) {
@@ -178,6 +180,12 @@ export function summarizeRuntimeLogs(parsedLogs) {
           }
         } else {
           unexpectedWorkspaceHostExits += 1;
+        }
+      } else if (entry.event.name === "service_process_exited") {
+        if (fields?.expected === true) {
+          expectedServiceProcessExits += 1;
+        } else {
+          unexpectedServiceProcessExits += 1;
         }
       }
     }
@@ -221,7 +229,9 @@ export function summarizeRuntimeLogs(parsedLogs) {
       nativeHttpServerErrors,
       nativeRequestErrors,
       sessions: sessions.size,
+      expectedServiceProcessExits,
       expectedWorkspaceHostExits,
+      unexpectedServiceProcessExits,
       unexpectedWorkspaceHostExits,
       unstructuredLines,
       warnings,
@@ -263,13 +273,19 @@ export function runtimeRiskFindings(summary) {
     }
   }
   for (const event of [
-    "service_process_exited",
     "service_restart_failed",
     "orphan_service_recovery_failed",
   ]) {
     if (count(event) > 0) {
       findings.push({ severity: "MEDIUM", event, count: count(event) });
     }
+  }
+  if (summary.totals.unexpectedServiceProcessExits > 0) {
+    findings.push({
+      severity: "MEDIUM",
+      event: "service_process_exited",
+      count: summary.totals.unexpectedServiceProcessExits,
+    });
   }
   if (summary.totals.unexpectedWorkspaceHostExits > 0) {
     findings.push({
@@ -344,17 +360,19 @@ function formatBytes(value) {
   return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
-async function existingLogPaths(requestedPaths) {
+export async function existingLogPaths(requestedPaths) {
   const primaryCandidates = requestedPaths.length
     ? requestedPaths.map((candidate) => path.resolve(candidate))
     : defaultLogPaths();
   const candidates = new Set(primaryCandidates);
-  for (const candidate of primaryCandidates) {
-    const baseName = path.basename(candidate);
-    if (baseName === "shipflow-desktop.log") {
-      candidates.add(path.join(path.dirname(candidate), "shipflow-service.log"));
-    } else if (baseName === "shipflow-service.log") {
-      candidates.add(path.join(path.dirname(candidate), "shipflow-desktop.log"));
+  if (requestedPaths.length <= 1) {
+    for (const candidate of primaryCandidates) {
+      const baseName = path.basename(candidate);
+      if (baseName === "shipflow-desktop.log") {
+        candidates.add(path.join(path.dirname(candidate), "shipflow-service.log"));
+      } else if (baseName === "shipflow-service.log") {
+        candidates.add(path.join(path.dirname(candidate), "shipflow-desktop.log"));
+      }
     }
   }
   const expanded = [];

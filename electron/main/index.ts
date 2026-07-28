@@ -1,6 +1,7 @@
-import path from "node:path";
+import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import {
   app,
   BrowserWindow,
@@ -60,6 +61,16 @@ import {
   inspectCrashDumps,
   summarizeProcessMetrics,
 } from "./crash-diagnostics";
+import {
+  activateRendererSafeMode,
+  hasRecentCrashReports,
+  loadRendererSafeModeState,
+  persistRendererSafeModeState,
+  registerRendererAccessViolation,
+  resetRendererSafeModeState,
+  shouldDisableHardwareAcceleration,
+  type RendererSafeModeState,
+} from "./renderer-safe-mode";
 
 const { autoUpdater } = electronUpdater;
 
@@ -100,6 +111,40 @@ configureAppLogger(
     : path.join(app.getPath("logs"), "shipflow-desktop.log"),
 );
 const crashDumpsPath = path.join(app.getPath("userData"), "Crashpad");
+const rendererSafeModePath = path.join(
+  app.getPath("userData"),
+  "renderer-safe-mode.json",
+);
+const rendererSafeModeStateExisted = existsSync(rendererSafeModePath);
+let rendererSafeModeState: RendererSafeModeState =
+  loadRendererSafeModeState(rendererSafeModePath);
+let rendererSafeModeSource = rendererSafeModeState.hardwareAccelerationDisabled
+  ? "persisted"
+  : "none";
+if (
+  process.platform === "win32" &&
+  !rendererSafeModeStateExisted &&
+  hasRecentCrashReports(crashDumpsPath)
+) {
+  rendererSafeModeState = activateRendererSafeMode(rendererSafeModeState);
+  rendererSafeModeSource = "recent_crash_reports";
+  try {
+    persistRendererSafeModeState(
+      rendererSafeModePath,
+      rendererSafeModeState,
+    );
+  } catch (error) {
+    appLogger.error("RendererSafeMode", error);
+  }
+}
+const rendererHardwareAccelerationDisabled =
+  shouldDisableHardwareAcceleration(
+    process.platform,
+    rendererSafeModeState,
+  );
+if (rendererHardwareAccelerationDisabled) {
+  app.disableHardwareAcceleration();
+}
 app.setPath("crashDumps", crashDumpsPath);
 let crashReporterStarted = false;
 try {
@@ -321,6 +366,50 @@ function logFolderMenuItem(): Electron.MenuItemConstructorOptions {
   };
 }
 
+function resetRendererSafeModeMenuItem(): Electron.MenuItemConstructorOptions {
+  return {
+    label: "Reset Windows Display Compatibility Mode",
+    enabled:
+      process.platform === "win32" &&
+      rendererSafeModeState.hardwareAccelerationDisabled,
+    click: () => {
+      try {
+        rendererSafeModeState = resetRendererSafeModeState();
+        rendererSafeModeSource = "none";
+        persistRendererSafeModeState(
+          rendererSafeModePath,
+          rendererSafeModeState,
+        );
+        appLogger.event(
+          "INFO",
+          "Renderer",
+          "renderer_safe_mode_reset",
+          {
+            restartRequired: rendererHardwareAccelerationDisabled,
+          },
+        );
+        installApplicationMenu();
+        void dialog.showMessageBox({
+          buttons: ["OK"],
+          detail: rendererHardwareAccelerationDisabled
+            ? "Hardware acceleration will be enabled the next time ShipFlow Desktop starts."
+            : "Windows display compatibility mode has been cleared.",
+          message: "Display compatibility mode reset.",
+          noLink: true,
+          title: PRODUCT_NAME,
+          type: "info",
+        });
+      } catch (error) {
+        appLogger.error("RendererSafeMode", error);
+        dialog.showErrorBox(
+          PRODUCT_NAME,
+          `Unable to reset display compatibility mode: ${String(error)}`,
+        );
+      }
+    },
+  };
+}
+
 function installApplicationMenu() {
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(process.platform === "darwin"
@@ -374,6 +463,12 @@ function installApplicationMenu() {
         { type: "separator" },
         menuItem("Check for Updates", "check-for-updates"),
         menuItem("Install Update", "install-app-update"),
+        ...(process.platform === "win32"
+          ? [
+              { type: "separator" as const },
+              resetRendererSafeModeMenuItem(),
+            ]
+          : []),
       ],
     },
   ];
@@ -484,7 +579,10 @@ async function showRendererRecoveryFallback(record: WindowRecord) {
       cancelId: 2,
       defaultId: 0,
       detail:
-        "Automatic display recovery was stopped to avoid a crash loop. Workspace data remains managed by the local engine.",
+        process.platform === "win32" &&
+        rendererSafeModeState.hardwareAccelerationDisabled
+          ? "Automatic display recovery was stopped to avoid a crash loop. Restarting will use Windows display compatibility mode. Unsaved workspace changes will still be checked before the application exits."
+          : "Automatic display recovery was stopped to avoid a crash loop. Workspace data remains managed by the local engine.",
       message: "The workspace display stopped repeatedly.",
       noLink: true,
       title: PRODUCT_NAME,
@@ -500,8 +598,7 @@ async function showRendererRecoveryFallback(record: WindowRecord) {
       windowLabel: record.label,
     });
     if (result.response === 0) {
-      app.relaunch();
-      await finalizeApplicationQuit("app");
+      quitCoordinator.request("relaunch");
     } else if (result.response === 1) {
       await openAppLogsFolder();
     }
@@ -510,6 +607,50 @@ async function showRendererRecoveryFallback(record: WindowRecord) {
   } finally {
     record.rendererFallbackActive = false;
   }
+}
+
+function registerRendererSafeModeCrash(
+  record: WindowRecord,
+  exitCode: number,
+) {
+  if (process.platform !== "win32") {
+    return false;
+  }
+  const update = registerRendererAccessViolation(
+    rendererSafeModeState,
+    exitCode,
+  );
+  if (update.state === rendererSafeModeState) {
+    return false;
+  }
+  rendererSafeModeState = update.state;
+  if (update.activated) {
+    rendererSafeModeSource = "access_violation_crash_loop";
+  }
+  try {
+    persistRendererSafeModeState(
+      rendererSafeModePath,
+      rendererSafeModeState,
+    );
+  } catch (error) {
+    appLogger.error("RendererSafeMode", error);
+  }
+  if (update.activated) {
+    appLogger.event(
+      "ERROR",
+      "Renderer",
+      "renderer_safe_mode_activated",
+      {
+        crashCount: update.crashCount,
+        exitCode,
+        restartRequired: true,
+        statePath: rendererSafeModePath,
+        windowLabel: record.label,
+      },
+    );
+    installApplicationMenu();
+  }
+  return update.activated;
 }
 
 function logRendererCrashDiagnostics(record: WindowRecord) {
@@ -650,8 +791,16 @@ function createWindow(
       // Diagnostics must never prevent the renderer recovery path.
       appLogger.error("CrashReporter", error);
     }
+    const safeModeActivated = registerRendererSafeModeCrash(
+      record,
+      details.exitCode,
+    );
     if (isRecoverableRendererExit(details.reason)) {
-      scheduleRendererRecovery(record);
+      if (safeModeActivated) {
+        void showRendererRecoveryFallback(record);
+      } else {
+        scheduleRendererRecovery(record);
+      }
     }
   });
   window.webContents.on("dom-ready", () => {
@@ -907,6 +1056,9 @@ async function finalizeApplicationQuit(reason: ApplicationQuitReason) {
   if (reason === "update" && updateReadyToInstall) {
     setImmediate(() => autoUpdater.quitAndInstall(false, true));
     return;
+  }
+  if (reason === "relaunch") {
+    app.relaunch();
   }
   setImmediate(() => app.quit());
 }
@@ -1367,6 +1519,8 @@ if (!hasSingleInstanceLock) {
     crashDumpsPath,
     crashReporterStarted,
     electronVersion: process.versions.electron,
+    hardwareAccelerationDisabled: rendererHardwareAccelerationDisabled,
+    rendererSafeModeSource,
     nodeVersion: process.versions.node,
     osRelease: os.release(),
     packaged: app.isPackaged,
@@ -1411,8 +1565,10 @@ if (!hasSingleInstanceLock) {
     );
     appLogger.event("INFO", "Lifecycle", "app_ready", {
       arch: process.arch,
+      hardwareAccelerationDisabled: rendererHardwareAccelerationDisabled,
       packaged: app.isPackaged,
       platform: process.platform,
+      rendererSafeModeSource,
       version: app.getVersion(),
     });
     registerIpc();
