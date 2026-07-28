@@ -135,6 +135,9 @@ export function summarizeRuntimeLogs(parsedLogs) {
   let maxServiceRssBytes = 0;
   let nativeRequestErrors = 0;
   let nativeHttpServerErrors = 0;
+  let expectedWorkspaceHostExits = 0;
+  let unexpectedWorkspaceHostExits = 0;
+  const requestedWorkspaceHostStops = new Set();
 
   for (const parsed of parsedLogs) {
     malformedLines += parsed.malformedLines;
@@ -151,6 +154,32 @@ export function summarizeRuntimeLogs(parsedLogs) {
     }
     if (entry.event) {
       increment(eventCounts, entry.event.name);
+      const fields = entry.event.fields;
+      const workspaceHostKey =
+        fields &&
+        typeof fields.pid === "number" &&
+        typeof fields.windowLabel === "string"
+          ? `${entry.sessionId}:${fields.windowLabel}:${fields.pid}`
+          : null;
+      if (
+        entry.event.name === "workspace_host_stop_requested" &&
+        workspaceHostKey
+      ) {
+        requestedWorkspaceHostStops.add(workspaceHostKey);
+      } else if (entry.event.name === "workspace_host_exited") {
+        const expected =
+          fields?.expected === true ||
+          (workspaceHostKey !== null &&
+            requestedWorkspaceHostStops.has(workspaceHostKey));
+        if (expected) {
+          expectedWorkspaceHostExits += 1;
+          if (workspaceHostKey) {
+            requestedWorkspaceHostStops.delete(workspaceHostKey);
+          }
+        } else {
+          unexpectedWorkspaceHostExits += 1;
+        }
+      }
     }
     maxMainRssBytes = Math.max(
       maxMainRssBytes,
@@ -192,6 +221,8 @@ export function summarizeRuntimeLogs(parsedLogs) {
       nativeHttpServerErrors,
       nativeRequestErrors,
       sessions: sessions.size,
+      expectedWorkspaceHostExits,
+      unexpectedWorkspaceHostExits,
       unstructuredLines,
       warnings,
     },
@@ -235,11 +266,17 @@ export function runtimeRiskFindings(summary) {
     "service_process_exited",
     "service_restart_failed",
     "orphan_service_recovery_failed",
-    "workspace_host_exited",
   ]) {
     if (count(event) > 0) {
       findings.push({ severity: "MEDIUM", event, count: count(event) });
     }
+  }
+  if (summary.totals.unexpectedWorkspaceHostExits > 0) {
+    findings.push({
+      severity: "MEDIUM",
+      event: "workspace_host_exited",
+      count: summary.totals.unexpectedWorkspaceHostExits,
+    });
   }
   if (summary.totals.nativeHttpServerErrors > 0) {
     findings.push({

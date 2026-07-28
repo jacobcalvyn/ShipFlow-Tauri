@@ -5,6 +5,7 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  crashReporter,
   dialog,
   ipcMain,
   Menu,
@@ -55,6 +56,10 @@ import {
 } from "./renderer-recovery";
 import { buildViewMenu } from "./application-menu";
 import { appUpdateStatus } from "./app-update";
+import {
+  inspectCrashDumps,
+  summarizeProcessMetrics,
+} from "./crash-diagnostics";
 
 const { autoUpdater } = electronUpdater;
 
@@ -72,6 +77,10 @@ type WindowRecord = {
   allowClose: boolean;
   rendererRecoveryPolicy: RendererRecoveryPolicy;
   rendererRecoveryTimer: NodeJS.Timeout | null;
+  rendererFallbackActive: boolean;
+  lastIpcActivity: string | null;
+  lastIpcActivityAtMs: number | null;
+  lastIpcActivityState: "started" | "completed" | "failed" | null;
   authorizedDocumentPaths: DocumentPathCapabilities;
 };
 
@@ -90,6 +99,27 @@ configureAppLogger(
     ? path.resolve(process.env.SHIPFLOW_LOG_FILE.trim())
     : path.join(app.getPath("logs"), "shipflow-desktop.log"),
 );
+const crashDumpsPath = path.join(app.getPath("userData"), "Crashpad");
+app.setPath("crashDumps", crashDumpsPath);
+let crashReporterStarted = false;
+try {
+  crashReporter.start({
+    compress: false,
+    globalExtra: {
+      appIdentifier: APP_IDENTIFIER,
+      arch: process.arch,
+      packaged: String(app.isPackaged),
+      platform: process.platform,
+    },
+    ignoreSystemCrashHandler: false,
+    productName: PRODUCT_NAME,
+    rateLimit: false,
+    uploadToServer: false,
+  });
+  crashReporterStarted = true;
+} catch (error) {
+  appLogger.error("CrashReporter", error);
+}
 app.setAppUserModelId(APP_IDENTIFIER);
 autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = false;
@@ -101,6 +131,7 @@ const workspaceHosts = new Map<string, WorkspaceHostClient>();
 const workspaceHostStarts = new Map<string, Promise<WorkspaceHostClient>>();
 const documentClaims = new Map<string, string>();
 let workspaceHostGeneration = 0;
+let rendererIpcActivitySequence = 0;
 let windowSequence = 0;
 let tray: Tray | null = null;
 let isQuitting = false;
@@ -113,6 +144,7 @@ let updateReadyToInstall = false;
 
 const RUNTIME_DIAGNOSTICS_INTERVAL_MS = 60_000;
 const RENDERER_RECOVERY_DELAY_MS = 250;
+const CRASH_DUMP_SETTLE_DELAY_MS = 1_000;
 
 const quitCoordinator = new ApplicationQuitCoordinator<WindowRecord>({
   windows: () => windowsByLabel.values(),
@@ -411,10 +443,7 @@ function scheduleRendererRecovery(record: WindowRecord) {
     appLogger.event("ERROR", "Renderer", "renderer_recovery_exhausted", {
       windowLabel: record.label,
     });
-    dialog.showErrorBox(
-      PRODUCT_NAME,
-      "The workspace renderer stopped repeatedly. Restart ShipFlow Desktop to recover safely.",
-    );
+    void showRendererRecoveryFallback(record);
     return;
   }
   appLogger.event("WARN", "Renderer", "renderer_recovery_scheduled", {
@@ -439,8 +468,82 @@ function scheduleRendererRecovery(record: WindowRecord) {
       })
       .catch((error) => {
         appLogger.error("RendererRecovery", error);
+        scheduleRendererRecovery(record);
       });
   }, RENDERER_RECOVERY_DELAY_MS);
+}
+
+async function showRendererRecoveryFallback(record: WindowRecord) {
+  if (record.rendererFallbackActive || record.window.isDestroyed()) {
+    return;
+  }
+  record.rendererFallbackActive = true;
+  try {
+    const result = await dialog.showMessageBox(record.window, {
+      buttons: ["Restart ShipFlow Desktop", "Open Logs Folder", "Close"],
+      cancelId: 2,
+      defaultId: 0,
+      detail:
+        "Automatic display recovery was stopped to avoid a crash loop. Workspace data remains managed by the local engine.",
+      message: "The workspace display stopped repeatedly.",
+      noLink: true,
+      title: PRODUCT_NAME,
+      type: "error",
+    });
+    appLogger.event("INFO", "Renderer", "renderer_recovery_fallback_action", {
+      action:
+        result.response === 0
+          ? "restart"
+          : result.response === 1
+            ? "open_logs"
+            : "close",
+      windowLabel: record.label,
+    });
+    if (result.response === 0) {
+      app.relaunch();
+      await finalizeApplicationQuit("app");
+    } else if (result.response === 1) {
+      await openAppLogsFolder();
+    }
+  } catch (error) {
+    appLogger.error("RendererRecovery", error);
+  } finally {
+    record.rendererFallbackActive = false;
+  }
+}
+
+function logRendererCrashDiagnostics(record: WindowRecord) {
+  const metrics = summarizeProcessMetrics(app.getAppMetrics());
+  const memory = process.memoryUsage();
+  appLogger.event("ERROR", "Renderer", "renderer_crash_diagnostics", {
+    ...metrics,
+    crashDumpsPath,
+    freeSystemMemoryBytes: os.freemem(),
+    gpuFeatureStatus: JSON.stringify(app.getGPUFeatureStatus()),
+    lastIpcActivity: record.lastIpcActivity,
+    lastIpcActivityAgeMs:
+      record.lastIpcActivityAtMs === null
+        ? null
+        : Math.max(0, Date.now() - record.lastIpcActivityAtMs),
+    lastIpcActivityState: record.lastIpcActivityState,
+    mainHeapUsedBytes: memory.heapUsed,
+    mainRssBytes: memory.rss,
+    windowLabel: record.label,
+  });
+  const timer = setTimeout(() => {
+    void inspectCrashDumps(crashDumpsPath)
+      .then((inventory) => {
+        appLogger.event("INFO", "Renderer", "renderer_crash_dump_inventory", {
+          ...inventory,
+          crashDumpsPath,
+          windowLabel: record.label,
+        });
+      })
+      .catch((error) => {
+        appLogger.error("CrashReporter", error);
+      });
+  }, CRASH_DUMP_SETTLE_DELAY_MS);
+  timer.unref();
 }
 
 function createWindow(
@@ -485,6 +588,10 @@ function createWindow(
     allowClose: false,
     rendererRecoveryPolicy: new RendererRecoveryPolicy(),
     rendererRecoveryTimer: null,
+    rendererFallbackActive: false,
+    lastIpcActivity: null,
+    lastIpcActivityAtMs: null,
+    lastIpcActivityState: null,
     authorizedDocumentPaths: new DocumentPathCapabilities(
       options.launchRequest?.documentPath
         ? [normalizeClaimPath(options.launchRequest.documentPath)]
@@ -537,6 +644,12 @@ function createWindow(
         windowLabel: label,
       },
     );
+    try {
+      logRendererCrashDiagnostics(record);
+    } catch (error) {
+      // Diagnostics must never prevent the renderer recovery path.
+      appLogger.error("CrashReporter", error);
+    }
     if (isRecoverableRendererExit(details.reason)) {
       scheduleRendererRecovery(record);
     }
@@ -1077,7 +1190,14 @@ function registerIpc() {
     SHIPFLOW_INVOKE_CHANNEL,
     async (event, command: ShipFlowCommand, args?: Record<string, unknown>) => {
       const startedAt = Date.now();
-      const windowLabel = windowsByWebContentsId.get(event.sender.id)?.label ?? "unknown";
+      const record = windowsByWebContentsId.get(event.sender.id);
+      const windowLabel = record?.label ?? "unknown";
+      const activity = `command:${String(command).slice(0, 96)}#${++rendererIpcActivitySequence}`;
+      if (record) {
+        record.lastIpcActivity = activity;
+        record.lastIpcActivityAtMs = startedAt;
+        record.lastIpcActivityState = "started";
+      }
       appLogger.event("INFO", "IPC", "command_started", {
         command: String(command).slice(0, 128),
         windowLabel,
@@ -1090,6 +1210,10 @@ function registerIpc() {
           result: "ok",
           windowLabel,
         });
+        if (record?.lastIpcActivity === activity) {
+          record.lastIpcActivityAtMs = Date.now();
+          record.lastIpcActivityState = "completed";
+        }
         return result;
       } catch (error) {
         appLogger.event("ERROR", "IPC", "command_completed", {
@@ -1099,6 +1223,10 @@ function registerIpc() {
           result: "error",
           windowLabel,
         });
+        if (record?.lastIpcActivity === activity) {
+          record.lastIpcActivityAtMs = Date.now();
+          record.lastIpcActivityState = "failed";
+        }
         throw error;
       }
     },
@@ -1121,6 +1249,10 @@ function registerIpc() {
         throw new Error(`Unsupported Workspace Engine method: ${request.method}`);
       }
       const auditRequestId = request.requestId.slice(0, 128);
+      const activity = `workspace:${request.method}:${auditRequestId}`;
+      record.lastIpcActivity = activity;
+      record.lastIpcActivityAtMs = startedAt;
+      record.lastIpcActivityState = "started";
       appLogger.event("INFO", "WorkspaceIPC", "request_started", {
         method: request.method,
         requestId: auditRequestId,
@@ -1147,6 +1279,10 @@ function registerIpc() {
           result: "ok",
           windowLabel: record.label,
         });
+        if (record.lastIpcActivity === activity) {
+          record.lastIpcActivityAtMs = Date.now();
+          record.lastIpcActivityState = "completed";
+        }
         return result;
       } catch (error) {
         appLogger.event("ERROR", "WorkspaceIPC", "request_completed", {
@@ -1157,6 +1293,10 @@ function registerIpc() {
           result: "error",
           windowLabel: record.label,
         });
+        if (record.lastIpcActivity === activity) {
+          record.lastIpcActivityAtMs = Date.now();
+          record.lastIpcActivityState = "failed";
+        }
         throw error;
       }
     },
@@ -1224,6 +1364,8 @@ if (!hasSingleInstanceLock) {
   appLogger.event("INFO", "Lifecycle", "app_launch", {
     arch: process.arch,
     chromeVersion: process.versions.chrome,
+    crashDumpsPath,
+    crashReporterStarted,
     electronVersion: process.versions.electron,
     nodeVersion: process.versions.node,
     osRelease: os.release(),

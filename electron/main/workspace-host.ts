@@ -300,6 +300,7 @@ export class WorkspaceHostClient {
         "workspace_host_exited",
         {
           detail,
+          expected: child.killed,
           pid: child.pid,
           uptimeMs: Date.now() - startupStartedAt,
           windowLabel: this.#windowLabel,

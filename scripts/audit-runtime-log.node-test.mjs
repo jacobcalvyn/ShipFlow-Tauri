@@ -65,6 +65,33 @@ test("counts malformed structured lines without treating normal text as corrupti
   ]);
 });
 
+test("does not flag a requested workspace host shutdown as a runtime risk", () => {
+  const parsed = parseRuntimeLog(
+    [
+      '[2026-07-24T00:00:00.000Z] [INFO] [WorkspaceHost] event=workspace_host_stop_requested data={"pid":42,"windowLabel":"main"} | session=11111111-1111-4111-8111-111111111111 sequence=1',
+      '[2026-07-24T00:00:00.010Z] [INFO] [WorkspaceHost] event=workspace_host_exited data={"detail":"signal SIGTERM","pid":42,"windowLabel":"main"} | session=11111111-1111-4111-8111-111111111111 sequence=2',
+    ].join("\n"),
+  );
+  const summary = summarizeRuntimeLogs([parsed]);
+
+  assert.equal(summary.totals.expectedWorkspaceHostExits, 1);
+  assert.equal(summary.totals.unexpectedWorkspaceHostExits, 0);
+  assert.deepEqual(runtimeRiskFindings(summary), []);
+});
+
+test("flags an unrequested workspace host exit", () => {
+  const parsed = parseRuntimeLog(
+    '[2026-07-24T00:00:00.000Z] [ERROR] [WorkspaceHost] event=workspace_host_exited data={"detail":"code 1","expected":false,"pid":42,"windowLabel":"main"} | session=11111111-1111-4111-8111-111111111111 sequence=1',
+  );
+  const summary = summarizeRuntimeLogs([parsed]);
+
+  assert.equal(summary.totals.expectedWorkspaceHostExits, 0);
+  assert.equal(summary.totals.unexpectedWorkspaceHostExits, 1);
+  assert.deepEqual(runtimeRiskFindings(summary), [
+    { severity: "MEDIUM", event: "workspace_host_exited", count: 1 },
+  ]);
+});
+
 test("fails only when a finding reaches the requested quality-gate threshold", () => {
   const findings = [
     { severity: "LOW", event: "malformed_log_lines", count: 1 },
