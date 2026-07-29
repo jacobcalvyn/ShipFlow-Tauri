@@ -186,14 +186,14 @@ pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackRespons
                                 return Some(src);
                             }
 
-                            return Some(resolve_pos_href(&src));
+                            return resolve_pod_href(&src);
                         }
                     }
 
                     cell.select(&a_selector)
                         .next()
                         .and_then(|link| link.value().attr("href"))
-                        .map(resolve_pos_href)
+                        .and_then(resolve_pod_href)
                 };
 
                 pod.photo1_url = extract_img(idx_photo1);
@@ -714,7 +714,7 @@ fn parse_status_akhir(raw: &str) -> StatusAkhirParts {
     let rem_after_di = rem_after_di.trim_start();
     let rem_lower = rem_after_di.to_ascii_lowercase();
 
-    let mut after_location = if rem_lower.starts_with("oleh ") {
+    let after_location = if rem_lower.starts_with("oleh ") {
         &rem_after_di["oleh ".len()..]
     } else if let Some(idx_oleh) = rem_lower.find(" oleh ") {
         let loc = rem_after_di[..idx_oleh].trim();
@@ -739,7 +739,8 @@ fn parse_status_akhir(raw: &str) -> StatusAkhirParts {
     let mut time = None;
 
     if let Some(start_paren) = after_location.find('(') {
-        if let Some(end_paren) = after_location.rfind(')') {
+        if let Some(relative_end_paren) = after_location[start_paren + 1..].find(')') {
+            let end_paren = start_paren + 1 + relative_end_paren;
             if end_paren > start_paren {
                 let inside = &after_location[start_paren + 1..end_paren];
                 let parts: Vec<String> = inside.split('/').map(normalize_text).collect();
@@ -749,7 +750,6 @@ fn parse_status_akhir(raw: &str) -> StatusAkhirParts {
                 if parts.len() > 1 && !parts[1].is_empty() {
                     officer_id = Some(parts[1].clone());
                 }
-                after_location = &after_location[end_paren + 1..];
             }
         }
     }
@@ -795,6 +795,20 @@ fn parse_status_akhir(raw: &str) -> StatusAkhirParts {
         date,
         time,
     )
+}
+
+fn resolve_pod_href(raw: &str) -> Option<String> {
+    let href = raw.trim();
+    let lower = href.to_ascii_lowercase();
+    if href.is_empty()
+        || lower.starts_with("target=")
+        || lower.starts_with("javascript:")
+        || href.chars().any(|ch| matches!(ch, '"' | '\'' | '<' | '>'))
+    {
+        return None;
+    }
+
+    Some(resolve_pos_href(href))
 }
 
 fn split_datetime(raw: &str) -> (Option<String>, Option<String>) {
@@ -1669,6 +1683,39 @@ mod tests {
     }
 
     #[test]
+    fn parse_tracking_html_separates_officer_from_trailing_recipient_note() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2607160021748</td></tr>
+              <tr><td>Status Akhir</td><td>DELIVERED (RETURN DELIVERY) di DC JAYAPURA 9910A oleh (Mikha Sandhy Tehuayo / ) Tanggal : 2026-07-27 08:44:49 kk kerja ( kk azalia )</td></tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("delivered return sample should parse");
+
+        assert_eq!(
+            response.status_akhir.status.as_deref(),
+            Some("DELIVERED (RETURN DELIVERY)")
+        );
+        assert_eq!(
+            response.status_akhir.location.as_deref(),
+            Some("DC JAYAPURA 9910A")
+        );
+        assert_eq!(
+            response.status_akhir.officer_name.as_deref(),
+            Some("Mikha Sandhy Tehuayo")
+        );
+        assert_eq!(response.status_akhir.officer_id, None);
+        assert_eq!(
+            response.status_akhir.datetime.as_deref(),
+            Some("2026-07-27 08:44:49")
+        );
+        assert_eq!(response.status_akhir.date.as_deref(), Some("2026-07-27"));
+        assert_eq!(response.status_akhir.time.as_deref(), Some("08:44:49"));
+    }
+
+    #[test]
     fn parse_tracking_html_keeps_only_latest_effective_update_per_runsheet() {
         let html = r#"
             <table>
@@ -1743,5 +1790,40 @@ mod tests {
             response.pod.photo2_url.as_deref(),
             Some("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB")
         );
+    }
+
+    #[test]
+    fn parse_tracking_html_rejects_malformed_empty_pod_href() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2607160021748</td></tr>
+              <tr><td>Status Akhir</td><td>DELIVERED di DC JAYAPURA 9910A oleh (Kurir / 9910bkurir) Tanggal : 2026-07-27 08:44:49</td></tr>
+            </table>
+            <table>
+              <tr>
+                <th>POD</th>
+                <th>Photo</th>
+                <th>Photo2</th>
+                <th>signature</th>
+                <th>coordinate</th>
+              </tr>
+              <tr>
+                <td></td>
+                <td><a href="/photo/valid.jpg">View Photo</a></td>
+                <td><a href= target="_blank">View Photo</a></td>
+                <td></td>
+                <td>-2.5,140.7</td>
+              </tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("malformed optional photo link should not fail tracking");
+
+        assert_eq!(
+            response.pod.photo1_url.as_deref(),
+            Some("https://pid.posindonesia.co.id/photo/valid.jpg")
+        );
+        assert_eq!(response.pod.photo2_url, None);
     }
 }

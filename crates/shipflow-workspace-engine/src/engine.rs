@@ -379,11 +379,13 @@ where
     ) -> WorkspaceEngineRuntimeResult<crate::imports::ImportJobDetail> {
         self.ensure_sheet_exists(&request.sheet_id)?;
         let job_id = self.next_import_job_id();
+        let manifest_bag_concurrency = self.config.max_concurrent_manifest_bag_lookups;
         let mut import_engine = ImportEngine::with_blob_root_path(
             &mut self.store,
             &mut self.import_source,
             self.blob_root_path.clone(),
-        );
+        )
+        .with_max_concurrent_manifest_bag_lookups(manifest_bag_concurrency);
         Ok(import_engine.create_job(&CreateImportJobPlan {
             job_id,
             sheet_id: request.sheet_id,
@@ -554,11 +556,13 @@ where
     where
         F: FnMut(WorkspaceEngineEvent),
     {
+        let manifest_bag_concurrency = self.config.max_concurrent_manifest_bag_lookups;
         let mut import_engine = ImportEngine::with_blob_root_path(
             &mut self.store,
             &mut self.import_source,
             self.blob_root_path.clone(),
-        );
+        )
+        .with_max_concurrent_manifest_bag_lookups(manifest_bag_concurrency);
         Ok(import_engine
             .run_job_with_progress(job_id, |event| {
                 on_event(WorkspaceEngineEvent::ImportJobProgress(event));
@@ -583,11 +587,13 @@ where
         F: FnMut(WorkspaceEngineEvent),
     {
         let max_attempts = self.config.retry_policy.max_attempts;
+        let manifest_bag_concurrency = self.config.max_concurrent_manifest_bag_lookups;
         let mut import_engine = ImportEngine::with_blob_root_path(
             &mut self.store,
             &mut self.import_source,
             self.blob_root_path.clone(),
-        );
+        )
+        .with_max_concurrent_manifest_bag_lookups(manifest_bag_concurrency);
         Ok(import_engine
             .retry_failed_and_run_with_progress(job_id, max_attempts, |event| {
                 on_event(WorkspaceEngineEvent::ImportJobProgress(event));
@@ -600,11 +606,13 @@ where
         kind: crate::imports::ImportKind,
         ids: &[String],
     ) -> WorkspaceEngineRuntimeResult<crate::imports::ImportSourcePreviewResult> {
+        let manifest_bag_concurrency = self.config.max_concurrent_manifest_bag_lookups;
         let mut import_engine = ImportEngine::with_blob_root_path(
             &mut self.store,
             &mut self.import_source,
             self.blob_root_path.clone(),
-        );
+        )
+        .with_max_concurrent_manifest_bag_lookups(manifest_bag_concurrency);
         Ok(import_engine.preview_import_source(kind, ids).await?)
     }
 

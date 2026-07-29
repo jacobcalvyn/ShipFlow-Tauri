@@ -15,13 +15,14 @@ use shipflow_core::{
     },
     parser::parse_lacak_mitra_contact_html,
     upstream::{
-        build_lacak_mitra_tracking_url, fetch_lookup_response, normalize_and_validate_bag_id,
+        build_lacak_mitra_tracking_url, normalize_and_validate_bag_id,
         normalize_and_validate_manifest_id, normalize_and_validate_shipment_id,
         read_response_text_limited, resolve_bag_request, resolve_manifest_request,
         resolve_tracking_request,
     },
 };
 use tokio::sync::{futures::OwnedNotified, Notify};
+use tokio::time::timeout;
 
 use crate::contact_cache::{
     ContactCacheEntry, ContactCacheEntryStatus, ContactCacheState, ContactFetchAction,
@@ -32,6 +33,7 @@ const TRACK_CACHE_TTL_SECS: u64 = 30;
 const BAG_CACHE_TTL_SECS: u64 = 60;
 const MANIFEST_CACHE_TTL_SECS: u64 = 90;
 const ERROR_CACHE_TTL_SECS: u64 = 8;
+const CONTACT_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 const CACHE_SUMMARY_MIN_EVENTS: u64 = 20;
 const CACHE_SUMMARY_MIN_INTERVAL_SECS: u64 = 60;
 const MAX_CONTACT_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -1243,20 +1245,32 @@ async fn fetch_contact_enrichment(
     shipment_id: &str,
 ) -> Result<ContactEnrichment, TrackingError> {
     let url = build_lacak_mitra_tracking_url(shipment_id);
-    let upstream_response = fetch_lookup_response(client, &url).await?;
-    if !upstream_response.status().is_success() {
-        return Err(TrackingError::Upstream(format!(
-            "Lacak Mitra contact endpoint returned HTTP {}.",
-            upstream_response.status()
-        )));
+    match timeout(CONTACT_LOOKUP_TIMEOUT, async {
+        let upstream_response = client.get(&url).send().await.map_err(|error| {
+            TrackingError::Upstream(format!("Lacak Mitra contact request failed: {error}"))
+        })?;
+        if !upstream_response.status().is_success() {
+            return Err(TrackingError::Upstream(format!(
+                "Lacak Mitra contact endpoint returned HTTP {}.",
+                upstream_response.status()
+            )));
+        }
+        let html = read_response_text_limited(
+            upstream_response,
+            MAX_CONTACT_RESPONSE_BYTES,
+            "Lacak Mitra contact response",
+        )
+        .await?;
+        Ok(parse_lacak_mitra_contact_html(&html))
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(TrackingError::Upstream(format!(
+            "Lacak Mitra contact request timed out after {} seconds.",
+            CONTACT_LOOKUP_TIMEOUT.as_secs()
+        ))),
     }
-    let html = read_response_text_limited(
-        upstream_response,
-        MAX_CONTACT_RESPONSE_BYTES,
-        "Lacak Mitra contact response",
-    )
-    .await?;
-    Ok(parse_lacak_mitra_contact_html(&html))
 }
 
 fn apply_cached_contact(

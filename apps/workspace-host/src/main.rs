@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use shipflow_core::model::{BagResponse, ManifestResponse};
 use shipflow_ipc::{RpcError, RpcMessage, RpcRequest, MAX_FRAME_BYTES};
@@ -124,6 +124,91 @@ impl ImportLookupSource for ServiceLookupSource {
         track_manifest(&self.client, &self.config, manifest_id, true)
             .await
             .map_err(ImportLookupFailure::from)
+    }
+
+    async fn fetch_bags<'a>(
+        &'a mut self,
+        bag_ids: &'a [String],
+        request_timeout: Duration,
+        max_concurrency: usize,
+    ) -> Vec<(String, Result<BagResponse, ImportLookupFailure>)> {
+        let started_at = Instant::now();
+        let concurrency = max_concurrency.max(1).min(bag_ids.len().max(1));
+        shipflow_core::shipflow_log!(
+            "[ShipFlowImport] manifest_bag_batch_start count={} concurrency={} timeout_seconds={}",
+            bag_ids.len(),
+            concurrency,
+            request_timeout.as_secs()
+        );
+        let mut pending = bag_ids.iter().cloned().enumerate();
+        let mut tasks = JoinSet::new();
+        let mut indexed_results = std::iter::repeat_with(|| None)
+            .take(bag_ids.len())
+            .collect::<Vec<Option<Result<BagResponse, ImportLookupFailure>>>>();
+
+        let spawn_lookup = |tasks: &mut JoinSet<_>, index: usize, bag_id: String| {
+            let client = self.client.clone();
+            let config = self.config.clone();
+            tasks.spawn(async move {
+                let result = match tokio::time::timeout(
+                    request_timeout,
+                    track_bag(&client, &config, &bag_id, true),
+                )
+                .await
+                {
+                    Ok(result) => result.map_err(ImportLookupFailure::from),
+                    Err(_) => Err(ImportLookupFailure::new(format!(
+                        "Timeout ambil data setelah {} detik.",
+                        request_timeout.as_secs()
+                    ))),
+                };
+                (index, result)
+            });
+        };
+
+        while tasks.len() < concurrency {
+            let Some((index, bag_id)) = pending.next() else {
+                break;
+            };
+            spawn_lookup(&mut tasks, index, bag_id);
+        }
+
+        while let Some(joined) = tasks.join_next().await {
+            match joined {
+                Ok((index, result)) => indexed_results[index] = Some(result),
+                Err(error) => {
+                    shipflow_core::shipflow_log!(
+                        "[ShipFlowImport] manifest_bag_worker_failed error={error}"
+                    );
+                }
+            }
+
+            if let Some((index, bag_id)) = pending.next() {
+                spawn_lookup(&mut tasks, index, bag_id);
+            }
+        }
+
+        let results = bag_ids
+            .iter()
+            .cloned()
+            .zip(indexed_results.into_iter().map(|result| {
+                result.unwrap_or_else(|| {
+                    Err(ImportLookupFailure::new(
+                        "Manifest bag lookup worker stopped unexpectedly.",
+                    ))
+                })
+            }))
+            .collect::<Vec<_>>();
+        let succeeded = results.iter().filter(|(_, result)| result.is_ok()).count();
+        shipflow_core::shipflow_log!(
+            "[ShipFlowImport] manifest_bag_batch_complete count={} succeeded={} failed={} concurrency={} elapsed_ms={}",
+            results.len(),
+            succeeded,
+            results.len().saturating_sub(succeeded),
+            concurrency,
+            started_at.elapsed().as_millis()
+        );
+        results
     }
 }
 

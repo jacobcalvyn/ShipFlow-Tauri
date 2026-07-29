@@ -14,7 +14,7 @@ use crate::persistent_store::default_persistent_lookup_store_path;
 const CONTACT_STORE_FILE_NAME: &str = "contact-store.sqlite3";
 const LEGACY_CONTACT_STORE_FILE_NAME: &str = "contact-store.json";
 const CONTACT_CACHE_TTL_MS: u128 = 90 * 24 * 60 * 60 * 1000;
-const CONTACT_FAILURE_CACHE_TTL_MS: u128 = 30 * 1000;
+const CONTACT_FAILURE_CACHE_TTL_MS: u128 = 5 * 60 * 1000;
 const CONTACT_LAST_USED_WRITE_INTERVAL_MS: u128 = 60 * 60 * 1000;
 const MAX_CONTACT_CACHE_ENTRIES: usize = 20_000;
 
@@ -746,6 +746,21 @@ mod tests {
         assert!(cache.get("P2606020189412").is_none());
         drop(cache);
         cleanup_sqlite(path);
+    }
+
+    #[test]
+    fn failed_contact_cache_entries_use_five_minute_ttl() {
+        assert_eq!(super::CONTACT_FAILURE_CACHE_TTL_MS, 5 * 60 * 1000);
+        assert!(!super::is_expired(
+            ContactCacheEntryStatus::Failed,
+            1_000,
+            1_000 + super::CONTACT_FAILURE_CACHE_TTL_MS - 1
+        ));
+        assert!(super::is_expired(
+            ContactCacheEntryStatus::Failed,
+            1_000,
+            1_000 + super::CONTACT_FAILURE_CACHE_TTL_MS
+        ));
     }
 
     #[test]
