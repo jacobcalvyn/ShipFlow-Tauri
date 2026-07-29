@@ -13,7 +13,7 @@ use shipflow_core::{
         LookupKind, ManifestResponse, TrackResponse, TrackingError, TrackingSource,
         TrackingSourceConfig,
     },
-    parser::parse_lacak_mitra_contact_html,
+    parser::parse_lacak_mitra_contact_html_checked,
     upstream::{
         build_lacak_mitra_tracking_url, normalize_and_validate_bag_id,
         normalize_and_validate_manifest_id, normalize_and_validate_shipment_id,
@@ -1261,7 +1261,7 @@ async fn fetch_contact_enrichment(
             "Lacak Mitra contact response",
         )
         .await?;
-        Ok(parse_lacak_mitra_contact_html(&html))
+        parse_lacak_mitra_contact_html_checked(&html)
     })
     .await
     {

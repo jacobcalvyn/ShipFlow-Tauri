@@ -887,6 +887,8 @@ mod tests {
                 ImportSourcePreviewRequest {
                     kind: ImportKind::Manifest,
                     ids: vec!["MAN1".to_string()],
+                    scope_key: None,
+                    request_key: None,
                 },
             ))
             .await

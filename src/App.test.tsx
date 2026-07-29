@@ -1885,10 +1885,12 @@ describe("App workspace isolation", () => {
       });
       expect(
         getWorkspaceEngineCommandCalls("preview_import_source")[0]?.[1]?.command?.payload
-      ).toEqual({
+      ).toEqual(expect.objectContaining({
         kind: "bag",
         ids: ["PID-SHEET-1"],
-      });
+        scopeKey: "default-sheet:bag",
+        requestKey: expect.any(String),
+      }));
       expect(getInvokeCalls("track_bag")[0]?.[1]?.forceRefresh).toBe(true);
 
       resolveBagRequest("PID-SHEET-1");
@@ -1929,10 +1931,12 @@ describe("App workspace isolation", () => {
       });
       expect(
         getWorkspaceEngineCommandCalls("preview_import_source")[1]?.[1]?.command?.payload
-      ).toEqual({
+      ).toEqual(expect.objectContaining({
         kind: "manifest",
         ids: ["MNF-SHEET-2"],
-      });
+        scopeKey: expect.stringMatching(/:manifest$/),
+        requestKey: expect.any(String),
+      }));
       expect(getInvokeCalls("track_manifest")[0]?.[1]?.forceRefresh).toBe(true);
 
       resolveManifestRequest("MNF-SHEET-2");

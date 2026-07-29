@@ -129,6 +129,13 @@ export type CreateImportJobRequest = {
 export type ImportSourcePreviewRequest = {
   kind: ImportKind;
   ids: string[];
+  scopeKey?: string;
+  requestKey?: string;
+};
+
+export type CancelImportSourcePreviewRequest = {
+  scopeKey: string;
+  requestKey?: string;
 };
 
 export type JobIdRequest = {
@@ -693,6 +700,15 @@ export function previewImportSource(payload: ImportSourcePreviewRequest) {
     command: "preview_import_source",
     payload,
   });
+}
+
+export function cancelImportSourcePreview(
+  payload: CancelImportSourcePreviewRequest,
+) {
+  return getShipFlowBridge().requestWorkspace<{ cancelled: boolean }>(
+    "workspace.cancel_import_preview",
+    payload,
+  );
 }
 
 export function queryPivot(payload: PivotQuery) {

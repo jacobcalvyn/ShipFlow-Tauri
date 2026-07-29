@@ -9,104 +9,6 @@ describe("workspace engine client", () => {
     installTestBridge({ requestWorkspace: requestWorkspaceMock });
   });
 
-  it("serializes import job creation with the Rust command contract", async () => {
-    requestWorkspaceMock.mockResolvedValueOnce({
-      type: "import_job_detail",
-      payload: {
-        summary: {
-          jobId: "job-1",
-          sheetId: "sheet-1",
-          kind: "manifest",
-          mode: "append",
-          status: "pending",
-          totalCount: 2,
-          successCount: 0,
-          failedCount: 0,
-          pendingCount: 2,
-        },
-        items: [],
-      },
-    });
-    const { createImportJob } = await import("./client");
-
-    await createImportJob({
-      sheetId: "sheet-1",
-      kind: "manifest",
-      ids: ["MNF1", "MNF2"],
-      mode: "append",
-    });
-
-    expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
-      command: "create_import_job",
-      payload: {
-        sheetId: "sheet-1",
-        kind: "manifest",
-        ids: ["MNF1", "MNF2"],
-        mode: "append",
-      },
-    });
-  });
-
-  it("serializes import run progress through the Electron workspace bridge", async () => {
-    requestWorkspaceMock.mockResolvedValueOnce({
-      type: "import_job_detail",
-      payload: {
-        summary: {
-          jobId: "job-1",
-          sheetId: "sheet-1",
-          kind: "bag",
-          mode: "append",
-          status: "completed",
-          totalCount: 1,
-          successCount: 1,
-          failedCount: 0,
-          pendingCount: 0,
-        },
-        items: [],
-      },
-    });
-    const { runImportJobWithProgress } = await import("./client");
-    const onEvent = vi.fn();
-
-    await runImportJobWithProgress("job-1", onEvent);
-
-    expect(requestWorkspaceMock).toHaveBeenCalledWith(
-      "workspace.run_import_job_with_progress",
-      { jobId: "job-1" },
-      expect.any(Function),
-    );
-  });
-
-  it("serializes failed import retry progress through the Electron workspace bridge", async () => {
-    requestWorkspaceMock.mockResolvedValueOnce({
-      type: "import_job_detail",
-      payload: {
-        summary: {
-          jobId: "job-1",
-          sheetId: "sheet-1",
-          kind: "bag",
-          mode: "append",
-          status: "completed",
-          totalCount: 1,
-          successCount: 1,
-          failedCount: 0,
-          pendingCount: 0,
-        },
-        items: [],
-      },
-    });
-    const { retryImportJobFailedWithProgress } = await import("./client");
-    const onEvent = vi.fn();
-
-    await retryImportJobFailedWithProgress("job-1", onEvent);
-
-    expect(requestWorkspaceMock).toHaveBeenCalledWith(
-      "workspace.retry_import_job_with_progress",
-      { jobId: "job-1" },
-      expect.any(Function),
-    );
-  });
-
   it("serializes dotted tracking id resolution with the Rust field name", async () => {
     requestWorkspaceMock.mockResolvedValueOnce({
       type: "resolved_tracking_id",
@@ -308,6 +210,8 @@ describe("workspace engine client", () => {
     const response = await previewImportSource({
       kind: "manifest",
       ids: ["MAN1"],
+      scopeKey: "sheet-1:manifest",
+      requestKey: "request-1",
     });
 
     expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
@@ -315,9 +219,29 @@ describe("workspace engine client", () => {
       payload: {
         kind: "manifest",
         ids: ["MAN1"],
+        scopeKey: "sheet-1:manifest",
+        requestKey: "request-1",
       },
     });
     expect(response.payload.trackingIds).toEqual(["P2606020189412.30"]);
+  });
+
+  it("serializes import source preview cancellation by sheet and kind", async () => {
+    requestWorkspaceMock.mockResolvedValueOnce({ cancelled: true });
+    const { cancelImportSourcePreview } = await import("./client");
+
+    await cancelImportSourcePreview({
+      scopeKey: "sheet-1:manifest",
+      requestKey: "request-1",
+    });
+
+    expect(requestWorkspaceMock).toHaveBeenCalledWith(
+      "workspace.cancel_import_preview",
+      {
+        scopeKey: "sheet-1:manifest",
+        requestKey: "request-1",
+      },
+    );
   });
 
   it("keeps pivot commands ready for row-column-value analytics", async () => {

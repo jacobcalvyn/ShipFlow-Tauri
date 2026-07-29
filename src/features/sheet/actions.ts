@@ -844,13 +844,22 @@ export function openImportSourceModalInSheet(
 }
 
 export function closeImportSourceModalInSheet(sheetState: SheetState) {
-  if (sheetState.importSourceModalKind === null) {
+  const kind = sheetState.importSourceModalKind;
+  if (kind === null) {
     return sheetState;
   }
 
   return {
     ...sheetState,
     importSourceModalKind: null,
+    importSourceLookupStates: {
+      ...sheetState.importSourceLookupStates,
+      [kind]: {
+        ...sheetState.importSourceLookupStates[kind],
+        loading: false,
+        requestKey: null,
+      },
+    },
   };
 }
 

@@ -62,6 +62,30 @@ pub trait ImportLookupSource {
             results
         }
     }
+
+    fn fetch_manifests<'a>(
+        &'a mut self,
+        manifest_ids: &'a [String],
+        request_timeout: Duration,
+        _max_concurrency: usize,
+    ) -> impl Future<Output = Vec<(String, Result<ManifestResponse, ImportLookupFailure>)>> + 'a
+    {
+        async move {
+            let mut results = Vec::with_capacity(manifest_ids.len());
+            for manifest_id in manifest_ids {
+                let result = match timeout(request_timeout, self.fetch_manifest(manifest_id)).await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(ImportLookupFailure::new(format!(
+                        "Timeout ambil data setelah {} detik.",
+                        request_timeout.as_secs()
+                    ))),
+                };
+                results.push((manifest_id.clone(), result));
+            }
+            results
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -315,13 +339,21 @@ where
         let mut responses = Vec::new();
         let mut tracking_ids = Vec::new();
 
-        for bag_id in bag_ids {
-            match self.fetch_bag_with_timeout(bag_id).await {
+        let bag_results = self
+            .source
+            .fetch_bags(
+                bag_ids,
+                IMPORT_SOURCE_LOOKUP_TIMEOUT,
+                self.max_concurrent_manifest_bag_lookups,
+            )
+            .await;
+        for (bag_id, result) in bag_results {
+            match result {
                 Ok(response) => {
                     let bag_tracking_ids = extract_bag_tracking_ids(&response);
                     extend_unique_bounded(&mut tracking_ids, &bag_tracking_ids)?;
                     source_items.push(preview_item(
-                        bag_id,
+                        &bag_id,
                         ImportSourceItemKind::Bag,
                         ImportJobItemStatus::Succeeded,
                         bag_tracking_ids,
@@ -331,7 +363,7 @@ where
                 }
                 Err(error) => {
                     source_items.push(preview_item(
-                        bag_id,
+                        &bag_id,
                         ImportSourceItemKind::Bag,
                         ImportJobItemStatus::Failed,
                         Vec::new(),
@@ -358,13 +390,21 @@ where
         let mut manifest_responses = Vec::new();
         let mut manifest_bag_ids = Vec::new();
 
-        for manifest_id in manifest_ids {
-            match self.fetch_manifest_with_timeout(manifest_id).await {
+        let manifest_results = self
+            .source
+            .fetch_manifests(
+                manifest_ids,
+                IMPORT_SOURCE_LOOKUP_TIMEOUT,
+                self.max_concurrent_manifest_bag_lookups,
+            )
+            .await;
+        for (manifest_id, result) in manifest_results {
+            match result {
                 Ok(response) => {
                     let bag_ids = extract_manifest_bag_ids(&response);
                     extend_unique_bounded(&mut manifest_bag_ids, &bag_ids)?;
                     source_items.push(preview_item(
-                        manifest_id,
+                        &manifest_id,
                         ImportSourceItemKind::Manifest,
                         ImportJobItemStatus::Succeeded,
                         bag_ids,
@@ -374,7 +414,7 @@ where
                 }
                 Err(error) => {
                     source_items.push(preview_item(
-                        manifest_id,
+                        &manifest_id,
                         ImportSourceItemKind::Manifest,
                         ImportJobItemStatus::Failed,
                         Vec::new(),
@@ -484,7 +524,7 @@ where
         item: &ImportJobItem,
         attempt_id: &str,
     ) -> ImportEngineResult<()> {
-        let response = self.source.fetch_manifest(&item.source_item_id).await;
+        let response = self.fetch_manifest_with_timeout(&item.source_item_id).await;
         match response {
             Ok(response) => {
                 let bag_ids = dedupe_non_empty(
@@ -560,7 +600,7 @@ where
         item: &ImportJobItem,
         attempt_id: &str,
     ) -> ImportEngineResult<()> {
-        let response = self.source.fetch_bag(&item.source_item_id).await;
+        let response = self.fetch_bag_with_timeout(&item.source_item_id).await;
         match response {
             Ok(response) => {
                 let shipment_ids = dedupe_non_empty(
@@ -1162,6 +1202,7 @@ mod tests {
             Some("bag timeout")
         );
         assert!(preview.raw_response.contains("P2606020189412.40"));
+        assert_eq!(source.bag_batch_concurrency, vec![4]);
 
         let rows = store
             .query_sheet_rows(
@@ -1219,6 +1260,7 @@ mod tests {
         assert_eq!(preview.tracking_ids, vec!["P2606020189412.40"]);
         assert!(preview.raw_response.contains("PID_OK"));
         assert_eq!(source.bag_batch_concurrency, vec![4]);
+        assert_eq!(source.manifest_batch_concurrency, vec![4]);
 
         let rows = store
             .query_sheet_rows(
@@ -1262,6 +1304,7 @@ mod tests {
         bags: HashMap<String, VecDeque<Result<BagResponse, ImportLookupFailure>>>,
         manifests: HashMap<String, VecDeque<Result<ManifestResponse, ImportLookupFailure>>>,
         bag_batch_concurrency: Vec<usize>,
+        manifest_batch_concurrency: Vec<usize>,
     }
 
     impl FakeImportSource {
@@ -1319,6 +1362,20 @@ mod tests {
             let mut results = Vec::with_capacity(bag_ids.len());
             for bag_id in bag_ids {
                 results.push((bag_id.clone(), self.fetch_bag(bag_id).await));
+            }
+            results
+        }
+
+        async fn fetch_manifests<'a>(
+            &'a mut self,
+            manifest_ids: &'a [String],
+            _request_timeout: Duration,
+            max_concurrency: usize,
+        ) -> Vec<(String, Result<ManifestResponse, ImportLookupFailure>)> {
+            self.manifest_batch_concurrency.push(max_concurrency);
+            let mut results = Vec::with_capacity(manifest_ids.len());
+            for manifest_id in manifest_ids {
+                results.push((manifest_id.clone(), self.fetch_manifest(manifest_id).await));
             }
             results
         }

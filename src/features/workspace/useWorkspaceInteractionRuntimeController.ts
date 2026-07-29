@@ -11,7 +11,6 @@ import {
   closeImportSourceModalInSheet,
   failTrackingRunInSheet,
   openImportSourceModalInSheet,
-  setImportSourceJobInSheet,
   setImportSourceLookupErrorInSheet,
   setImportSourceLookupProgressInSheet,
   setImportSourceLookupSuccessInSheet,
@@ -36,11 +35,7 @@ import { useWorkspaceRuntimeCommandsController } from "./useWorkspaceRuntimeComm
 import { useWorkspaceTableControllers } from "./useWorkspaceTableControllers";
 import { WorkspaceState } from "./types";
 import {
-  createImportJob,
-  getImportJob,
-  type ImportJobDetail,
-  type ImportJobItem,
-  type ImportJobProgressEvent,
+  cancelImportSourcePreview,
   ImportSourcePreviewItem,
   ImportSourcePreviewResult,
   previewImportSource,
@@ -48,10 +43,7 @@ import {
   type SheetRowProjection,
   type SheetRowsQuery,
   refreshSheetRowsTrackingWithProgress,
-  retryImportJobFailedWithProgress,
-  runImportJobWithProgress,
   upsertSheetRows,
-  WorkspaceEngineEvent,
 } from "../workspace-engine/client";
 import {
   applyTrackingRefreshProgressToSheet,
@@ -162,22 +154,6 @@ function mergeTrackingIds(...trackingIdGroups: Array<string[] | undefined>) {
   return trackingIds;
 }
 
-function getImportJobTrackingIds(detail: ImportJobDetail) {
-  return mergeTrackingIds(
-    ...detail.items
-      .filter((item) => item.status === "succeeded")
-      .map((item) => item.trackingIds)
-  );
-}
-
-export function getImportJobSheetRowIds(detail: ImportJobDetail) {
-  return mergeTrackingIds(
-    ...detail.items
-      .filter((item) => item.status === "succeeded")
-      .map((item) => item.sheetRowIds)
-  );
-}
-
 function createImportTrackingRunId(sheetId: string, reason: string) {
   return `${sheetId}:import-${reason}:${Date.now()}:${Math.random()
     .toString(36)
@@ -274,10 +250,14 @@ function mergeImportSourcePreviewResults(
 async function runImportSourcePreviewInBatches({
   kind,
   sourceIds,
+  scopeKey,
+  requestKey,
   onPreview,
 }: {
   kind: ImportSourceModalKind;
   sourceIds: string[];
+  scopeKey: string;
+  requestKey: string;
   onPreview: (
     preview: ImportSourcePreviewResult,
     mergedPreview: ImportSourcePreviewResult
@@ -301,6 +281,8 @@ async function runImportSourcePreviewInBatches({
           await previewImportSource({
             kind,
             ids: [sourceId],
+            scopeKey,
+            requestKey,
           })
         ).payload;
       } catch (error) {
@@ -505,207 +487,6 @@ function isImportSourceLookupCurrent(
   );
 }
 
-function isImportJobRunningStatus(status: ImportJobProgressEvent["status"]) {
-  return status === "pending" || status === "running";
-}
-
-function isImportJobItemRunningStatus(status: ImportJobItem["status"]) {
-  return status === "pending" || status === "running";
-}
-
-export function applyWorkspaceEngineImportJobDetail(
-  sheetState: SheetState,
-  kind: ImportSourceModalKind,
-  requestKey: string,
-  detail: ImportJobDetail
-) {
-  if (sheetState.importSourceLookupStates[kind].requestKey !== requestKey) {
-    return sheetState;
-  }
-
-  const currentLookupState = sheetState.importSourceLookupStates[kind];
-  const sourceItemStates: ImportSourceItemLookupState[] = [];
-  const manifestBagStates: ManifestBagLookupState[] = [];
-  const trackingIds: string[] = [];
-
-  const appendTrackingIds = (ids: string[]) => {
-    ids.forEach((trackingId) => {
-      const normalizedTrackingId = trackingId.trim();
-      if (normalizedTrackingId && !trackingIds.includes(normalizedTrackingId)) {
-        trackingIds.push(normalizedTrackingId);
-      }
-    });
-  };
-
-  detail.items.forEach((item) => {
-    const loading = isImportJobItemRunningStatus(item.status);
-    const error = item.errorMessage ?? "";
-
-    if (item.sourceItemKind === "bag" && kind === "bag") {
-      sourceItemStates.push({
-        itemId: item.sourceItemId,
-        loading,
-        error,
-        trackingIds: item.trackingIds,
-      });
-      appendTrackingIds(item.trackingIds);
-      return;
-    }
-
-    if (item.sourceItemKind === "manifest" && kind === "manifest") {
-      sourceItemStates.push({
-        itemId: item.sourceItemId,
-        loading,
-        error,
-        trackingIds: item.trackingIds,
-      });
-      return;
-    }
-
-    if (item.sourceItemKind === "manifest_bag" && kind === "manifest") {
-      manifestBagStates.push({
-        bagId: item.sourceItemId,
-        loading,
-        error,
-        trackingIds: item.trackingIds,
-      });
-      appendTrackingIds(item.trackingIds);
-    }
-  });
-
-  return {
-    ...sheetState,
-    importSourceLookupStates: {
-      ...sheetState.importSourceLookupStates,
-      [kind]: {
-        ...currentLookupState,
-        loading: isImportJobRunningStatus(detail.summary.status),
-        error: "",
-        trackingIds,
-        jobId: detail.summary.jobId,
-        sourceItemStates,
-        manifestBagStates,
-      },
-    },
-  };
-}
-
-function applyWorkspaceEngineImportProgress(
-  sheetState: SheetState,
-  kind: ImportSourceModalKind,
-  requestKey: string,
-  event: WorkspaceEngineEvent
-) {
-  if (
-    event.type !== "import_job_progress" ||
-    sheetState.importSourceLookupStates[kind].requestKey !== requestKey
-  ) {
-    return sheetState;
-  }
-
-  const currentLookupState = sheetState.importSourceLookupStates[kind];
-  const sourceItemStates = [...(currentLookupState.sourceItemStates ?? [])];
-  const manifestBagStates = [...(currentLookupState.manifestBagStates ?? [])];
-  const trackingIds = [...currentLookupState.trackingIds];
-  const sourceItemIndexById = new Map(
-    sourceItemStates.map((state, index) => [state.itemId, index])
-  );
-  const manifestBagIndexById = new Map(
-    manifestBagStates.map((state, index) => [state.bagId, index])
-  );
-
-  const upsertSourceState = (
-    itemId: string,
-    state: Omit<ImportSourceItemLookupState, "itemId">
-  ) => {
-    const existingIndex = sourceItemIndexById.get(itemId);
-    const nextState = { itemId, ...state };
-
-    if (existingIndex === undefined) {
-      sourceItemIndexById.set(itemId, sourceItemStates.length);
-      sourceItemStates.push(nextState);
-      return;
-    }
-
-    sourceItemStates[existingIndex] = nextState;
-  };
-
-  const upsertManifestBagState = (
-    bagId: string,
-    state: Omit<ManifestBagLookupState, "bagId">
-  ) => {
-    const existingIndex = manifestBagIndexById.get(bagId);
-    const nextState = { bagId, ...state };
-
-    if (existingIndex === undefined) {
-      manifestBagIndexById.set(bagId, manifestBagStates.length);
-      manifestBagStates.push(nextState);
-      return;
-    }
-
-    manifestBagStates[existingIndex] = nextState;
-  };
-
-  event.payload.itemDeltas.forEach((delta) => {
-    const loading = delta.status === "pending" || delta.status === "running";
-    const error = delta.errorMessage ?? "";
-
-    if (delta.sourceItemKind === "bag" && kind === "bag") {
-      upsertSourceState(delta.sourceItemId, {
-        loading,
-        error,
-        trackingIds: delta.trackingIds,
-      });
-      delta.trackingIds.forEach((trackingId) => {
-        if (!trackingIds.includes(trackingId)) {
-          trackingIds.push(trackingId);
-        }
-      });
-      return;
-    }
-
-    if (delta.sourceItemKind === "manifest" && kind === "manifest") {
-      upsertSourceState(delta.sourceItemId, {
-        loading,
-        error,
-        trackingIds: [],
-      });
-      delta.trackingIds.forEach((bagId) => {
-        upsertManifestBagState(bagId, {
-          loading: true,
-          error: "",
-          trackingIds: [],
-        });
-      });
-      return;
-    }
-
-    if (delta.sourceItemKind === "manifest_bag" && kind === "manifest") {
-      upsertManifestBagState(delta.sourceItemId, {
-        loading,
-        error,
-        trackingIds: delta.trackingIds,
-      });
-    }
-  });
-
-  return {
-    ...sheetState,
-    importSourceLookupStates: {
-      ...sheetState.importSourceLookupStates,
-      [kind]: {
-        ...currentLookupState,
-        loading: isImportJobRunningStatus(event.payload.status),
-        error: "",
-        trackingIds,
-        jobId: event.payload.jobId,
-        sourceItemStates,
-        manifestBagStates,
-      },
-    },
-  };
-}
-
 type ResizeState = {
   path: string;
   startX: number;
@@ -865,60 +646,32 @@ export function useWorkspaceInteractionRuntimeController({
 
   const openImportSourceModal = useCallback(
     (kind: ImportSourceModalKind) => {
-      const lookupState = activeSheet.importSourceLookupStates[kind];
-      const jobId = lookupState.jobId ?? null;
-      const requestKey = lookupState.requestKey ?? null;
       updateActiveSheet((current) => openImportSourceModalInSheet(current, kind));
-
-      if (!jobId || !requestKey) {
-        return;
-      }
-
-      getImportJob(jobId)
-        .then((response) => {
-          updateSheet(activeSheetId, (current) => {
-            const currentLookupState = current.importSourceLookupStates[kind];
-            if (
-              currentLookupState.jobId !== jobId ||
-              currentLookupState.requestKey !== requestKey
-            ) {
-              return current;
-            }
-
-            return applyWorkspaceEngineImportJobDetail(
-              current,
-              kind,
-              requestKey,
-              response.payload
-            );
-          });
-        })
-        .catch((error) => {
-          updateSheet(activeSheetId, (current) => {
-            const currentLookupState = current.importSourceLookupStates[kind];
-            if (
-              currentLookupState.jobId !== jobId ||
-              currentLookupState.requestKey !== requestKey
-            ) {
-              return current;
-            }
-
-            return setImportSourceLookupErrorInSheet(
-              current,
-              kind,
-              getRuntimeErrorMessage(error),
-              requestKey,
-              currentLookupState.sourceItemStates
-            );
-          });
-        });
     },
-    [activeSheet.importSourceLookupStates, activeSheetId, updateActiveSheet, updateSheet]
+    [updateActiveSheet]
   );
 
   const closeImportSourceModal = useCallback(() => {
+    const kind = activeSheet.importSourceModalKind;
+    const requestKey = kind
+      ? activeSheet.importSourceLookupStates[kind].requestKey
+      : null;
+    if (kind && requestKey) {
+      void cancelImportSourcePreview({
+        scopeKey: `${activeSheetId}:${kind}`,
+        requestKey,
+      }).catch(() => {
+        // The request may already have completed; stale UI updates are also
+        // guarded by requestKey in the sheet reducer.
+      });
+    }
     updateActiveSheet((current) => closeImportSourceModalInSheet(current));
-  }, [updateActiveSheet]);
+  }, [
+    activeSheet.importSourceLookupStates,
+    activeSheet.importSourceModalKind,
+    activeSheetId,
+    updateActiveSheet,
+  ]);
 
   const setImportSourceDraft = useCallback(
     (kind: ImportSourceModalKind, value: string) => {
@@ -945,6 +698,7 @@ export function useWorkspaceInteractionRuntimeController({
       const requestKey = `${kind}:${Date.now()}:${Math.random()
         .toString(36)
         .slice(2)}`;
+      const scopeKey = `${targetSheetId}:${kind}`;
 
       if (isRetry) {
         flushSync(() => {
@@ -959,144 +713,14 @@ export function useWorkspaceInteractionRuntimeController({
           )
         });
 
-        const retryJobId =
-          workspaceRef.current.sheetsById[targetSheetId]?.importSourceLookupStates[
-            kind
-          ].jobId?.trim() ?? "";
-        if (retryJobId) {
-          const refreshedRowIds: string[] = [];
-          const appendRefreshedRowIds = (rowIds: string[]) => {
-            rowIds.forEach((rowId) => {
-              const normalizedRowId = rowId.trim();
-              if (normalizedRowId && !refreshedRowIds.includes(normalizedRowId)) {
-                refreshedRowIds.push(normalizedRowId);
-              }
-            });
-          };
-
-          try {
-            const completed = await retryImportJobFailedWithProgress(
-              retryJobId,
-              (event) => {
-                if (event.type === "import_job_progress") {
-                  event.payload.itemDeltas
-                    .filter((delta) => delta.status === "succeeded")
-                    .forEach((delta) => appendRefreshedRowIds(delta.sheetRowIds));
-                }
-
-                updateSheet(targetSheetId, (current) =>
-                  applyWorkspaceEngineImportProgress(
-                    current,
-                    kind,
-                    requestKey,
-                    event
-                  )
-                );
-              }
-            );
-            onWorkspaceEngineMutation?.(targetSheetId);
-            updateSheet(targetSheetId, (current) =>
-              applyWorkspaceEngineImportJobDetail(
-                current,
-                kind,
-                requestKey,
-                completed.payload
-              )
-            );
-
-            const refreshRowIds =
-              refreshedRowIds.length > 0
-                ? refreshedRowIds
-                : getImportJobSheetRowIds(completed.payload);
-            if (refreshRowIds.length > 0) {
-              if (
-                workspaceRef.current.sheetsById[targetSheetId]
-                  ?.activeTrackingRunId
-              ) {
-                throw new Error(
-                  "Proses lacak lain sedang berjalan pada sheet ini."
-                );
-              }
-              const trackingRunId = createImportTrackingRunId(targetSheetId, `${kind}-retry`);
-              flushSync(() => {
-                updateSheet(targetSheetId, (current) =>
-                  startTrackingRunInSheet(current, trackingRunId)
-                );
-              });
-              try {
-                const refreshResult = await refreshSheetRowsTrackingWithProgress(
-                  {
-                    sheetId: targetSheetId,
-                    rowIds: refreshRowIds,
-                    forceRefresh: true,
-                    runId: trackingRunId,
-                  },
-                  (event) => {
-                    if (
-                      event.type === "tracking_refresh_progress" &&
-                      event.payload.runId === trackingRunId
-                    ) {
-                      updateSheet(targetSheetId, (current) =>
-                        applyTrackingRefreshProgressToSheet(current, event.payload, {
-                          runId: trackingRunId,
-                        })
-                      );
-                    }
-                  }
-                );
-                if (
-                  refreshResult.payload.runId === trackingRunId &&
-                  refreshResult.payload.rows.length > 0
-                ) {
-                  updateSheet(targetSheetId, (current) =>
-                    applyTrackingRefreshRowsToSheet(current, refreshResult.payload.rows, {
-                      runId: trackingRunId,
-                    })
-                  );
-                }
-              } catch (error) {
-                const message = getRuntimeErrorMessage(error);
-                updateSheet(targetSheetId, (current) =>
-                  failTrackingRunInSheet(current, trackingRunId, message)
-                );
-                throw error;
-              } finally {
-                updateSheet(targetSheetId, (current) =>
-                  clearTrackingRunInSheet(current, trackingRunId)
-                );
-              }
-              onWorkspaceEngineMutation?.(targetSheetId);
-            }
-
-            showNotice({
-              tone:
-                completed.payload.summary.failedCount > 0 ? "error" : "success",
-              message:
-                completed.payload.summary.failedCount > 0
-                  ? "Sebagian data masih gagal diambil."
-                  : "Ambil ulang gagal berhasil.",
-            });
-          } catch (error) {
-            const message = getRuntimeErrorMessage(error);
-            updateSheet(targetSheetId, (current) =>
-              setImportSourceLookupErrorInSheet(
-                current,
-                kind,
-                message,
-                requestKey,
-                current.importSourceLookupStates[kind].sourceItemStates
-              )
-            );
-          }
-          return;
-        }
-
         try {
           if (kind === "bag") {
             const preview = (
               await previewImportSource({
                 kind: "bag",
                 ids: retrySourceItemIds,
+                scopeKey,
+                requestKey,
               })
             ).payload;
 
@@ -1172,6 +796,8 @@ export function useWorkspaceInteractionRuntimeController({
               await previewImportSource({
                 kind: "manifest",
                 ids: retrySourceItemIds,
+                scopeKey,
+                requestKey,
               })
             ).payload;
 
@@ -1208,6 +834,8 @@ export function useWorkspaceInteractionRuntimeController({
               await previewImportSource({
                 kind: "bag",
                 ids: retryManifestBagIds,
+                scopeKey,
+                requestKey,
               })
             ).payload;
 
@@ -1323,6 +951,8 @@ export function useWorkspaceInteractionRuntimeController({
           const preview = await runImportSourcePreviewInBatches({
             kind: "bag",
             sourceIds: lookupIds,
+            scopeKey,
+            requestKey,
             onPreview: (itemPreview) => {
               if (
                 isImportSourceLookupCurrent(
@@ -1390,6 +1020,8 @@ export function useWorkspaceInteractionRuntimeController({
         const preview = await runImportSourcePreviewInBatches({
           kind: "manifest",
           sourceIds: lookupIds,
+          scopeKey,
+          requestKey,
           onPreview: (itemPreview) => {
             if (
               isImportSourceLookupCurrent(
@@ -1464,6 +1096,16 @@ export function useWorkspaceInteractionRuntimeController({
           });
         }
       } catch (error) {
+        if (
+          !isImportSourceLookupCurrent(
+            workspaceRef,
+            targetSheetId,
+            kind,
+            requestKey
+          )
+        ) {
+          return;
+        }
         const message = getRuntimeErrorMessage(error);
         updateSheet(targetSheetId, (current) =>
           setImportSourceLookupErrorInSheet(current, kind, message, requestKey)

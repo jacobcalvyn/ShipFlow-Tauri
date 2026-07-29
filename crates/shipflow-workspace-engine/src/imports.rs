@@ -89,6 +89,10 @@ pub struct ImportRetryTargets {
 pub struct ImportSourcePreviewRequest {
     pub kind: ImportKind,
     pub ids: Vec<String>,
+    #[serde(default)]
+    pub scope_key: Option<String>,
+    #[serde(default)]
+    pub request_key: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

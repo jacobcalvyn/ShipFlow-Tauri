@@ -426,11 +426,20 @@ describe("sheet actions", () => {
   it("opens and closes import source modals per sheet", () => {
     const initial = createDefaultSheetState();
 
-    const opened = openImportSourceModalInSheet(initial, "bag");
+    const opened = startImportSourceLookupInSheet(
+      openImportSourceModalInSheet(initial, "bag"),
+      "bag",
+      "request-1",
+      ["PID123"]
+    );
     const closed = closeImportSourceModalInSheet(opened);
 
     expect(opened.importSourceModalKind).toBe("bag");
     expect(closed.importSourceModalKind).toBeNull();
+    expect(closed.importSourceLookupStates.bag).toMatchObject({
+      loading: false,
+      requestKey: null,
+    });
   });
 
   it("stores import source drafts by modal kind", async () => {

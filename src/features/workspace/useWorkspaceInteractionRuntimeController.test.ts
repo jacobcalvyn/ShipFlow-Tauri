@@ -2,27 +2,16 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SheetState } from "../sheet/types";
 import { createDefaultSheetState } from "../sheet/default-state";
-import type {
-  ImportJobDetail,
-  ImportSourcePreviewResult,
-  WorkspaceEngineEvent,
-} from "../workspace-engine/client";
+import type { ImportSourcePreviewResult } from "../workspace-engine/client";
 import type { WorkspaceState } from "./types";
-import {
-  applyWorkspaceEngineImportJobDetail,
-  getImportJobSheetRowIds,
-  useWorkspaceInteractionRuntimeController,
-} from "./useWorkspaceInteractionRuntimeController";
+import { useWorkspaceInteractionRuntimeController } from "./useWorkspaceInteractionRuntimeController";
 
 const mocks = vi.hoisted(() => ({
-  createImportJobMock: vi.fn(),
+  cancelImportSourcePreviewMock: vi.fn(),
   clearSheetRowsMock: vi.fn(),
-  getImportJobMock: vi.fn(),
   previewImportSourceMock: vi.fn(),
   querySheetRowsMock: vi.fn(),
   refreshSheetRowsTrackingMock: vi.fn(),
-  retryImportJobFailedWithProgressMock: vi.fn(),
-  runImportJobWithProgressMock: vi.fn(),
   upsertSheetRowsMock: vi.fn(),
   useWorkspaceRuntimeCommandsControllerMock: vi.fn(),
   useWorkspaceTableControllersMock: vi.fn(),
@@ -32,16 +21,12 @@ vi.mock("../workspace-engine/client", async () => {
   const actual = await vi.importActual<object>("../workspace-engine/client");
   return {
     ...actual,
-    createImportJob: mocks.createImportJobMock,
+    cancelImportSourcePreview: mocks.cancelImportSourcePreviewMock,
     clearSheetRows: mocks.clearSheetRowsMock,
-    getImportJob: mocks.getImportJobMock,
     previewImportSource: mocks.previewImportSourceMock,
     querySheetRows: mocks.querySheetRowsMock,
     refreshSheetRowsTracking: mocks.refreshSheetRowsTrackingMock,
     refreshSheetRowsTrackingWithProgress: mocks.refreshSheetRowsTrackingMock,
-    retryImportJobFailedWithProgress:
-      mocks.retryImportJobFailedWithProgressMock,
-    runImportJobWithProgress: mocks.runImportJobWithProgressMock,
     upsertSheetRows: mocks.upsertSheetRowsMock,
   };
 });
@@ -80,278 +65,6 @@ describe("useWorkspaceInteractionRuntimeController", () => {
 
   afterEach(() => {
     vi.useRealTimers();
-  });
-
-  it("collects import refresh targets from Rust job item row ids", () => {
-    const detail = {
-      summary: {
-        jobId: "job-1",
-        sheetId: "sheet-1",
-        kind: "bag",
-        mode: "append",
-        status: "completed",
-        totalCount: 3,
-        successCount: 2,
-        failedCount: 1,
-        pendingCount: 0,
-      },
-      items: [
-        {
-          itemId: "job-1:item:0",
-          sourceItemId: "PID-A",
-          sourceItemKind: "bag",
-          position: 0,
-          status: "succeeded",
-          trackingIds: ["P1", "P2"],
-          sheetRowIds: ["sheet-1:row:0", "sheet-1:row:1"],
-          errorMessage: null,
-          attemptCount: 1,
-        },
-        {
-          itemId: "job-1:item:1",
-          sourceItemId: "PID-B",
-          sourceItemKind: "bag",
-          position: 1,
-          status: "succeeded",
-          trackingIds: ["P2", "P3"],
-          sheetRowIds: ["sheet-1:row:1", "sheet-1:row:2"],
-          errorMessage: null,
-          attemptCount: 1,
-        },
-        {
-          itemId: "job-1:item:2",
-          sourceItemId: "PID-C",
-          sourceItemKind: "bag",
-          position: 2,
-          status: "failed",
-          trackingIds: ["SHOULD-NOT-REFRESH"],
-          sheetRowIds: ["sheet-1:row:99"],
-          errorMessage: "upstream failed",
-          attemptCount: 1,
-        },
-      ],
-    } as ImportJobDetail;
-
-    expect(getImportJobSheetRowIds(detail)).toEqual([
-      "sheet-1:row:0",
-      "sheet-1:row:1",
-      "sheet-1:row:2",
-    ]);
-  });
-
-  it("reconstructs bag import modal state from Rust job detail without stale ids", () => {
-    const sheetState = {
-      importSourceLookupStates: {
-        bag: {
-          loading: false,
-          rawResponse: "legacy-preview",
-          error: "stale error",
-          trackingIds: ["STALE-ID"],
-          jobId: "old-job",
-          requestKey: "bag:commit:1",
-          sourceItemStates: [
-            {
-              itemId: "STALE-BAG",
-              loading: false,
-              error: "",
-              trackingIds: ["STALE-ID"],
-            },
-          ],
-        },
-        manifest: {
-          loading: false,
-          rawResponse: "",
-          error: "",
-          trackingIds: [],
-        },
-      },
-    } as unknown as SheetState;
-    const detail: ImportJobDetail = {
-      summary: {
-        jobId: "job-1",
-        sheetId: "sheet-1",
-        kind: "bag",
-        mode: "append",
-        status: "completed",
-        totalCount: 2,
-        successCount: 1,
-        failedCount: 1,
-        pendingCount: 0,
-      },
-      items: [
-        {
-          itemId: "job-1:item:0",
-          sourceItemId: "PID-OK",
-          sourceItemKind: "bag",
-          position: 0,
-          status: "succeeded",
-          trackingIds: ["P1", "P2"],
-          sheetRowIds: ["sheet-1:row:0", "sheet-1:row:1"],
-          errorMessage: null,
-          attemptCount: 1,
-        },
-        {
-          itemId: "job-1:item:1",
-          sourceItemId: "PID-FAILED",
-          sourceItemKind: "bag",
-          position: 1,
-          status: "failed",
-          trackingIds: [],
-          sheetRowIds: [],
-          errorMessage: "upstream timeout",
-          attemptCount: 1,
-        },
-      ],
-    };
-
-    const next = applyWorkspaceEngineImportJobDetail(
-      sheetState,
-      "bag",
-      "bag:commit:1",
-      detail
-    );
-
-    expect(next.importSourceLookupStates.bag).toMatchObject({
-      loading: false,
-      error: "",
-      trackingIds: ["P1", "P2"],
-      jobId: "job-1",
-      sourceItemStates: [
-        {
-          itemId: "PID-OK",
-          loading: false,
-          error: "",
-          trackingIds: ["P1", "P2"],
-        },
-        {
-          itemId: "PID-FAILED",
-          loading: false,
-          error: "upstream timeout",
-          trackingIds: [],
-        },
-      ],
-      manifestBagStates: [],
-    });
-  });
-
-  it("reconstructs manifest import modal bag rows from Rust job detail", () => {
-    const sheetState = {
-      importSourceLookupStates: {
-        bag: {
-          loading: false,
-          rawResponse: "",
-          error: "",
-          trackingIds: [],
-        },
-        manifest: {
-          loading: false,
-          rawResponse: "legacy-preview",
-          error: "",
-          trackingIds: ["STALE-ID"],
-          requestKey: "manifest:commit:1",
-          sourceItemStates: [
-            {
-              itemId: "STALE-MANIFEST",
-              loading: false,
-              error: "",
-              trackingIds: ["STALE-BAG"],
-            },
-          ],
-          manifestBagStates: [
-            {
-              bagId: "STALE-BAG",
-              loading: false,
-              error: "",
-              trackingIds: ["STALE-ID"],
-            },
-          ],
-        },
-      },
-    } as unknown as SheetState;
-    const detail: ImportJobDetail = {
-      summary: {
-        jobId: "job-2",
-        sheetId: "sheet-1",
-        kind: "manifest",
-        mode: "replace",
-        status: "completed",
-        totalCount: 3,
-        successCount: 2,
-        failedCount: 1,
-        pendingCount: 0,
-      },
-      items: [
-        {
-          itemId: "job-2:manifest:0",
-          sourceItemId: "MNF-OK",
-          sourceItemKind: "manifest",
-          position: 0,
-          status: "succeeded",
-          trackingIds: ["PID-OK"],
-          sheetRowIds: [],
-          errorMessage: null,
-          attemptCount: 1,
-        },
-        {
-          itemId: "job-2:bag:1",
-          sourceItemId: "PID-OK",
-          sourceItemKind: "manifest_bag",
-          position: 1,
-          status: "succeeded",
-          trackingIds: ["P1", "P2"],
-          sheetRowIds: ["sheet-1:row:0", "sheet-1:row:1"],
-          errorMessage: null,
-          attemptCount: 1,
-        },
-        {
-          itemId: "job-2:bag:2",
-          sourceItemId: "PID-FAILED",
-          sourceItemKind: "manifest_bag",
-          position: 2,
-          status: "failed",
-          trackingIds: [],
-          sheetRowIds: [],
-          errorMessage: "bag timeout",
-          attemptCount: 2,
-        },
-      ],
-    };
-
-    const next = applyWorkspaceEngineImportJobDetail(
-      sheetState,
-      "manifest",
-      "manifest:commit:1",
-      detail
-    );
-
-    expect(next.importSourceLookupStates.manifest).toMatchObject({
-      loading: false,
-      error: "",
-      trackingIds: ["P1", "P2"],
-      jobId: "job-2",
-      sourceItemStates: [
-        {
-          itemId: "MNF-OK",
-          loading: false,
-          error: "",
-          trackingIds: ["PID-OK"],
-        },
-      ],
-      manifestBagStates: [
-        {
-          bagId: "PID-OK",
-          loading: false,
-          error: "",
-          trackingIds: ["P1", "P2"],
-        },
-        {
-          bagId: "PID-FAILED",
-          loading: false,
-          error: "bag timeout",
-          trackingIds: [],
-        },
-      ],
-    });
   });
 
   it("updates bag import preview state as each source id finishes", async () => {
@@ -548,14 +261,22 @@ describe("useWorkspaceInteractionRuntimeController", () => {
         },
       ],
     });
-    expect(mocks.previewImportSourceMock).toHaveBeenCalledWith({
-      kind: "bag",
-      ids: ["PID-A"],
-    });
-    expect(mocks.previewImportSourceMock).toHaveBeenCalledWith({
-      kind: "bag",
-      ids: ["PID-B"],
-    });
+    expect(mocks.previewImportSourceMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "bag",
+        ids: ["PID-A"],
+        scopeKey: "sheet-1:bag",
+        requestKey: expect.any(String),
+      })
+    );
+    expect(mocks.previewImportSourceMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "bag",
+        ids: ["PID-B"],
+        scopeKey: "sheet-1:bag",
+        requestKey: expect.any(String),
+      })
+    );
   });
 
   it("shows the Rust timeout returned for a stuck bag import preview source", async () => {
@@ -655,10 +376,14 @@ describe("useWorkspaceInteractionRuntimeController", () => {
       await result.current.runImportSourceLookup("bag");
     });
 
-    expect(mocks.previewImportSourceMock).toHaveBeenCalledWith({
-      kind: "bag",
-      ids: ["PID-SLOW"],
-    });
+    expect(mocks.previewImportSourceMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "bag",
+        ids: ["PID-SLOW"],
+        scopeKey: "sheet-1:bag",
+        requestKey: expect.any(String),
+      })
+    );
 
     const state =
       workspaceRef.current.sheetsById["sheet-1"].importSourceLookupStates.bag;
@@ -913,241 +638,6 @@ describe("useWorkspaceInteractionRuntimeController", () => {
     });
   });
 
-  it("retries a committed import through the Rust failed-only job channel", async () => {
-    const sheetState = {
-      deleteAllArmed: false,
-      openColumnMenuPath: null,
-      selectionFollowsVisibleRows: false,
-      hiddenColumnPaths: [],
-      pinnedColumnPaths: [],
-      importSourceDrafts: {
-        bag: "PID-FAILED",
-        manifest: "",
-      },
-      importSourceLookupStates: {
-        bag: {
-          loading: false,
-          rawResponse: "",
-          error: "",
-          trackingIds: ["P1"],
-          jobId: "job-1",
-          requestKey: "bag:commit:1",
-          sourceItemStates: [
-            {
-              itemId: "PID-OK",
-              loading: false,
-              error: "",
-              trackingIds: ["P1"],
-            },
-            {
-              itemId: "PID-FAILED",
-              loading: false,
-              error: "upstream timeout",
-              trackingIds: [],
-            },
-          ],
-          manifestBagStates: [],
-        },
-        manifest: {
-          loading: false,
-          rawResponse: "",
-          error: "",
-          trackingIds: [],
-        },
-      },
-    } as unknown as SheetState;
-    const workspaceRef: { current: WorkspaceState } = {
-      current: {
-        version: 1,
-        activeSheetId: "sheet-1",
-        sheetOrder: ["sheet-1"],
-        sheetMetaById: {
-          "sheet-1": {
-            name: "Sheet 1",
-            color: "blue",
-            icon: "sheet",
-          },
-        },
-        sheetsById: {
-          "sheet-1": sheetState,
-        },
-      },
-    };
-    const updateSheet = vi.fn(
-      (sheetId: string, updater: (sheet: SheetState) => SheetState) => {
-        const currentSheet = workspaceRef.current.sheetsById[sheetId];
-        workspaceRef.current = {
-          ...workspaceRef.current,
-          sheetsById: {
-            ...workspaceRef.current.sheetsById,
-            [sheetId]: updater(currentSheet),
-          },
-        };
-      }
-    );
-    const completed: ImportJobDetail = {
-      summary: {
-        jobId: "job-1",
-        sheetId: "sheet-1",
-        kind: "bag",
-        mode: "append",
-        status: "completed",
-        totalCount: 2,
-        successCount: 2,
-        failedCount: 0,
-        pendingCount: 0,
-      },
-      items: [
-        {
-          itemId: "job-1:item:0",
-          sourceItemId: "PID-OK",
-          sourceItemKind: "bag",
-          position: 0,
-          status: "succeeded",
-          trackingIds: ["P1"],
-          sheetRowIds: ["sheet-1:row:0"],
-          errorMessage: null,
-          attemptCount: 1,
-        },
-        {
-          itemId: "job-1:item:1",
-          sourceItemId: "PID-FAILED",
-          sourceItemKind: "bag",
-          position: 1,
-          status: "succeeded",
-          trackingIds: ["P2"],
-          sheetRowIds: ["sheet-1:row:1"],
-          errorMessage: null,
-          attemptCount: 2,
-        },
-      ],
-    };
-    mocks.retryImportJobFailedWithProgressMock.mockImplementation(
-      async (_jobId: string, onEvent: (event: WorkspaceEngineEvent) => void) => {
-        onEvent({
-          type: "import_job_progress",
-          payload: {
-            jobId: "job-1",
-            sheetId: "sheet-1",
-            kind: "bag",
-            mode: "append",
-            status: "completed",
-            totalCount: 2,
-            successCount: 2,
-            failedCount: 0,
-            pendingCount: 0,
-            itemDeltas: [
-              {
-                itemId: "job-1:item:1",
-                sourceItemId: "PID-FAILED",
-                sourceItemKind: "bag",
-                status: "succeeded",
-                trackingIds: ["P2"],
-                sheetRowIds: ["sheet-1:row:1"],
-                errorMessage: null,
-              },
-            ],
-          },
-        });
-
-        return {
-          type: "import_job_detail",
-          payload: completed,
-        };
-      }
-    );
-    mocks.refreshSheetRowsTrackingMock.mockResolvedValue({
-      type: "sheet_rows_tracking_refresh",
-      payload: {
-        sheetId: "sheet-1",
-        successCount: 1,
-        failedCount: 0,
-        rows: [],
-      },
-    });
-    mocks.useWorkspaceRuntimeCommandsControllerMock.mockReturnValue({
-      fetchRow: vi.fn(),
-      copySelectedTrackingIds: vi.fn(),
-    });
-    mocks.useWorkspaceTableControllersMock.mockReturnValue({});
-    const showNotice = vi.fn();
-    const onWorkspaceEngineMutation = vi.fn();
-
-    const { result } = renderHook(() =>
-      useWorkspaceInteractionRuntimeController({
-        activeSheet: sheetState,
-        activeSheetId: "sheet-1",
-        workspaceTabs: [{ id: "sheet-1", name: "Sheet 1" }],
-        workspaceRef,
-        setWorkspaceState: vi.fn(),
-        updateActiveSheet: vi.fn(),
-        updateSheet,
-        setHoveredColumn: vi.fn(),
-        deleteAllTimeoutRef: { current: null },
-        deleteAllArmedSheetIdRef: { current: null },
-        deleteSelectedTimeoutRef: { current: null },
-        deleteSelectedArmedSheetIdRef: { current: null },
-        deleteSelectedArmedSheetId: null,
-        setDeleteSelectedArmedSheetId: vi.fn(),
-        armDeleteAll: vi.fn(),
-        disarmDeleteAll: vi.fn(),
-        armDeleteSelected: vi.fn(),
-        disarmDeleteSelected: vi.fn(),
-        resizeStateRef: { current: null },
-        sheetScrollRef: { current: null },
-        sheetScrollPositionsRef: { current: new Map() },
-        columnMenuRefs: { current: new Map() },
-        highlightedColumnTimeoutRef: { current: null },
-        highlightedColumnSheetIdRef: { current: null },
-        activeFilterCount: 0,
-        allTrackingIds: ["P1"],
-        exportableTableRows: [],
-        rustExportRowsQuery: null,
-        retrackableRows: [],
-        retryFailedEntries: [],
-        selectedEngineRowIds: [],
-        selectedTrackingIds: [],
-        selectedVisibleRowKeys: [],
-        visibleColumns: [],
-        visibleColumnPathSet: new Set(),
-        visibleSelectableKeys: [],
-        effectiveColumnWidths: {},
-        pinnedColumnSet: new Set(),
-        allVisibleSelected: false,
-        showNotice,
-        onWorkspaceEngineMutation,
-      } as never)
-    );
-
-    await result.current.runImportSourceLookup("bag", {
-      sourceItemIds: ["PID-FAILED"],
-    });
-
-    expect(mocks.retryImportJobFailedWithProgressMock).toHaveBeenCalledWith(
-      "job-1",
-      expect.any(Function)
-    );
-    expect(mocks.previewImportSourceMock).not.toHaveBeenCalled();
-    expect(mocks.refreshSheetRowsTrackingMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sheetId: "sheet-1",
-        rowIds: ["sheet-1:row:1"],
-        forceRefresh: true,
-        runId: expect.any(String),
-      }),
-      expect.any(Function)
-    );
-    expect(onWorkspaceEngineMutation).toHaveBeenCalledTimes(2);
-    expect(showNotice).toHaveBeenLastCalledWith({
-      tone: "success",
-      message: "Ambil ulang gagal berhasil.",
-    });
-    expect(
-      workspaceRef.current.sheetsById["sheet-1"].importSourceLookupStates.bag
-        .trackingIds
-    ).toEqual(["P1", "P2"]);
-  });
-
   it("commits previewed import tracking ids without refetching source ids", async () => {
     const initialRows = createDefaultSheetState().rows;
     const sheetState: SheetState = {
@@ -1354,8 +844,6 @@ describe("useWorkspaceInteractionRuntimeController", () => {
       });
     });
 
-    expect(mocks.createImportJobMock).not.toHaveBeenCalled();
-    expect(mocks.runImportJobWithProgressMock).not.toHaveBeenCalled();
     expect(mocks.querySheetRowsMock).toHaveBeenCalledWith({
       sheetId: "sheet-1",
       offset: 0,

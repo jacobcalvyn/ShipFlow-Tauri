@@ -36,6 +36,7 @@ export type ShipFlowCommand =
 
 export type ShipFlowWorkspaceMethod =
   | "workspace.command"
+  | "workspace.cancel_import_preview"
   | "workspace.run_import_job_with_progress"
   | "workspace.retry_import_job_with_progress"
   | "workspace.refresh_tracking_with_progress";

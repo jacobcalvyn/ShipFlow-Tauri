@@ -306,10 +306,18 @@ pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackRespons
 }
 
 pub fn parse_lacak_mitra_contact_html(html: &str) -> ContactEnrichment {
+    parse_lacak_mitra_contact_html_checked(html).unwrap_or_default()
+}
+
+pub fn parse_lacak_mitra_contact_html_checked(
+    html: &str,
+) -> Result<ContactEnrichment, TrackingError> {
     let document = ScraperHtml::parse_document(html);
     let tr_selector = Selector::parse("tr").expect("valid selector");
     let cell_selector = Selector::parse("td, th").expect("valid selector");
     let mut enrichment = ContactEnrichment::default();
+    let mut found_sender = false;
+    let mut found_recipient = false;
 
     for tr in document.select(&tr_selector) {
         let cells: Vec<String> = tr
@@ -323,12 +331,29 @@ pub fn parse_lacak_mitra_contact_html(html: &str) -> ContactEnrichment {
         }
 
         match normalize_label(&cells[0]).as_str() {
-            "PENGIRIM" => enrichment.pengirim = parse_contact(&cells[1]),
-            "PENERIMA" => enrichment.penerima = parse_contact(&cells[1]),
+            "PENGIRIM" => {
+                found_sender = true;
+                enrichment.pengirim = parse_contact(&cells[1]);
+            }
+            "PENERIMA" => {
+                found_recipient = true;
+                enrichment.penerima = parse_contact(&cells[1]);
+            }
             _ => {}
         }
     }
 
+    if !found_sender || !found_recipient {
+        return Err(TrackingError::Upstream(
+            "Lacak Mitra returned HTML without the expected sender and recipient fields.".into(),
+        ));
+    }
+
+    let valid_phone = |value: Option<String>| {
+        value.filter(|phone| phone.chars().filter(char::is_ascii_digit).count() >= 6)
+    };
+    enrichment.pengirim.telepon = valid_phone(enrichment.pengirim.telepon);
+    enrichment.penerima.telepon = valid_phone(enrichment.penerima.telepon);
     enrichment.pengirim.nama = None;
     enrichment.pengirim.alamat = None;
     enrichment.pengirim.kode_pos = None;
@@ -336,7 +361,7 @@ pub fn parse_lacak_mitra_contact_html(html: &str) -> ContactEnrichment {
     enrichment.penerima.alamat = None;
     enrichment.penerima.kode_pos = None;
 
-    enrichment
+    Ok(enrichment)
 }
 
 fn normalize_text(input: &str) -> String {
@@ -1467,6 +1492,32 @@ mod tests {
         assert_eq!(contact.penerima.telepon.as_deref(), Some("0967535620"));
         assert!(contact.pengirim.nama.is_none());
         assert!(contact.penerima.alamat.is_none());
+    }
+
+    #[test]
+    fn checked_lacak_mitra_contact_parser_accepts_valid_page_without_phone_numbers() {
+        let html = r#"
+            <table>
+              <tr><td>Pengirim</td><td>SHIPPER; -; ADDRESS;</td></tr>
+              <tr><td>Penerima</td><td>RECIPIENT; -; ADDRESS;</td></tr>
+            </table>
+        "#;
+
+        let contact = super::parse_lacak_mitra_contact_html_checked(html)
+            .expect("valid contact page should parse");
+
+        assert!(contact.pengirim.telepon.is_none());
+        assert!(contact.penerima.telepon.is_none());
+    }
+
+    #[test]
+    fn checked_lacak_mitra_contact_parser_rejects_unexpected_html() {
+        let error = super::parse_lacak_mitra_contact_html_checked(
+            "<html><body>Maintenance in progress</body></html>",
+        )
+        .expect_err("unexpected HTML must not become a long-lived missing contact");
+
+        assert!(matches!(error, TrackingError::Upstream(_)));
     }
 
     #[test]

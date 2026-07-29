@@ -63,12 +63,6 @@ function requestTimeoutMs(method: string, params: unknown) {
     );
   }
   if (
-    method === "workspace.run_import_job_with_progress" ||
-    method === "workspace.retry_import_job_with_progress"
-  ) {
-    return MAX_REQUEST_TIMEOUT_MS;
-  }
-  if (
     method === "workspace.command" &&
     params &&
     typeof params === "object" &&

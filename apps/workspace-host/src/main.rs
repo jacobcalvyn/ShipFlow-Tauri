@@ -1,10 +1,10 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -12,7 +12,7 @@ use shipflow_core::model::{BagResponse, ManifestResponse};
 use shipflow_ipc::{RpcError, RpcMessage, RpcRequest, MAX_FRAME_BYTES};
 use shipflow_service_client::{track_bag, track_manifest, track_shipment, ServiceConnectionConfig};
 use shipflow_workspace_engine::commands::{
-    JobIdRequest, RefreshSheetRowsTrackingRequest, WorkspaceEngineCommand, WorkspaceEngineResponse,
+    RefreshSheetRowsTrackingRequest, WorkspaceEngineCommand, WorkspaceEngineResponse,
 };
 use shipflow_workspace_engine::engine::{
     WorkspaceEngineBootstrapConfig, WorkspaceEngineConfig, WorkspaceEngineRuntime,
@@ -24,7 +24,7 @@ use shipflow_workspace_engine::tracking::{
     TrackingBatchLookupFuture, TrackingBatchResultCallback, TrackingLookupFailure,
     TrackingLookupFuture, TrackingLookupSource,
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
 
 const PRODUCT: &str = "shipflow-workspace-host";
@@ -42,9 +42,133 @@ const MAX_CONCURRENT_LONG_OPERATIONS: usize = 1;
 const MAX_BUFFERED_LONG_OPERATIONS: usize = 64;
 const MAX_BUFFERED_SERIAL_REQUESTS: usize = 256;
 static TRACKING_BATCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static IMPORT_LOOKUP_SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 type HostRuntime = WorkspaceEngineRuntime<ServiceLookupSource>;
 type Output = Arc<Mutex<io::Stdout>>;
+
+#[derive(Debug)]
+struct PreviewRun {
+    request_key: String,
+    active_requests: usize,
+    cancellation: watch::Sender<bool>,
+}
+
+#[derive(Debug, Default)]
+struct PreviewCancellationRegistry {
+    runs: Mutex<HashMap<String, PreviewRun>>,
+}
+
+impl PreviewCancellationRegistry {
+    fn register(
+        &self,
+        scope_key: &str,
+        request_key: &str,
+    ) -> Result<watch::Receiver<bool>, String> {
+        let mut runs = self
+            .runs
+            .lock()
+            .map_err(|_| "Import preview cancellation registry is unavailable.".to_string())?;
+
+        if let Some(run) = runs.get_mut(scope_key) {
+            if run.request_key == request_key {
+                run.active_requests = run.active_requests.saturating_add(1);
+                return Ok(run.cancellation.subscribe());
+            }
+            let _ = run.cancellation.send(true);
+        }
+
+        let (cancellation, receiver) = watch::channel(false);
+        runs.insert(
+            scope_key.to_string(),
+            PreviewRun {
+                request_key: request_key.to_string(),
+                active_requests: 1,
+                cancellation,
+            },
+        );
+        Ok(receiver)
+    }
+
+    fn cancel(&self, scope_key: &str, request_key: Option<&str>) -> Result<bool, String> {
+        let runs = self
+            .runs
+            .lock()
+            .map_err(|_| "Import preview cancellation registry is unavailable.".to_string())?;
+        let Some(run) = runs.get(scope_key) else {
+            return Ok(false);
+        };
+        if request_key.is_some_and(|key| key != run.request_key) {
+            return Ok(false);
+        }
+        let _ = run.cancellation.send(true);
+        Ok(true)
+    }
+
+    fn complete(&self, scope_key: &str, request_key: &str) {
+        let Ok(mut runs) = self.runs.lock() else {
+            return;
+        };
+        let Some(run) = runs.get_mut(scope_key) else {
+            return;
+        };
+        if run.request_key != request_key {
+            return;
+        }
+        run.active_requests = run.active_requests.saturating_sub(1);
+        if run.active_requests == 0 {
+            runs.remove(scope_key);
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CancelImportPreviewRequest {
+    scope_key: String,
+    request_key: Option<String>,
+}
+
+fn validate_preview_key(value: &str, label: &str) -> Result<(), RpcError> {
+    if value.trim().is_empty() || value.len() > 256 {
+        return Err(RpcError::new(
+            "invalid_params",
+            format!("{label} must contain between 1 and 256 characters."),
+        ));
+    }
+    Ok(())
+}
+
+fn import_preview_identity(request: &RpcRequest) -> Result<(String, String), RpcError> {
+    let payload = request
+        .params
+        .get("payload")
+        .ok_or_else(|| RpcError::new("invalid_params", "Import preview payload is required."))?;
+    let scope_key = payload
+        .get("scopeKey")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(&request.id)
+        .to_string();
+    let request_key = payload
+        .get("requestKey")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(&request.id)
+        .to_string();
+    validate_preview_key(&scope_key, "scopeKey")?;
+    validate_preview_key(&request_key, "requestKey")?;
+    Ok((scope_key, request_key))
+}
+
+async fn wait_for_preview_cancellation(mut cancellation: watch::Receiver<bool>) {
+    if *cancellation.borrow() {
+        return;
+    }
+    while cancellation.changed().await.is_ok() {
+        if *cancellation.borrow() {
+            return;
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 struct HostConfig {
@@ -93,6 +217,7 @@ Environment:\n  SHIPFLOW_INTERNAL_SERVICE_TOKEN"
 struct ServiceLookupSource {
     client: reqwest::Client,
     config: ServiceConnectionConfig,
+    import_lookup_slots: Arc<Semaphore>,
 }
 
 impl ServiceLookupSource {
@@ -103,7 +228,14 @@ impl ServiceLookupSource {
             .timeout(SERVICE_REQUEST_TIMEOUT)
             .build()
             .map_err(|error| format!("Unable to build workspace service client: {error}"))?;
-        Ok(Self { client, config })
+        Ok(Self {
+            client,
+            config,
+            import_lookup_slots: Arc::clone(
+                IMPORT_LOOKUP_SLOTS
+                    .get_or_init(|| Arc::new(Semaphore::new(MAX_CONCURRENT_IMPORT_PREVIEWS))),
+            ),
+        })
     }
 }
 
@@ -112,6 +244,12 @@ impl ImportLookupSource for ServiceLookupSource {
         &'a mut self,
         bag_id: &'a str,
     ) -> Result<BagResponse, ImportLookupFailure> {
+        let _permit = self
+            .import_lookup_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| ImportLookupFailure::new("Import lookup limiter is unavailable."))?;
         track_bag(&self.client, &self.config, bag_id, true)
             .await
             .map_err(ImportLookupFailure::from)
@@ -121,6 +259,12 @@ impl ImportLookupSource for ServiceLookupSource {
         &'a mut self,
         manifest_id: &'a str,
     ) -> Result<ManifestResponse, ImportLookupFailure> {
+        let _permit = self
+            .import_lookup_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| ImportLookupFailure::new("Import lookup limiter is unavailable."))?;
         track_manifest(&self.client, &self.config, manifest_id, true)
             .await
             .map_err(ImportLookupFailure::from)
@@ -149,14 +293,19 @@ impl ImportLookupSource for ServiceLookupSource {
         let spawn_lookup = |tasks: &mut JoinSet<_>, index: usize, bag_id: String| {
             let client = self.client.clone();
             let config = self.config.clone();
+            let import_lookup_slots = Arc::clone(&self.import_lookup_slots);
             tasks.spawn(async move {
-                let result = match tokio::time::timeout(
-                    request_timeout,
-                    track_bag(&client, &config, &bag_id, true),
-                )
+                let result = match tokio::time::timeout(request_timeout, async {
+                    let _permit = import_lookup_slots.acquire_owned().await.map_err(|_| {
+                        ImportLookupFailure::new("Import lookup limiter is unavailable.")
+                    })?;
+                    track_bag(&client, &config, &bag_id, true)
+                        .await
+                        .map_err(ImportLookupFailure::from)
+                })
                 .await
                 {
-                    Ok(result) => result.map_err(ImportLookupFailure::from),
+                    Ok(result) => result,
                     Err(_) => Err(ImportLookupFailure::new(format!(
                         "Timeout ambil data setelah {} detik.",
                         request_timeout.as_secs()
@@ -202,6 +351,96 @@ impl ImportLookupSource for ServiceLookupSource {
         let succeeded = results.iter().filter(|(_, result)| result.is_ok()).count();
         shipflow_core::shipflow_log!(
             "[ShipFlowImport] manifest_bag_batch_complete count={} succeeded={} failed={} concurrency={} elapsed_ms={}",
+            results.len(),
+            succeeded,
+            results.len().saturating_sub(succeeded),
+            concurrency,
+            started_at.elapsed().as_millis()
+        );
+        results
+    }
+
+    async fn fetch_manifests<'a>(
+        &'a mut self,
+        manifest_ids: &'a [String],
+        request_timeout: Duration,
+        max_concurrency: usize,
+    ) -> Vec<(String, Result<ManifestResponse, ImportLookupFailure>)> {
+        let started_at = Instant::now();
+        let concurrency = max_concurrency.max(1).min(manifest_ids.len().max(1));
+        shipflow_core::shipflow_log!(
+            "[ShipFlowImport] manifest_batch_start count={} concurrency={} timeout_seconds={}",
+            manifest_ids.len(),
+            concurrency,
+            request_timeout.as_secs()
+        );
+        let mut pending = manifest_ids.iter().cloned().enumerate();
+        let mut tasks = JoinSet::new();
+        let mut indexed_results = std::iter::repeat_with(|| None)
+            .take(manifest_ids.len())
+            .collect::<Vec<Option<Result<ManifestResponse, ImportLookupFailure>>>>();
+
+        let spawn_lookup = |tasks: &mut JoinSet<_>, index: usize, manifest_id: String| {
+            let client = self.client.clone();
+            let config = self.config.clone();
+            let import_lookup_slots = Arc::clone(&self.import_lookup_slots);
+            tasks.spawn(async move {
+                let result = match tokio::time::timeout(request_timeout, async {
+                    let _permit = import_lookup_slots.acquire_owned().await.map_err(|_| {
+                        ImportLookupFailure::new("Import lookup limiter is unavailable.")
+                    })?;
+                    track_manifest(&client, &config, &manifest_id, true)
+                        .await
+                        .map_err(ImportLookupFailure::from)
+                })
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(ImportLookupFailure::new(format!(
+                        "Timeout ambil data setelah {} detik.",
+                        request_timeout.as_secs()
+                    ))),
+                };
+                (index, result)
+            });
+        };
+
+        while tasks.len() < concurrency {
+            let Some((index, manifest_id)) = pending.next() else {
+                break;
+            };
+            spawn_lookup(&mut tasks, index, manifest_id);
+        }
+
+        while let Some(joined) = tasks.join_next().await {
+            match joined {
+                Ok((index, result)) => indexed_results[index] = Some(result),
+                Err(error) => {
+                    shipflow_core::shipflow_log!(
+                        "[ShipFlowImport] manifest_worker_failed error={error}"
+                    );
+                }
+            }
+
+            if let Some((index, manifest_id)) = pending.next() {
+                spawn_lookup(&mut tasks, index, manifest_id);
+            }
+        }
+
+        let results = manifest_ids
+            .iter()
+            .cloned()
+            .zip(indexed_results.into_iter().map(|result| {
+                result.unwrap_or_else(|| {
+                    Err(ImportLookupFailure::new(
+                        "Manifest lookup worker stopped unexpectedly.",
+                    ))
+                })
+            }))
+            .collect::<Vec<_>>();
+        let succeeded = results.iter().filter(|(_, result)| result.is_ok()).count();
+        shipflow_core::shipflow_log!(
+            "[ShipFlowImport] manifest_batch_complete count={} succeeded={} failed={} concurrency={} elapsed_ms={}",
             results.len(),
             succeeded,
             results.len().saturating_sub(succeeded),
@@ -356,12 +595,7 @@ fn is_import_preview_request(request: &RpcRequest) -> bool {
 }
 
 fn is_long_running_request(request: &RpcRequest) -> bool {
-    if matches!(
-        request.method.as_str(),
-        "workspace.run_import_job_with_progress"
-            | "workspace.retry_import_job_with_progress"
-            | "workspace.refresh_tracking_with_progress"
-    ) {
+    if request.method == "workspace.refresh_tracking_with_progress" {
         return true;
     }
 
@@ -371,13 +605,19 @@ fn is_long_running_request(request: &RpcRequest) -> bool {
                 .params
                 .get("command")
                 .and_then(serde_json::Value::as_str),
-            Some(
-                "run_import_job"
-                    | "retry_import_job_failed"
-                    | "refresh_sheet_row_tracking"
-                    | "refresh_sheet_rows_tracking"
-            )
+            Some("refresh_sheet_row_tracking" | "refresh_sheet_rows_tracking")
         )
+}
+
+fn is_obsolete_import_job_command(command: &WorkspaceEngineCommand) -> bool {
+    matches!(
+        command,
+        WorkspaceEngineCommand::CreateImportJob(_)
+            | WorkspaceEngineCommand::RunImportJob(_)
+            | WorkspaceEngineCommand::RetryImportJobFailed(_)
+            | WorkspaceEngineCommand::CancelImportJob(_)
+            | WorkspaceEngineCommand::GetImportJob(_)
+    )
 }
 
 fn send_busy(output: &Output, request_id: impl Into<String>, message: &'static str) {
@@ -446,48 +686,18 @@ async fn handle_request(
         "workspace.command" => {
             let command: WorkspaceEngineCommand = serde_json::from_value(request.params)
                 .map_err(|error| RpcError::new("invalid_params", error.to_string()))?;
+            if is_obsolete_import_job_command(&command) {
+                return Err(RpcError::new(
+                    "method_not_found",
+                    "Persisted import jobs are no longer exposed. Use preview_import_source.",
+                ));
+            }
             let result = runtime
                 .handle_command(command)
                 .await
                 .map_err(|error| RpcError::new("workspace_error", error.to_string()))?;
             send_result(output, &request.id, result)
                 .map_err(|error| RpcError::new("transport_error", error))
-        }
-        "workspace.run_import_job_with_progress" => {
-            let params: JobIdRequest = serde_json::from_value(request.params)
-                .map_err(|error| RpcError::new("invalid_params", error.to_string()))?;
-            let output_for_event = Arc::clone(output);
-            let request_id = request.id.clone();
-            let detail = runtime
-                .run_import_job_with_progress(&params.job_id, move |event| {
-                    send_event(&output_for_event, &request_id, event);
-                })
-                .await
-                .map_err(|error| RpcError::new("workspace_error", error.to_string()))?;
-            send_result(
-                output,
-                &request.id,
-                WorkspaceEngineResponse::ImportJobDetail(detail),
-            )
-            .map_err(|error| RpcError::new("transport_error", error))
-        }
-        "workspace.retry_import_job_with_progress" => {
-            let params: JobIdRequest = serde_json::from_value(request.params)
-                .map_err(|error| RpcError::new("invalid_params", error.to_string()))?;
-            let output_for_event = Arc::clone(output);
-            let request_id = request.id.clone();
-            let detail = runtime
-                .retry_import_job_failed_with_progress(&params.job_id, move |event| {
-                    send_event(&output_for_event, &request_id, event);
-                })
-                .await
-                .map_err(|error| RpcError::new("workspace_error", error.to_string()))?;
-            send_result(
-                output,
-                &request.id,
-                WorkspaceEngineResponse::ImportJobDetail(detail),
-            )
-            .map_err(|error| RpcError::new("transport_error", error))
         }
         "workspace.refresh_tracking_with_progress" => {
             let params: RefreshSheetRowsTrackingRequest = serde_json::from_value(request.params)
@@ -534,6 +744,7 @@ fn main() {
     let output = Arc::new(Mutex::new(io::stdout()));
     let import_preview_slots = Arc::new(Semaphore::new(MAX_CONCURRENT_IMPORT_PREVIEWS));
     let import_preview_capacity = Arc::new(Semaphore::new(MAX_BUFFERED_IMPORT_PREVIEWS));
+    let preview_cancellations = Arc::new(PreviewCancellationRegistry::default());
     let long_operation_slots = Arc::new(Semaphore::new(MAX_CONCURRENT_LONG_OPERATIONS));
     let long_operation_capacity = Arc::new(Semaphore::new(MAX_BUFFERED_LONG_OPERATIONS));
     let (serial_sender, serial_actor) = spawn_serial_actor(workspace_runtime, Arc::clone(&output))
@@ -594,7 +805,41 @@ fn main() {
             }
         };
         let request_id = request.id.clone();
+        if request.method == "workspace.cancel_import_preview" {
+            let result = (|| {
+                request.validate()?;
+                let params: CancelImportPreviewRequest = serde_json::from_value(request.params)
+                    .map_err(|error| RpcError::new("invalid_params", error.to_string()))?;
+                validate_preview_key(&params.scope_key, "scopeKey")?;
+                if let Some(request_key) = params.request_key.as_deref() {
+                    validate_preview_key(request_key, "requestKey")?;
+                }
+                preview_cancellations
+                    .cancel(&params.scope_key, params.request_key.as_deref())
+                    .map_err(|error| RpcError::new("runtime_error", error))
+            })();
+            match result {
+                Ok(cancelled) => {
+                    let _ = send_result(
+                        &output,
+                        &request_id,
+                        serde_json::json!({ "cancelled": cancelled }),
+                    );
+                }
+                Err(error) => {
+                    let _ = send(&output, &RpcMessage::error(request_id, error));
+                }
+            }
+            continue;
+        }
         if is_import_preview_request(&request) {
+            let (scope_key, preview_request_key) = match import_preview_identity(&request) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    let _ = send(&output, &RpcMessage::error(request_id, error));
+                    continue;
+                }
+            };
             let capacity_permit = match Arc::clone(&import_preview_capacity).try_acquire_owned() {
                 Ok(permit) => permit,
                 Err(_) => {
@@ -611,32 +856,41 @@ fn main() {
                     continue;
                 }
             };
+            let cancellation =
+                match preview_cancellations.register(&scope_key, &preview_request_key) {
+                    Ok(cancellation) => cancellation,
+                    Err(error) => {
+                        let _ = send(
+                            &output,
+                            &RpcMessage::error(request_id, RpcError::new("runtime_error", error)),
+                        );
+                        continue;
+                    }
+                };
             let task_slots = Arc::clone(&import_preview_slots);
             let task_config = config.clone();
             let task_output = Arc::clone(&output);
+            let task_cancellations = Arc::clone(&preview_cancellations);
             tokio_runtime.spawn(async move {
                 let _capacity_permit = capacity_permit;
-                let execution_permit = match task_slots.acquire_owned().await {
-                    Ok(permit) => permit,
-                    Err(_) => {
-                        let _ = send(
-                            &task_output,
-                            &RpcMessage::error(
-                                request.id,
-                                RpcError::new(
-                                    "runtime_error",
-                                    "Import preview dispatcher is shutting down.",
-                                ),
-                            ),
-                        );
-                        return;
-                    }
-                };
-                let _execution_permit = execution_permit;
                 let request_id = request.id.clone();
-                if let Err(error) =
+                let operation = async {
+                    let _execution_permit = task_slots.acquire_owned().await.map_err(|_| {
+                        RpcError::new(
+                            "runtime_error",
+                            "Import preview dispatcher is shutting down.",
+                        )
+                    })?;
                     handle_import_preview_request(request, &task_config, &task_output).await
-                {
+                };
+                let result = tokio::select! {
+                    _ = wait_for_preview_cancellation(cancellation) => {
+                        Err(RpcError::new("cancelled", "Import preview was cancelled."))
+                    }
+                    result = operation => result,
+                };
+                task_cancellations.complete(&scope_key, &preview_request_key);
+                if let Err(error) = result {
                     let _ = send(&task_output, &RpcMessage::error(request_id, error));
                 }
             });
@@ -759,14 +1013,10 @@ mod tests {
     }
 
     #[test]
-    fn dispatches_tracking_and_import_runs_outside_the_serial_actor() {
+    fn dispatches_tracking_runs_outside_the_serial_actor() {
         assert!(is_long_running_request(&request(
             "workspace.refresh_tracking_with_progress",
             json!({ "sheetId": "sheet-1", "rowIds": [] }),
-        )));
-        assert!(is_long_running_request(&request(
-            "workspace.run_import_job_with_progress",
-            json!({ "jobId": "job-1" }),
         )));
         assert!(is_long_running_request(&request(
             "workspace.command",
@@ -780,12 +1030,47 @@ mod tests {
                 }
             }),
         )));
-        assert!(!is_long_running_request(&request(
-            "workspace.command",
-            json!({
-                "command": "cancel_import_job",
-                "payload": { "jobId": "job-1" }
-            }),
-        )));
+    }
+
+    #[test]
+    fn rejects_obsolete_import_job_commands_at_the_host_boundary() {
+        assert!(is_obsolete_import_job_command(
+            &WorkspaceEngineCommand::GetImportJob(
+                shipflow_workspace_engine::commands::JobIdRequest {
+                    job_id: "job-1".to_string(),
+                },
+            ),
+        ));
+        assert!(!is_obsolete_import_job_command(
+            &WorkspaceEngineCommand::PreviewImportSource(
+                shipflow_workspace_engine::imports::ImportSourcePreviewRequest {
+                    kind: shipflow_workspace_engine::imports::ImportKind::Bag,
+                    ids: vec!["PID1".to_string()],
+                    scope_key: None,
+                    request_key: None,
+                },
+            ),
+        ));
+    }
+
+    #[test]
+    fn superseding_preview_cancels_only_the_previous_request_key() {
+        let registry = PreviewCancellationRegistry::default();
+        let first = registry
+            .register("sheet-1:bag", "request-1")
+            .expect("first request registers");
+        let second = registry
+            .register("sheet-1:bag", "request-2")
+            .expect("second request registers");
+
+        assert!(*first.borrow());
+        assert!(!*second.borrow());
+        assert!(!registry
+            .cancel("sheet-1:bag", Some("request-1"))
+            .expect("stale cancellation is handled"));
+        assert!(registry
+            .cancel("sheet-1:bag", Some("request-2"))
+            .expect("current cancellation is handled"));
+        assert!(*second.borrow());
     }
 }
