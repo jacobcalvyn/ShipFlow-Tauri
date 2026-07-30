@@ -420,7 +420,16 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                 },
                 "TrackResponse": {
                     "type": "object",
-                    "required": ["url", "detail", "status_akhir", "pod", "history", "history_summary"],
+                    "required": [
+                        "url",
+                        "detail",
+                        "status_akhir",
+                        "pod",
+                        "history",
+                        "history_summary",
+                        "shipment_identity",
+                        "multi_koli"
+                    ],
                     "properties": {
                         "url": { "type": "string" },
                         "detail": { "type": "object", "additionalProperties": true },
@@ -431,7 +440,71 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                             "items": { "$ref": "#/components/schemas/TrackHistoryEntry" }
                         },
                         "history_summary": { "type": "object", "additionalProperties": true },
+                        "shipment_identity": { "$ref": "#/components/schemas/ShipmentIdentity" },
+                        "multi_koli": { "$ref": "#/components/schemas/MultiKoliSummary" },
                         "contact_enrichment": { "$ref": "#/components/schemas/ContactEnrichmentMetadata" }
+                    }
+                },
+                "ShipmentIdentity": {
+                    "type": "object",
+                    "required": ["requested_id", "parent_shipment_id", "is_koli", "koli_number"],
+                    "description": "Additive identity metadata for the requested shipment or a specific dotted koli ID.",
+                    "properties": {
+                        "requested_id": { "type": ["string", "null"] },
+                        "parent_shipment_id": { "type": ["string", "null"] },
+                        "is_koli": { "type": "boolean" },
+                        "koli_number": { "type": ["integer", "null"], "minimum": 1 }
+                    }
+                },
+                "MultiKoliSummary": {
+                    "type": "object",
+                    "required": ["is_multi_koli", "jumlah_koli", "nomor_koli", "status_agregat", "koli"],
+                    "description": "History-derived multi-koli summary. Existing tracking fields remain unchanged; consumers should use this object for per-koli decisions.",
+                    "properties": {
+                        "is_multi_koli": { "type": "boolean" },
+                        "jumlah_koli": { "type": "integer", "minimum": 1 },
+                        "nomor_koli": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        },
+                        "status_agregat": {
+                            "type": ["string", "null"],
+                            "description": "DELIVERED only when every detected koli has explicit delivery evidence; null means no recognized per-koli status evidence exists."
+                        },
+                        "koli": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/KoliStatusSummary" }
+                        }
+                    }
+                },
+                "KoliStatusSummary": {
+                    "type": "object",
+                    "required": [
+                        "nomor_koli",
+                        "urutan_koli",
+                        "status_akhir",
+                        "lokasi_akhir",
+                        "waktu_status_akhir",
+                        "has_delivery_proof",
+                        "bukti_status"
+                    ],
+                    "description": "Status for one koli derived only from history events that explicitly mention that koli ID.",
+                    "properties": {
+                        "nomor_koli": { "type": "string" },
+                        "urutan_koli": { "type": "integer", "minimum": 1 },
+                        "status_akhir": {
+                            "type": ["string", "null"],
+                            "description": "Latest recognized per-koli history status. Failure uses the canonical FAILEDTODELIVERED value."
+                        },
+                        "lokasi_akhir": { "type": ["string", "null"] },
+                        "waktu_status_akhir": { "type": ["string", "null"] },
+                        "has_delivery_proof": { "type": "boolean" },
+                        "bukti_status": {
+                            "oneOf": [
+                                { "$ref": "#/components/schemas/TrackHistoryEntry" },
+                                { "type": "null" }
+                            ]
+                        }
                     }
                 },
                 "ContactEnrichmentMetadata": {
@@ -814,6 +887,31 @@ mod tests {
             super::SERVICE_LOOKUP_DEADLINE_SECS
         );
         assert!(document["components"]["schemas"]["BackpressureLaneDiagnostics"].is_object());
+    }
+
+    #[test]
+    fn documents_additive_multi_koli_tracking_fields() {
+        let document = service_openapi_document(18422, false);
+        let track_response = &document["components"]["schemas"]["TrackResponse"];
+        let required = track_response["required"]
+            .as_array()
+            .expect("TrackResponse required fields should be an array");
+
+        assert!(required.iter().any(|field| field == "shipment_identity"));
+        assert!(required.iter().any(|field| field == "multi_koli"));
+        assert_eq!(
+            track_response["properties"]["shipment_identity"]["$ref"],
+            "#/components/schemas/ShipmentIdentity"
+        );
+        assert_eq!(
+            track_response["properties"]["multi_koli"]["$ref"],
+            "#/components/schemas/MultiKoliSummary"
+        );
+        assert_eq!(
+            document["components"]["schemas"]["KoliStatusSummary"]["properties"]
+                ["has_delivery_proof"]["type"],
+            "boolean"
+        );
     }
 
     #[test]

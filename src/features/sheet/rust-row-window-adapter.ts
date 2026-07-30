@@ -22,7 +22,33 @@ function parseObjectValue(value: unknown): Record<string, unknown> | null {
   }
 }
 
-function createDefaultTrackResponse(trackingId: string): TrackResponse {
+type HydratedTrackResponse = TrackResponse & {
+  shipment_identity: NonNullable<TrackResponse["shipment_identity"]>;
+  multi_koli: NonNullable<TrackResponse["multi_koli"]>;
+};
+
+function createDefaultShipmentIdentity(
+  trackingId: string
+): HydratedTrackResponse["shipment_identity"] {
+  const separator = trackingId.lastIndexOf(".");
+  const parentShipmentId = trackingId.slice(0, separator);
+  const suffix = trackingId.slice(separator + 1);
+  const koliNumber = /^\d+$/.test(suffix) ? Number(suffix) : Number.NaN;
+  const isKoli =
+    separator > 0 &&
+    Number.isInteger(koliNumber) &&
+    koliNumber > 0 &&
+    koliNumber <= 4_294_967_295;
+
+  return {
+    requested_id: trackingId,
+    parent_shipment_id: isKoli ? parentShipmentId : trackingId,
+    is_koli: isKoli,
+    koli_number: isKoli ? koliNumber : null,
+  };
+}
+
+function createDefaultTrackResponse(trackingId: string): HydratedTrackResponse {
   return {
     url: "",
     detail: {
@@ -50,6 +76,14 @@ function createDefaultTrackResponse(trackingId: string): TrackResponse {
       bagging_unbagging: [],
       manifest_r7: [],
       delivery_runsheet: [],
+    },
+    shipment_identity: createDefaultShipmentIdentity(trackingId),
+    multi_koli: {
+      is_multi_koli: false,
+      jumlah_koli: 1,
+      nomor_koli: [],
+      status_agregat: null,
+      koli: [],
     },
   };
 }
@@ -102,5 +136,17 @@ export function createTrackResponseFromProjection(
     },
     history: history as TrackResponse["history"],
     history_summary: historySummary as TrackResponse["history_summary"],
+    shipment_identity: isObject(normalizedHistoryJson.shipment_identity)
+      ? ({
+          ...fallback.shipment_identity,
+          ...normalizedHistoryJson.shipment_identity,
+        } as TrackResponse["shipment_identity"])
+      : fallback.shipment_identity,
+    multi_koli: isObject(normalizedHistoryJson.multi_koli)
+      ? ({
+          ...fallback.multi_koli,
+          ...normalizedHistoryJson.multi_koli,
+        } as TrackResponse["multi_koli"])
+      : fallback.multi_koli,
   };
 }

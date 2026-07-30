@@ -1,13 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use scraper::{Html as ScraperHtml, Selector};
 
 use crate::model::{
     Actors, BaggingUnbaggingEvent, BaggingUnbaggingSummary, BillingDetail, ContactDetail,
     ContactEnrichment, DeliveryRunsheetSummary, DeliveryRunsheetUpdate, HistorySummary,
-    IrregularitySummary, ManifestR7Summary, OriginDetail, PackageDetail, PerformanceDetail,
-    ShipmentHeader, StatusAkhirParts, TrackCodDetail, TrackDetail, TrackHistoryEntry, TrackPod,
-    TrackResponse, TrackStatusAkhir, TrackingError,
+    IrregularitySummary, KoliStatusSummary, ManifestR7Summary, MultiKoliSummary, OriginDetail,
+    PackageDetail, PerformanceDetail, ShipmentHeader, ShipmentIdentity, StatusAkhirParts,
+    TrackCodDetail, TrackDetail, TrackHistoryEntry, TrackPod, TrackResponse, TrackStatusAkhir,
+    TrackingError,
 };
 use crate::upstream::resolve_pos_href;
 
@@ -294,15 +295,279 @@ pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackRespons
         performance,
     };
 
-    Ok(TrackResponse {
+    let requested_id = detail.header.nomor_kiriman.clone().unwrap_or_default();
+    let mut response = TrackResponse {
         url: request_url.into(),
         detail,
         status_akhir,
         pod,
         history,
         history_summary,
+        shipment_identity: ShipmentIdentity::default(),
+        multi_koli: MultiKoliSummary::default(),
         contact_enrichment: None,
-    })
+    };
+    populate_shipment_structure(&mut response, &requested_id);
+    Ok(response)
+}
+
+pub fn populate_shipment_structure(response: &mut TrackResponse, requested_id: &str) {
+    let requested_id = requested_id.trim();
+    let effective_requested_id = if requested_id.is_empty() {
+        response
+            .detail
+            .header
+            .nomor_kiriman
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+    } else {
+        requested_id
+    };
+
+    let (parent_shipment_id, requested_koli_number) = split_koli_id(effective_requested_id)
+        .map(|(parent, number)| (parent.to_string(), Some(number)))
+        .unwrap_or_else(|| (effective_requested_id.to_string(), None));
+
+    response.shipment_identity = ShipmentIdentity {
+        requested_id: non_empty_string(effective_requested_id),
+        parent_shipment_id: non_empty_string(&parent_shipment_id),
+        is_koli: requested_koli_number.is_some(),
+        koli_number: requested_koli_number,
+    };
+
+    if parent_shipment_id.is_empty() {
+        response.multi_koli = MultiKoliSummary::default();
+        return;
+    }
+
+    let mut known_koli = BTreeMap::<(u32, String), String>::new();
+    if let Some(number) = requested_koli_number {
+        known_koli.insert(
+            (number, effective_requested_id.to_ascii_uppercase()),
+            effective_requested_id.to_string(),
+        );
+    }
+    for history_entry in &response.history {
+        collect_koli_ids(
+            &history_entry.detail_history,
+            &parent_shipment_id,
+            &mut known_koli,
+        );
+    }
+
+    if known_koli.is_empty() {
+        response.multi_koli = MultiKoliSummary::default();
+        return;
+    }
+
+    let mut koli = Vec::with_capacity(known_koli.len());
+    for ((number, _), nomor_koli) in &known_koli {
+        let latest_status = response
+            .history
+            .iter()
+            .filter(|entry| history_mentions_koli(entry, nomor_koli))
+            .filter_map(|entry| {
+                infer_koli_status(&entry.detail_history).map(|status| (entry, status))
+            })
+            .max_by(|(left, _), (right, _)| left.tanggal_update.cmp(&right.tanggal_update));
+        let (bukti_status, status_akhir) = latest_status
+            .map(|(entry, status)| (Some(entry.clone()), Some(status)))
+            .unwrap_or((None, None));
+        let has_delivery_proof = status_akhir.as_deref() == Some("DELIVERED");
+        let lokasi_akhir = bukti_status
+            .as_ref()
+            .and_then(|entry| infer_history_location(&entry.detail_history))
+            .or_else(|| {
+                has_delivery_proof
+                    .then(|| response.status_akhir.location.clone())
+                    .flatten()
+            });
+        let waktu_status_akhir = bukti_status
+            .as_ref()
+            .map(|entry| entry.tanggal_update.clone());
+
+        koli.push(KoliStatusSummary {
+            nomor_koli: nomor_koli.clone(),
+            urutan_koli: *number,
+            status_akhir,
+            lokasi_akhir,
+            waktu_status_akhir,
+            has_delivery_proof,
+            bukti_status,
+        });
+    }
+
+    let is_multi_koli = koli.len() > 1;
+    let status_agregat = aggregate_koli_status(is_multi_koli, &koli);
+    response.multi_koli = MultiKoliSummary {
+        is_multi_koli,
+        jumlah_koli: koli.len(),
+        nomor_koli: koli.iter().map(|item| item.nomor_koli.clone()).collect(),
+        status_agregat,
+        koli,
+    };
+}
+
+fn split_koli_id(value: &str) -> Option<(&str, u32)> {
+    let (parent, suffix) = value.rsplit_once('.')?;
+    if parent.is_empty() || suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+
+    let number = suffix.parse::<u32>().ok()?;
+    (number > 0).then_some((parent, number))
+}
+
+fn collect_koli_ids(detail: &str, parent_id: &str, output: &mut BTreeMap<(u32, String), String>) {
+    let normalized_detail = detail.to_ascii_uppercase();
+    let normalized_parent = parent_id.to_ascii_uppercase();
+    let needle = format!("{normalized_parent}.");
+
+    for (start, _) in normalized_detail.match_indices(&needle) {
+        if start > 0
+            && normalized_detail[..start]
+                .bytes()
+                .next_back()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'.')
+        {
+            continue;
+        }
+
+        let suffix_start = start + needle.len();
+        let suffix = normalized_detail[suffix_start..]
+            .bytes()
+            .take_while(|byte| byte.is_ascii_digit())
+            .collect::<Vec<_>>();
+        if suffix.is_empty() {
+            continue;
+        }
+
+        let suffix_end = suffix_start + suffix.len();
+        if normalized_detail[suffix_end..]
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'.')
+        {
+            continue;
+        }
+
+        let Ok(number) = std::str::from_utf8(&suffix)
+            .unwrap_or_default()
+            .parse::<u32>()
+        else {
+            continue;
+        };
+        if number == 0 {
+            continue;
+        }
+
+        let suffix = &detail[suffix_start..suffix_end];
+        let exact_id = format!("{parent_id}.{suffix}");
+        output
+            .entry((number, exact_id.to_ascii_uppercase()))
+            .or_insert(exact_id);
+    }
+}
+
+fn history_mentions_koli(entry: &TrackHistoryEntry, nomor_koli: &str) -> bool {
+    let mut found = BTreeMap::new();
+    let Some((parent_id, _)) = split_koli_id(nomor_koli) else {
+        return false;
+    };
+    collect_koli_ids(&entry.detail_history, parent_id, &mut found);
+    found
+        .values()
+        .any(|value| value.eq_ignore_ascii_case(nomor_koli))
+}
+
+fn infer_koli_status(detail: &str) -> Option<String> {
+    let normalized = detail.to_ascii_lowercase();
+    let status = if normalized.contains("failedtodelivered")
+        || normalized.contains("gagal antar")
+        || normalized.contains("gagal diantar")
+    {
+        "FAILEDTODELIVERED"
+    } else if normalized.contains("telah diantar") || normalized.contains("status delivered") {
+        "DELIVERED"
+    } else if normalized.contains("deliveryrunsheet") {
+        "DELIVERYRUNSHEET"
+    } else if normalized.contains("manifest r7") || normalized.contains("manifestr7") {
+        "MANIFEST_R7"
+    } else if normalized.contains("unbagging") {
+        "UNBAGGING"
+    } else if normalized.contains("bagging") {
+        "BAGGING"
+    } else if normalized.contains("receiving") {
+        "RECEIVING"
+    } else {
+        return None;
+    };
+
+    Some(status.into())
+}
+
+fn infer_history_location(detail: &str) -> Option<String> {
+    let normalized = detail.to_ascii_lowercase();
+    let start = normalized.rfind(" di ")? + 4;
+    let mut location = detail[start..].trim();
+
+    for delimiter in [
+        " dengan tujuan ",
+        " dan nomor ",
+        ", [coordinate",
+        " [coordinate",
+    ] {
+        if let Some(index) = location.to_ascii_lowercase().find(delimiter) {
+            location = location[..index].trim();
+        }
+    }
+
+    if let Some((prefix, suffix)) = location.rsplit_once(' ') {
+        if suffix.len() == 5
+            && suffix.as_bytes()[2] == b':'
+            && suffix
+                .bytes()
+                .enumerate()
+                .all(|(index, byte)| index == 2 || byte.is_ascii_digit())
+        {
+            location = prefix.trim();
+        }
+    }
+
+    non_empty_string(location)
+}
+
+fn aggregate_koli_status(is_multi_koli: bool, koli: &[KoliStatusSummary]) -> Option<String> {
+    if !is_multi_koli {
+        return None;
+    }
+
+    let delivered_count = koli.iter().filter(|item| item.has_delivery_proof).count();
+    if delivered_count == koli.len() {
+        return Some("DELIVERED".into());
+    }
+    if delivered_count > 0 {
+        return Some("PARTIALLY_DELIVERED".into());
+    }
+
+    let first_status = koli.first()?.status_akhir.as_deref();
+    if koli.iter().all(|item| item.status_akhir.is_none()) {
+        return None;
+    }
+    if first_status.is_some()
+        && koli
+            .iter()
+            .all(|item| item.status_akhir.as_deref() == first_status)
+    {
+        return first_status.map(str::to_string);
+    }
+
+    Some("IN_PROGRESS".into())
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 pub fn parse_lacak_mitra_contact_html(html: &str) -> ContactEnrichment {
@@ -1651,7 +1916,7 @@ mod tests {
 
         assert_eq!(
             digest,
-            "2e9458ace339e7dafe3bece7c1620b0d1fc6af4db52f6094b168568be4a5da1f"
+            "c6496ef83cb7f3864709e0f2cc0178de410b2697c43b61b52d39538cdc2e95b0"
         );
     }
 
@@ -1876,5 +2141,261 @@ mod tests {
             Some("https://pid.posindonesia.co.id/photo/valid.jpg")
         );
         assert_eq!(response.pod.photo2_url, None);
+    }
+
+    #[test]
+    fn parse_tracking_html_adds_single_shipment_identity_without_changing_legacy_fields() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2606130056480</td></tr>
+              <tr><td>Status Akhir</td><td>INLOCATION di DC JAYAPURA 9910A Tanggal : 2026-07-27 08:44:49</td></tr>
+            </table>
+            <table>
+              <tr><th>Tanggal Update</th><th>Detail History</th></tr>
+              <tr>
+                <td>2026-07-27 08:44:49</td>
+                <td>Paket P2606130056480 telah melewati proses Receiving oleh Akbar di DC JAYAPURA 9910A</td>
+              </tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("single shipment should parse");
+        let serialized = serde_json::to_value(&response).expect("response should serialize");
+
+        assert_eq!(
+            response.shipment_identity.requested_id.as_deref(),
+            Some("P2606130056480")
+        );
+        assert_eq!(
+            response.shipment_identity.parent_shipment_id.as_deref(),
+            Some("P2606130056480")
+        );
+        assert!(!response.shipment_identity.is_koli);
+        assert_eq!(response.shipment_identity.koli_number, None);
+        assert!(!response.multi_koli.is_multi_koli);
+        assert_eq!(response.multi_koli.jumlah_koli, 1);
+        assert!(response.multi_koli.nomor_koli.is_empty());
+        assert!(response.multi_koli.koli.is_empty());
+        assert_eq!(
+            serialized["status_akhir"]["status"], "INLOCATION",
+            "legacy status must remain unchanged"
+        );
+        assert!(serialized["shipment_identity"].is_object());
+        assert!(serialized["multi_koli"].is_object());
+    }
+
+    #[test]
+    fn parse_tracking_html_derives_independent_status_for_each_koli() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2603020015760</td></tr>
+              <tr><td>Status Akhir</td><td>DELIVERED di DC JAYAPURA 9910A oleh (Saiful / 560013748) Tanggal : 2026-07-29 12:10:18</td></tr>
+            </table>
+            <table>
+              <tr><th>Tanggal Update</th><th>Detail History</th></tr>
+              <tr>
+                <td>2026-03-10 09:55:21</td>
+                <td>Barang anda P2603020015760.1,P2603020015760.2 telah melewati proses bagging dengan nomor bag PID92446731 oleh Rikson Miosido di SPP JAYAPURA 99100</td>
+              </tr>
+              <tr>
+                <td>2026-07-29 12:10:34</td>
+                <td>Barang anda P2603020015760.1 telah diantar oleh Saiful Kemal Junaidi Jamaludin dan diterima oleh amanda</td>
+              </tr>
+            </table>
+        "#;
+
+        let response =
+            parse_tracking_html("https://example.test", html).expect("multi koli should parse");
+
+        assert!(response.multi_koli.is_multi_koli);
+        assert_eq!(response.multi_koli.jumlah_koli, 2);
+        assert_eq!(
+            response.multi_koli.nomor_koli,
+            ["P2603020015760.1", "P2603020015760.2"]
+        );
+        assert_eq!(
+            response.multi_koli.status_agregat.as_deref(),
+            Some("PARTIALLY_DELIVERED")
+        );
+
+        let koli_one = &response.multi_koli.koli[0];
+        assert_eq!(koli_one.status_akhir.as_deref(), Some("DELIVERED"));
+        assert!(koli_one.has_delivery_proof);
+        assert_eq!(koli_one.lokasi_akhir.as_deref(), Some("DC JAYAPURA 9910A"));
+
+        let koli_two = &response.multi_koli.koli[1];
+        assert_eq!(koli_two.status_akhir.as_deref(), Some("BAGGING"));
+        assert!(!koli_two.has_delivery_proof);
+        assert_eq!(
+            koli_two.waktu_status_akhir.as_deref(),
+            Some("2026-03-10 09:55:21")
+        );
+        assert_eq!(koli_two.lokasi_akhir.as_deref(), Some("SPP JAYAPURA 99100"));
+        assert_eq!(
+            response.status_akhir.status.as_deref(),
+            Some("DELIVERED"),
+            "legacy source status must remain unchanged"
+        );
+    }
+
+    #[test]
+    fn populate_shipment_structure_recognizes_direct_koli_request() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2603020015760.2</td></tr>
+              <tr><td>Status Akhir</td><td>DELIVERED di DC JAYAPURA 9910A oleh (Saiful / 560013748) Tanggal : 2026-07-29 12:10:18</td></tr>
+            </table>
+            <table>
+              <tr><th>Tanggal Update</th><th>Detail History</th></tr>
+              <tr>
+                <td>2026-03-10 09:55:21</td>
+                <td>Barang anda P2603020015760.1,P2603020015760.2 telah melewati proses bagging dengan nomor bag PID92446731 oleh Rikson Miosido di SPP JAYAPURA 99100</td>
+              </tr>
+              <tr>
+                <td>2026-07-29 12:10:34</td>
+                <td>Barang anda P2603020015760.1 telah diantar oleh Saiful Kemal Junaidi Jamaludin dan diterima oleh amanda</td>
+              </tr>
+            </table>
+        "#;
+
+        let response =
+            parse_tracking_html("https://example.test", html).expect("direct koli should parse");
+
+        assert_eq!(
+            response.shipment_identity.requested_id.as_deref(),
+            Some("P2603020015760.2")
+        );
+        assert_eq!(
+            response.shipment_identity.parent_shipment_id.as_deref(),
+            Some("P2603020015760")
+        );
+        assert!(response.shipment_identity.is_koli);
+        assert_eq!(response.shipment_identity.koli_number, Some(2));
+        assert_eq!(
+            response.multi_koli.koli[1].status_akhir.as_deref(),
+            Some("BAGGING")
+        );
+        assert!(!response.multi_koli.koli[1].has_delivery_proof);
+    }
+
+    #[test]
+    fn multi_koli_keeps_the_latest_recognized_status_event() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2603020015760</td></tr>
+            </table>
+            <table>
+              <tr><th>Tanggal Update</th><th>Detail History</th></tr>
+              <tr>
+                <td>2026-03-10 09:55:21</td>
+                <td>Barang anda P2603020015760.1,P2603020015760.2 telah melewati proses bagging dengan nomor bag PID92446731 di SPP JAYAPURA 99100</td>
+              </tr>
+              <tr>
+                <td>2026-03-11 10:00:00</td>
+                <td>Irregularity Retur Barang untuk P2603020015760.1 telah dicatat</td>
+              </tr>
+            </table>
+        "#;
+
+        let response =
+            parse_tracking_html("https://example.test", html).expect("multi koli should parse");
+        let koli_one = &response.multi_koli.koli[0];
+
+        assert_eq!(koli_one.status_akhir.as_deref(), Some("BAGGING"));
+        assert_eq!(
+            koli_one.waktu_status_akhir.as_deref(),
+            Some("2026-03-10 09:55:21")
+        );
+        assert_eq!(
+            koli_one
+                .bukti_status
+                .as_ref()
+                .map(|entry| entry.tanggal_update.as_str()),
+            Some("2026-03-10 09:55:21")
+        );
+    }
+
+    #[test]
+    fn multi_koli_prioritizes_failed_delivery_evidence_over_delivered_words() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2603020015760</td></tr>
+            </table>
+            <table>
+              <tr><th>Tanggal Update</th><th>Detail History</th></tr>
+              <tr>
+                <td>2026-07-29 12:10:34</td>
+                <td>Barang P2603020015760.1 telah diantar tetapi gagal antar karena penerima tidak dikenal</td>
+              </tr>
+              <tr>
+                <td>2026-03-10 09:55:21</td>
+                <td>Barang P2603020015760.2 telah melewati proses bagging di SPP JAYAPURA 99100</td>
+              </tr>
+            </table>
+        "#;
+
+        let response =
+            parse_tracking_html("https://example.test", html).expect("multi koli should parse");
+        let koli_one = &response.multi_koli.koli[0];
+
+        assert_eq!(koli_one.status_akhir.as_deref(), Some("FAILEDTODELIVERED"));
+        assert!(!koli_one.has_delivery_proof);
+    }
+
+    #[test]
+    fn multi_koli_preserves_the_exact_dotted_suffix() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2603020015760.01</td></tr>
+            </table>
+            <table>
+              <tr><th>Tanggal Update</th><th>Detail History</th></tr>
+              <tr>
+                <td>2026-03-10 09:55:21</td>
+                <td>Barang P2603020015760.01,P2603020015760.2 telah melewati proses bagging di SPP JAYAPURA 99100</td>
+              </tr>
+            </table>
+        "#;
+
+        let response =
+            parse_tracking_html("https://example.test", html).expect("multi koli should parse");
+
+        assert_eq!(
+            response.shipment_identity.requested_id.as_deref(),
+            Some("P2603020015760.01")
+        );
+        assert_eq!(
+            response.multi_koli.nomor_koli,
+            ["P2603020015760.01", "P2603020015760.2"]
+        );
+        assert_eq!(response.multi_koli.koli[0].urutan_koli, 1);
+    }
+
+    #[test]
+    fn multi_koli_does_not_invent_an_aggregate_without_status_evidence() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2603020015760</td></tr>
+            </table>
+            <table>
+              <tr><th>Tanggal Update</th><th>Detail History</th></tr>
+              <tr>
+                <td>2026-03-10 09:55:21</td>
+                <td>Catatan operasional untuk P2603020015760.1 dan P2603020015760.2</td>
+              </tr>
+            </table>
+        "#;
+
+        let response =
+            parse_tracking_html("https://example.test", html).expect("multi koli should parse");
+
+        assert!(response.multi_koli.is_multi_koli);
+        assert!(response
+            .multi_koli
+            .koli
+            .iter()
+            .all(|item| item.status_akhir.is_none()));
+        assert_eq!(response.multi_koli.status_agregat, None);
     }
 }

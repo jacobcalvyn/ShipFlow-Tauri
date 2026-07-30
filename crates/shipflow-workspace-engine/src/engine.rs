@@ -2198,6 +2198,8 @@ mod tests {
             pod: Default::default(),
             history: vec![],
             history_summary: Default::default(),
+            shipment_identity: Default::default(),
+            multi_koli: Default::default(),
             contact_enrichment: None,
         }
     }

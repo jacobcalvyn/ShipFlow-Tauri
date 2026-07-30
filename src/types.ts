@@ -151,6 +151,31 @@ export type ContactEnrichmentMetadata = {
   recipient_phone_present: boolean;
 };
 
+export type ShipmentIdentity = {
+  requested_id?: string | null;
+  parent_shipment_id?: string | null;
+  is_koli: boolean;
+  koli_number?: number | null;
+};
+
+export type KoliStatusSummary = {
+  nomor_koli: string;
+  urutan_koli: number;
+  status_akhir?: string | null;
+  lokasi_akhir?: string | null;
+  waktu_status_akhir?: string | null;
+  has_delivery_proof: boolean;
+  bukti_status?: TrackHistoryEntry | null;
+};
+
+export type MultiKoliSummary = {
+  is_multi_koli: boolean;
+  jumlah_koli: number;
+  nomor_koli: string[];
+  status_agregat?: string | null;
+  koli: KoliStatusSummary[];
+};
+
 export type TrackResponse = {
   url: string;
   detail: TrackDetail;
@@ -158,6 +183,8 @@ export type TrackResponse = {
   pod: TrackPod;
   history: TrackHistoryEntry[];
   history_summary: HistorySummary;
+  shipment_identity?: ShipmentIdentity;
+  multi_koli?: MultiKoliSummary;
   contact_enrichment?: ContactEnrichmentMetadata;
 };
 

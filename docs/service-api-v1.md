@@ -327,6 +327,68 @@ Tracking responses may include optional contact enrichment metadata:
 
 Supported enrichment statuses are `cache_hit`, `fetched`, `missing`, `failed`, and `skipped`. A `failed` or `missing` enrichment status does not make the tracking lookup fail if the primary PID tracking lookup succeeded.
 
+Tracking responses also include additive shipment identity and history-derived
+multi-koli metadata. Existing `detail`, `status_akhir`, `pod`, `history`, and
+`history_summary` fields keep their original shape and source semantics.
+
+```json
+{
+  "shipment_identity": {
+    "requested_id": "P2603020015760.2",
+    "parent_shipment_id": "P2603020015760",
+    "is_koli": true,
+    "koli_number": 2
+  },
+  "multi_koli": {
+    "is_multi_koli": true,
+    "jumlah_koli": 2,
+    "nomor_koli": [
+      "P2603020015760.1",
+      "P2603020015760.2"
+    ],
+    "status_agregat": "PARTIALLY_DELIVERED",
+    "koli": [
+      {
+        "nomor_koli": "P2603020015760.1",
+        "urutan_koli": 1,
+        "status_akhir": "DELIVERED",
+        "lokasi_akhir": "DC JAYAPURA 9910A",
+        "waktu_status_akhir": "2026-07-29 12:10:34",
+        "has_delivery_proof": true,
+        "bukti_status": {
+          "tanggal_update": "2026-07-29 12:10:34",
+          "detail_history": "Barang anda P2603020015760.1 telah diantar..."
+        }
+      },
+      {
+        "nomor_koli": "P2603020015760.2",
+        "urutan_koli": 2,
+        "status_akhir": "BAGGING",
+        "lokasi_akhir": "SPP JAYAPURA 99100",
+        "waktu_status_akhir": "2026-03-10 09:55:21",
+        "has_delivery_proof": false,
+        "bukti_status": {
+          "tanggal_update": "2026-03-10 09:55:21",
+          "detail_history": "Barang anda P2603020015760.1,P2603020015760.2 telah melewati proses bagging..."
+        }
+      }
+    ]
+  }
+}
+```
+
+Per-koli status is derived only from history entries that explicitly mention
+that dotted koli ID. An unsuffixed parent event is not delivery proof for every
+koli. `status_agregat` becomes `DELIVERED` only when every detected koli has
+explicit delivery evidence; a mixture of delivered and undelivered koli uses
+`PARTIALLY_DELIVERED`. Failed delivery evidence uses the existing canonical
+`FAILEDTODELIVERED` status. `IN_PROGRESS` is only returned when recognized
+per-koli process evidence exists but the statuses differ. If no recognized
+per-koli status evidence exists, `status_agregat` is `null`. For a regular
+shipment, `is_multi_koli` is `false`, `jumlah_koli` is `1`, and both
+`nomor_koli` and `koli` are empty. Dotted shipment IDs preserve their exact
+suffix text; numeric parsing is used only for `koli_number` and ordering.
+
 `GET /v1/track/:shipment_id/html` returns the raw upstream tracking page HTML in an envelope:
 
 ```json

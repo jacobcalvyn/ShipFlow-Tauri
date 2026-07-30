@@ -160,6 +160,46 @@ pub struct TrackHistoryEntry {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ShipmentIdentity {
+    pub requested_id: Option<String>,
+    pub parent_shipment_id: Option<String>,
+    pub is_koli: bool,
+    pub koli_number: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct KoliStatusSummary {
+    pub nomor_koli: String,
+    pub urutan_koli: u32,
+    pub status_akhir: Option<String>,
+    pub lokasi_akhir: Option<String>,
+    pub waktu_status_akhir: Option<String>,
+    pub has_delivery_proof: bool,
+    pub bukti_status: Option<TrackHistoryEntry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MultiKoliSummary {
+    pub is_multi_koli: bool,
+    pub jumlah_koli: usize,
+    pub nomor_koli: Vec<String>,
+    pub status_agregat: Option<String>,
+    pub koli: Vec<KoliStatusSummary>,
+}
+
+impl Default for MultiKoliSummary {
+    fn default() -> Self {
+        Self {
+            is_multi_koli: false,
+            jumlah_koli: 1,
+            nomor_koli: Vec::new(),
+            status_agregat: None,
+            koli: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct HistorySummary {
     pub irregularity: Vec<IrregularitySummary>,
     pub bagging_unbagging: Vec<BaggingUnbaggingSummary>,
@@ -231,6 +271,10 @@ pub struct TrackResponse {
     pub pod: TrackPod,
     pub history: Vec<TrackHistoryEntry>,
     pub history_summary: HistorySummary,
+    #[serde(default)]
+    pub shipment_identity: ShipmentIdentity,
+    #[serde(default)]
+    pub multi_koli: MultiKoliSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contact_enrichment: Option<ContactEnrichmentMetadata>,
 }

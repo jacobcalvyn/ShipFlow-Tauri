@@ -13,7 +13,7 @@ use shipflow_core::{
         LookupKind, ManifestResponse, TrackResponse, TrackingError, TrackingSource,
         TrackingSourceConfig,
     },
-    parser::parse_lacak_mitra_contact_html_checked,
+    parser::{parse_lacak_mitra_contact_html_checked, populate_shipment_structure},
     upstream::{
         build_lacak_mitra_tracking_url, normalize_and_validate_bag_id,
         normalize_and_validate_manifest_id, normalize_and_validate_shipment_id,
@@ -1111,7 +1111,7 @@ where
     let tracking_source = source_config.clone();
     let lookup_id = normalized_shipment_id.clone();
 
-    let result = lookup_cache
+    let mut result = lookup_cache
         .resolve_cached_lookup(
             LookupKind::Track,
             normalized_shipment_id.clone(),
@@ -1127,6 +1127,7 @@ where
             },
         )
         .await?;
+    populate_shipment_structure(&mut result, &normalized_shipment_id);
 
     enrich_tracking_contacts(
         contact_cache,
@@ -1539,6 +1540,9 @@ mod tests {
                                 pod: shipflow_core::model::TrackPod::default(),
                                 history: Vec::new(),
                                 history_summary: shipflow_core::model::HistorySummary::default(),
+                                shipment_identity: shipflow_core::model::ShipmentIdentity::default(
+                                ),
+                                multi_koli: shipflow_core::model::MultiKoliSummary::default(),
                                 contact_enrichment: None,
                             })
                         }
@@ -1566,6 +1570,9 @@ mod tests {
                                 pod: shipflow_core::model::TrackPod::default(),
                                 history: Vec::new(),
                                 history_summary: shipflow_core::model::HistorySummary::default(),
+                                shipment_identity: shipflow_core::model::ShipmentIdentity::default(
+                                ),
+                                multi_koli: shipflow_core::model::MultiKoliSummary::default(),
                                 contact_enrichment: None,
                             })
                         }

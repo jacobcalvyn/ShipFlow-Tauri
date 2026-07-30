@@ -723,6 +723,8 @@ fn store_successful_tracking_response(
             "pod": response.pod,
             "history": response.history,
             "history_summary": response.history_summary,
+            "shipment_identity": response.shipment_identity,
+            "multi_koli": response.multi_koli,
         }),
         raw_blob_id,
         source_url: response.url,
@@ -850,7 +852,24 @@ mod tests {
             })
             .expect("row is stored");
         let mut source = FakeTrackingSource::default();
-        source.push_tracking("P2606020189412", Ok(track_response("P2606020189412")));
+        let mut response = track_response("P2606020189412");
+        response.shipment_identity = shipflow_core::model::ShipmentIdentity {
+            requested_id: Some("P2606020189412.30".to_string()),
+            parent_shipment_id: Some("P2606020189412".to_string()),
+            is_koli: true,
+            koli_number: Some(30),
+        };
+        response.multi_koli = shipflow_core::model::MultiKoliSummary {
+            is_multi_koli: true,
+            jumlah_koli: 2,
+            nomor_koli: vec![
+                "P2606020189412.1".to_string(),
+                "P2606020189412.30".to_string(),
+            ],
+            status_agregat: Some("PARTIALLY_DELIVERED".to_string()),
+            koli: vec![],
+        };
+        source.push_tracking("P2606020189412", Ok(response));
 
         {
             let mut engine = TrackingEngine::new(&mut store, &mut source);
@@ -870,6 +889,14 @@ mod tests {
             assert_eq!(
                 row.history_json.as_ref().unwrap()["history_summary"]["irregularity"],
                 json!([])
+            );
+            assert_eq!(
+                row.history_json.as_ref().unwrap()["shipment_identity"]["requested_id"],
+                "P2606020189412.30"
+            );
+            assert_eq!(
+                row.history_json.as_ref().unwrap()["multi_koli"]["status_agregat"],
+                "PARTIALLY_DELIVERED"
             );
         }
         assert_eq!(source.requested_ids, vec!["P2606020189412".to_string()]);
@@ -893,6 +920,10 @@ mod tests {
         assert_eq!(
             rows.rows[0].status_json.as_ref().unwrap()["status"],
             "DELIVERED"
+        );
+        assert_eq!(
+            rows.rows[0].history_json.as_ref().unwrap()["multi_koli"]["nomor_koli"],
+            json!(["P2606020189412.1", "P2606020189412.30"])
         );
     }
 
@@ -1526,6 +1557,8 @@ mod tests {
                 detail_history: "Delivered".to_string(),
             }],
             history_summary: Default::default(),
+            shipment_identity: Default::default(),
+            multi_koli: Default::default(),
             contact_enrichment: None,
         }
     }
