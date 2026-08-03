@@ -344,6 +344,7 @@ fn rpc_error_from_tracking_error(error: TrackingError) -> RpcError {
 mod tests {
     use super::{drain_internal_ipc_connections, handle_request, parse_lookup_params};
     use crate::{
+        bag_route_cache::BagRouteCacheState,
         contact_cache::ContactCacheState,
         http_api::{HttpApiState, ShutdownSignal},
         lookup_cache::LookupCacheState,
@@ -460,6 +461,7 @@ mod tests {
             tracking_source: TrackingSourceConfig::default(),
             lookup_cache: LookupCacheState::default(),
             contact_cache: ContactCacheState::default(),
+            bag_route_cache: BagRouteCacheState::default(),
             public_upstream_backpressure: UpstreamBackpressure::public_default(),
             upstream_backpressure: UpstreamBackpressure::default(),
             contact_backpressure: UpstreamBackpressure::contact_default(),

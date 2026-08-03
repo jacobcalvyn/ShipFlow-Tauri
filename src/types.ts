@@ -103,10 +103,15 @@ export type BaggingUnbaggingEvent = {
   waktu?: string;
 };
 
+export type BaggingEvent = BaggingUnbaggingEvent & {
+  tujuan?: string;
+};
+
 export type BaggingUnbaggingSummary = {
   nomor_kantung: string;
-  bagging?: BaggingUnbaggingEvent;
+  bagging?: BaggingEvent;
   unbagging?: BaggingUnbaggingEvent;
+  unbagging_sesuai_tujuan?: boolean;
 };
 
 export type ManifestR7Summary = {

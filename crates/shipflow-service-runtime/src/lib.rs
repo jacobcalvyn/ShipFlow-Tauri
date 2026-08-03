@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 pub mod api_contract;
+pub mod bag_route_cache;
 pub mod contact_cache;
 mod diagnostics;
 pub mod http_api;

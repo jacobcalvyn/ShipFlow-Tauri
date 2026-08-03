@@ -14,25 +14,27 @@ use serde::Serialize;
 use serde_json::Value;
 use shipflow_core::{
     model::{
-        BagResponse, ManifestResponse, TrackResponse, TrackingError, TrackingHtmlResponse,
-        TrackingSource, TrackingSourceConfig,
+        BagResponse, BagRoute, ManifestResponse, TrackResponse, TrackingError,
+        TrackingHtmlResponse, TrackingSource, TrackingSourceConfig,
     },
-    upstream::{parse_external_api_base_url, resolve_tracking_html_request},
+    upstream::{parse_external_api_base_url, resolve_tracking_html_request, scrape_pos_bag_route},
 };
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     future::Future,
     net::{IpAddr, SocketAddr},
     time::{Duration, Instant},
 };
 use tokio::{
     sync::watch,
+    task::JoinSet,
     time::{timeout, MissedTickBehavior},
 };
 
 use crate::api_contract::{
     envelope, error_response_v1, generate_request_id, REQUEST_ID_HEADER_NAME,
 };
+use crate::bag_route_cache::{BagRouteCacheSnapshot, BagRouteCacheState, BagRouteFetchAction};
 use crate::contact_cache::{ContactCacheSnapshot, ContactCacheState};
 use crate::diagnostics::process_rss_bytes;
 use crate::lookup_cache::{
@@ -64,9 +66,13 @@ pub const SERVICE_LOOKUP_DEADLINE_SECS: u64 = 120;
 const SERVICE_MAINTENANCE_INTERVAL_SECS: u64 = 60;
 const SERVICE_MEMORY_WARNING_BYTES: u64 = 512 * 1024 * 1024;
 const SERVICE_HTTP_BODY_LIMIT_BYTES: usize = 64 * 1024;
-const SERVICE_HTTP_HANDLER_DEADLINE_SECS: u64 = SERVICE_LOOKUP_DEADLINE_SECS + 10;
 const DIAGNOSTICS_SCHEMA_VERSION: &str = "shipflow.service.diagnostics.v1";
 const MAX_REQUEST_ID_BYTES: usize = 128;
+const BAG_ROUTE_LOOKUP_TIMEOUT_SECS: u64 = 20;
+const BAG_ROUTE_ENRICHMENT_BUDGET_SECS: u64 = 20;
+const MAX_CONCURRENT_BAG_ROUTE_ENRICHMENTS_PER_TRACK: usize = 4;
+const SERVICE_HTTP_HANDLER_DEADLINE_SECS: u64 =
+    SERVICE_LOOKUP_DEADLINE_SECS + BAG_ROUTE_ENRICHMENT_BUDGET_SECS + 10;
 
 #[derive(Clone)]
 pub struct HttpApiState {
@@ -79,6 +85,7 @@ pub struct HttpApiState {
     pub tracking_source: shipflow_core::model::TrackingSourceConfig,
     pub lookup_cache: LookupCacheState,
     pub contact_cache: ContactCacheState,
+    pub bag_route_cache: BagRouteCacheState,
     pub public_upstream_backpressure: UpstreamBackpressure,
     pub upstream_backpressure: UpstreamBackpressure,
     pub contact_backpressure: UpstreamBackpressure,
@@ -170,6 +177,7 @@ struct DiagnosticsResponse {
     lookup_deadline_seconds: u64,
     lookup_cache: CacheDiagnostics,
     contact_cache: ContactCacheDiagnostics,
+    bag_route_cache: BagRouteCacheDiagnostics,
     backpressure: BackpressureDiagnostics,
 }
 
@@ -186,6 +194,14 @@ struct CacheDiagnostics {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ContactCacheDiagnostics {
+    entries: usize,
+    in_flight: usize,
+    capacity: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BagRouteCacheDiagnostics {
     entries: usize,
     in_flight: usize,
     capacity: usize,
@@ -389,6 +405,7 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
         tracking_source,
         lookup_cache,
         contact_cache: ContactCacheState::default(),
+        bag_route_cache: BagRouteCacheState::default(),
         public_upstream_backpressure: UpstreamBackpressure::public_default(),
         upstream_backpressure: UpstreamBackpressure::default(),
         contact_backpressure: UpstreamBackpressure::contact_default(),
@@ -613,13 +630,14 @@ async fn run_service_maintenance(state: HttpApiState) {
             _ = interval.tick() => {
                 let lookup_cache = state.lookup_cache.prune_expired_and_over_capacity();
                 let contact_cache = state.contact_cache.snapshot_async().await;
+                let bag_route_cache = state.bag_route_cache.snapshot_async().await;
                 let public = state.public_upstream_backpressure.snapshot();
                 let global = state.upstream_backpressure.snapshot();
                 let contact = state.contact_backpressure.snapshot();
                 let ingress = state.http_ingress_backpressure.snapshot();
                 let rss_bytes = process_rss_bytes();
                 shipflow_core::shipflow_log!(
-                    "[ShipFlowDiagnostics] uptimeSec={} rssBytes={} cacheReady={} cacheLoading={} cacheBytes={} cacheByteCapacity={} contactEntries={} contactInFlight={} ingressActive={} ingressQueued={} publicActive={} publicQueued={} globalActive={} globalQueued={} contactActive={} contactQueued={}",
+                    "[ShipFlowDiagnostics] uptimeSec={} rssBytes={} cacheReady={} cacheLoading={} cacheBytes={} cacheByteCapacity={} contactEntries={} contactInFlight={} bagRouteEntries={} bagRouteInFlight={} ingressActive={} ingressQueued={} publicActive={} publicQueued={} globalActive={} globalQueued={} contactActive={} contactQueued={}",
                     state.started_at.elapsed().as_secs(),
                     rss_bytes.map_or_else(|| "unavailable".to_string(), |value| value.to_string()),
                     lookup_cache.ready,
@@ -628,6 +646,8 @@ async fn run_service_maintenance(state: HttpApiState) {
                     lookup_cache.byte_capacity,
                     contact_cache.entries,
                     contact_cache.in_flight,
+                    bag_route_cache.entries,
+                    bag_route_cache.in_flight,
                     ingress.active,
                     ingress.queued,
                     public.active,
@@ -749,6 +769,7 @@ async fn v1_diagnostics_handler(
     })?;
     let lookup_cache = state.lookup_cache.snapshot();
     let contact_cache = state.contact_cache.snapshot_async().await;
+    let bag_route_cache = state.bag_route_cache.snapshot_async().await;
     let public = state.public_upstream_backpressure.snapshot();
     let global = state.upstream_backpressure.snapshot();
     let contact = state.contact_backpressure.snapshot();
@@ -765,6 +786,7 @@ async fn v1_diagnostics_handler(
             lookup_deadline_seconds: SERVICE_LOOKUP_DEADLINE_SECS,
             lookup_cache: cache_diagnostics(lookup_cache),
             contact_cache: contact_cache_diagnostics(contact_cache),
+            bag_route_cache: bag_route_cache_diagnostics(bag_route_cache),
             backpressure: BackpressureDiagnostics {
                 ingress: backpressure_diagnostics(ingress),
                 public: backpressure_diagnostics(public),
@@ -997,6 +1019,24 @@ pub(crate) async fn resolve_tracking_payload(
         ),
     )
     .await;
+    let result = match result {
+        Ok(mut response) => {
+            if timeout(
+                Duration::from_secs(BAG_ROUTE_ENRICHMENT_BUDGET_SECS),
+                enrich_tracking_bag_routes(state, &mut response, request_id),
+            )
+            .await
+            .is_err()
+            {
+                shipflow_core::shipflow_log!(
+                    "[ShipFlowBagRouteCache] enrichment_budget_exhausted id={} budgetSec={BAG_ROUTE_ENRICHMENT_BUDGET_SECS}",
+                    normalized_id
+                );
+            }
+            Ok(response)
+        }
+        Err(error) => Err(error),
+    };
     log_service_tracking_timing(
         route,
         &normalized_id,
@@ -1006,6 +1046,184 @@ pub(crate) async fn resolve_tracking_payload(
         result.is_ok(),
     );
     result
+}
+
+async fn enrich_tracking_bag_routes(
+    state: &HttpApiState,
+    response: &mut TrackResponse,
+    request_id: &str,
+) {
+    if state.tracking_source.tracking_source != TrackingSource::Default {
+        return;
+    }
+
+    let mut seen = HashSet::new();
+    let mut pending: VecDeque<String> = response
+        .history_summary
+        .bagging_unbagging
+        .iter()
+        .filter(|summary| summary.bagging.is_some())
+        .filter_map(|summary| {
+            let bag_id = summary.nomor_kantung.trim().to_ascii_uppercase();
+            (!bag_id.is_empty() && seen.insert(bag_id.clone())).then_some(bag_id)
+        })
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
+
+    let mut tasks = JoinSet::new();
+    loop {
+        while tasks.len() < MAX_CONCURRENT_BAG_ROUTE_ENRICHMENTS_PER_TRACK {
+            let Some(bag_id) = pending.pop_front() else {
+                break;
+            };
+            let task_state = state.clone();
+            let task_request_id = request_id.to_string();
+            tasks.spawn(async move {
+                let route = resolve_cached_bag_route(&task_state, &bag_id, &task_request_id).await;
+                (bag_id, route)
+            });
+        }
+
+        let Some(joined) = tasks.join_next().await else {
+            break;
+        };
+        match joined {
+            Ok((_bag_id, Some(route))) => apply_bag_route(response, &route),
+            Ok((_bag_id, None)) => {}
+            Err(error) => shipflow_core::shipflow_log!(
+                "[ShipFlowBagRouteCache] enrichment_task_failed error={error}"
+            ),
+        }
+    }
+}
+
+async fn resolve_cached_bag_route(
+    state: &HttpApiState,
+    bag_id: &str,
+    request_id: &str,
+) -> Option<BagRoute> {
+    loop {
+        if let Some(entry) = state.bag_route_cache.get_async(bag_id).await {
+            shipflow_core::shipflow_log!(
+                "[ShipFlowBagRouteCache] cache_hit id={} status={:?}",
+                entry.bag_id,
+                entry.status
+            );
+            return entry.route;
+        }
+
+        match state.bag_route_cache.begin_fetch(bag_id) {
+            BagRouteFetchAction::Wait(waiter) => waiter.await,
+            BagRouteFetchAction::Start(fetch_lease) => {
+                let _fetch_lease = fetch_lease;
+                let permit = match state
+                    .contact_backpressure
+                    .acquire("bag_route_enrichment", bag_id, request_id)
+                    .await
+                {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        state.bag_route_cache.store_failure_async(bag_id).await;
+                        shipflow_core::shipflow_log!(
+                            "[ShipFlowBagRouteCache] permit_failed id={} error={error:?}",
+                            bag_id
+                        );
+                        return None;
+                    }
+                };
+                let fetch_result = timeout(
+                    Duration::from_secs(BAG_ROUTE_LOOKUP_TIMEOUT_SECS),
+                    scrape_pos_bag_route(&state.client, bag_id),
+                )
+                .await;
+                drop(permit);
+
+                match fetch_result {
+                    Ok(Ok(route)) => {
+                        let entry = state.bag_route_cache.store_async(bag_id, route).await;
+                        shipflow_core::shipflow_log!(
+                            "[ShipFlowBagRouteCache] fetch_ok id={} status={:?} destinationPresent={}",
+                            bag_id,
+                            entry.status,
+                            entry.route.as_ref().is_some_and(|route| route.tujuan.is_some())
+                        );
+                        return entry.route;
+                    }
+                    Ok(Err(error)) => {
+                        state.bag_route_cache.store_failure_async(bag_id).await;
+                        shipflow_core::shipflow_log!(
+                            "[ShipFlowBagRouteCache] fetch_failed id={} error={error:?}",
+                            bag_id
+                        );
+                        return None;
+                    }
+                    Err(_) => {
+                        state.bag_route_cache.store_failure_async(bag_id).await;
+                        shipflow_core::shipflow_log!(
+                            "[ShipFlowBagRouteCache] fetch_timeout id={} timeoutSec={BAG_ROUTE_LOOKUP_TIMEOUT_SECS}",
+                            bag_id
+                        );
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn apply_bag_route(response: &mut TrackResponse, route: &BagRoute) {
+    for summary in &mut response.history_summary.bagging_unbagging {
+        if !summary
+            .nomor_kantung
+            .eq_ignore_ascii_case(&route.nomor_kantung)
+        {
+            continue;
+        }
+
+        let Some(bagging) = summary.bagging.as_mut() else {
+            continue;
+        };
+        if bagging.lokasi.is_none() {
+            bagging.lokasi = route.lokasi_asal.clone();
+        }
+        bagging.tujuan = route.tujuan.clone();
+        summary.unbagging_sesuai_tujuan = match (
+            route.tujuan.as_deref(),
+            summary
+                .unbagging
+                .as_ref()
+                .and_then(|unbagging| unbagging.lokasi.as_deref()),
+        ) {
+            (Some(expected), Some(actual)) => Some(locations_match(expected, actual)),
+            _ => None,
+        };
+    }
+}
+
+fn locations_match(expected: &str, actual: &str) -> bool {
+    let expected = normalized_location_identity(expected);
+    let actual = normalized_location_identity(actual);
+    !expected.is_empty() && expected == actual
+}
+
+fn normalized_location_identity(value: &str) -> String {
+    let normalized = value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_uppercase();
+    normalized
+        .split_whitespace()
+        .rev()
+        .find(|part| part.chars().any(|character| character.is_ascii_digit()))
+        .map(|part| {
+            part.chars()
+                .filter(|character| character.is_ascii_alphanumeric())
+                .collect()
+        })
+        .unwrap_or(normalized)
 }
 
 async fn acquire_lookup_permits(
@@ -1172,6 +1390,14 @@ fn cache_diagnostics(snapshot: LookupCacheSnapshot) -> CacheDiagnostics {
 
 fn contact_cache_diagnostics(snapshot: ContactCacheSnapshot) -> ContactCacheDiagnostics {
     ContactCacheDiagnostics {
+        entries: snapshot.entries,
+        in_flight: snapshot.in_flight,
+        capacity: snapshot.capacity,
+    }
+}
+
+fn bag_route_cache_diagnostics(snapshot: BagRouteCacheSnapshot) -> BagRouteCacheDiagnostics {
+    BagRouteCacheDiagnostics {
         entries: snapshot.entries,
         in_flight: snapshot.in_flight,
         capacity: snapshot.capacity,
@@ -1367,13 +1593,17 @@ mod tests {
         body::{to_bytes, Body},
         http::{header::AUTHORIZATION, HeaderMap, Request, StatusCode},
     };
-    use shipflow_core::model::{TrackingSource, TrackingSourceConfig};
+    use shipflow_core::model::{
+        BagRoute, BaggingEvent, BaggingUnbaggingEvent, BaggingUnbaggingSummary, HistorySummary,
+        MultiKoliSummary, ShipmentIdentity, TrackDetail, TrackPod, TrackResponse, TrackStatusAkhir,
+        TrackingSource, TrackingSourceConfig,
+    };
     use tower::ServiceExt;
 
     use super::{
-        acquire_lookup_permits, authorize_request_id, authorize_request_message, build_router,
-        external_api_request, is_forbidden_external_address, is_private_external_address,
-        read_lookup_request_options, resolve_external_api_addresses,
+        acquire_lookup_permits, apply_bag_route, authorize_request_id, authorize_request_message,
+        build_router, external_api_request, is_forbidden_external_address,
+        is_private_external_address, read_lookup_request_options, resolve_external_api_addresses,
         tracking_source_redirects_allowed, with_lookup_deadline_duration, HttpApiState,
         LookupTrafficClass, ShutdownSignal,
     };
@@ -1382,6 +1612,7 @@ mod tests {
     use tokio::time::Duration;
 
     use crate::{
+        bag_route_cache::BagRouteCacheState,
         contact_cache::ContactCacheState,
         lookup_cache::LookupCacheState,
         model::ServiceRuntimeMode,
@@ -1416,6 +1647,67 @@ mod tests {
         assert!(tracking_source_redirects_allowed(
             &TrackingSourceConfig::default()
         ));
+    }
+
+    #[test]
+    fn bag_route_enrichment_keeps_expected_and_actual_locations_separate() {
+        let mut response = TrackResponse {
+            url: "https://example.test/track/P1".into(),
+            detail: TrackDetail::default(),
+            status_akhir: TrackStatusAkhir::default(),
+            pod: TrackPod::default(),
+            history: Vec::new(),
+            history_summary: HistorySummary {
+                bagging_unbagging: vec![BaggingUnbaggingSummary {
+                    nomor_kantung: "PID96722106".into(),
+                    bagging: Some(BaggingEvent {
+                        petugas: None,
+                        lokasi: Some("KCU JAYAPURA 99000".into()),
+                        tujuan: None,
+                        tanggal: None,
+                        waktu: None,
+                    }),
+                    unbagging: Some(BaggingUnbaggingEvent {
+                        petugas: None,
+                        lokasi: Some("DC JAYAPURA 9910A".into()),
+                        tanggal: None,
+                        waktu: None,
+                    }),
+                    unbagging_sesuai_tujuan: None,
+                }],
+                ..HistorySummary::default()
+            },
+            shipment_identity: ShipmentIdentity::default(),
+            multi_koli: MultiKoliSummary::default(),
+            contact_enrichment: None,
+        };
+
+        apply_bag_route(
+            &mut response,
+            &BagRoute {
+                nomor_kantung: "PID96722106".into(),
+                lokasi_asal: Some("KCU JAYAPURA 99000".into()),
+                tujuan: Some("DC JAYAPURA 9910A".into()),
+                url: "https://example.test/print-bag".into(),
+            },
+        );
+
+        let summary = &response.history_summary.bagging_unbagging[0];
+        assert_eq!(
+            summary
+                .bagging
+                .as_ref()
+                .and_then(|bagging| bagging.tujuan.as_deref()),
+            Some("DC JAYAPURA 9910A")
+        );
+        assert_eq!(
+            summary
+                .unbagging
+                .as_ref()
+                .and_then(|unbagging| unbagging.lokasi.as_deref()),
+            Some("DC JAYAPURA 9910A")
+        );
+        assert_eq!(summary.unbagging_sesuai_tujuan, Some(true));
     }
 
     #[tokio::test]
@@ -1946,6 +2238,7 @@ mod tests {
             tracking_source: TrackingSourceConfig::default(),
             lookup_cache: LookupCacheState::default(),
             contact_cache: ContactCacheState::default(),
+            bag_route_cache: BagRouteCacheState::default(),
             public_upstream_backpressure: UpstreamBackpressure::public_default(),
             upstream_backpressure: UpstreamBackpressure::default(),
             contact_backpressure: UpstreamBackpressure::contact_default(),

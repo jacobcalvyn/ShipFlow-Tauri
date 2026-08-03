@@ -439,7 +439,7 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                             "type": "array",
                             "items": { "$ref": "#/components/schemas/TrackHistoryEntry" }
                         },
-                        "history_summary": { "type": "object", "additionalProperties": true },
+                        "history_summary": { "$ref": "#/components/schemas/HistorySummary" },
                         "shipment_identity": { "$ref": "#/components/schemas/ShipmentIdentity" },
                         "multi_koli": { "$ref": "#/components/schemas/MultiKoliSummary" },
                         "contact_enrichment": { "$ref": "#/components/schemas/ContactEnrichmentMetadata" }
@@ -521,11 +521,83 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                         "recipient_phone_present": { "type": "boolean" }
                     }
                 },
+                "HistorySummary": {
+                    "type": "object",
+                    "required": ["irregularity", "bagging_unbagging", "manifest_r7", "delivery_runsheet"],
+                    "properties": {
+                        "irregularity": {
+                            "type": "array",
+                            "items": { "type": "object", "additionalProperties": true }
+                        },
+                        "bagging_unbagging": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/BaggingUnbaggingSummary" }
+                        },
+                        "manifest_r7": {
+                            "type": "array",
+                            "items": { "type": "object", "additionalProperties": true }
+                        },
+                        "delivery_runsheet": {
+                            "type": "array",
+                            "items": { "type": "object", "additionalProperties": true }
+                        }
+                    }
+                },
+                "BaggingUnbaggingSummary": {
+                    "type": "object",
+                    "required": ["nomor_kantung", "bagging", "unbagging", "unbagging_sesuai_tujuan"],
+                    "properties": {
+                        "nomor_kantung": { "type": "string" },
+                        "bagging": {
+                            "oneOf": [
+                                { "$ref": "#/components/schemas/BaggingEvent" },
+                                { "type": "null" }
+                            ]
+                        },
+                        "unbagging": {
+                            "oneOf": [
+                                { "$ref": "#/components/schemas/BaggingUnbaggingEvent" },
+                                { "type": "null" }
+                            ]
+                        },
+                        "unbagging_sesuai_tujuan": {
+                            "type": ["boolean", "null"],
+                            "description": "true when the actual unbagging office matches the destination printed for the bag; null when either value is unavailable."
+                        }
+                    }
+                },
+                "BaggingEvent": {
+                    "type": "object",
+                    "required": ["petugas", "lokasi", "tujuan", "tanggal", "waktu"],
+                    "properties": {
+                        "petugas": { "type": ["string", "null"] },
+                        "lokasi": { "type": ["string", "null"] },
+                        "tujuan": {
+                            "type": ["string", "null"],
+                            "description": "Expected bag destination from the POS Mile bag label. This best-effort field is served from the persistent bag route cache after the first successful lookup."
+                        },
+                        "tanggal": { "type": ["string", "null"] },
+                        "waktu": { "type": ["string", "null"] }
+                    }
+                },
+                "BaggingUnbaggingEvent": {
+                    "type": "object",
+                    "required": ["petugas", "lokasi", "tanggal", "waktu"],
+                    "properties": {
+                        "petugas": { "type": ["string", "null"] },
+                        "lokasi": { "type": ["string", "null"] },
+                        "tanggal": { "type": ["string", "null"] },
+                        "waktu": { "type": ["string", "null"] }
+                    }
+                },
                 "TrackStatusAkhir": {
                     "type": "object",
                     "properties": {
                         "status": { "type": ["string", "null"] },
-                        "location": { "type": ["string", "null"] },
+                        "location": {
+                            "type": ["string", "null"],
+                            "description": "Final operational location reported by the primary source. When a delivery-flow status omits it, ShipFlow uses the most recent relevant DeliveryRunsheet location without overwriting a reported value."
+                        },
                         "officer_name": { "type": ["string", "null"] },
                         "officer_id": { "type": ["string", "null"] },
                         "datetime": { "type": ["string", "null"], "description": "Clean final status timestamp formatted as YYYY-MM-DD HH:mm:ss when available." },
@@ -614,6 +686,8 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
     document["components"]["schemas"]["CacheDiagnostics"] = cache_diagnostics_schema();
     document["components"]["schemas"]["ContactCacheDiagnostics"] =
         contact_cache_diagnostics_schema();
+    document["components"]["schemas"]["BagRouteCacheDiagnostics"] =
+        bag_route_cache_diagnostics_schema();
     document["components"]["schemas"]["BackpressureLaneDiagnostics"] =
         backpressure_lane_diagnostics_schema();
 
@@ -665,6 +739,7 @@ fn diagnostics_response_schema() -> Value {
             "lookupDeadlineSeconds",
             "lookupCache",
             "contactCache",
+            "bagRouteCache",
             "backpressure"
         ],
         "properties": {
@@ -678,6 +753,7 @@ fn diagnostics_response_schema() -> Value {
             },
             "lookupCache": { "$ref": "#/components/schemas/CacheDiagnostics" },
             "contactCache": { "$ref": "#/components/schemas/ContactCacheDiagnostics" },
+            "bagRouteCache": { "$ref": "#/components/schemas/BagRouteCacheDiagnostics" },
             "backpressure": {
                 "type": "object",
                 "required": ["ingress", "public", "global", "contact"],
@@ -702,6 +778,18 @@ fn cache_diagnostics_schema() -> Value {
             "capacity": { "type": "integer", "minimum": 1 },
             "bytes": { "type": "integer", "minimum": 0 },
             "byteCapacity": { "type": "integer", "minimum": 1 }
+        }
+    })
+}
+
+fn bag_route_cache_diagnostics_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["entries", "inFlight", "capacity"],
+        "properties": {
+            "entries": { "type": "integer", "minimum": 0 },
+            "inFlight": { "type": "integer", "minimum": 0 },
+            "capacity": { "type": "integer", "minimum": 1 }
         }
     })
 }
@@ -911,6 +999,30 @@ mod tests {
             document["components"]["schemas"]["KoliStatusSummary"]["properties"]
                 ["has_delivery_proof"]["type"],
             "boolean"
+        );
+    }
+
+    #[test]
+    fn documents_persistent_bag_route_enrichment_fields() {
+        let document = service_openapi_document(18422, false);
+
+        assert_eq!(
+            document["components"]["schemas"]["TrackResponse"]["properties"]["history_summary"]
+                ["$ref"],
+            "#/components/schemas/HistorySummary"
+        );
+        assert_eq!(
+            document["components"]["schemas"]["BaggingEvent"]["properties"]["tujuan"]["type"][0],
+            "string"
+        );
+        assert_eq!(
+            document["components"]["schemas"]["BaggingUnbaggingSummary"]["properties"]
+                ["unbagging_sesuai_tujuan"]["type"][0],
+            "boolean"
+        );
+        assert_eq!(
+            document["components"]["schemas"]["Diagnostics"]["properties"]["bagRouteCache"]["$ref"],
+            "#/components/schemas/BagRouteCacheDiagnostics"
         );
     }
 

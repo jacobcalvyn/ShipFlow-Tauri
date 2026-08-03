@@ -14,10 +14,11 @@ use reqwest::{
 use serde::{de::DeserializeOwned, Deserialize};
 
 use crate::bag::parse_bag_html;
+use crate::bag_route::parse_bag_route_html;
 use crate::manifest::parse_manifest_html;
 use crate::model::{
-    BagResponse, LookupKind, ManifestResponse, TrackResponse, TrackingError, TrackingHtmlResponse,
-    TrackingSource, TrackingSourceConfig,
+    BagResponse, BagRoute, LookupKind, ManifestResponse, TrackResponse, TrackingError,
+    TrackingHtmlResponse, TrackingSource, TrackingSourceConfig,
 };
 use crate::parser::parse_tracking_html;
 
@@ -28,6 +29,8 @@ pub const POS_LACAK_MITRA_ENDPOINT: &str =
     "https://lacak-mitra.posindonesia.co.id/lacak_barcode.php";
 pub const POS_BAG_ENDPOINT: &str =
     "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak_bag.php";
+pub const POS_BAG_LABEL_ENDPOINT: &str = "https://apiexpos.mile.app/api/v1/print-bag";
+const POS_BAG_LABEL_ORGANIZATION_ID: &str = "5f9fae9b5fbe9d6e401ad0c5";
 pub const POS_MANIFEST_ENDPOINT: &str =
     "https://pid.posindonesia.co.id/lacak/admin/GetManifestR7_detil.php";
 const TRACKING_MAX_ATTEMPTS: u32 = 3;
@@ -191,6 +194,28 @@ pub async fn scrape_pos_bag(client: &Client, bag_id: &str) -> Result<BagResponse
     let parsed = parse_bag_html(&html, &request_url).map_err(TrackingError::Upstream)?;
     ensure_lookup_item_limit("Bag response", parsed.items.len())?;
     Ok(parsed)
+}
+
+pub async fn scrape_pos_bag_route(
+    client: &Client,
+    bag_id: &str,
+) -> Result<BagRoute, TrackingError> {
+    let normalized_bag_id = normalize_and_validate_bag_id(bag_id)?;
+    let request_url = build_pos_bag_label_url(&normalized_bag_id);
+    let response =
+        client.get(&request_url).send().await.map_err(|error| {
+            TrackingError::Upstream(format!("Bag label request failed: {error}"))
+        })?;
+
+    if !response.status().is_success() {
+        return Err(TrackingError::Upstream(format!(
+            "Bag label endpoint returned HTTP {}.",
+            response.status()
+        )));
+    }
+
+    let html = read_response_text_limited(response, 512 * 1024, "Bag label response").await?;
+    parse_bag_route_html(&html, &normalized_bag_id, &request_url).map_err(TrackingError::Upstream)
 }
 
 pub async fn scrape_pos_manifest(
@@ -858,6 +883,13 @@ pub fn build_lacak_mitra_tracking_url(shipment_id: &str) -> String {
     format!("{POS_LACAK_MITRA_ENDPOINT}?id={shipment_id}")
 }
 
+pub fn build_pos_bag_label_url(bag_id: &str) -> String {
+    let organization_oid = STANDARD.encode(POS_BAG_LABEL_ORGANIZATION_ID);
+    format!(
+        "{POS_BAG_LABEL_ENDPOINT}?bag_id={bag_id}_{POS_BAG_LABEL_ORGANIZATION_ID}&oid={organization_oid}"
+    )
+}
+
 fn build_encoded_pos_lookup_url(base_url: &str, lookup_id: &str) -> String {
     let encoded_id = STANDARD
         .encode(lookup_id)
@@ -1130,7 +1162,7 @@ async fn read_external_api_error_message(response: Response) -> String {
 mod tests {
     use super::{
         apply_external_api_auth_headers, build_external_api_lookup_url,
-        build_lacak_mitra_tracking_url, build_tracking_url,
+        build_lacak_mitra_tracking_url, build_pos_bag_label_url, build_tracking_url,
         external_api_base_url_prefers_v1_contract, normalize_and_validate_bag_id,
         normalize_and_validate_manifest_id, normalize_and_validate_shipment_id,
         parse_external_api_bag_response, parse_external_api_base_url,
@@ -1198,6 +1230,14 @@ mod tests {
         assert_eq!(
             build_lacak_mitra_tracking_url("P2606020189412.30"),
             "https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=P2606020189412.30"
+        );
+    }
+
+    #[test]
+    fn build_pos_bag_label_url_uses_validated_bag_and_pos_organization() {
+        assert_eq!(
+            build_pos_bag_label_url("PID96722106"),
+            "https://apiexpos.mile.app/api/v1/print-bag?bag_id=PID96722106_5f9fae9b5fbe9d6e401ad0c5&oid=NWY5ZmFlOWI1ZmJlOWQ2ZTQwMWFkMGM1"
         );
     }
 

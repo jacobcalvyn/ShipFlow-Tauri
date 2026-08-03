@@ -3,12 +3,12 @@ use std::collections::{BTreeMap, HashMap};
 use scraper::{Html as ScraperHtml, Selector};
 
 use crate::model::{
-    Actors, BaggingUnbaggingEvent, BaggingUnbaggingSummary, BillingDetail, ContactDetail,
-    ContactEnrichment, DeliveryRunsheetSummary, DeliveryRunsheetUpdate, HistorySummary,
-    IrregularitySummary, KoliStatusSummary, ManifestR7Summary, MultiKoliSummary, OriginDetail,
-    PackageDetail, PerformanceDetail, ShipmentHeader, ShipmentIdentity, StatusAkhirParts,
-    TrackCodDetail, TrackDetail, TrackHistoryEntry, TrackPod, TrackResponse, TrackStatusAkhir,
-    TrackingError,
+    Actors, BaggingEvent, BaggingUnbaggingEvent, BaggingUnbaggingSummary, BillingDetail,
+    ContactDetail, ContactEnrichment, DeliveryRunsheetSummary, DeliveryRunsheetUpdate,
+    HistorySummary, IrregularitySummary, KoliStatusSummary, ManifestR7Summary, MultiKoliSummary,
+    OriginDetail, PackageDetail, PerformanceDetail, ShipmentHeader, ShipmentIdentity,
+    StatusAkhirParts, TrackCodDetail, TrackDetail, TrackHistoryEntry, TrackPod, TrackResponse,
+    TrackStatusAkhir, TrackingError,
 };
 use crate::upstream::resolve_pos_href;
 
@@ -286,6 +286,7 @@ pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackRespons
     }
 
     let history_summary = build_history_summary(&history, &status_akhir, &pod);
+    fill_missing_status_location(&mut status_akhir, &history_summary);
     let detail = TrackDetail {
         header,
         origin,
@@ -1178,9 +1179,10 @@ fn build_history_summary(
         if lower.contains("proses bagging") && lower.contains("nomor bag") {
             if let Some(nomor_kantung) = extract_bag_id(&entry.detail_history, "nomor bag") {
                 let (petugas, lokasi) = parse_oleh_di(&entry.detail_history);
-                let event = BaggingUnbaggingEvent {
+                let event = BaggingEvent {
                     petugas,
                     lokasi,
+                    tujuan: None,
                     tanggal: tanggal.clone(),
                     waktu: waktu.clone(),
                 };
@@ -1195,6 +1197,7 @@ fn build_history_summary(
                             nomor_kantung,
                             bagging: None,
                             unbagging: None,
+                            unbagging_sesuai_tujuan: None,
                         });
                 bag_entry.bagging = Some(event);
                 matched_any = true;
@@ -1219,6 +1222,7 @@ fn build_history_summary(
                             nomor_kantung,
                             bagging: None,
                             unbagging: None,
+                            unbagging_sesuai_tujuan: None,
                         });
                 bag_entry.unbagging = Some(event);
                 matched_any = true;
@@ -1358,6 +1362,73 @@ fn build_history_summary(
         manifest_r7,
         delivery_runsheet,
     }
+}
+
+fn fill_missing_status_location(
+    status_akhir: &mut TrackStatusAkhir,
+    history_summary: &HistorySummary,
+) {
+    if status_akhir
+        .location
+        .as_deref()
+        .is_some_and(|location| !location.trim().is_empty())
+    {
+        return;
+    }
+
+    let Some(status) = status_akhir.status.as_deref() else {
+        return;
+    };
+    let normalized_status = status.trim().to_ascii_uppercase();
+    let belongs_to_delivery_flow = normalized_status == "ON PROCESS"
+        || normalized_status.contains("FAILEDTODELIVERED")
+        || normalized_status.contains("DELIVERYRUNSHEET")
+        || normalized_status.starts_with("DELIVERED");
+
+    if !belongs_to_delivery_flow {
+        return;
+    }
+
+    status_akhir.location = history_summary
+        .delivery_runsheet
+        .iter()
+        .enumerate()
+        .filter_map(|(index, runsheet)| {
+            let location = runsheet
+                .lokasi
+                .as_deref()
+                .map(str::trim)
+                .filter(|location| !location.is_empty())?;
+            Some((
+                (latest_runsheet_activity(runsheet), index),
+                location.to_string(),
+            ))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0))
+        .map(|(_, location)| location);
+}
+
+fn latest_runsheet_activity(runsheet: &DeliveryRunsheetSummary) -> Option<String> {
+    std::iter::once(history_timestamp_key(
+        runsheet.tanggal.as_deref(),
+        runsheet.waktu.as_deref(),
+    ))
+    .chain(
+        runsheet.updates.iter().map(|update| {
+            history_timestamp_key(update.tanggal.as_deref(), update.waktu.as_deref())
+        }),
+    )
+    .flatten()
+    .max()
+}
+
+fn history_timestamp_key(date: Option<&str>, time: Option<&str>) -> Option<String> {
+    let date = date?.trim();
+    if date.is_empty() {
+        return None;
+    }
+
+    Some(format!("{date} {}", time.unwrap_or_default().trim()))
 }
 
 fn parse_irregularity_detail(
@@ -1996,6 +2067,88 @@ mod tests {
         );
         assert_eq!(response.status_akhir.date.as_deref(), Some("2026-06-15"));
         assert_eq!(response.status_akhir.time.as_deref(), Some("09:03:42"));
+    }
+
+    #[test]
+    fn parse_tracking_html_fills_missing_final_location_from_latest_runsheet() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2605060061264</td></tr>
+              <tr><td>Status Akhir</td><td>ON PROCESS di oleh (Enos Nasarenus Okomsaru / 560009780) Tanggal : 2026-07-30 00:01:11</td></tr>
+            </table>
+            <table>
+              <tr><td>TANGGAL UPDATE</td><td>DETAIL HISTORY</td></tr>
+              <tr>
+                <td>2026-07-29 08:57:58</td>
+                <td>Barang P2605060061264 anda telah melewati proses DeliveryRunsheet oleh Akbar di DC JAYAPURA 9910A dan diterima oleh Enos Nasarenus Okomsaru (560009780)</td>
+              </tr>
+              <tr>
+                <td>2026-07-30 00:01:12</td>
+                <td>Proses antaran P2605060061264 telah diupdate oleh SYSTEM dengan status failed by system 00:01</td>
+              </tr>
+              <tr>
+                <td>2026-05-11 08:39:48</td>
+                <td>Barang P2605060061264 anda telah melewati proses DeliveryRunsheet oleh Akbar di DC ABEPURA 9910B dan diterima oleh Kurir Lama</td>
+              </tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("missing final location should use the latest runsheet location");
+
+        assert_eq!(response.status_akhir.status.as_deref(), Some("ON PROCESS"));
+        assert_eq!(
+            response.status_akhir.location.as_deref(),
+            Some("DC JAYAPURA 9910A")
+        );
+    }
+
+    #[test]
+    fn parse_tracking_html_does_not_overwrite_reported_final_location() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2605060061264</td></tr>
+              <tr><td>Status Akhir</td><td>ON PROCESS di DC SENTANI 99352 oleh (Current Courier / 123) Tanggal : 2026-07-30 00:01:11</td></tr>
+            </table>
+            <table>
+              <tr><td>TANGGAL UPDATE</td><td>DETAIL HISTORY</td></tr>
+              <tr>
+                <td>2026-07-29 08:57:58</td>
+                <td>Barang P2605060061264 anda telah melewati proses DeliveryRunsheet oleh Akbar di DC JAYAPURA 9910A dan diterima oleh Enos Nasarenus Okomsaru</td>
+              </tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("reported final location should remain authoritative");
+
+        assert_eq!(
+            response.status_akhir.location.as_deref(),
+            Some("DC SENTANI 99352")
+        );
+    }
+
+    #[test]
+    fn parse_tracking_html_does_not_reuse_runsheet_location_for_unrelated_status() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2605060061264</td></tr>
+              <tr><td>Status Akhir</td><td>INLOCATION di oleh (SYSTEM / 123) Tanggal : 2026-07-30 00:01:11</td></tr>
+            </table>
+            <table>
+              <tr><td>TANGGAL UPDATE</td><td>DETAIL HISTORY</td></tr>
+              <tr>
+                <td>2026-05-11 08:39:48</td>
+                <td>Barang P2605060061264 anda telah melewati proses DeliveryRunsheet oleh Akbar di DC JAYAPURA 9910A dan diterima oleh Kurir Lama</td>
+              </tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("unrelated status must not inherit a stale runsheet location");
+
+        assert_eq!(response.status_akhir.status.as_deref(), Some("INLOCATION"));
+        assert_eq!(response.status_akhir.location, None);
     }
 
     #[test]

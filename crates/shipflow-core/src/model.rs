@@ -226,10 +226,28 @@ pub struct BaggingUnbaggingEvent {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BaggingEvent {
+    pub petugas: Option<String>,
+    pub lokasi: Option<String>,
+    pub tujuan: Option<String>,
+    pub tanggal: Option<String>,
+    pub waktu: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BaggingUnbaggingSummary {
     pub nomor_kantung: String,
-    pub bagging: Option<BaggingUnbaggingEvent>,
+    pub bagging: Option<BaggingEvent>,
     pub unbagging: Option<BaggingUnbaggingEvent>,
+    pub unbagging_sesuai_tujuan: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct BagRoute {
+    pub nomor_kantung: String,
+    pub lokasi_asal: Option<String>,
+    pub tujuan: Option<String>,
+    pub url: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

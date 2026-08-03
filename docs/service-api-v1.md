@@ -312,6 +312,30 @@ The `data` object is the same normalized response shape returned through Desktop
 
 For the internal POS scraper, `detail_lacak_banyak.php` remains the primary tracking source for shipment status, SLA, history, POD, bagging, manifest, delivery, names, and addresses. ShipFlow Service may call `https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=<shipment_id>` only as a best-effort contact enrichment source for missing sender/recipient phone numbers. `lacak-mitra` data must not overwrite primary tracking fields.
 
+Bagging history may also receive best-effort route enrichment from the POS Mile bag label. The first successful lookup for a normalized bag ID is stored persistently in `bag-route-store.sqlite3`; later shipments referencing the same bag use the cached route without calling the label endpoint again. A label lookup failure never fails the primary tracking response, and failed lookups are retried only after a short negative-cache window.
+
+```json
+{
+  "nomor_kantung": "PID96722106",
+  "bagging": {
+    "petugas": "Sokrates Wanggai (985478998dm)",
+    "lokasi": "KCU JAYAPURA 99000",
+    "tujuan": "DC JAYAPURA 9910A",
+    "tanggal": "2026-05-06",
+    "waktu": "17:34:53"
+  },
+  "unbagging": {
+    "petugas": "Akbar (985478901)",
+    "lokasi": "DC JAYAPURA 9910A",
+    "tanggal": "2026-05-07",
+    "waktu": "09:41:20"
+  },
+  "unbagging_sesuai_tujuan": true
+}
+```
+
+`bagging.tujuan` is the expected destination printed when the bag was created. `unbagging.lokasi` remains the actual unbagging office. `unbagging_sesuai_tujuan` is `true` when their normalized office codes match, `false` when they differ, and `null` when either side is unavailable.
+
 Tracking responses may include optional contact enrichment metadata:
 
 ```json
@@ -330,6 +354,12 @@ Supported enrichment statuses are `cache_hit`, `fetched`, `missing`, `failed`, a
 Tracking responses also include additive shipment identity and history-derived
 multi-koli metadata. Existing `detail`, `status_akhir`, `pod`, `history`, and
 `history_summary` fields keep their original shape and source semantics.
+
+`status_akhir.location` keeps the location reported by the primary source when
+present. If the primary source omits the location for a delivery-flow status,
+ShipFlow fills it with the most recent relevant DeliveryRunsheet location. This
+is the last known operational location, not a real-time physical or GPS
+position. Unrelated historical DeliveryRunsheet locations are not reused.
 
 ```json
 {

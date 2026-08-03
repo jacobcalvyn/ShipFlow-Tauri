@@ -1,4 +1,5 @@
 pub mod bag;
+pub mod bag_route;
 pub mod manifest;
 pub mod model;
 pub mod parser;
