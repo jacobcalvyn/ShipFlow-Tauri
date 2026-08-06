@@ -14,6 +14,23 @@ use crate::upstream::resolve_pos_href;
 
 const MAX_TRACKING_TABLE_ROWS: usize = 10_000;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CanonicalDeliveryStatus {
+    Delivered,
+    FailedToDelivered,
+    OnProcess,
+}
+
+impl CanonicalDeliveryStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Delivered => "DELIVERED",
+            Self::FailedToDelivered => "FAILEDTODELIVERED",
+            Self::OnProcess => "ON PROCESS",
+        }
+    }
+}
+
 #[derive(Default)]
 struct ProsesAntaranDetail {
     petugas: Option<String>,
@@ -1263,11 +1280,10 @@ fn build_history_summary(
 
         if lower.contains("proses antaran") {
             let antaran_detail = parse_proses_antaran_status(&entry.detail_history);
-            let inferred_status = infer_delivery_update_status(status_akhir, &antaran_detail);
             let koordinat = extract_coordinate(&entry.detail_history);
             let update = DeliveryRunsheetUpdate {
                 petugas: antaran_detail.petugas,
-                status: antaran_detail.status.or(inferred_status),
+                status: antaran_detail.status,
                 keterangan_status: antaran_detail.keterangan_status,
                 tanggal: tanggal.clone(),
                 waktu: waktu.clone(),
@@ -1292,10 +1308,40 @@ fn build_history_summary(
             });
             current_delivery_idx = Some(delivery_runsheet.len() - 1);
             matched_any = true;
-        } else if lower.contains("delivered") {
+        } else if let Some(delivered_detail) =
+            parse_successful_delivery_status(&entry.detail_history)
+        {
+            let update = DeliveryRunsheetUpdate {
+                petugas: delivered_detail.petugas,
+                status: delivered_detail.status,
+                keterangan_status: delivered_detail.keterangan_status,
+                tanggal: tanggal.clone(),
+                waktu: waktu.clone(),
+                koordinat: extract_coordinate(&entry.detail_history),
+            };
+
+            if let Some(idx) = current_delivery_idx {
+                if let Some(summary) = delivery_runsheet.get_mut(idx) {
+                    summary.updates = vec![update];
+                    continue;
+                }
+            }
+
+            delivery_runsheet.push(DeliveryRunsheetSummary {
+                petugas_mandor: None,
+                petugas_kurir: None,
+                lokasi: None,
+                tanggal: None,
+                waktu: None,
+                koordinat: None,
+                updates: vec![update],
+            });
+            current_delivery_idx = Some(delivery_runsheet.len() - 1);
+            matched_any = true;
+        } else if lower.contains("delivered") && !lower.contains("failedtodelivered") {
             let update = DeliveryRunsheetUpdate {
                 petugas: None,
-                status: Some(normalize_text(&entry.detail_history)),
+                status: Some(CanonicalDeliveryStatus::Delivered.as_str().into()),
                 keterangan_status: None,
                 tanggal: tanggal.clone(),
                 waktu: waktu.clone(),
@@ -1325,8 +1371,7 @@ fn build_history_summary(
                         .status
                         .as_deref()
                         .unwrap_or("")
-                        .to_lowercase()
-                        .contains("delivered")
+                        .eq_ignore_ascii_case(CanonicalDeliveryStatus::Delivered.as_str())
                 });
 
                 if !has_delivered {
@@ -1673,21 +1718,6 @@ fn parse_manifest_r7_detail(
     (nomor_r7, petugas, lokasi, tujuan)
 }
 
-fn infer_delivery_update_status(
-    status_akhir: &TrackStatusAkhir,
-    antaran_detail: &ProsesAntaranDetail,
-) -> Option<String> {
-    if antaran_detail.status.is_some() {
-        return None;
-    }
-
-    if antaran_detail.keterangan_status.is_some() {
-        return status_akhir.status.clone();
-    }
-
-    None
-}
-
 fn parse_proses_antaran_status(raw: &str) -> ProsesAntaranDetail {
     let text = raw.trim();
     let lower = text.to_lowercase();
@@ -1713,6 +1743,27 @@ fn parse_proses_antaran_status(raw: &str) -> ProsesAntaranDetail {
         }
     }
 
+    if let Some(idx) = lower.find("dengan status ") {
+        let start = idx + "dengan status ".len();
+        let rest = text[start..].trim_start();
+        let mut end = rest.len();
+        if let Some(idx_time) = rest.find(|ch: char| ch.is_ascii_digit()) {
+            end = idx_time;
+        } else if let Some(idx_comma) = rest.find(',') {
+            end = idx_comma;
+        } else if let Some(idx_bracket) = rest.find('[') {
+            end = idx_bracket;
+        }
+        let value = rest[..end].trim();
+        if !value.is_empty() {
+            return ProsesAntaranDetail {
+                petugas,
+                status: Some(value.to_string()),
+                keterangan_status: None,
+            };
+        }
+    }
+
     if let Some(idx) = lower.find("dengan keterangan (") {
         let start = idx + "dengan keterangan (".len();
         if let Some(end_rel) = text[start..].find(')') {
@@ -1720,7 +1771,8 @@ fn parse_proses_antaran_status(raw: &str) -> ProsesAntaranDetail {
             if !value.is_empty() {
                 return ProsesAntaranDetail {
                     petugas,
-                    status: None,
+                    status: classify_delivery_description(value)
+                        .map(|status| status.as_str().to_string()),
                     keterangan_status: Some(value.to_string()),
                 };
             }
@@ -1755,6 +1807,96 @@ fn parse_proses_antaran_status(raw: &str) -> ProsesAntaranDetail {
     }
 }
 
+fn parse_successful_delivery_status(raw: &str) -> Option<ProsesAntaranDetail> {
+    let text = raw.trim();
+    let lower = text.to_lowercase();
+    let delivered_key = "telah diantar oleh ";
+    let recipient_key = " dan diterima oleh ";
+    let delivered_idx = lower.find(delivered_key)?;
+
+    if lower.contains("gagal diantar") || lower.contains("gagal antar") {
+        return None;
+    }
+
+    let courier_start = delivered_idx + delivered_key.len();
+    let after_courier_lower = &lower[courier_start..];
+    let recipient_relative_idx = after_courier_lower.find(recipient_key)?;
+    let courier = text[courier_start..courier_start + recipient_relative_idx].trim();
+    let recipient_start = courier_start + recipient_relative_idx + recipient_key.len();
+    let recipient_detail = text[recipient_start..].trim();
+    let description = extract_trailing_parenthesized_value(recipient_detail);
+
+    Some(ProsesAntaranDetail {
+        petugas: (!courier.is_empty()).then(|| courier.to_string()),
+        status: Some(CanonicalDeliveryStatus::Delivered.as_str().into()),
+        keterangan_status: description,
+    })
+}
+
+fn extract_trailing_parenthesized_value(value: &str) -> Option<String> {
+    let end = value.rfind(')')?;
+    let start = value[..end].rfind('(')?;
+    let candidate = value[start + 1..end].trim();
+    (!candidate.is_empty()).then(|| candidate.to_string())
+}
+
+fn classify_delivery_description(description: &str) -> Option<CanonicalDeliveryStatus> {
+    let normalized = normalize_delivery_description(description);
+
+    match normalized.as_str() {
+        "DITERIMA YANG BERSANGKUTAN"
+        | "DITERIMA ORANG SERUMAH"
+        | "DITERIMA DENGAN SURAT KUASA"
+        | "DITERIMA SATPAM"
+        | "DITERIMA SEKRETARIS"
+        | "DITERIMA RESEPSIONIS"
+        | "DITERIMA REKAN KERJA"
+        | "DITERIMA PETUGAS MAILROOM"
+        | "DITERIMA PETUGAS POBOX"
+        | "KIRIMAN BUNTU"
+        | "DITERIMA LURAH/KEPALA DESA"
+        | "DITERIMA APARAT KELURAHAN/APARAT DESA"
+        | "DITERIMA PETUGAS POSRESTAN"
+        | "DITERIMA OLEH UT DAERAH" => Some(CanonicalDeliveryStatus::Delivered),
+        "YANG BERSANGKUTAN TIDAK DIKENAL"
+        | "KIRIMAN DITOLAK YANG BERSANGKUTAN"
+        | "RUMAH KOSONG"
+        | "YANG BERSANGKUTAN PINDAH"
+        | "KANTOR TUTUP"
+        | "YANG BERSANGKUTAN TIDAK DITEMPAT"
+        | "BENCANA ALAM"
+        | "TIDAK BERPENGHUNI (PERMANEN)"
+        | "RUMAH/ALAMAT TIDAK DITEMUKAN"
+        | "ALAMAT TIDAK DITEMUKAN"
+        | "YANG BERSANGKUTAN MENINGGAL DUNIA DENGAN AHLI WARIS"
+        | "YANG BERSANGKUTAN MENINGGAL DUNIA TANPA AHLI WARIS"
+        | "KIRIMAN DITOLAK LURAH/KEPALA DESA"
+        | "KIRIMAN DITOLAK APARAT KELURAHAN/APARAT DESA" => {
+            Some(CanonicalDeliveryStatus::FailedToDelivered)
+        }
+        "RUMAH KOSONG - ANTAR ULANG"
+        | "KANTOR TUTUP - ANTAR ULANG"
+        | "YANG BERSANGKUTAN TIDAK DITEMPAT - ANTAR ULANG"
+        | "BENCANA ALAM - ANTAR ULANG"
+        | "LUAR BATAS ANTAR - ANTARAN BERJADWAL"
+        | "RUMAH/ALAMAT BELUM DIKETEMUKAN - ANTAR ULANG"
+        | "YBS/ORANG SERUMAH TIDAK BERSEDIA FOTO DIRI/IDENTITAS"
+        | "SATPAM/RECEPTIONIST TIDAK BERSEDIA FOTO DIRI/IDENTITAS"
+        | "SEKRETARIS/REKAN KERJA TIDAK BERSEDIA FOTO DIRI/IDENTITAS"
+        | "PENERIMA TELAH DIKONFIRMASI - ANTAR ULANG" => Some(CanonicalDeliveryStatus::OnProcess),
+        _ => None,
+    }
+}
+
+fn normalize_delivery_description(description: &str) -> String {
+    normalize_text(description)
+        .to_ascii_uppercase()
+        .split('/')
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -1770,6 +1912,8 @@ mod tests {
         include_str!("../tests/fixtures/pos_tracking_reordered_tables.html");
     const RUNSHEET_FAILEDTODELIVERED_HTML: &str =
         include_str!("../tests/fixtures/pos_tracking_runsheet_failedtoddelivered.html");
+    const DELIVERY_STATUS_CATALOG_HTML: &str =
+        include_str!("../tests/fixtures/pos_tracking_delivery_status_catalog.html");
 
     #[test]
     fn parse_tracking_html_matches_track_response_shape() {
@@ -2220,6 +2364,141 @@ mod tests {
         assert_eq!(
             runsheet.updates[0].keterangan_status.as_deref(),
             Some("YANG BERSANGKUTAN TIDAK DITEMPAT")
+        );
+    }
+
+    #[test]
+    fn parse_tracking_html_classifies_each_delivery_attempt_without_final_status_leakage() {
+        let response = parse_tracking_html("https://example.test", DELIVERY_STATUS_CATALOG_HTML)
+            .expect("delivery attempt catalog sample should parse");
+
+        assert_eq!(response.status_akhir.status.as_deref(), Some("INLOCATION"));
+        assert_eq!(
+            response.status_akhir.location.as_deref(),
+            Some("KCP AIMAS 98418")
+        );
+        assert_eq!(
+            response.status_akhir.datetime.as_deref(),
+            Some("2026-08-06 14:07:21")
+        );
+
+        let runsheets = &response.history_summary.delivery_runsheet;
+        assert_eq!(runsheets.len(), 3);
+        assert_eq!(
+            runsheets[0].updates[0].status.as_deref(),
+            Some("ON PROCESS")
+        );
+        assert_eq!(
+            runsheets[0].updates[0].keterangan_status.as_deref(),
+            Some("RUMAH KOSONG - ANTAR ULANG")
+        );
+        assert_eq!(
+            runsheets[1].updates[0].status.as_deref(),
+            Some("FAILEDTODELIVERED")
+        );
+        assert_eq!(
+            runsheets[1].updates[0].keterangan_status.as_deref(),
+            Some("YANG BERSANGKUTAN TIDAK DIKENAL")
+        );
+        assert_eq!(
+            runsheets[2].updates[0].status.as_deref(),
+            Some("ON PROCESS")
+        );
+        assert_eq!(
+            runsheets[2].updates[0].keterangan_status.as_deref(),
+            Some("PENERIMA TELAH DIKONFIRMASI - ANTAR ULANG")
+        );
+    }
+
+    #[test]
+    fn parse_tracking_html_keeps_unknown_delivery_description_without_guessing_status() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2608010099999</td></tr>
+              <tr><td>Status Akhir</td><td>INLOCATION di KCP AIMAS 98418 Tanggal : 2026-08-06 14:07:21</td></tr>
+            </table>
+            <table>
+              <tr><td>TANGGAL UPDATE</td><td>DETAIL HISTORY</td></tr>
+              <tr>
+                <td>2026-08-06 13:03:00</td>
+                <td>Barang P2608010099999 anda telah melewati proses DeliveryRunsheet oleh Mandor di KCP AIMAS 98418 dan diterima oleh Kurir</td>
+              </tr>
+              <tr>
+                <td>2026-08-06 13:46:43</td>
+                <td>Proses antaran P2608010099999 oleh Kurir dengan keterangan (ALASAN BARU DARI POS)</td>
+              </tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("unknown delivery description should remain parseable");
+        let update = &response.history_summary.delivery_runsheet[0].updates[0];
+
+        assert_eq!(update.status, None);
+        assert_eq!(
+            update.keterangan_status.as_deref(),
+            Some("ALASAN BARU DARI POS")
+        );
+        assert_eq!(response.status_akhir.status.as_deref(), Some("INLOCATION"));
+    }
+
+    #[test]
+    fn parse_tracking_html_preserves_explicit_delivery_update_status() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2608010088888</td></tr>
+              <tr><td>Status Akhir</td><td>ON PROCESS di KCP AIMAS 98418 Tanggal : 2026-08-06 14:07:21</td></tr>
+            </table>
+            <table>
+              <tr><td>TANGGAL UPDATE</td><td>DETAIL HISTORY</td></tr>
+              <tr>
+                <td>2026-08-06 13:03:00</td>
+                <td>Barang P2608010088888 anda telah melewati proses DeliveryRunsheet oleh Mandor di KCP AIMAS 98418 dan diterima oleh Kurir</td>
+              </tr>
+              <tr>
+                <td>2026-08-06 13:46:43</td>
+                <td>Proses antaran P2608010088888 telah diupdate oleh SYSTEM dengan status failed by system 13:46</td>
+              </tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("explicit delivery status should remain authoritative");
+        let update = &response.history_summary.delivery_runsheet[0].updates[0];
+
+        assert_eq!(update.status.as_deref(), Some("failed by system"));
+        assert_eq!(update.keterangan_status, None);
+    }
+
+    #[test]
+    fn parse_tracking_html_extracts_successful_delivery_description() {
+        let html = r#"
+            <table>
+              <tr><td>Nomor Kiriman</td><td>P2608010077777</td></tr>
+              <tr><td>Status Akhir</td><td>DELIVERED di KCP AIMAS 98418 Tanggal : 2026-08-06 14:07:21</td></tr>
+            </table>
+            <table>
+              <tr><td>TANGGAL UPDATE</td><td>DETAIL HISTORY</td></tr>
+              <tr>
+                <td>2026-08-06 13:03:00</td>
+                <td>Barang P2608010077777 anda telah melewati proses DeliveryRunsheet oleh Mandor di KCP AIMAS 98418 dan diterima oleh Kurir</td>
+              </tr>
+              <tr>
+                <td>2026-08-06 13:46:43</td>
+                <td>Barang anda P2608010077777 telah diantar oleh Kurir dan diterima oleh Amanda (DITERIMA YANG BERSANGKUTAN)</td>
+              </tr>
+            </table>
+        "#;
+
+        let response = parse_tracking_html("https://example.test", html)
+            .expect("successful delivery description should parse");
+        let update = &response.history_summary.delivery_runsheet[0].updates[0];
+
+        assert_eq!(update.petugas.as_deref(), Some("Kurir"));
+        assert_eq!(update.status.as_deref(), Some("DELIVERED"));
+        assert_eq!(
+            update.keterangan_status.as_deref(),
+            Some("DITERIMA YANG BERSANGKUTAN")
         );
     }
 

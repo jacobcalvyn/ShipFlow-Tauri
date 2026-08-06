@@ -361,6 +361,21 @@ ShipFlow fills it with the most recent relevant DeliveryRunsheet location. This
 is the last known operational location, not a real-time physical or GPS
 position. Unrelated historical DeliveryRunsheet locations are not reused.
 
+Each `history_summary.delivery_runsheet[].updates[]` entry represents one
+delivery attempt. Its `status` is classified from that event's explicit status
+or `keterangan_status`; it is never copied from the shipment-level
+`status_akhir`. Known descriptions use these canonical event statuses:
+
+- `DELIVERED` for successful recipient descriptions such as `DITERIMA YANG BERSANGKUTAN`.
+- `FAILEDTODELIVERED` for completed failed attempts such as `YANG BERSANGKUTAN TIDAK DIKENAL` or `RUMAH KOSONG`.
+- `ON PROCESS` for retryable outcomes such as `RUMAH KOSONG - ANTAR ULANG` or `PENERIMA TELAH DIKONFIRMASI - ANTAR ULANG`.
+
+An explicit upstream event status, including values such as `failed by system`,
+remains unchanged. An unrecognized description remains available in
+`keterangan_status` while the event-local `status` is `null`; ShipFlow does not
+guess by using `status_akhir`. Delivery event `tanggal` and `waktu` retain the
+source timestamp text and are not converted to another timezone.
+
 ```json
 {
   "shipment_identity": {

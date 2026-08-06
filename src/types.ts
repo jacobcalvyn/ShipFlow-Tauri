@@ -125,6 +125,11 @@ export type ManifestR7Summary = {
 
 export type DeliveryRunsheetUpdate = {
   petugas?: string;
+  /**
+   * Event-local delivery status. Known descriptions are normalized to
+   * DELIVERED, FAILEDTODELIVERED, or ON PROCESS; explicit upstream values are
+   * preserved and unknown descriptions remain unset.
+   */
   status?: string;
   keterangan_status?: string;
   tanggal?: string;

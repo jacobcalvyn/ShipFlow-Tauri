@@ -539,8 +539,40 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                         },
                         "delivery_runsheet": {
                             "type": "array",
-                            "items": { "type": "object", "additionalProperties": true }
+                            "items": { "$ref": "#/components/schemas/DeliveryRunsheetSummary" }
                         }
+                    }
+                },
+                "DeliveryRunsheetSummary": {
+                    "type": "object",
+                    "required": ["petugas_mandor", "petugas_kurir", "lokasi", "tanggal", "waktu", "koordinat", "updates"],
+                    "properties": {
+                        "petugas_mandor": { "type": ["string", "null"] },
+                        "petugas_kurir": { "type": ["string", "null"] },
+                        "lokasi": { "type": ["string", "null"] },
+                        "tanggal": { "type": ["string", "null"] },
+                        "waktu": { "type": ["string", "null"] },
+                        "koordinat": { "type": ["string", "null"] },
+                        "updates": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/DeliveryRunsheetUpdate" }
+                        }
+                    }
+                },
+                "DeliveryRunsheetUpdate": {
+                    "type": "object",
+                    "required": ["petugas", "status", "keterangan_status", "tanggal", "waktu", "koordinat"],
+                    "description": "One delivery-attempt update. Status is derived from this event only and is never copied from status_akhir. Known descriptions normalize to DELIVERED, FAILEDTODELIVERED, or ON PROCESS. Explicit upstream statuses remain unchanged; an unknown description produces null status while keterangan_status is preserved.",
+                    "properties": {
+                        "petugas": { "type": ["string", "null"] },
+                        "status": {
+                            "type": ["string", "null"],
+                            "description": "Event-local status. Inferred values are DELIVERED, FAILEDTODELIVERED, and ON PROCESS; explicit upstream values may also appear."
+                        },
+                        "keterangan_status": { "type": ["string", "null"] },
+                        "tanggal": { "type": ["string", "null"] },
+                        "waktu": { "type": ["string", "null"] },
+                        "koordinat": { "type": ["string", "null"] }
                     }
                 },
                 "BaggingUnbaggingSummary": {
@@ -1024,6 +1056,28 @@ mod tests {
             document["components"]["schemas"]["Diagnostics"]["properties"]["bagRouteCache"]["$ref"],
             "#/components/schemas/BagRouteCacheDiagnostics"
         );
+    }
+
+    #[test]
+    fn documents_event_local_delivery_attempt_status() {
+        let document = service_openapi_document(18422, false);
+
+        assert_eq!(
+            document["components"]["schemas"]["HistorySummary"]["properties"]["delivery_runsheet"]
+                ["items"]["$ref"],
+            "#/components/schemas/DeliveryRunsheetSummary"
+        );
+        assert_eq!(
+            document["components"]["schemas"]["DeliveryRunsheetSummary"]["properties"]["updates"]
+                ["items"]["$ref"],
+            "#/components/schemas/DeliveryRunsheetUpdate"
+        );
+        let description = document["components"]["schemas"]["DeliveryRunsheetUpdate"]
+            ["description"]
+            .as_str()
+            .expect("delivery attempt contract should be documented");
+        assert!(description.contains("never copied from status_akhir"));
+        assert!(description.contains("unknown description produces null status"));
     }
 
     #[test]
