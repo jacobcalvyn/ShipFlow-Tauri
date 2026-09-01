@@ -93,6 +93,11 @@ pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackRespons
                 performance.sla_days = sla_detail.sla_days;
             }
             "BOOKING CODE" => header.booking_code = Some(value),
+            "KANTOR KIRIMAN" => {
+                let (nama_kantor, id_kantor) = parse_kantor_header_value(&value);
+                origin.nama_kantor = nama_kantor;
+                origin.id_kantor = id_kantor;
+            }
             "IDPELANGGAN KORPORAT" => header.id_pelanggan_korporat = Some(value),
             "TYPE PEMBAYARAN" => billing.type_pembayaran = Some(value),
             "JENIS LAYANAN" => package.jenis_layanan = Some(value),
@@ -299,7 +304,13 @@ pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackRespons
             .to_lowercase()
             .contains("connote telah dibuat oleh")
     }) {
-        origin = parse_kantor_kiriman_detail(entry);
+        let from_history = parse_kantor_kiriman_detail(entry);
+        origin.tanggal = from_history.tanggal.or(origin.tanggal);
+        origin.waktu = from_history.waktu.or(origin.waktu);
+        origin.nama_petugas = from_history.nama_petugas.or(origin.nama_petugas);
+        origin.id_petugas = from_history.id_petugas.or(origin.id_petugas);
+        origin.nama_kantor = origin.nama_kantor.or(from_history.nama_kantor);
+        origin.id_kantor = origin.id_kantor.or(from_history.id_kantor);
     }
 
     let history_summary = build_history_summary(&history, &status_akhir, &pod);
@@ -955,23 +966,43 @@ fn parse_contact(raw: &str) -> ContactDetail {
     }
 }
 
+fn parse_kantor_header_value(raw: &str) -> (Option<String>, Option<String>) {
+    let cleaned = normalize_text(raw)
+        .replace("(/)", "")
+        .replace("()", "")
+        .trim()
+        .to_string();
+    if cleaned.is_empty() {
+        return (None, None);
+    }
+
+    let parts: Vec<&str> = cleaned.split_whitespace().collect();
+    if let Some(last) = parts.last() {
+        if last.len() < 10 && last.chars().any(|ch| ch.is_ascii_digit()) {
+            let nama = parts[..parts.len() - 1].join(" ");
+            return (
+                (!nama.is_empty()).then_some(nama),
+                Some((*last).to_string()),
+            );
+        }
+    }
+
+    (Some(cleaned), None)
+}
+
 fn parse_kantor_kiriman_detail(entry: &TrackHistoryEntry) -> OriginDetail {
     let mut detail = OriginDetail::default();
     let (tanggal, waktu) = split_datetime(&entry.tanggal_update);
     detail.tanggal = tanggal;
     detail.waktu = waktu;
 
-    let raw = &entry.detail_history;
-    if !raw.to_lowercase().starts_with("connote telah dibuat oleh") {
+    let raw = entry.detail_history.trim();
+    let lower = raw.to_ascii_lowercase();
+    const PREFIX: &str = "connote telah dibuat oleh";
+    let Some(prefix_index) = lower.find(PREFIX) else {
         return detail;
-    }
-
-    let after_prefix = raw
-        .trim()
-        .strip_prefix("Connote telah dibuat oleh ")
-        .or_else(|| raw.trim().strip_prefix("Connote telah dibuat oleh"))
-        .unwrap_or(raw)
-        .trim();
+    };
+    let after_prefix = raw[prefix_index + PREFIX.len()..].trim();
 
     let (petugas_part, lokasi_part) = after_prefix
         .split_once(" di lokasi ")
@@ -1037,7 +1068,12 @@ fn parse_status_akhir(raw: &str) -> StatusAkhirParts {
         }
         &rem_after_di[idx_oleh + " oleh".len()..]
     } else {
-        rem_after_di
+        let loc_end = status_location_end_index(rem_after_di);
+        let loc = rem_after_di[..loc_end].trim();
+        if !loc.is_empty() {
+            location = Some(loc.to_string());
+        }
+        rem_after_di[loc_end..].trim_start()
     };
 
     let mut officer_name = None;
@@ -1059,6 +1095,12 @@ fn parse_status_akhir(raw: &str) -> StatusAkhirParts {
                     officer_id = Some(parts[1].clone());
                 }
             }
+        }
+    }
+    if officer_name.is_none() {
+        if let Some((name, id)) = parse_bracket_officer(after_location) {
+            officer_name = name;
+            officer_id = id;
         }
     }
 
@@ -1552,10 +1594,10 @@ fn parse_oleh_di(raw: &str) -> (Option<String>, Option<String>) {
             let after_di_lower = &lower[start_di..];
 
             let mut end_loc = after_di.len();
-            if let Some(idx_stop) = after_di_lower.find(" dan diterima oleh ") {
+            if let Some((idx_stop, _)) = find_diterima_oleh(after_di_lower) {
                 end_loc = idx_stop;
-            } else if let Some(idx_comma) = after_di.find(',') {
-                end_loc = idx_comma;
+            } else if let Some(idx_coord) = find_bare_coordinate_offset(after_di) {
+                end_loc = idx_coord;
             } else if let Some(idx_bracket) = after_di.find('[') {
                 end_loc = idx_bracket;
             }
@@ -1614,14 +1656,12 @@ fn extract_coordinate(raw: &str) -> Option<String> {
 fn extract_diterima_oleh(raw: &str) -> Option<String> {
     let text = raw.trim();
     let lower = text.to_lowercase();
-    let key = " dan diterima oleh ";
-    let idx = lower.find(key)?;
-    let start = idx + key.len();
-    let after = &text[start..];
+    let (_, name_start) = find_diterima_oleh(&lower)?;
+    let after = &text[name_start..];
 
     let mut end = after.len();
-    if let Some(idx_comma) = after.find(',') {
-        end = idx_comma;
+    if let Some(idx_coord) = find_bare_coordinate_offset(after) {
+        end = idx_coord;
     } else if let Some(idx_bracket) = after.find('[') {
         end = idx_bracket;
     }
@@ -1631,6 +1671,89 @@ fn extract_diterima_oleh(raw: &str) -> Option<String> {
         None
     } else {
         Some(value.to_string())
+    }
+}
+
+fn find_diterima_oleh(lower: &str) -> Option<(usize, usize)> {
+    const WITH_DAN: &str = " dan diterima oleh ";
+    const WITHOUT_DAN: &str = " diterima oleh ";
+    const AT_START: &str = "diterima oleh ";
+
+    if let Some(index) = lower.find(WITH_DAN) {
+        return Some((index, index + WITH_DAN.len()));
+    }
+    if let Some(index) = lower.find(WITHOUT_DAN) {
+        return Some((index, index + WITHOUT_DAN.len()));
+    }
+    if lower.starts_with(AT_START) {
+        return Some((0, AT_START.len()));
+    }
+    None
+}
+
+fn find_bare_coordinate_offset(text: &str) -> Option<usize> {
+    let mut search_from = 0;
+    while let Some(relative_comma) = text[search_from..].find(',') {
+        let comma_at = search_from + relative_comma;
+        let left = text[..comma_at].trim_end();
+        let right = text[comma_at + 1..].trim_start();
+        let left_token = left.rsplit(' ').next().unwrap_or("");
+        let right_token = right
+            .split(|ch: char| !(ch.is_ascii_digit() || ch == '.' || ch == '-'))
+            .next()
+            .unwrap_or("");
+        if looks_like_decimal_coordinate(left_token) && looks_like_decimal_coordinate(right_token) {
+            return Some(left.len().saturating_sub(left_token.len()));
+        }
+        search_from = comma_at + 1;
+    }
+    None
+}
+
+fn looks_like_decimal_coordinate(value: &str) -> bool {
+    let trimmed = value.trim().trim_start_matches('-');
+    let mut parts = trimmed.split('.');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(whole), Some(fraction), None) => {
+            !whole.is_empty()
+                && !fraction.is_empty()
+                && whole.bytes().all(|byte| byte.is_ascii_digit())
+                && fraction.bytes().all(|byte| byte.is_ascii_digit())
+        }
+        _ => false,
+    }
+}
+
+fn status_location_end_index(remainder: &str) -> usize {
+    let lower = remainder.to_ascii_lowercase();
+    let mut end = remainder.len();
+    if let Some(index) = remainder.find('[') {
+        end = index;
+    }
+    if let Some(index) = lower.find("tanggal") {
+        end = end.min(index);
+    }
+    end
+}
+
+fn parse_bracket_officer(raw: &str) -> Option<(Option<String>, Option<String>)> {
+    let start = raw.find('[')?;
+    let relative_end = raw[start + 1..].find(']')?;
+    let inside = raw[start + 1..start + 1 + relative_end].trim();
+    if inside.is_empty()
+        || extract_datetime_parts(inside).is_some()
+        || inside.to_ascii_lowercase().starts_with("coordinate")
+    {
+        return None;
+    }
+
+    let parts: Vec<String> = inside.split('/').map(normalize_text).collect();
+    let officer_name = parts.first().filter(|part| !part.is_empty()).cloned();
+    let officer_id = parts.get(1).filter(|part| !part.is_empty()).cloned();
+    if officer_name.is_none() && officer_id.is_none() {
+        None
+    } else {
+        Some((officer_name, officer_id))
     }
 }
 
@@ -1779,6 +1902,38 @@ fn parse_proses_antaran_status(raw: &str) -> ProsesAntaranDetail {
         }
     }
 
+    if let Some(idx) = lower.find("dengan keterangan ") {
+        let start = idx + "dengan keterangan ".len();
+        let rest = text[start..].trim_start();
+        if !rest.is_empty() && !rest.starts_with('(') {
+            let mut end = rest.len();
+            let rest_lower = rest.to_ascii_lowercase();
+            if let Some(index) = rest_lower.find("[coordinate") {
+                end = end.min(index);
+            }
+            if let Some(index) = rest.find('[') {
+                end = end.min(index);
+            }
+            if let Some(index) = find_bare_coordinate_offset(rest) {
+                end = end.min(index);
+            }
+            for stopper in [" photo", " lihat photo", " view photo"] {
+                if let Some(index) = rest_lower.find(stopper) {
+                    end = end.min(index);
+                }
+            }
+            let value = strip_trailing_clock(rest[..end].trim());
+            if !value.is_empty() {
+                return ProsesAntaranDetail {
+                    petugas,
+                    status: classify_unbounded_delivery_keterangan(value)
+                        .map(|status| status.as_str().to_string()),
+                    keterangan_status: Some(value.to_string()),
+                };
+            }
+        }
+    }
+
     if let Some(idx) = lower.find("status") {
         let start = idx + "status".len();
         let rest = text[start..].trim_start();
@@ -1838,6 +1993,33 @@ fn extract_trailing_parenthesized_value(value: &str) -> Option<String> {
     let start = value[..end].rfind('(')?;
     let candidate = value[start + 1..end].trim();
     (!candidate.is_empty()).then(|| candidate.to_string())
+}
+
+fn classify_unbounded_delivery_keterangan(description: &str) -> Option<CanonicalDeliveryStatus> {
+    let normalized = description.to_ascii_lowercase();
+    if normalized.contains("gagal antar") || normalized.contains("gagal diantar") {
+        return Some(CanonicalDeliveryStatus::FailedToDelivered);
+    }
+    classify_delivery_description(description)
+}
+
+fn strip_trailing_clock(value: &str) -> &str {
+    let trimmed = value.trim();
+    let Some((prefix, suffix)) = trimmed.rsplit_once(' ') else {
+        return trimmed;
+    };
+    let suffix = suffix.trim();
+    let is_clock = matches!(suffix.len(), 4 | 5)
+        && suffix.as_bytes().get(suffix.len().saturating_sub(3)) == Some(&b':')
+        && suffix
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| index == suffix.len().saturating_sub(3) || byte.is_ascii_digit());
+    if is_clock {
+        prefix.trim()
+    } else {
+        trimmed
+    }
 }
 
 fn classify_delivery_description(description: &str) -> Option<CanonicalDeliveryStatus> {
@@ -1933,6 +2115,15 @@ mod tests {
         );
         assert_eq!(response.status_akhir.status.as_deref(), Some("INVEHICLE"));
         assert_eq!(
+            response.status_akhir.location.as_deref(),
+            Some("SPP JAYAPURA 99100")
+        );
+        assert_eq!(
+            response.detail.origin.nama_kantor.as_deref(),
+            Some("KCU JAKARTA FLORA")
+        );
+        assert_eq!(response.detail.origin.id_kantor.as_deref(), Some("12000"));
+        assert_eq!(
             response.pod.photo1_url.as_deref(),
             Some("https://apistorage.mile.app/v2-public/prod/pos/2026/04/13/sample-photo.jpg")
         );
@@ -1948,6 +2139,18 @@ mod tests {
         assert_eq!(
             response.history_summary.delivery_runsheet[0].updates.len(),
             1
+        );
+        assert_eq!(
+            response.history_summary.delivery_runsheet[0].updates[0]
+                .status
+                .as_deref(),
+            Some("FAILEDTODELIVERED")
+        );
+        assert_eq!(
+            response.history_summary.delivery_runsheet[0].updates[0]
+                .keterangan_status
+                .as_deref(),
+            Some("gagal antar")
         );
     }
 
@@ -2131,7 +2334,7 @@ mod tests {
 
         assert_eq!(
             digest,
-            "c6496ef83cb7f3864709e0f2cc0178de410b2697c43b61b52d39538cdc2e95b0"
+            "0dfccccf695c0c186d7e2fe9daeb47d7d46568531299bfb34cadfc57f928d8d8"
         );
     }
 
@@ -2166,6 +2369,20 @@ mod tests {
             runsheet.updates[0].keterangan_status.as_deref(),
             Some("YANG BERSANGKUTAN TIDAK DITEMPAT")
         );
+        assert_eq!(
+            response.status_akhir.location.as_deref(),
+            Some("DC ABEPURA 9910B")
+        );
+        assert_eq!(
+            response.status_akhir.officer_name.as_deref(),
+            Some("Kurir Abepura")
+        );
+        assert_eq!(
+            response.status_akhir.officer_id.as_deref(),
+            Some("560033538")
+        );
+        assert_eq!(runsheet.lokasi.as_deref(), Some("DC ABEPURA 9910B"));
+        assert_eq!(runsheet.petugas_kurir.as_deref(), Some("Kurir Abepura"));
     }
 
     #[test]

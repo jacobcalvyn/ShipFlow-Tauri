@@ -20,6 +20,7 @@ import {
   sanitizeTrackingPasteValues,
 } from "./utils";
 import { createDefaultSheetState } from "./default-state";
+import { createEngineRowSelectionKey } from "./selection-keys";
 
 function createRow(partial: Partial<SheetRow> = {}): SheetRow {
   return {
@@ -570,6 +571,18 @@ describe("sheet utils", () => {
 
     expect(() => assertValidSheetState(sheetState)).toThrow(
       "cannot be stale without a last-known-good shipment"
+    );
+  });
+
+  it("accepts canonical engine selection keys outside the React row mirror", () => {
+    const sheetState = createDefaultSheetState();
+    sheetState.selectedRowKeys = [createEngineRowSelectionKey("rust-row-900")];
+
+    expect(() => assertValidSheetState(sheetState)).not.toThrow();
+
+    sheetState.selectedRowKeys = ["engine:"];
+    expect(() => assertValidSheetState(sheetState)).toThrow(
+      "Selected row key engine: does not exist in sheet state."
     );
   });
 });

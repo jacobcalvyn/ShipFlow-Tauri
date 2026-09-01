@@ -14,6 +14,15 @@ import {
   getRawColumnValue,
   getRowStatus,
 } from "./utils";
+import {
+  createEngineRowSelectionKey,
+  getEngineRowIdFromSelectionKey,
+} from "./selection-keys";
+
+export {
+  createEngineRowSelectionKey,
+  getEngineRowIdFromSelectionKey,
+} from "./selection-keys";
 
 export type SheetTableRow = {
   key: string;
@@ -48,6 +57,11 @@ export type SheetTableRowTrackingEntry = {
   value: string;
   engineRowId?: string;
 };
+
+export function getTableRowSelectionKey(row: SheetTableRow) {
+  const engineRowId = row.engineRowId?.trim();
+  return engineRowId ? createEngineRowSelectionKey(engineRowId) : row.key;
+}
 
 const sheetTableRowRenderSignatureByObject = new WeakMap<
   SheetTableRow,
@@ -468,7 +482,7 @@ export function createSheetTableRowsFromRustWindow(
 export function getVisibleSelectableTableRowKeys(rows: SheetTableRow[]) {
   return rows
     .filter((row) => row.trackingInput.trim() !== "" || row.shipment !== null)
-    .map((row) => row.key);
+    .map(getTableRowSelectionKey);
 }
 
 function getSheetRowTrackingId(row: SheetRow) {
@@ -513,6 +527,10 @@ function isSelectableTableRowSelected(
   selectedRowKeySet: Set<string>,
   selectedTrackingIdSet: Set<string>
 ) {
+  if (selectedRowKeySet.has(getTableRowSelectionKey(row))) {
+    return true;
+  }
+
   if (selectedRowKeySet.has(row.key)) {
     return true;
   }
@@ -568,24 +586,83 @@ export function getSelectedTableRowKeySet(
 
 export function getSelectedTableRowTrackingIds(
   rows: SheetTableRow[],
-  selectedVisibleRowKeys: string[]
+  selectedRowKeys: string[],
+  sourceRows: SheetRow[] = []
 ) {
-  const selectedVisibleRowKeySet = new Set(selectedVisibleRowKeys);
-  return rows
-    .filter((row) => selectedVisibleRowKeySet.has(row.key))
-    .map((row) => row.trackingInput.trim())
-    .filter(Boolean);
+  const selectedRowKeySet = new Set(selectedRowKeys);
+  const trackingIds: string[] = [];
+  const seen = new Set<string>();
+
+  const pushUnique = (value: string) => {
+    if (!value || seen.has(value)) {
+      return;
+    }
+    seen.add(value);
+    trackingIds.push(value);
+  };
+
+  for (const row of rows) {
+    if (
+      selectedRowKeySet.has(getTableRowSelectionKey(row)) ||
+      selectedRowKeySet.has(row.key) ||
+      (row.engineRowId && selectedRowKeySet.has(row.engineRowId))
+    ) {
+      pushUnique(row.trackingInput.trim());
+    }
+  }
+
+  for (const row of sourceRows) {
+    if (selectedRowKeySet.has(row.key)) {
+      pushUnique(row.trackingInput.trim());
+    }
+  }
+
+  return trackingIds;
 }
 
 export function getSelectedTableRowEngineRowIds(
   rows: SheetTableRow[],
-  selectedVisibleRowKeys: string[]
+  selectedRowKeys: string[]
 ) {
-  const selectedVisibleRowKeySet = new Set(selectedVisibleRowKeys);
-  return rows
-    .filter((row) => selectedVisibleRowKeySet.has(row.key))
-    .map((row) => row.engineRowId?.trim() ?? "")
-    .filter(Boolean);
+  const selectedRowKeySet = new Set(selectedRowKeys);
+  const engineRowIds: string[] = [];
+  const seen = new Set<string>();
+  const representedKeys = new Set<string>();
+
+  const pushUnique = (value: string) => {
+    if (!value || seen.has(value)) {
+      return;
+    }
+    seen.add(value);
+    engineRowIds.push(value);
+  };
+
+  for (const row of rows) {
+    if (
+      selectedRowKeySet.has(getTableRowSelectionKey(row)) ||
+      selectedRowKeySet.has(row.key) ||
+      (row.engineRowId && selectedRowKeySet.has(row.engineRowId))
+    ) {
+      const engineRowId = row.engineRowId?.trim();
+      if (engineRowId) {
+        pushUnique(engineRowId);
+      }
+      representedKeys.add(row.key);
+      if (engineRowId) {
+        representedKeys.add(engineRowId);
+        representedKeys.add(createEngineRowSelectionKey(engineRowId));
+      }
+    }
+  }
+
+  for (const key of selectedRowKeys) {
+    const engineRowId = getEngineRowIdFromSelectionKey(key);
+    if (engineRowId && !representedKeys.has(key)) {
+      pushUnique(engineRowId);
+    }
+  }
+
+  return engineRowIds;
 }
 
 export function getAllTableRowTrackingIds(rows: SheetTableRow[]) {

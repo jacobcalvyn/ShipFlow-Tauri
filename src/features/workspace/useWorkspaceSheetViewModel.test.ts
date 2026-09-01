@@ -1386,7 +1386,7 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
         value: "RUST",
       },
     ]);
-    expect(result.current.visibleSelectableKeys).toEqual(["rust-row-1"]);
+    expect(result.current.visibleSelectableKeys).toEqual(["engine:rust-row-1"]);
   });
 
   it("keeps total shipment count unfiltered when filters narrow Rust rows", async () => {

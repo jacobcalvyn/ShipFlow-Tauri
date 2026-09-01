@@ -3594,7 +3594,7 @@ describe("App workspace isolation", () => {
     });
   });
 
-  it("clears hidden selections after deleting visible selected rows", async () => {
+  it("deletes selected rows even when a filter hides part of the selection", async () => {
     render(<App />);
 
     const [firstInput, secondInput] = screen.getAllByPlaceholderText("Masukkan ID");
@@ -3627,12 +3627,13 @@ describe("App workspace isolation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear Filter" }));
 
     await waitFor(() => {
-      expect(screen.getAllByDisplayValue("P801")[0]).toBeInTheDocument();
+      expect(screen.queryByDisplayValue("P800")).not.toBeInTheDocument();
+      expect(screen.queryByDisplayValue("P801")).not.toBeInTheDocument();
       expect(screen.getByText("0 row dipilih")).toBeInTheDocument();
     });
   });
 
-  it("drops hidden selections when filters hide selected rows", async () => {
+  it("preserves selected rows when filters hide part of the selection", async () => {
     render(<App />);
 
     const [firstInput, secondInput] = screen.getAllByPlaceholderText("Masukkan ID");
@@ -3661,13 +3662,13 @@ describe("App workspace isolation", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("1 row dipilih")).toBeInTheDocument();
+      expect(screen.getByText("2 row dipilih")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Clear Filter" }));
 
     await waitFor(() => {
-      expect(screen.getByText("1 row dipilih")).toBeInTheDocument();
+      expect(screen.getByText("2 row dipilih")).toBeInTheDocument();
     });
   });
 

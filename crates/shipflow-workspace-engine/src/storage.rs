@@ -590,6 +590,18 @@ impl SqliteWorkspaceStore {
         self.upsert_sheet_rows_atomic(&input.sheet_id, std::slice::from_ref(input), false)
     }
 
+    pub fn next_generated_sheet_row_id(
+        &self,
+        sheet_id: &str,
+        position: u32,
+    ) -> WorkspaceStoreResult<String> {
+        Ok(next_available_generated_sheet_row_id(
+            &self.connection,
+            sheet_id,
+            position,
+        )?)
+    }
+
     pub fn upsert_sheet_rows_atomic(
         &mut self,
         sheet_id: &str,
@@ -1225,6 +1237,27 @@ impl SqliteWorkspaceStore {
             .query_map(params![sheet_id], |row| row.get(0))?
             .collect::<Result<Vec<_>, rusqlite::Error>>()?;
         Ok(row_ids)
+    }
+
+    pub fn recover_interrupted_tracking_rows(&mut self) -> WorkspaceStoreResult<u32> {
+        let now = now_utc_text();
+        let changed = self.connection.execute(
+            r#"
+            UPDATE sheet_rows
+            SET row_status = 'failed',
+                error_message = 'Tracking was interrupted before completion.',
+                updated_at = ?1
+            WHERE row_status IN ('pending', 'loading')
+            "#,
+            params![now],
+        )?;
+        Ok(changed as u32)
+    }
+
+    pub fn current_local_date(&self) -> WorkspaceStoreResult<String> {
+        Ok(self
+            .connection
+            .query_row("SELECT date('now', 'localtime')", [], |row| row.get(0))?)
     }
 
     pub fn query_sheet_rows(
@@ -2999,7 +3032,7 @@ fn sheet_sort_column(field: &str) -> Option<&'static str> {
 }
 
 fn next_available_generated_sheet_row_id(
-    transaction: &Transaction<'_>,
+    connection: &Connection,
     sheet_id: &str,
     position: u32,
 ) -> rusqlite::Result<String> {
@@ -3010,7 +3043,7 @@ fn next_available_generated_sheet_row_id(
         } else {
             format!("{sheet_id}:row:{position}:{suffix}")
         };
-        let count = transaction.query_row(
+        let count = connection.query_row(
             "SELECT COUNT(*) FROM sheet_rows WHERE id = ?1",
             params![row_id],
             |row| row.get::<_, i64>(0),
@@ -5223,6 +5256,53 @@ mod tests {
         assert_eq!(
             attempts[0].error_message.as_deref(),
             Some("interrupted by shutdown")
+        );
+    }
+
+    #[test]
+    fn recovery_marks_interrupted_tracking_rows_as_failed() {
+        let mut store = prepared_store();
+        for (row_id, position, row_status) in [
+            ("pending-row", 0, SheetRowStatus::Pending),
+            ("loading-row", 1, SheetRowStatus::Loading),
+            ("loaded-row", 2, SheetRowStatus::Loaded),
+        ] {
+            store
+                .upsert_sheet_row(&UpsertSheetRowInput {
+                    row_id: row_id.to_string(),
+                    sheet_id: "sheet-1".to_string(),
+                    position,
+                    display_tracking_id: row_id.to_string(),
+                    lookup_tracking_id: row_id.to_string(),
+                    row_status,
+                    error_message: None,
+                })
+                .expect("tracking row is stored");
+        }
+
+        let recovered = store
+            .recover_interrupted_tracking_rows()
+            .expect("tracking recovery succeeds");
+
+        assert_eq!(recovered, 2);
+        for row_id in ["pending-row", "loading-row"] {
+            let row = store
+                .get_sheet_row(row_id)
+                .expect("recovered row loads")
+                .expect("recovered row exists");
+            assert_eq!(row.row_status, SheetRowStatus::Failed);
+            assert_eq!(
+                row.error_message.as_deref(),
+                Some("Tracking was interrupted before completion.")
+            );
+        }
+        assert_eq!(
+            store
+                .get_sheet_row("loaded-row")
+                .expect("loaded row lookup succeeds")
+                .expect("loaded row exists")
+                .row_status,
+            SheetRowStatus::Loaded
         );
     }
 

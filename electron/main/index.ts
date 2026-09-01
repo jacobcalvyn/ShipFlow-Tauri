@@ -257,6 +257,7 @@ const WORKSPACE_ONLY_COMMANDS = new Set<ShipFlowCommand>([
 ]);
 const ALLOWED_WORKSPACE_METHODS = new Set<ShipFlowWorkspaceRequest["method"]>([
   "workspace.command",
+  "workspace.cancel_import_preview",
   "workspace.run_import_job_with_progress",
   "workspace.retry_import_job_with_progress",
   "workspace.refresh_tracking_with_progress",

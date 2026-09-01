@@ -5,6 +5,7 @@ import type {
 } from "../workspace-engine/client";
 import { createEmptyRows } from "./utils";
 import {
+  createEngineRowSelectionKey,
   createSheetTableRowsFromSheetRows,
   createSheetTableRowsFromRustWindow,
   getLoadingTableRowCount,
@@ -106,6 +107,12 @@ describe("sheet table row view", () => {
     expect(getSelectedTableRowEngineRowIds(rows, ["legacy-visible-key"])).toEqual([
       "rust-row-1",
     ]);
+    expect(
+      getSelectedTableRowEngineRowIds(rows, [
+        "legacy-visible-key",
+        createEngineRowSelectionKey("rust-row-900"),
+      ])
+    ).toEqual(["rust-row-1", "rust-row-900"]);
   });
 
   it("builds shipment data from stringified Rust projection JSON", () => {

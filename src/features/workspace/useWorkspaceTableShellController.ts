@@ -1,6 +1,5 @@
 import { HIDDEN_COLUMNS_STORAGE_KEY, PINNED_COLUMNS_STORAGE_KEY, SELECTOR_COLUMN_WIDTH } from "../sheet/columns";
 import {
-  pruneSelectionToVisibleRowsInSheet,
   setHighlightedColumnInSheet,
   setOpenColumnMenuInSheet,
   stopSelectionFollowingVisibleRowsInSheet,
@@ -153,21 +152,6 @@ export function useWorkspaceTableShellController({
       syncSelectionWithVisibleRowsInSheet(current, visibleSelectableKeys)
     );
   }, [activeSheetSelectionFollowsVisibleRows, updateActiveSheet, visibleSelectableKeys]);
-
-  useEffect(() => {
-    if (activeSheetSelectionFollowsVisibleRows || isDisplayedRowsQueryPending) {
-      return;
-    }
-
-    updateActiveSheet((current) =>
-      pruneSelectionToVisibleRowsInSheet(current, visibleSelectableKeys)
-    );
-  }, [
-    activeSheetSelectionFollowsVisibleRows,
-    isDisplayedRowsQueryPending,
-    updateActiveSheet,
-    visibleSelectableKeys,
-  ]);
 
   const scrollToColumn = useCallback(
     (path: string) => {

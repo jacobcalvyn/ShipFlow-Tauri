@@ -544,18 +544,34 @@ where
             )
             .await;
 
-        if let Some(error) = storage_error {
-            return Err(error);
-        }
-
-        let missing_result_error = batch_result.err().unwrap_or_else(|| {
-            TrackingLookupFailure::new("tracking batch did not return a result")
-        });
+        let missing_result_error = storage_error
+            .as_ref()
+            .map(|error| TrackingLookupFailure::new(error.to_string()))
+            .or_else(|| batch_result.err())
+            .unwrap_or_else(|| {
+                TrackingLookupFailure::new("tracking batch did not return a result")
+            });
+        let fallback_rows_by_id = rows_by_lookup_id
+            .iter()
+            .flat_map(|(_, grouped_rows)| grouped_rows.iter())
+            .map(|row| (row.row_id.clone(), row.clone()))
+            .collect::<std::collections::HashMap<_, _>>();
         for (_, grouped_rows) in rows_by_lookup_id.into_iter() {
             for row in grouped_rows {
-                if let Some(row) =
-                    store_failed_tracking_lookup(self.store, &row, &missing_result_error)?
-                {
+                if terminal_row_ids.contains(&row.row_id) {
+                    continue;
+                }
+                let failed_row =
+                    match store_failed_tracking_lookup(self.store, &row, &missing_result_error) {
+                        Ok(row) => row,
+                        Err(error) => {
+                            if storage_error.is_none() {
+                                storage_error = Some(error);
+                            }
+                            Some(failed_tracking_projection(&row, &missing_result_error))
+                        }
+                    };
+                if let Some(row) = failed_row {
                     failed_count += 1;
                     let pending_count = total_count
                         .saturating_sub(success_count)
@@ -580,8 +596,33 @@ where
                 continue;
             }
 
-            let Some(current_row) = self.store.get_sheet_row(&row_id)? else {
-                continue;
+            let current_row = match self.store.get_sheet_row(&row_id) {
+                Ok(Some(row)) => row,
+                Ok(None) => continue,
+                Err(error) => {
+                    if storage_error.is_none() {
+                        storage_error = Some(error.into());
+                    }
+                    if let Some(row) = fallback_rows_by_id.get(&row_id) {
+                        let row = failed_tracking_projection(row, &missing_result_error);
+                        failed_count += 1;
+                        let pending_count = total_count
+                            .saturating_sub(success_count)
+                            .saturating_sub(failed_count);
+                        on_progress(TrackingRefreshProgressEvent {
+                            run_id: run_id.clone(),
+                            sheet_id: sheet_id.to_string(),
+                            row: row.clone(),
+                            total_count,
+                            success_count,
+                            failed_count,
+                            pending_count,
+                        });
+                        terminal_row_ids.insert(row.row_id.clone());
+                        rows.push(row);
+                    }
+                    continue;
+                }
             };
             if current_row.lookup_tracking_id != lookup_tracking_id
                 || current_row.row_generation != row_generation
@@ -595,9 +636,21 @@ where
                 continue;
             }
 
-            if let Some(row) =
-                store_failed_tracking_lookup(self.store, &current_row, &missing_result_error)?
-            {
+            let failed_row =
+                match store_failed_tracking_lookup(self.store, &current_row, &missing_result_error)
+                {
+                    Ok(row) => row,
+                    Err(error) => {
+                        if storage_error.is_none() {
+                            storage_error = Some(error);
+                        }
+                        Some(failed_tracking_projection(
+                            &current_row,
+                            &missing_result_error,
+                        ))
+                    }
+                };
+            if let Some(row) = failed_row {
                 failed_count += 1;
                 let pending_count = total_count
                     .saturating_sub(success_count)
@@ -624,6 +677,10 @@ where
             failed_count,
             rows.len()
         );
+
+        if let Some(error) = storage_error {
+            return Err(error);
+        }
 
         Ok(SheetRowsTrackingRefreshResult {
             run_id,
@@ -771,6 +828,16 @@ fn store_failed_tracking_lookup(
         current.lookup_tracking_id == row.lookup_tracking_id
             && current.row_generation == row.row_generation
     }))
+}
+
+fn failed_tracking_projection(
+    row: &SheetRowProjection,
+    error: &TrackingLookupFailure,
+) -> SheetRowProjection {
+    let mut failed = row.clone();
+    failed.row_status = SheetRowStatus::Failed;
+    failed.error_message = Some(error.message.clone());
+    failed
 }
 
 fn store_raw_response_blob(

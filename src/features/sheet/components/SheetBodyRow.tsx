@@ -17,7 +17,7 @@ import {
   LATEST_MANIFEST_COLUMN_PATH,
   TRACKING_COLUMN_PATH,
 } from "../columns";
-import type { SheetTableRow } from "../table-row-view";
+import { getTableRowSelectionKey, type SheetTableRow } from "../table-row-view";
 import { ColumnDefinition } from "../types";
 import { MAX_TRACKING_INPUT_LENGTH } from "../utils";
 import {
@@ -540,7 +540,7 @@ export const SheetBodyRow = memo(function SheetBodyRow({
         <input
           type="checkbox"
           checked={isSelected}
-          onChange={() => onToggleSelection(row.key)}
+          onChange={() => onToggleSelection(getTableRowSelectionKey(row))}
           aria-label={`Select row ${row.trackingInput || row.key}`}
         />
       </td>

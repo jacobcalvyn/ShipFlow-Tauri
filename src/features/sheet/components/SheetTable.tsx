@@ -13,6 +13,7 @@ import { ColumnHeaderCell } from "./ColumnHeaderCell";
 import { SheetBodyRow } from "./SheetBodyRow";
 import { canUseColumnTextFilter } from "../columns";
 import type { SheetTableRow } from "../table-row-view";
+import type { SheetRowsQuery } from "../../workspace-engine/client";
 import { ColumnDefinition, ValueFilterOption } from "../types";
 import { getColumnToneClass } from "../utils";
 
@@ -76,6 +77,7 @@ type SheetTableProps = {
     hasMore: boolean;
     nextOffset: number | null;
   } | null;
+  rowsQuery?: SheetRowsQuery | null;
   visibleColumns: ColumnDefinition[];
   hiddenColumns: ColumnDefinition[];
   columnWidths: Record<string, number>;
@@ -125,7 +127,18 @@ type SheetTableProps = {
     event: ClipboardEvent<HTMLInputElement>,
     sheetId: string,
     rowKey: string,
-    options?: { position?: number; engineRowId?: string }
+    options?: {
+      position?: number;
+      engineRowId?: string;
+      displayedRows?: Array<{
+        key: string;
+        position?: number;
+        engineRowId?: string;
+      }>;
+      nextAppendPosition?: number;
+      rowsQuery?: SheetRowsQuery;
+      queryOffset?: number;
+    }
   ) => void;
   onFilterChange: (path: string, value: string) => void;
   onResizeStart: (
@@ -148,6 +161,7 @@ export function SheetTable({
   displayScale,
   displayedTableRows,
   rowWindow = null,
+  rowsQuery = null,
   visibleColumns,
   hiddenColumns,
   columnWidths,
@@ -422,7 +436,37 @@ export function SheetTable({
               onTrackingInputChange={onTrackingInputChange}
               onTrackingInputBlur={onTrackingInputBlur}
               onTrackingInputKeyDown={onTrackingInputKeyDown}
-              onTrackingInputPaste={onTrackingInputPaste}
+              onTrackingInputPaste={(event, currentSheetId, rowKey, options) => {
+                const displayedRowIndex = displayedTableRows.findIndex(
+                  (displayedRow) => displayedRow.key === rowKey
+                );
+                let maxDisplayedPosition = -1;
+                for (const displayedRow of displayedTableRows) {
+                  if (
+                    typeof displayedRow.position === "number" &&
+                    displayedRow.position > maxDisplayedPosition
+                  ) {
+                    maxDisplayedPosition = displayedRow.position;
+                  }
+                }
+                const nextAppendPosition = Math.max(
+                  maxDisplayedPosition + 1,
+                  rowWindow?.totalCount ?? 0
+                );
+                onTrackingInputPaste(event, currentSheetId, rowKey, {
+                  ...options,
+                  displayedRows: displayedTableRows.map((displayedRow) => ({
+                    key: displayedRow.key,
+                    position: displayedRow.position,
+                    engineRowId: displayedRow.engineRowId,
+                  })),
+                  nextAppendPosition,
+                  ...(rowsQuery ? { rowsQuery } : {}),
+                  ...(displayedRowIndex >= 0
+                    ? { queryOffset: (rowWindow?.offset ?? 0) + displayedRowIndex }
+                    : {}),
+                });
+              }}
             />
           ))}
           {bottomSpacerHeight > 0 ? (

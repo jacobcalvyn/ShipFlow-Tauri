@@ -10,6 +10,7 @@ import {
   setTrackingInputInSheet,
 } from "../sheet/actions";
 import { SheetState } from "../sheet/types";
+import { createEngineRowSelectionKey } from "../sheet/table-row-view";
 import {
   getTrackingInputValidationError,
   createEmptyRow,
@@ -22,7 +23,9 @@ import {
   deleteSheetRows,
   refreshSheetRowTracking,
   refreshSheetRowsTrackingWithProgress,
+  querySheetRows,
   type SheetRowProjection,
+  type SheetRowsQuery,
   upsertSheetRows,
 } from "../workspace-engine/client";
 import {
@@ -90,6 +93,16 @@ function mergeBulkQueueEntries(
 }
 
 type TrackingRowContext = {
+  position?: number;
+  engineRowId?: string;
+  displayedRows?: BulkPasteDisplayedRow[];
+  nextAppendPosition?: number;
+  rowsQuery?: SheetRowsQuery;
+  queryOffset?: number;
+};
+
+export type BulkPasteDisplayedRow = {
+  key: string;
   position?: number;
   engineRowId?: string;
 };
@@ -202,34 +215,185 @@ function setTrackingDraftInputInSheet(
   );
 }
 
-function getProjectedBulkPasteRowKey(
-  sheetId: string,
-  startRowKey: string,
-  position: number,
-  offset: number
-) {
-  return offset === 0 ? startRowKey : `${sheetId}:row:${position + offset}`;
+function createPasteBatchId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export function applyProjectedBulkPasteDraftToSheet(
-  sheetState: SheetState,
-  sheetId: string,
-  startRowKey: string,
-  startPosition: number,
-  values: string[],
-  startEngineRowId?: string
-): { sheetState: SheetState; targetEntries: TrackingBulkPasteEntry[] } {
-  const nextRows = [...sheetState.rows];
-  const targetEntries = values.map((value, offset) => {
-    const engineRowId =
-      offset === 0 && startEngineRowId?.trim() ? startEngineRowId.trim() : "";
+function maxDisplayedPastePosition(
+  displayedRows: BulkPasteDisplayedRow[],
+  startPosition?: number
+) {
+  let maxPosition =
+    typeof startPosition === "number" && startPosition >= 0 ? startPosition : -1;
+  for (const row of displayedRows) {
+    if (typeof row.position === "number" && row.position > maxPosition) {
+      maxPosition = row.position;
+    }
+  }
+  return maxPosition;
+}
+
+export function createBulkPasteTargetEntries({
+  sheetId,
+  startRowKey,
+  values,
+  displayedRows,
+  startPosition,
+  startEngineRowId,
+  nextAppendPosition,
+}: {
+  sheetId: string;
+  startRowKey: string;
+  values: string[];
+  displayedRows: BulkPasteDisplayedRow[];
+  startPosition?: number;
+  startEngineRowId?: string;
+  nextAppendPosition?: number;
+}): TrackingBulkPasteEntry[] {
+  const startIndex = displayedRows.findIndex((row) => row.key === startRowKey);
+  const batchId = createPasteBatchId();
+  const fallbackAppendPosition = Math.max(
+    maxDisplayedPastePosition(displayedRows, startPosition) + 1,
+    typeof nextAppendPosition === "number" && nextAppendPosition >= 0
+      ? nextAppendPosition
+      : 0
+  );
+  let appendOffset = 0;
+
+  return values.map((value, offset) => {
+    const displayed = startIndex >= 0 ? displayedRows[startIndex + offset] : undefined;
+    if (displayed) {
+      const engineRowId =
+        displayed.engineRowId?.trim() ||
+        (offset === 0 ? startEngineRowId?.trim() : "") ||
+        "";
+      const position =
+        typeof displayed.position === "number" && displayed.position >= 0
+          ? displayed.position
+          : typeof startPosition === "number"
+            ? startPosition + offset
+            : undefined;
+      return {
+        key: displayed.key,
+        value,
+        ...(typeof position === "number" ? { position } : {}),
+        ...(engineRowId ? { engineRowId } : {}),
+      };
+    }
+
+    if (offset === 0) {
+      const engineRowId = startEngineRowId?.trim() || "";
+      return {
+        key: startRowKey,
+        value,
+        position:
+          typeof startPosition === "number" && startPosition >= 0
+            ? startPosition
+            : fallbackAppendPosition,
+        ...(engineRowId ? { engineRowId } : {}),
+      };
+    }
+
+    const position = fallbackAppendPosition + appendOffset;
+    appendOffset += 1;
     return {
-      key: getProjectedBulkPasteRowKey(sheetId, startRowKey, startPosition, offset),
+      key: `${sheetId}:paste:${batchId}:${offset}`,
       value,
-      position: startPosition + offset,
-      ...(engineRowId ? { engineRowId } : {}),
+      position,
     };
   });
+}
+
+export async function resolveProjectedBulkPasteTargetEntries({
+  sheetId,
+  values,
+  displayedRows,
+  startOffset,
+  rowsQuery,
+  loadRows = querySheetRows,
+}: {
+  sheetId: string;
+  values: string[];
+  displayedRows: BulkPasteDisplayedRow[];
+  startOffset: number;
+  rowsQuery: SheetRowsQuery;
+  loadRows?: typeof querySheetRows;
+}): Promise<TrackingBulkPasteEntry[]> {
+  const displayedByEngineRowId = new Map(
+    displayedRows
+      .filter((row) => row.engineRowId?.trim())
+      .map((row) => [row.engineRowId!.trim(), row])
+  );
+  const targetEntries: TrackingBulkPasteEntry[] = [];
+  let offset = Math.max(0, startOffset);
+
+  while (targetEntries.length < values.length) {
+    const remaining = values.length - targetEntries.length;
+    const response = await loadRows({
+      ...rowsQuery,
+      offset,
+      limit: Math.min(1_000, remaining),
+    });
+    if (response.payload.rows.length === 0) {
+      break;
+    }
+
+    for (const row of response.payload.rows) {
+      if (targetEntries.length >= values.length) {
+        break;
+      }
+      const displayed = displayedByEngineRowId.get(row.rowId);
+      targetEntries.push({
+        key: displayed?.key ?? row.rowId,
+        value: values[targetEntries.length],
+        position: row.position,
+        engineRowId: row.rowId,
+      });
+    }
+
+    if (!response.payload.hasMore || response.payload.nextOffset === null) {
+      break;
+    }
+    if (response.payload.nextOffset <= offset) {
+      throw new Error("Rust bulk-paste pagination stalled.");
+    }
+    offset = response.payload.nextOffset;
+  }
+
+  if (targetEntries.length >= values.length) {
+    return targetEntries;
+  }
+
+  const tailResponse = await loadRows({
+    sheetId,
+    offset: 0,
+    limit: 1,
+    filters: [],
+    valueFilters: [],
+    sort: [{ field: "position", direction: "desc" }],
+  });
+  const nextAppendPosition =
+    (tailResponse.payload.rows[0]?.position ?? -1) + 1;
+  const batchId = createPasteBatchId();
+  const appendStartIndex = targetEntries.length;
+  for (let index = appendStartIndex; index < values.length; index += 1) {
+    const rowId = `${sheetId}:paste:${batchId}:${index}`;
+    targetEntries.push({
+      key: rowId,
+      value: values[index],
+      position: nextAppendPosition + index - appendStartIndex,
+      engineRowId: rowId,
+    });
+  }
+
+  return targetEntries;
+}
+
+export function applyBulkPasteEntriesToSheet(
+  sheetState: SheetState,
+  targetEntries: TrackingBulkPasteEntry[]
+): { sheetState: SheetState; targetEntries: TrackingBulkPasteEntry[] } {
+  const nextRows = [...sheetState.rows];
 
   for (const entry of targetEntries) {
     const rowIndex = nextRows.findIndex((row) => row.key === entry.key);
@@ -259,12 +423,38 @@ export function applyProjectedBulkPasteDraftToSheet(
       selectedRowKeys: Array.from(
         new Set([
           ...sheetState.selectedRowKeys,
-          ...targetEntries.map((entry) => entry.key),
+          ...targetEntries.map((entry) =>
+            createEngineRowSelectionKey(entry.engineRowId?.trim() || entry.key)
+          ),
         ])
       ),
     },
     targetEntries,
   };
+}
+
+export function applyProjectedBulkPasteDraftToSheet(
+  sheetState: SheetState,
+  sheetId: string,
+  startRowKey: string,
+  startPosition: number,
+  values: string[],
+  startEngineRowId?: string,
+  displayedRows: BulkPasteDisplayedRow[] = [],
+  nextAppendPosition?: number
+): { sheetState: SheetState; targetEntries: TrackingBulkPasteEntry[] } {
+  return applyBulkPasteEntriesToSheet(
+    sheetState,
+    createBulkPasteTargetEntries({
+      sheetId,
+      startRowKey,
+      values,
+      displayedRows,
+      startPosition,
+      startEngineRowId,
+      nextAppendPosition,
+    })
+  );
 }
 
 function emitTrackingTelemetry(
@@ -1356,73 +1546,99 @@ export function useTrackingRuntimeController({
       }
 
       const startIndex = currentSheet.rows.findIndex((row) => row.key === rowKey);
+      const displayedRows = options?.displayedRows ?? [];
       if (
+        displayedRows.length === 0 &&
         startIndex === -1 &&
         (typeof options?.position !== "number" || options.position < 0)
       ) {
         return;
       }
 
-      const result =
-        startIndex >= 0
-          ? (() => {
-              const legacyResult = applyBulkPasteToSheet(
-                currentSheet,
-                startIndex,
-                values
-              );
-              return {
-                ...legacyResult,
-                targetEntries: legacyResult.targetKeys.map((key, index) => {
-                  const engineRowId =
-                    index === 0 && options?.engineRowId?.trim()
-                      ? options.engineRowId.trim()
-                      : "";
-                  return {
-                    key,
-                    value: values[index],
-                    position: startIndex + index,
-                    ...(engineRowId ? { engineRowId } : {}),
-                  };
-                }),
-              };
-            })()
-          : applyProjectedBulkPasteDraftToSheet(
-              currentSheet,
-              sheetId,
-              rowKey,
-              options?.position ?? 0,
-              values,
-              options?.engineRowId
-            );
-      const targetEntries = result.targetEntries;
-      const targetKeys = targetEntries.map((entry) => entry.key);
-
-      abortRowTrackingWork(sheetId, targetKeys, "bulk_paste_overwrite");
-
-      updateSheet(sheetId, () => result.sheetState);
-
-      if (targetKeys.length === 0) {
-        return;
-      }
-
-      targetEntries.forEach((entry) => {
-        const value = entry.value;
-        const validationError = getTrackingInputValidationError(value);
-        if (!validationError) {
+      void (async () => {
+        const targetEntries =
+          displayedRows.length > 0 &&
+          options?.rowsQuery &&
+          typeof options.queryOffset === "number"
+            ? await resolveProjectedBulkPasteTargetEntries({
+                sheetId,
+                values,
+                displayedRows,
+                startOffset: options.queryOffset,
+                rowsQuery: options.rowsQuery,
+              })
+            : displayedRows.length > 0
+              ? createBulkPasteTargetEntries({
+                  sheetId,
+                  startRowKey: rowKey,
+                  values,
+                  displayedRows,
+                  startPosition: options?.position,
+                  startEngineRowId: options?.engineRowId,
+                  nextAppendPosition: options?.nextAppendPosition,
+                })
+              : startIndex >= 0
+                ? (() => {
+                    const legacyResult = applyBulkPasteToSheet(
+                      currentSheet,
+                      startIndex,
+                      values
+                    );
+                    return legacyResult.targetKeys.map((key, index) => {
+                      const engineRowId =
+                        index === 0 && options?.engineRowId?.trim()
+                          ? options.engineRowId.trim()
+                          : "";
+                      return {
+                        key,
+                        value: values[index],
+                        position: startIndex + index,
+                        ...(engineRowId ? { engineRowId } : {}),
+                      };
+                    });
+                  })()
+                : createBulkPasteTargetEntries({
+                    sheetId,
+                    startRowKey: rowKey,
+                    values,
+                    displayedRows: [],
+                    startPosition: options?.position,
+                    startEngineRowId: options?.engineRowId,
+                  });
+        const latestSheet = workspaceRef.current.sheetsById[sheetId];
+        if (!latestSheet || targetEntries.length === 0) {
           return;
         }
+        const result = applyBulkPasteEntriesToSheet(latestSheet, targetEntries);
+        const targetKeys = targetEntries.map((entry) => entry.key);
 
+        abortRowTrackingWork(sheetId, targetKeys, "bulk_paste_overwrite");
+        updateSheet(sheetId, () => result.sheetState);
+
+        targetEntries.forEach((entry) => {
+          const validationError = getTrackingInputValidationError(entry.value);
+          if (validationError) {
+            updateSheet(sheetId, (current) =>
+              setRowErrorInSheet(current, entry.key, validationError)
+            );
+          }
+        });
+
+        await refreshTrackingRows(
+          sheetId,
+          targetEntries.filter(({ value }) => !getTrackingInputValidationError(value)),
+          { sheetState: result.sheetState }
+        );
+      })().catch((error) => {
+        console.error("[ShipFlowWorkspace] bulk paste failed", error);
         updateSheet(sheetId, (current) =>
-          setRowErrorInSheet(current, entry.key, validationError)
+          setRowErrorInSheet(
+            current,
+            rowKey,
+            error instanceof Error ? error.message : "Bulk paste failed."
+          )
         );
       });
-
-      void refreshTrackingRows(
-        sheetId,
-        targetEntries.filter(({ value }) => !getTrackingInputValidationError(value)),
-        { sheetState: result.sheetState }
-      );
     },
     [
       abortRowTrackingWork,

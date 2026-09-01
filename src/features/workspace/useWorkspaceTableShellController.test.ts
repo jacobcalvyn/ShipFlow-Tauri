@@ -65,7 +65,27 @@ describe("useWorkspaceTableShellController", () => {
     const nextSheet = applyActiveSheetUpdaters(initialSheet, updateActiveSheet);
 
     expect(nextSheet.selectionFollowsVisibleRows).toBe(false);
-    expect(nextSheet.selectedRowKeys).toEqual([]);
+    expect(nextSheet.selectedRowKeys).toEqual(["row-9"]);
+  });
+
+  it("does not prune selection when the visible window changes", () => {
+    const updateActiveSheet = vi.fn();
+    const options = createOptions({
+      hasActiveFilters: false,
+      visibleSelectableKeys: ["row-501", "row-502"],
+      updateActiveSheet,
+    });
+    const initialSheet = {
+      ...createDefaultSheetState(),
+      selectedRowKeys: ["row-1", "row-2"],
+      selectionFollowsVisibleRows: false,
+    };
+
+    renderHook(() => useWorkspaceTableShellController(options));
+
+    const nextSheet = applyActiveSheetUpdaters(initialSheet, updateActiveSheet);
+
+    expect(nextSheet.selectedRowKeys).toEqual(["row-1", "row-2"]);
   });
 
   it("stops following visible rows when filters are cleared without selecting everything", () => {

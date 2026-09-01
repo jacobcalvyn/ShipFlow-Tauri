@@ -6,6 +6,7 @@ type UseWorkspaceTablePropsOptions = {
   effectiveDisplayScale: ComponentProps<typeof SheetTable>["displayScale"];
   displayedTableRows: ComponentProps<typeof SheetTable>["displayedTableRows"];
   displayedRowWindow: ComponentProps<typeof SheetTable>["rowWindow"];
+  rowsQuery: ComponentProps<typeof SheetTable>["rowsQuery"];
   visibleColumns: ComponentProps<typeof SheetTable>["visibleColumns"];
   hiddenColumns: ComponentProps<typeof SheetTable>["hiddenColumns"];
   effectiveColumnWidths: ComponentProps<typeof SheetTable>["columnWidths"];
@@ -53,6 +54,7 @@ export function useWorkspaceTableProps({
   effectiveDisplayScale,
   displayedTableRows,
   displayedRowWindow,
+  rowsQuery,
   visibleColumns,
   hiddenColumns,
   effectiveColumnWidths,
@@ -97,6 +99,7 @@ export function useWorkspaceTableProps({
     displayScale: effectiveDisplayScale,
     displayedTableRows,
     rowWindow: displayedRowWindow,
+    rowsQuery,
     visibleColumns,
     hiddenColumns,
     columnWidths: effectiveColumnWidths,

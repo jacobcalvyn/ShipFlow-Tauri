@@ -295,22 +295,24 @@ impl ImportLookupSource for ServiceLookupSource {
             let config = self.config.clone();
             let import_lookup_slots = Arc::clone(&self.import_lookup_slots);
             tasks.spawn(async move {
-                let result = match tokio::time::timeout(request_timeout, async {
+                let result = async {
                     let _permit = import_lookup_slots.acquire_owned().await.map_err(|_| {
                         ImportLookupFailure::new("Import lookup limiter is unavailable.")
                     })?;
-                    track_bag(&client, &config, &bag_id, true)
-                        .await
-                        .map_err(ImportLookupFailure::from)
-                })
-                .await
-                {
-                    Ok(result) => result,
-                    Err(_) => Err(ImportLookupFailure::new(format!(
-                        "Timeout ambil data setelah {} detik.",
-                        request_timeout.as_secs()
-                    ))),
-                };
+                    match tokio::time::timeout(
+                        request_timeout,
+                        track_bag(&client, &config, &bag_id, true),
+                    )
+                    .await
+                    {
+                        Ok(result) => result.map_err(ImportLookupFailure::from),
+                        Err(_) => Err(ImportLookupFailure::new(format!(
+                            "Timeout ambil data setelah {} detik.",
+                            request_timeout.as_secs()
+                        ))),
+                    }
+                }
+                .await;
                 (index, result)
             });
         };
@@ -385,22 +387,24 @@ impl ImportLookupSource for ServiceLookupSource {
             let config = self.config.clone();
             let import_lookup_slots = Arc::clone(&self.import_lookup_slots);
             tasks.spawn(async move {
-                let result = match tokio::time::timeout(request_timeout, async {
+                let result = async {
                     let _permit = import_lookup_slots.acquire_owned().await.map_err(|_| {
                         ImportLookupFailure::new("Import lookup limiter is unavailable.")
                     })?;
-                    track_manifest(&client, &config, &manifest_id, true)
-                        .await
-                        .map_err(ImportLookupFailure::from)
-                })
-                .await
-                {
-                    Ok(result) => result,
-                    Err(_) => Err(ImportLookupFailure::new(format!(
-                        "Timeout ambil data setelah {} detik.",
-                        request_timeout.as_secs()
-                    ))),
-                };
+                    match tokio::time::timeout(
+                        request_timeout,
+                        track_manifest(&client, &config, &manifest_id, true),
+                    )
+                    .await
+                    {
+                        Ok(result) => result.map_err(ImportLookupFailure::from),
+                        Err(_) => Err(ImportLookupFailure::new(format!(
+                            "Timeout ambil data setelah {} detik.",
+                            request_timeout.as_secs()
+                        ))),
+                    }
+                }
+                .await;
                 (index, result)
             });
         };

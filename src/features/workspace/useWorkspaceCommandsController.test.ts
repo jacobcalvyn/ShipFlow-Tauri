@@ -296,7 +296,7 @@ describe("useWorkspaceCommandsController", () => {
     });
     expect(options.abortRowTrackingWork).toHaveBeenCalledWith(
       "sheet-1",
-      ["legacy-visible-key"],
+      ["legacy-visible-key", "rust-row-1"],
       "selected_rows_deleted"
     );
     expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
@@ -802,6 +802,103 @@ describe("useWorkspaceCommandsController", () => {
     const csvContent = exportWorkspaceCsvMock.mock.calls[0]?.[0].csvContent ?? "";
     expect(csvContent).toContain("RUST-1");
     expect(exportWorkspaceCsvMock.mock.calls[0]?.[0].rowCount).toBe(1);
+  });
+
+  it("exports selected Rust rows even when they are outside the active query window", async () => {
+    const options = buildOptions();
+    options.exportableTableRows = [];
+    options.selectedEngineRowIds = ["rust-row-1500", "rust-row-2"];
+    options.rustExportRowsQuery = {
+      sheetId: "sheet-1",
+      offset: 0,
+      limit: 500,
+      filters: [{ field: "status_akhir.status", value: "DELIVERED" }],
+      valueFilters: [],
+      sort: [{ field: TRACKING_COLUMN_PATH, direction: "asc" }],
+    };
+    workspaceEngineMocks.querySheetRows
+      .mockResolvedValueOnce({
+        type: "sheet_rows",
+        payload: {
+          sheetId: "sheet-1",
+          offset: 0,
+          limit: 1_000,
+          totalCount: 1_501,
+          hasMore: true,
+          nextOffset: 1_000,
+          rows: [
+            {
+              rowId: "rust-row-2",
+              position: 2,
+              displayTrackingId: "RUST-2",
+              lookupTrackingId: "RUST-2",
+              rowStatus: "loaded",
+              errorMessage: null,
+              statusJson: { status: "DELIVERED" },
+              detailJson: null,
+              historyJson: null,
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        type: "sheet_rows",
+        payload: {
+          sheetId: "sheet-1",
+          offset: 1_000,
+          limit: 1_000,
+          totalCount: 1_501,
+          hasMore: false,
+          nextOffset: null,
+          rows: [
+            {
+              rowId: "rust-row-1500",
+              position: 1_500,
+              displayTrackingId: "RUST-1500",
+              lookupTrackingId: "RUST-1500",
+              rowStatus: "loaded",
+              errorMessage: null,
+              statusJson: { status: "INLOCATION" },
+              detailJson: null,
+              historyJson: null,
+            },
+          ],
+        },
+      });
+
+    const { result } = renderHook(() =>
+      useWorkspaceCommandsController(options as never)
+    );
+
+    await act(async () => {
+      result.current.exportCsv();
+    });
+
+    await waitFor(() => {
+      expect(exportWorkspaceCsvMock).toHaveBeenCalledTimes(1);
+    });
+
+    expect(workspaceEngineMocks.querySheetRows).toHaveBeenNthCalledWith(1, {
+      ...options.rustExportRowsQuery,
+      offset: 0,
+      limit: 1_000,
+      filters: [],
+      valueFilters: [],
+      sort: [],
+    });
+    expect(workspaceEngineMocks.querySheetRows).toHaveBeenNthCalledWith(2, {
+      ...options.rustExportRowsQuery,
+      offset: 1_000,
+      limit: 1_000,
+      filters: [],
+      valueFilters: [],
+      sort: [],
+    });
+    const csvContent = exportWorkspaceCsvMock.mock.calls[0]?.[0].csvContent ?? "";
+    expect(csvContent.indexOf("RUST-1500")).toBeLessThan(
+      csvContent.indexOf("RUST-2")
+    );
+    expect(exportWorkspaceCsvMock.mock.calls[0]?.[0].rowCount).toBe(2);
   });
 
   it("exports unselected CSV rows by paging through the Rust row query", async () => {

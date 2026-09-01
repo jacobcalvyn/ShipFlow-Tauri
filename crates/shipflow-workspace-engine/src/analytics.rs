@@ -164,8 +164,14 @@ impl DuckDbAnalyticsEngine {
         query: &PivotQuery,
     ) -> AnalyticsEngineResult<PivotResult> {
         let source_rows = self.query_source_rows(store, query)?;
+        let today_text = store.current_local_date()?;
+        let today =
+            parse_year_month_day(&today_text).ok_or_else(|| WorkspaceStoreError::InvalidValue {
+                field: "current_local_date",
+                value: today_text,
+            })?;
 
-        query_pivot_from_rows(&source_rows.rows, query)
+        query_pivot_from_rows_on_date(&source_rows.rows, query, today)
     }
 
     pub fn query_chart(
@@ -256,14 +262,23 @@ struct PivotOutputRow {
     share: f64,
 }
 
+#[cfg(test)]
 fn query_pivot_from_rows(
     rows: &[SheetRowProjection],
     query: &PivotQuery,
 ) -> AnalyticsEngineResult<PivotResult> {
+    query_pivot_from_rows_on_date(rows, query, time::OffsetDateTime::now_utc().date())
+}
+
+fn query_pivot_from_rows_on_date(
+    rows: &[SheetRowProjection],
+    query: &PivotQuery,
+    today: time::Date,
+) -> AnalyticsEngineResult<PivotResult> {
     let bindings = create_field_bindings(query);
     let connection = Connection::open_in_memory()?;
     create_duckdb_source_table(&connection, &bindings)?;
-    insert_duckdb_rows(&connection, &bindings, rows)?;
+    insert_duckdb_rows(&connection, &bindings, rows, today)?;
 
     let mut output_rows = query_duckdb_pivot_rows(&connection, &bindings, query)?;
     apply_pivot_sort(&mut output_rows, &query.sort);
@@ -348,6 +363,7 @@ fn insert_duckdb_rows(
     connection: &Connection,
     bindings: &[FieldBinding],
     rows: &[SheetRowProjection],
+    today: time::Date,
 ) -> AnalyticsEngineResult<()> {
     let placeholders = std::iter::repeat_n("?", 1 + bindings.len() * 3)
         .collect::<Vec<_>>()
@@ -368,7 +384,7 @@ fn insert_duckdb_rows(
     for (row_index, row) in rows.iter().enumerate() {
         let mut values = vec![DuckDbValue::Int(row_index as i32)];
         for binding in bindings {
-            let cell = extract_field_cell(row, &binding.path);
+            let cell = extract_field_cell(row, &binding.path, today);
             values.push(DuckDbValue::Text(cell.text));
             values.push(DuckDbValue::Double(cell.numeric));
             values.push(DuckDbValue::Boolean(cell.has_value));
@@ -629,8 +645,8 @@ fn quote_identifier(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
 }
 
-fn extract_field_cell(row: &SheetRowProjection, path: &str) -> FieldCell {
-    let value = extract_field_value(row, path);
+fn extract_field_cell(row: &SheetRowProjection, path: &str, today: time::Date) -> FieldCell {
+    let value = extract_field_value(row, path, today);
     let Some(value) = value else {
         return missing_field_cell();
     };
@@ -669,12 +685,32 @@ fn extract_field_cell(row: &SheetRowProjection, path: &str) -> FieldCell {
     }
 }
 
-fn extract_field_value(row: &SheetRowProjection, path: &str) -> Option<serde_json::Value> {
+fn extract_field_value(
+    row: &SheetRowProjection,
+    path: &str,
+    today: time::Date,
+) -> Option<serde_json::Value> {
     match path {
-        "detail.shipment_header.nomor_kiriman" | "displayTrackingId" => {
-            Some(serde_json::Value::String(row.display_tracking_id.clone()))
-        }
+        "displayTrackingId" => Some(serde_json::Value::String(row.display_tracking_id.clone())),
+        "detail.shipment_header.nomor_kiriman" => row
+            .detail_json
+            .as_ref()
+            .and_then(|detail| extract_json_path(detail, "shipment_header.nomor_kiriman").cloned())
+            .or_else(|| Some(serde_json::Value::String(row.display_tracking_id.clone()))),
         "lookupTrackingId" => Some(serde_json::Value::String(row.lookup_tracking_id.clone())),
+        "computed.days_since_transaction" => elapsed_days_value(
+            extract_json_path(row.detail_json.as_ref()?, "origin_detail.tanggal_input")
+                .and_then(serde_json::Value::as_str),
+            today,
+        ),
+        "computed.days_since_last_unbagging" => {
+            latest_unbagging_days(row.history_json.as_ref()?, today)
+        }
+        "history_summary.latest_bagging_status" => {
+            latest_bag_status_text(row.history_json.as_ref()?)
+        }
+        "history_summary.latest_manifest_r7" => latest_manifest_id(row.history_json.as_ref()?),
+        "computed.delivery_runsheet_count" => delivery_runsheet_count(row.history_json.as_ref()?),
         _ if path.starts_with("status_akhir.") => {
             let local_path = path.trim_start_matches("status_akhir.");
             extract_json_path(row.status_json.as_ref()?, local_path).cloned()
@@ -685,6 +721,105 @@ fn extract_field_value(row: &SheetRowProjection, path: &str) -> Option<serde_jso
         }
         _ => None,
     }
+}
+
+fn elapsed_days_value(date_text: Option<&str>, today: time::Date) -> Option<serde_json::Value> {
+    let days = elapsed_calendar_days(date_text?, today)?;
+    Some(serde_json::Value::from(days))
+}
+
+fn elapsed_calendar_days(date_text: &str, today: time::Date) -> Option<i64> {
+    let parsed = parse_year_month_day(date_text)?;
+    Some((i64::from(today.to_julian_day()) - i64::from(parsed.to_julian_day())).max(0))
+}
+
+fn parse_year_month_day(value: &str) -> Option<time::Date> {
+    let trimmed = value.trim();
+    let year_first = trimmed.get(0..10).filter(|slice| {
+        slice.as_bytes().get(4) == Some(&b'-') || slice.as_bytes().get(4) == Some(&b'/')
+    });
+    if let Some(slice) = year_first {
+        let year: i32 = slice.get(0..4)?.parse().ok()?;
+        let month: u8 = slice.get(5..7)?.parse().ok()?;
+        let day: u8 = slice.get(8..10)?.parse().ok()?;
+        return time::Date::from_calendar_date(year, time::Month::try_from(month).ok()?, day).ok();
+    }
+    None
+}
+
+fn latest_unbagging_days(
+    history_json: &serde_json::Value,
+    today: time::Date,
+) -> Option<serde_json::Value> {
+    let entries = history_json
+        .pointer("/history_summary/bagging_unbagging")?
+        .as_array()?;
+    let mut latest: Option<(i64, i64)> = None;
+    for (index, entry) in entries.iter().enumerate() {
+        let Some(unbagging) = entry.get("unbagging") else {
+            continue;
+        };
+        if unbagging.is_null() {
+            continue;
+        }
+        let Some(date) = unbagging.get("tanggal").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(days) = elapsed_calendar_days(date, today) else {
+            continue;
+        };
+        let sort_key = (days, -(index as i64));
+        if latest.is_none_or(|current| sort_key < current) {
+            latest = Some(sort_key);
+        }
+    }
+    latest.map(|(days, _)| serde_json::Value::from(days))
+}
+
+fn latest_bag_status_text(history_json: &serde_json::Value) -> Option<serde_json::Value> {
+    let entries = history_json
+        .pointer("/history_summary/bagging_unbagging")?
+        .as_array()?;
+    for entry in entries.iter().rev() {
+        let bag_id = entry
+            .get("nomor_kantung")
+            .and_then(serde_json::Value::as_str)?;
+        if bag_id.is_empty() {
+            continue;
+        }
+        let label = if entry.get("unbagging").is_some_and(|value| !value.is_null()) {
+            "Unbagging"
+        } else if entry.get("bagging").is_some_and(|value| !value.is_null()) {
+            "Bagging"
+        } else {
+            continue;
+        };
+        return Some(serde_json::Value::String(format!("{bag_id} - {label}")));
+    }
+    None
+}
+
+fn latest_manifest_id(history_json: &serde_json::Value) -> Option<serde_json::Value> {
+    let entries = history_json
+        .pointer("/history_summary/manifest_r7")?
+        .as_array()?;
+    for entry in entries.iter().rev() {
+        if let Some(nomor_r7) = entry
+            .get("nomor_r7")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(serde_json::Value::String(nomor_r7.to_string()));
+        }
+    }
+    None
+}
+
+fn delivery_runsheet_count(history_json: &serde_json::Value) -> Option<serde_json::Value> {
+    let entries = history_json
+        .pointer("/history_summary/delivery_runsheet")?
+        .as_array()?;
+    Some(serde_json::Value::from(entries.len() as u64))
 }
 
 fn extract_json_path<'a>(
@@ -828,6 +963,106 @@ mod tests {
                 && row["metrics"]["detail.performance_detail.sla_days_diff__sum"] == json!(10.0)
                 && row["metrics"]["detail.shipment_header.nomor_kiriman__count_unique"] == json!(1)
         }));
+    }
+
+    #[test]
+    fn duckdb_pivot_reads_computed_history_and_parent_shipment_id() {
+        let mut row = row_projection(
+            "row-1",
+            "P1.30",
+            "PKH",
+            "DELIVERED",
+            0,
+            serde_json::Value::Number(0.into()),
+        );
+        row.detail_json = Some(json!({
+            "shipment_header": { "nomor_kiriman": "P1" },
+            "origin_detail": { "tanggal_input": "2026-01-01" },
+            "package_detail": { "jenis_layanan": "PKH" },
+            "billing_detail": { "cod_info": { "total_cod": 0 } },
+            "performance_detail": { "sla_days_diff": 0 }
+        }));
+        row.history_json = Some(json!({
+            "history_summary": {
+                "bagging_unbagging": [
+                    {
+                        "nomor_kantung": "PID1",
+                        "bagging": { "tanggal": "2026-01-02" }
+                    },
+                    {
+                        "nomor_kantung": "PID2",
+                        "bagging": { "tanggal": "2026-01-03" },
+                        "unbagging": { "tanggal": "2026-01-04" }
+                    }
+                ],
+                "manifest_r7": [{ "nomor_r7": "R7-9" }],
+                "delivery_runsheet": [{}, {}]
+            }
+        }));
+
+        let result = query_pivot_from_rows(
+            &[row],
+            &PivotQuery {
+                sheet_id: "sheet-1".to_string(),
+                source_scope: AnalyticsSourceScope::AllRows,
+                filters: vec![],
+                value_filters: vec![],
+                selected_row_ids: vec![],
+                row_fields: vec!["history_summary.latest_bagging_status".to_string()],
+                column_fields: vec![],
+                values: vec![
+                    AnalyticsValue {
+                        field: "computed.delivery_runsheet_count".to_string(),
+                        aggregation: AnalyticsAggregation::Sum,
+                    },
+                    AnalyticsValue {
+                        field: "history_summary.latest_manifest_r7".to_string(),
+                        aggregation: AnalyticsAggregation::First,
+                    },
+                    AnalyticsValue {
+                        field: "detail.shipment_header.nomor_kiriman".to_string(),
+                        aggregation: AnalyticsAggregation::First,
+                    },
+                ],
+                sort: vec![],
+                limit: 100,
+            },
+        )
+        .expect("computed history pivot succeeds");
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0]["rowValues"], json!(["PID2 - Unbagging"]));
+        assert_eq!(
+            result.rows[0]["metrics"]["computed.delivery_runsheet_count__sum"],
+            json!(2.0)
+        );
+        assert_eq!(
+            result.rows[0]["metrics"]["history_summary.latest_manifest_r7__first"],
+            json!("R7-9")
+        );
+        assert_eq!(
+            result.rows[0]["metrics"]["detail.shipment_header.nomor_kiriman__first"],
+            json!("P1")
+        );
+    }
+
+    #[test]
+    fn computed_day_fields_use_the_explicit_local_calendar_date() {
+        let local_today = time::Date::from_calendar_date(2026, time::Month::September, 1)
+            .expect("local test date is valid");
+
+        assert_eq!(
+            elapsed_calendar_days("2026-08-31 23:59:59", local_today),
+            Some(1)
+        );
+        assert_eq!(
+            elapsed_calendar_days("2026-09-01 00:00:01", local_today),
+            Some(0)
+        );
+        assert_eq!(
+            elapsed_calendar_days("2026-09-02 00:00:00", local_today),
+            Some(0)
+        );
     }
 
     #[test]

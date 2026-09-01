@@ -1125,7 +1125,6 @@ async fn resolve_cached_bag_route(
                 {
                     Ok(permit) => permit,
                     Err(error) => {
-                        state.bag_route_cache.store_failure_async(bag_id).await;
                         shipflow_core::shipflow_log!(
                             "[ShipFlowBagRouteCache] permit_failed id={} error={error:?}",
                             bag_id

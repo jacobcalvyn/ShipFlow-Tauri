@@ -147,7 +147,12 @@ describe("SheetTable", () => {
       expect.any(Object),
       "sheet-1",
       "row-1",
-      { position: 0 }
+      expect.objectContaining({
+        position: 0,
+        displayedRows: expect.arrayContaining([
+          expect.objectContaining({ key: "row-1" }),
+        ]),
+      })
     );
 
     fireEvent.change(screen.getAllByPlaceholderText("Filter")[0], {

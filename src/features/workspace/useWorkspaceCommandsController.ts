@@ -97,6 +97,70 @@ async function collectRustExportRows(query: SheetRowsQuery) {
   return rows;
 }
 
+async function collectRustSelectedRows(
+  query: SheetRowsQuery,
+  selectedRowIds: string[]
+) {
+  const orderedRowIds = Array.from(
+    new Set(selectedRowIds.map((rowId) => rowId.trim()).filter(Boolean))
+  );
+  if (orderedRowIds.length === 0) {
+    return [];
+  }
+
+  const selectedRowIdSet = new Set(orderedRowIds);
+  const rowsById = new Map<string, SheetTableRow>();
+  let offset = 0;
+
+  while (rowsById.size < selectedRowIdSet.size) {
+    const response = await querySheetRows({
+      ...query,
+      offset,
+      limit: CSV_RUST_EXPORT_WINDOW_LIMIT,
+      filters: [],
+      valueFilters: [],
+      sort: [],
+    });
+    const selectedProjections = response.payload.rows.filter((row) =>
+      selectedRowIdSet.has(row.rowId)
+    );
+    if (selectedProjections.length > 0) {
+      const selectedRows = createSheetTableRowsFromRustWindow(
+        {
+          ...response.payload,
+          totalCount: selectedProjections.length,
+          hasMore: false,
+          nextOffset: null,
+          rows: selectedProjections,
+        },
+        []
+      );
+      selectedRows.forEach((row) => {
+        if (row.engineRowId) {
+          rowsById.set(row.engineRowId, row);
+        }
+      });
+    }
+
+    if (!response.payload.hasMore || response.payload.nextOffset === null) {
+      break;
+    }
+    if (response.payload.nextOffset <= offset) {
+      throw new Error("Rust selected-row pagination stalled.");
+    }
+    offset = response.payload.nextOffset;
+  }
+
+  const missingRowIds = orderedRowIds.filter((rowId) => !rowsById.has(rowId));
+  if (missingRowIds.length > 0) {
+    throw new Error(
+      `Selected rows are no longer available: ${missingRowIds.join(", ")}`
+    );
+  }
+
+  return orderedRowIds.map((rowId) => rowsById.get(rowId)!);
+}
+
 async function collectRustRefreshRowIds(query: SheetRowsQuery) {
   const rowIds: string[] = [];
   let offset = 0;
@@ -374,17 +438,39 @@ export function useWorkspaceCommandsController({
   );
 
   const copySelectedTrackingIds = useCallback(() => {
-    if (selectedTrackingIds.length === 0) {
+    if (selectedEngineRowIds.length === 0 && selectedTrackingIds.length === 0) {
       return;
     }
 
-    void copyText(selectedTrackingIds.join("\n")).catch(() =>
+    void (async () => {
+      const trackingIds =
+        rustExportRowsQuery && selectedEngineRowIds.length > 0
+          ? (
+              await collectRustSelectedRows(
+                rustExportRowsQuery,
+                selectedEngineRowIds
+              )
+            )
+              .map((row) => row.trackingInput.trim())
+              .filter(Boolean)
+          : selectedTrackingIds;
+      if (trackingIds.length === 0) {
+        return;
+      }
+      await copyText(trackingIds.join("\n"));
+    })().catch(() =>
       showNotice({
         tone: "error",
         message: "Gagal menyalin ID kiriman terselect.",
       })
     );
-  }, [copyText, selectedTrackingIds, showNotice]);
+  }, [
+    copyText,
+    rustExportRowsQuery,
+    selectedEngineRowIds,
+    selectedTrackingIds,
+    showNotice,
+  ]);
 
   const copyAllTrackingIds = useCallback(() => {
     if (allTrackingIds.length === 0 && !rustExportRowsQuery) {
@@ -580,7 +666,7 @@ export function useWorkspaceCommandsController({
   }, [updateActiveSheet, visibleColumnPathSet]);
 
   const deleteSelectedRows = useCallback(async () => {
-    if (selectedVisibleRowKeys.length === 0) {
+    if (selectedEngineRowIds.length === 0 && selectedVisibleRowKeys.length === 0) {
       disarmDeleteSelected();
       return;
     }
@@ -591,7 +677,9 @@ export function useWorkspaceCommandsController({
     }
 
     const targetSheetId = activeSheetId;
-    const selectedRowKeysSnapshot = [...selectedVisibleRowKeys];
+    const selectedRowKeysSnapshot = Array.from(
+      new Set([...selectedVisibleRowKeys, ...selectedEngineRowIds])
+    );
     const selectedEngineRowIdsSnapshot = [...selectedEngineRowIds];
 
     disarmDeleteSelected();
@@ -676,7 +764,11 @@ export function useWorkspaceCommandsController({
   ]);
 
   const exportCsv = useCallback(() => {
-    if (exportableTableRows.length === 0 && !rustExportRowsQuery) {
+    if (
+      exportableTableRows.length === 0 &&
+      selectedEngineRowIds.length === 0 &&
+      !rustExportRowsQuery
+    ) {
       return;
     }
 
@@ -689,10 +781,11 @@ export function useWorkspaceCommandsController({
     }
 
     void (async () => {
-      const rows =
-        selectedVisibleRowKeys.length === 0 && rustExportRowsQuery
-          ? await collectRustExportRows(rustExportRowsQuery)
-          : exportableTableRows;
+      const rows = rustExportRowsQuery
+        ? selectedEngineRowIds.length > 0
+          ? await collectRustSelectedRows(rustExportRowsQuery, selectedEngineRowIds)
+          : await collectRustExportRows(rustExportRowsQuery)
+        : exportableTableRows;
 
       if (rows.length === 0) {
         return;
@@ -708,7 +801,7 @@ export function useWorkspaceCommandsController({
       const csvContent = [header.join(","), ...lines].join("\n");
       const dateSuffix = new Date().toISOString().slice(0, 10);
       const suggestedName =
-        selectedVisibleRowKeys.length > 0
+        selectedEngineRowIds.length > 0 || selectedVisibleRowKeys.length > 0
           ? `shipflow-selected-${dateSuffix}.csv`
           : `shipflow-view-${dateSuffix}.csv`;
 
@@ -735,6 +828,7 @@ export function useWorkspaceCommandsController({
   }, [
     exportableTableRows,
     rustExportRowsQuery,
+    selectedEngineRowIds,
     selectedVisibleRowKeys.length,
     showNotice,
     visibleColumns,

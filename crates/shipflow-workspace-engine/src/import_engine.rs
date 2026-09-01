@@ -679,7 +679,7 @@ where
             }
 
             let resolved = resolve_tracking_id(display_tracking_id);
-            let row_id = format!("{sheet_id}:row:{position}");
+            let row_id = self.store.next_generated_sheet_row_id(sheet_id, position)?;
             rows.push(UpsertSheetRowInput {
                 row_id: row_id.clone(),
                 sheet_id: sheet_id.to_string(),
@@ -1379,6 +1379,61 @@ mod tests {
             }
             results
         }
+    }
+
+    #[tokio::test]
+    async fn bag_import_does_not_overwrite_compacted_row_ids() {
+        let mut store = prepared_store();
+        for (row_id, position, tracking_id) in [
+            ("sheet-1:row:0", 0_u32, "POLD0"),
+            ("sheet-1:row:1", 1, "POLD1"),
+            ("sheet-1:row:2", 2, "POLD2"),
+        ] {
+            store
+                .upsert_sheet_row(&UpsertSheetRowInput {
+                    row_id: row_id.to_string(),
+                    sheet_id: "sheet-1".to_string(),
+                    position,
+                    display_tracking_id: tracking_id.to_string(),
+                    lookup_tracking_id: tracking_id.to_string(),
+                    row_status: SheetRowStatus::Empty,
+                    error_message: None,
+                })
+                .expect("seed row is stored");
+        }
+        store
+            .delete_sheet_rows("sheet-1", &["sheet-1:row:0".to_string()])
+            .expect("leading row is deleted and compacted");
+
+        let mut source = FakeImportSource::default();
+        source.push_bag("PID_NEW", Ok(bag_response(&["PNEW"])));
+        {
+            let mut engine = ImportEngine::new(&mut store, &mut source);
+            engine
+                .create_job(&CreateImportJobPlan {
+                    job_id: "job-compact".to_string(),
+                    sheet_id: "sheet-1".to_string(),
+                    kind: ImportKind::Bag,
+                    ids: vec!["PID_NEW".to_string()],
+                    mode: ImportMode::Append,
+                })
+                .expect("job is created");
+            engine
+                .run_job("job-compact")
+                .await
+                .expect("bag import runs");
+        }
+
+        let preserved = store
+            .get_sheet_row("sheet-1:row:2")
+            .expect("compacted row lookup succeeds")
+            .expect("compacted row remains");
+        assert_eq!(preserved.display_tracking_id, "POLD2");
+        let imported_row_id = store
+            .sheet_row_id_for_display_tracking_id("sheet-1", "PNEW")
+            .expect("imported row lookup succeeds")
+            .expect("imported tracking id is stored");
+        assert_ne!(imported_row_id, "sheet-1:row:2");
     }
 
     fn prepared_store() -> SqliteWorkspaceStore {

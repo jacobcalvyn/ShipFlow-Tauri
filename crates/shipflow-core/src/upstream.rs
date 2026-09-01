@@ -134,10 +134,10 @@ pub async fn scrape_pos_tracking(
     let response = fetch_lookup_response(client, &request_url).await?;
 
     if !response.status().is_success() {
-        return Err(TrackingError::Upstream(format!(
-            "Tracking endpoint returned HTTP {}.",
-            response.status()
-        )));
+        return Err(tracking_error_from_http_status(
+            response.status(),
+            "Tracking endpoint",
+        ));
     }
 
     let html =
@@ -158,10 +158,10 @@ pub async fn scrape_pos_tracking_html(
     let response = fetch_lookup_response(client, &request_url).await?;
 
     if !response.status().is_success() {
-        return Err(TrackingError::Upstream(format!(
-            "Tracking endpoint returned HTTP {}.",
-            response.status()
-        )));
+        return Err(tracking_error_from_http_status(
+            response.status(),
+            "Tracking HTML endpoint",
+        ));
     }
 
     let html = read_response_text_limited(
@@ -183,10 +183,10 @@ pub async fn scrape_pos_bag(client: &Client, bag_id: &str) -> Result<BagResponse
     let response = fetch_lookup_response(client, &request_url).await?;
 
     if !response.status().is_success() {
-        return Err(TrackingError::Upstream(format!(
-            "Bag endpoint returned HTTP {}.",
-            response.status()
-        )));
+        return Err(tracking_error_from_http_status(
+            response.status(),
+            "Bag endpoint",
+        ));
     }
 
     let html =
@@ -208,10 +208,10 @@ pub async fn scrape_pos_bag_route(
         })?;
 
     if !response.status().is_success() {
-        return Err(TrackingError::Upstream(format!(
-            "Bag label endpoint returned HTTP {}.",
-            response.status()
-        )));
+        return Err(tracking_error_from_http_status(
+            response.status(),
+            "Bag label endpoint",
+        ));
     }
 
     let html = read_response_text_limited(response, 512 * 1024, "Bag label response").await?;
@@ -227,10 +227,10 @@ pub async fn scrape_pos_manifest(
     let response = fetch_lookup_response(client, &request_url).await?;
 
     if !response.status().is_success() {
-        return Err(TrackingError::Upstream(format!(
-            "Manifest endpoint returned HTTP {}.",
-            response.status()
-        )));
+        return Err(tracking_error_from_http_status(
+            response.status(),
+            "Manifest endpoint",
+        ));
     }
 
     let html =
@@ -873,6 +873,19 @@ fn normalize_lookup_id(input: &str, kind: LookupKind) -> Result<String, Tracking
 
 pub fn is_retryable_status(status: StatusCode) -> bool {
     status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+pub fn tracking_error_from_http_status(status: StatusCode, label: &str) -> TrackingError {
+    let message = format!("{label} returned HTTP {status}.");
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        TrackingError::RateLimited(message)
+    } else if status == StatusCode::NOT_FOUND {
+        TrackingError::NotFound(message)
+    } else if status == StatusCode::SERVICE_UNAVAILABLE || status == StatusCode::GATEWAY_TIMEOUT {
+        TrackingError::ServiceUnavailable(message)
+    } else {
+        TrackingError::Upstream(message)
+    }
 }
 
 pub fn build_tracking_url(base_url: &str, shipment_id: &str) -> String {

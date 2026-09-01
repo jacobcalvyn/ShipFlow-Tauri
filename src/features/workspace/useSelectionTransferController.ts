@@ -99,14 +99,7 @@ export function useSelectionTransferController({
     [activeSheetId, workspaceTabs]
   );
   const resolveSelectedEngineMutationRowIds = useCallback(async () => {
-    const selectedEngineRowIdsMirrorUiKeys =
-      selectedEngineRowIds.length === selectedVisibleRowKeys.length &&
-      selectedEngineRowIds.every((rowId, index) => rowId === selectedVisibleRowKeys[index]);
-    if (
-      selectedEngineRowIds.length === selectedTrackingIds.length &&
-      selectedEngineRowIds.every((rowId) => rowId.trim() !== "") &&
-      !selectedEngineRowIdsMirrorUiKeys
-    ) {
+    if (selectedEngineRowIds.length > 0) {
       return selectedEngineRowIds;
     }
 
@@ -186,7 +179,7 @@ export function useSelectionTransferController({
 
   const transferSelectedIdsToNewSheet = useCallback(
     async (mode: SelectionTransferMode) => {
-      if (selectedTrackingIds.length === 0) {
+      if (selectedEngineRowIds.length === 0 && selectedTrackingIds.length === 0) {
         return;
       }
 
@@ -248,8 +241,8 @@ export function useSelectionTransferController({
         tone: "success",
         message:
           mode === "move"
-            ? `${selectedTrackingIds.length} ID dipindahkan ke sheet baru.`
-            : `${selectedTrackingIds.length} ID disalin ke sheet baru.`,
+            ? `${selectedEngineRowIds.length || selectedTrackingIds.length} ID dipindahkan ke sheet baru.`
+            : `${selectedEngineRowIds.length || selectedTrackingIds.length} ID disalin ke sheet baru.`,
       });
 
     },
@@ -262,6 +255,7 @@ export function useSelectionTransferController({
       removeSelectedRowsFromSource,
       resolveSelectedEngineMutationRowIds,
       selectedTrackingIds,
+      selectedEngineRowIds,
       selectedVisibleRowKeys,
       setHoveredColumn,
       setWorkspaceState,
@@ -273,7 +267,7 @@ export function useSelectionTransferController({
 
   const beginSelectedIdsDrag = useCallback(
     (event: ReactDragEvent<HTMLButtonElement>) => {
-      if (selectedTrackingIds.length === 0) {
+      if (selectedEngineRowIds.length === 0 || selectedTrackingIds.length === 0) {
         event.preventDefault();
         return;
       }
@@ -299,7 +293,7 @@ export function useSelectionTransferController({
 
   const transferSelectedIdsToExistingSheet = useCallback(
     async (mode: SelectionTransferMode, targetSheetId: string) => {
-      if (selectedTrackingIds.length === 0) {
+      if (selectedEngineRowIds.length === 0 && selectedTrackingIds.length === 0) {
         return;
       }
 
@@ -343,8 +337,8 @@ export function useSelectionTransferController({
         tone: "success",
         message:
           mode === "move"
-            ? `${selectedTrackingIds.length} ID dipindahkan ke ${targetSheetName}.`
-            : `${selectedTrackingIds.length} ID ditambahkan ke ${targetSheetName}.`,
+            ? `${selectedEngineRowIds.length || selectedTrackingIds.length} ID dipindahkan ke ${targetSheetName}.`
+            : `${selectedEngineRowIds.length || selectedTrackingIds.length} ID ditambahkan ke ${targetSheetName}.`,
       });
 
     },
@@ -356,6 +350,7 @@ export function useSelectionTransferController({
       removeSelectedRowsFromSource,
       resolveSelectedEngineMutationRowIds,
       selectedTrackingIds,
+      selectedEngineRowIds,
       selectedVisibleRowKeys,
       setWorkspaceState,
       showNotice,
@@ -381,10 +376,13 @@ export function useSelectionTransferController({
   );
 
   useEffect(() => {
-    if (selectedTrackingIds.length === 0 || appendTargetSheets.length === 0) {
+    if (
+      (selectedEngineRowIds.length === 0 && selectedTrackingIds.length === 0) ||
+      appendTargetSheets.length === 0
+    ) {
       setIsSheetTransferDragActive(false);
     }
-  }, [appendTargetSheets.length, selectedTrackingIds.length]);
+  }, [appendTargetSheets.length, selectedEngineRowIds.length, selectedTrackingIds.length]);
 
   return {
     appendTargetSheets,

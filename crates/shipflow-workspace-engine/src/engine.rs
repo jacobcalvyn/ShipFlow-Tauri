@@ -204,6 +204,12 @@ where
             })?,
         };
         let recovery = store.recover_interrupted_import_jobs()?;
+        let recovered_tracking_rows = store.recover_interrupted_tracking_rows()?;
+        if recovered_tracking_rows > 0 {
+            eprintln!(
+                "[ShipFlowWorkspaceEngine] recovered interrupted tracking rows count={recovered_tracking_rows}"
+            );
+        }
         let runtime = Self::new_with_blob_root_path(config, store, import_source, blob_root_path);
 
         Ok(WorkspaceEngineBootstrap {

@@ -135,6 +135,8 @@ struct CachedLookupError {
 enum CachedLookupErrorKind {
     BadRequest,
     NotFound,
+    RateLimited,
+    ServiceUnavailable,
     Upstream,
 }
 
@@ -888,12 +890,14 @@ impl CachedLookupError {
                 kind: CachedLookupErrorKind::NotFound,
                 message: message.clone(),
             },
-            TrackingError::RateLimited(message) | TrackingError::ServiceUnavailable(message) => {
-                Self {
-                    kind: CachedLookupErrorKind::Upstream,
-                    message: message.clone(),
-                }
-            }
+            TrackingError::RateLimited(message) => Self {
+                kind: CachedLookupErrorKind::RateLimited,
+                message: message.clone(),
+            },
+            TrackingError::ServiceUnavailable(message) => Self {
+                kind: CachedLookupErrorKind::ServiceUnavailable,
+                message: message.clone(),
+            },
             TrackingError::Upstream(message) => Self {
                 kind: CachedLookupErrorKind::Upstream,
                 message: message.clone(),
@@ -905,6 +909,10 @@ impl CachedLookupError {
         match self.kind {
             CachedLookupErrorKind::BadRequest => TrackingError::BadRequest(self.message.clone()),
             CachedLookupErrorKind::NotFound => TrackingError::NotFound(self.message.clone()),
+            CachedLookupErrorKind::RateLimited => TrackingError::RateLimited(self.message.clone()),
+            CachedLookupErrorKind::ServiceUnavailable => {
+                TrackingError::ServiceUnavailable(self.message.clone())
+            }
             CachedLookupErrorKind::Upstream => TrackingError::Upstream(self.message.clone()),
         }
     }
@@ -1186,7 +1194,6 @@ where
                 let permit = match acquire_contact_permit().await {
                     Ok(permit) => permit,
                     Err(error) => {
-                        contact_cache.store_failure_async(shipment_id).await;
                         response.contact_enrichment = Some(contact_enrichment_metadata(
                             ContactEnrichmentStatus::Failed,
                             &response,
@@ -2039,6 +2046,57 @@ mod tests {
             assert!(matches!(first_error, TrackingError::RateLimited(_)));
             assert_eq!(second.nomor_kantung.as_deref(), Some("PID-BUSY"));
             assert_eq!(fetch_count.load(Ordering::SeqCst), 2);
+        });
+    }
+
+    #[test]
+    fn cacheable_rate_limited_errors_replay_as_rate_limited() {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        runtime.block_on(async {
+            let cache = LookupCacheState::with_policy(create_test_policy());
+            let fetch_count = Arc::new(AtomicUsize::new(0));
+
+            let first_error = cache
+                .resolve_cached_lookup::<BagResponse, _, _>(
+                    LookupKind::Bag,
+                    "PID-429".into(),
+                    "pos-bag".into(),
+                    LookupRequestOptions::default(),
+                    {
+                        let fetch_count = Arc::clone(&fetch_count);
+                        move || async move {
+                            fetch_count.fetch_add(1, Ordering::SeqCst);
+                            Err(LookupLoaderError::cacheable(TrackingError::RateLimited(
+                                "Too many requests.".into(),
+                            )))
+                        }
+                    },
+                )
+                .await
+                .expect_err("first lookup should fail");
+
+            let second_error = cache
+                .resolve_cached_lookup::<BagResponse, _, _>(
+                    LookupKind::Bag,
+                    "PID-429".into(),
+                    "pos-bag".into(),
+                    LookupRequestOptions::default(),
+                    {
+                        let fetch_count = Arc::clone(&fetch_count);
+                        move || async move {
+                            fetch_count.fetch_add(1, Ordering::SeqCst);
+                            Err(LookupLoaderError::cacheable(TrackingError::Upstream(
+                                "should not refetch".into(),
+                            )))
+                        }
+                    },
+                )
+                .await
+                .expect_err("cached rate limit should replay");
+
+            assert!(matches!(first_error, TrackingError::RateLimited(_)));
+            assert!(matches!(second_error, TrackingError::RateLimited(_)));
+            assert_eq!(fetch_count.load(Ordering::SeqCst), 1);
         });
     }
 

@@ -605,13 +605,21 @@ export function useWorkspaceSheetViewModel(
     visibleSelectableKeys.length > 0 &&
     visibleSelectableKeys.every((key) => selectedRowKeySet.has(key));
 
+  const selectedActionRowKeys = activeSheet.selectedRowKeys;
+
   const selectedTrackingIds = useMemo(
-    () => getSelectedTableRowTrackingIds(displayedTableRows, selectedVisibleRowKeys),
-    [displayedTableRows, selectedVisibleRowKeys]
+    () =>
+      getSelectedTableRowTrackingIds(
+        displayedTableRows,
+        selectedActionRowKeys,
+        activeSheet.rows
+      ),
+    [activeSheet.rows, displayedTableRows, selectedActionRowKeys]
   );
   const selectedEngineRowIds = useMemo(
-    () => getSelectedTableRowEngineRowIds(displayedTableRows, selectedVisibleRowKeys),
-    [displayedTableRows, selectedVisibleRowKeys]
+    () =>
+      getSelectedTableRowEngineRowIds(displayedTableRows, selectedActionRowKeys),
+    [displayedTableRows, selectedActionRowKeys]
   );
 
   const allTrackingIds = useMemo(
@@ -680,8 +688,8 @@ export function useWorkspaceSheetViewModel(
 
     if (
       activeSheet.analytics.sourceScope === "selected_rows" &&
-      selectedVisibleRowKeys.length > 0 &&
-      selectedEngineRowIds.length !== selectedVisibleRowKeys.length
+      activeSheet.selectedRowKeys.length > 0 &&
+      selectedEngineRowIds.length !== activeSheet.selectedRowKeys.length
     ) {
       return null;
     }
@@ -772,6 +780,7 @@ export function useWorkspaceSheetViewModel(
     effectiveColumnWidths,
     exportableTableRows,
     rustExportRowsQuery,
+    rustSheetRowsBaseQuery,
     hiddenColumns,
     ignoredHiddenFilterCount,
     isDisplayedRowsQueryPending,

@@ -148,10 +148,12 @@ export function useWorkspaceShellViewController({
     : null;
   const actionTrackingRowsCount =
     rustActionRowCount ?? sheetViewModel.retrackableRows.length;
+  const selectedEngineRowIds = sheetViewModel.selectedEngineRowIds ?? [];
   const exportableRowsCount =
-    rustActionRowCount !== null && sheetViewModel.selectedVisibleRowKeys.length === 0
+    rustActionRowCount !== null && selectedEngineRowIds.length === 0
       ? rustActionRowCount
-      : sheetViewModel.exportableTableRows.length;
+      : selectedEngineRowIds.length ||
+        sheetViewModel.exportableTableRows.length;
   const sheetActionBarProps = useWorkspaceActionBarProps({
     loadedCount: sheetViewModel.loadedCount,
     totalShipmentCount: sheetViewModel.totalShipmentCount,
@@ -161,7 +163,9 @@ export function useWorkspaceShellViewController({
     deleteAllArmed: activeSheet.deleteAllArmed,
     exportableRowsCount,
     activeFilterCount: sheetViewModel.activeFilterCount,
-    selectedRowCount: sheetViewModel.selectedVisibleRowKeys.length,
+    selectedRowCount:
+      selectedEngineRowIds.length ||
+      sheetViewModel.selectedVisibleRowKeys.length,
     deleteSelectedArmed: deleteArm.deleteSelectedArmedSheetId === activeSheetId,
     ignoredHiddenFilterCount: sheetViewModel.ignoredHiddenFilterCount,
     columnShortcuts: sheetViewModel.columnShortcuts,
@@ -196,6 +200,7 @@ export function useWorkspaceShellViewController({
     effectiveDisplayScale: surface.effectiveDisplayScale,
     displayedTableRows: sheetViewModel.displayedTableRows,
     displayedRowWindow: sheetViewModel.displayedRowWindow,
+    rowsQuery: sheetViewModel.rustSheetRowsBaseQuery,
     visibleColumns: sheetViewModel.visibleColumns,
     hiddenColumns: sheetViewModel.hiddenColumns,
     effectiveColumnWidths: sheetViewModel.effectiveColumnWidths,

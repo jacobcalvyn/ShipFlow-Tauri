@@ -12,6 +12,7 @@ import {
   TRACKING_COLUMN_PATH,
 } from "./columns";
 import { ColumnDefinition, SheetRow, SheetState } from "./types";
+import { getEngineRowIdFromSelectionKey } from "./selection-keys";
 
 const ZERO_WIDTH_CHARACTERS_REGEX = /[\u200B-\u200D\uFEFF]/g;
 const NON_TRACKING_CHARACTERS_REGEX = /[^A-Z0-9.-]/g;
@@ -1009,7 +1010,10 @@ export function assertValidSheetState(sheetState: SheetState) {
   }
 
   for (const selectedRowKey of sheetState.selectedRowKeys) {
-    if (!rowKeySet.has(selectedRowKey)) {
+    if (
+      !rowKeySet.has(selectedRowKey) &&
+      !getEngineRowIdFromSelectionKey(selectedRowKey)
+    ) {
       throw new Error(`Selected row key ${selectedRowKey} does not exist in sheet state.`);
     }
   }
