@@ -41,6 +41,9 @@ pub struct ApiErrorBody {
     pub message: String,
 }
 
+/// Keep handler error variants compact without changing their JSON representation.
+pub type ApiErrorResponse = (StatusCode, Json<Box<ApiErrorEnvelope>>);
+
 pub fn generated_at_iso8601() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
@@ -82,24 +85,62 @@ pub fn error_response_v1(
     schema_version: &'static str,
     request_id: String,
     message: &str,
-) -> (StatusCode, Json<ApiErrorEnvelope>) {
+) -> ApiErrorResponse {
     (
         status,
-        Json(ApiErrorEnvelope {
+        Json(Box::new(ApiErrorEnvelope {
             meta: response_meta(schema_version, request_id),
             error: ApiErrorBody {
                 message: message.to_string(),
             },
             warnings: Vec::new(),
-        }),
+        })),
     )
 }
 
 #[cfg(test)]
 mod tests {
+    use axum::{body::to_bytes, http::StatusCode, response::IntoResponse};
     use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
-    use super::{envelope, generated_at_iso8601, API_VERSION};
+    use super::{envelope, error_response_v1, generated_at_iso8601, API_VERSION};
+
+    #[tokio::test]
+    async fn compact_error_response_preserves_http_contract() {
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::NOT_FOUND,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::GATEWAY_TIMEOUT,
+        ] {
+            let error = error_response_v1(status, "test.v1", "req-1".into(), "Lookup failed.");
+            let error_bytes = std::mem::size_of_val(&error);
+            assert!(error_bytes <= 128, "API error occupies {error_bytes} bytes");
+            let generated_at = error.1.meta.generated_at.clone();
+            OffsetDateTime::parse(&generated_at, &Rfc3339).unwrap();
+            let response = error.into_response();
+            assert_eq!(response.status(), status);
+            assert_eq!(response.headers()["content-type"], "application/json");
+            let body = to_bytes(response.into_body(), 4096).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(
+                body,
+                serde_json::json!({
+                    "meta": {
+                        "apiVersion": "v1",
+                        "schemaVersion": "test.v1",
+                        "requestId": "req-1",
+                        "generatedAt": generated_at,
+                    },
+                    "error": {"message": "Lookup failed."},
+                    "warnings": [],
+                })
+            );
+        }
+    }
 
     #[test]
     fn builds_v1_envelope_with_stable_meta() {

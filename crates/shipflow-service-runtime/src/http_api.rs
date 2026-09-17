@@ -32,7 +32,7 @@ use tokio::{
 };
 
 use crate::api_contract::{
-    envelope, error_response_v1, generate_request_id, REQUEST_ID_HEADER_NAME,
+    envelope, error_response_v1, generate_request_id, ApiErrorResponse, REQUEST_ID_HEADER_NAME,
 };
 use crate::bag_route_cache::{BagRouteCacheSnapshot, BagRouteCacheState, BagRouteFetchAction};
 use crate::contact_cache::{ContactCacheSnapshot, ContactCacheState};
@@ -671,10 +671,7 @@ async fn run_service_maintenance(state: HttpApiState) {
 async fn v1_status_handler(
     State(state): State<HttpApiState>,
     headers: HeaderMap,
-) -> Result<
-    Json<crate::api_contract::ApiEnvelope<StatusResponse>>,
-    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
-> {
+) -> Result<Json<crate::api_contract::ApiEnvelope<StatusResponse>>, ApiErrorResponse> {
     let request_id = authorize_request_id(&headers);
     Ok(envelope(
         STATUS_SCHEMA_VERSION,
@@ -686,10 +683,7 @@ async fn v1_status_handler(
 async fn v1_auth_check_handler(
     State(state): State<HttpApiState>,
     headers: HeaderMap,
-) -> Result<
-    Json<crate::api_contract::ApiEnvelope<AuthCheckResponse>>,
-    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
-> {
+) -> Result<Json<crate::api_contract::ApiEnvelope<AuthCheckResponse>>, ApiErrorResponse> {
     let request_id = authorize_request_id(&headers);
     authorize_state_request(&headers, &state).map_err(|message| {
         error_response_v1(
@@ -714,10 +708,7 @@ async fn v1_auth_check_handler(
 async fn v1_capabilities_handler(
     State(state): State<HttpApiState>,
     headers: HeaderMap,
-) -> Result<
-    Json<crate::api_contract::ApiEnvelope<CapabilitiesResponse>>,
-    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
-> {
+) -> Result<Json<crate::api_contract::ApiEnvelope<CapabilitiesResponse>>, ApiErrorResponse> {
     let request_id = authorize_request_id(&headers);
     authorize_state_request(&headers, &state).map_err(|message| {
         error_response_v1(
@@ -754,10 +745,7 @@ async fn v1_capabilities_handler(
 async fn v1_diagnostics_handler(
     State(state): State<HttpApiState>,
     headers: HeaderMap,
-) -> Result<
-    Json<crate::api_contract::ApiEnvelope<DiagnosticsResponse>>,
-    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
-> {
+) -> Result<Json<crate::api_contract::ApiEnvelope<DiagnosticsResponse>>, ApiErrorResponse> {
     let request_id = authorize_request_id(&headers);
     authorize_state_request(&headers, &state).map_err(|message| {
         error_response_v1(
@@ -800,7 +788,7 @@ async fn v1_diagnostics_handler(
 async fn v1_openapi_handler(
     State(state): State<HttpApiState>,
     headers: HeaderMap,
-) -> Result<Json<Value>, (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>)> {
+) -> Result<Json<Value>, ApiErrorResponse> {
     let request_id = authorize_request_id(&headers);
     authorize_state_request(&headers, &state).map_err(|message| {
         error_response_v1(
@@ -821,10 +809,7 @@ async fn v1_track_handler(
     State(state): State<HttpApiState>,
     headers: HeaderMap,
     Path(shipment_id): Path<String>,
-) -> Result<
-    Json<crate::api_contract::ApiEnvelope<TrackResponse>>,
-    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
-> {
+) -> Result<Json<crate::api_contract::ApiEnvelope<TrackResponse>>, ApiErrorResponse> {
     let request_id = authorize_request_id(&headers);
     authorize_state_request(&headers, &state).map_err(|message| {
         error_response_v1(
@@ -856,10 +841,7 @@ async fn v1_tracking_html_handler(
     State(state): State<HttpApiState>,
     headers: HeaderMap,
     Path(shipment_id): Path<String>,
-) -> Result<
-    Json<crate::api_contract::ApiEnvelope<TrackingHtmlResponse>>,
-    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
-> {
+) -> Result<Json<crate::api_contract::ApiEnvelope<TrackingHtmlResponse>>, ApiErrorResponse> {
     let started_at = Instant::now();
     let request_id = authorize_request_id(&headers);
     authorize_state_request(&headers, &state).map_err(|message| {
@@ -903,10 +885,7 @@ async fn v1_bag_handler(
     State(state): State<HttpApiState>,
     headers: HeaderMap,
     Path(bag_id): Path<String>,
-) -> Result<
-    Json<crate::api_contract::ApiEnvelope<BagResponse>>,
-    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
-> {
+) -> Result<Json<crate::api_contract::ApiEnvelope<BagResponse>>, ApiErrorResponse> {
     let request_id = authorize_request_id(&headers);
     authorize_state_request(&headers, &state).map_err(|message| {
         error_response_v1(
@@ -936,10 +915,7 @@ async fn v1_manifest_handler(
     State(state): State<HttpApiState>,
     headers: HeaderMap,
     Path(manifest_id): Path<String>,
-) -> Result<
-    Json<crate::api_contract::ApiEnvelope<ManifestResponse>>,
-    (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>),
-> {
+) -> Result<Json<crate::api_contract::ApiEnvelope<ManifestResponse>>, ApiErrorResponse> {
     let request_id = authorize_request_id(&headers);
     authorize_state_request(&headers, &state).map_err(|message| {
         error_response_v1(
@@ -1519,7 +1495,7 @@ fn map_tracking_error_v1(
     error: TrackingError,
     schema_version: &'static str,
     request_id: String,
-) -> (StatusCode, Json<crate::api_contract::ApiErrorEnvelope>) {
+) -> ApiErrorResponse {
     match error {
         TrackingError::BadRequest(message) => error_response_v1(
             StatusCode::BAD_REQUEST,
