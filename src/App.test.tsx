@@ -762,6 +762,31 @@ describe("App workspace isolation", () => {
       if (command === "workspace_engine_command") {
         const workspaceCommand = args?.command;
 
+        if (workspaceCommand?.command === "restore_workspace") {
+          if (workspaceEngineUpsertFailureMessage) {
+            return Promise.reject(new Error(workspaceEngineUpsertFailureMessage));
+          }
+          const payload = workspaceCommand.payload as import("./features/workspace-engine/client").RestoreWorkspaceRequest;
+          const restored = new Map(payload.seedOnly ? workspaceEngineRowsBySheet : []);
+          for (const sheet of payload.sheets) {
+            if (payload.seedOnly && restored.get(sheet.sheetId)?.length) continue;
+            restored.set(sheet.sheetId, sheet.rows.map((row) => ({
+              rowId: row.rowId,
+              position: row.position,
+              displayTrackingId: row.displayTrackingId,
+              lookupTrackingId: row.displayTrackingId.replace(/\.\d+$/, ""),
+              rowStatus: row.rowStatus,
+              errorMessage: row.errorMessage,
+              statusJson: row.shipment?.status_akhir ?? null,
+              detailJson: row.shipment?.detail ?? null,
+              historyJson: row.shipment ?? null,
+            })));
+          }
+          workspaceEngineRowsBySheet.clear();
+          for (const [sheetId, rows] of restored) workspaceEngineRowsBySheet.set(sheetId, rows);
+          return Promise.resolve({ type: "sheets", payload: payload.sheets });
+        }
+
         if (workspaceCommand?.command === "list_sheets") {
           return Promise.resolve({
             type: "sheets",
@@ -3986,31 +4011,10 @@ describe("App workspace isolation", () => {
 
     expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("POPEN1");
     expect(getWorkspaceEngineCommandCalls("clear_sheet_rows")).toHaveLength(0);
-    expect(
-      getWorkspaceEngineCommandCalls("upsert_sheet_rows").some(([, args]) => {
-        const payload = args?.command?.payload as
-          | {
-              sheetId?: string;
-              replaceExisting?: boolean;
-              rows?: Array<{
-                rowId?: string;
-                position?: number;
-                displayTrackingId?: string;
-              }>;
-            }
-          | undefined;
-        return (
-          payload?.sheetId === "sheet-opened" &&
-          payload.replaceExisting === true &&
-          payload.rows?.some(
-            (row) =>
-              row.rowId === "row-opened" &&
-              row.position === 0 &&
-              row.displayTrackingId === "POPEN1"
-          )
-        );
-      })
-    ).toBe(true);
+    expect(getWorkspaceEngineCommandCalls("restore_workspace").some(([, args]) => {
+      const payload = args?.command?.payload as import("./features/workspace-engine/client").RestoreWorkspaceRequest;
+      return !payload.seedOnly && payload.sheets.some((sheet) => sheet.sheetId === "sheet-opened" && sheet.rows.some((row) => row.rowId === "row-opened" && row.position === 0 && row.displayTrackingId === "POPEN1"));
+    })).toBe(true);
     openFileMenu();
     expect(screen.getByRole("menuitem", { name: "picked-open.shipflow" })).toBeInTheDocument();
   });
@@ -4028,7 +4032,12 @@ describe("App workspace isolation", () => {
         screen.getByText("Workspace engine document migration failed.")
       ).toBeInTheDocument();
       expect(getInvokeCalls("read_workspace_document")).toHaveLength(1);
-      expectWorkspaceEngineCommandCount("upsert_sheet_rows", 1);
+      expect(
+        getWorkspaceEngineCommandCalls("restore_workspace").filter(([, args]) => {
+          const payload = args?.command?.payload as { seedOnly?: boolean } | undefined;
+          return payload?.seedOnly === false;
+        })
+      ).toHaveLength(1);
     });
 
     expect(screen.getAllByPlaceholderText("Masukkan ID")[0]).toHaveValue("");

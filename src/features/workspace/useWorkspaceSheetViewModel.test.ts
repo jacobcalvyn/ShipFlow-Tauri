@@ -132,6 +132,24 @@ describe("useWorkspaceSheetViewModel Rust analytics boundary", () => {
     });
   });
 
+  it("keeps matching engine rows visible and exportable alongside an incomplete local draft", async () => {
+    const sheet = createDefaultSheetState();
+    sheet.rows = [{ ...sheet.rows[0], trackingInput: "PENDING" }];
+    sheet.filters = { "status_akhir.status": "DELIVERED" };
+    mocks.querySheetRows.mockResolvedValue({ type:"sheet_rows", payload:{sheetId:"sheet-1",offset:0,limit:500,totalCount:1,hasMore:false,nextOffset:null,rows:[{rowId:"loaded-only-in-engine",position:0,displayTrackingId:"P1",lookupTrackingId:"P1",rowStatus:"loaded",errorMessage:null,statusJson:{status:"DELIVERED"},detailJson:{shipment_header:{nomor_kiriman:"P1"}},historyJson:{}}]}});
+    const { result } = renderHook(() => useWorkspaceSheetViewModel(sheet,"sheet-1"));
+    await waitFor(() => expect(result.current.displayedTableRows).toHaveLength(1));
+    expect(result.current.rustExportRowsQuery?.filters).toEqual([{field:"status_akhir.status",value:"DELIVERED"}]);
+  });
+
+  it("surfaces an oversized pivot failure instead of showing an empty successful result", async () => {
+    mocks.queryPivot.mockRejectedValueOnce(new Error("Pivot contains 10001 groups. Narrow the source filters."));
+    const sheet=createAnalyticsSheet();
+    const { result } = renderHook(() => useWorkspaceSheetViewModel(sheet,"sheet-1"));
+    await waitFor(() => expect(result.current.analyticsSummary.errorMessage).toContain("10001 groups"));
+    expect(result.current.analyticsSummary.rows).toEqual([]);
+  });
+
   it("uses the Rust pivot summary when the source row count matches the UI source", async () => {
     mocks.queryPivot.mockResolvedValueOnce({
       type: "pivot",

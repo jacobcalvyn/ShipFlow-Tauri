@@ -266,6 +266,7 @@ pub async fn resolve_tracking_request(
     client: &Client,
     source_config: &TrackingSourceConfig,
     shipment_id: &str,
+    force_refresh: bool,
 ) -> Result<TrackResponse, TrackingError> {
     match source_config.tracking_source {
         TrackingSource::Default => scrape_pos_tracking(client, shipment_id).await,
@@ -276,6 +277,7 @@ pub async fn resolve_tracking_request(
                 &source_config.external_api_auth_token,
                 source_config.allow_insecure_external_api_http,
                 shipment_id,
+                force_refresh,
             )
             .await
         }
@@ -299,6 +301,7 @@ pub async fn resolve_bag_request(
     client: &Client,
     source_config: &TrackingSourceConfig,
     bag_id: &str,
+    force_refresh: bool,
 ) -> Result<BagResponse, TrackingError> {
     match source_config.tracking_source {
         TrackingSource::Default => scrape_pos_bag(client, bag_id).await,
@@ -309,6 +312,7 @@ pub async fn resolve_bag_request(
                 &source_config.external_api_auth_token,
                 source_config.allow_insecure_external_api_http,
                 bag_id,
+                force_refresh,
             )
             .await?;
             ensure_lookup_item_limit("External API bag response", response.items.len())?;
@@ -321,6 +325,7 @@ pub async fn resolve_manifest_request(
     client: &Client,
     source_config: &TrackingSourceConfig,
     manifest_id: &str,
+    force_refresh: bool,
 ) -> Result<ManifestResponse, TrackingError> {
     match source_config.tracking_source {
         TrackingSource::Default => scrape_pos_manifest(client, manifest_id).await,
@@ -331,6 +336,7 @@ pub async fn resolve_manifest_request(
                 &source_config.external_api_auth_token,
                 source_config.allow_insecure_external_api_http,
                 manifest_id,
+                force_refresh,
             )
             .await?;
             ensure_lookup_item_limit("External API manifest response", response.items.len())?;
@@ -353,6 +359,7 @@ pub async fn fetch_external_api_tracking(
     auth_token: &str,
     allow_insecure_http: bool,
     shipment_id: &str,
+    force_refresh: bool,
 ) -> Result<TrackResponse, TrackingError> {
     let total_started_at = Instant::now();
     let normalized_shipment_id = normalize_and_validate_shipment_id(shipment_id)?;
@@ -373,8 +380,13 @@ pub async fn fetch_external_api_tracking(
         })?;
 
     let http_started_at = Instant::now();
-    let response =
-        fetch_external_api_response(client, request_url.clone(), trimmed_auth_token).await?;
+    let response = fetch_external_api_response(
+        client,
+        request_url.clone(),
+        trimmed_auth_token,
+        force_refresh,
+    )
+    .await?;
     log_external_api_tracking_timing(
         &normalized_shipment_id,
         "http",
@@ -395,8 +407,13 @@ pub async fn fetch_external_api_tracking(
                 TrackingError::BadRequest(format!("External API tracking URL is invalid: {error}"))
             })?;
         let legacy_http_started_at = Instant::now();
-        let legacy_response =
-            fetch_external_api_response(client, legacy_request_url, trimmed_auth_token).await?;
+        let legacy_response = fetch_external_api_response(
+            client,
+            legacy_request_url,
+            trimmed_auth_token,
+            force_refresh,
+        )
+        .await?;
         log_external_api_tracking_timing(
             &normalized_shipment_id,
             "http",
@@ -421,6 +438,7 @@ pub async fn fetch_external_api_bag(
     auth_token: &str,
     allow_insecure_http: bool,
     bag_id: &str,
+    force_refresh: bool,
 ) -> Result<BagResponse, TrackingError> {
     let normalized_bag_id = normalize_and_validate_bag_id(bag_id)?;
     fetch_external_api_lookup(
@@ -428,9 +446,9 @@ pub async fn fetch_external_api_bag(
         base_url,
         auth_token,
         allow_insecure_http,
-        LookupKind::Bag,
-        &normalized_bag_id,
+        (LookupKind::Bag, &normalized_bag_id),
         parse_external_api_bag_response,
+        force_refresh,
     )
     .await
 }
@@ -441,6 +459,7 @@ pub async fn fetch_external_api_manifest(
     auth_token: &str,
     allow_insecure_http: bool,
     manifest_id: &str,
+    force_refresh: bool,
 ) -> Result<ManifestResponse, TrackingError> {
     let normalized_manifest_id = normalize_and_validate_manifest_id(manifest_id)?;
     fetch_external_api_lookup(
@@ -448,9 +467,9 @@ pub async fn fetch_external_api_manifest(
         base_url,
         auth_token,
         allow_insecure_http,
-        LookupKind::Manifest,
-        &normalized_manifest_id,
+        (LookupKind::Manifest, &normalized_manifest_id),
         parse_external_api_manifest_response,
+        force_refresh,
     )
     .await
 }
@@ -460,10 +479,11 @@ async fn fetch_external_api_lookup<T>(
     base_url: &str,
     auth_token: &str,
     allow_insecure_http: bool,
-    kind: LookupKind,
-    lookup_id: &str,
+    lookup: (LookupKind, &str),
     parser: fn(&str) -> Result<T, TrackingError>,
+    force_refresh: bool,
 ) -> Result<T, TrackingError> {
+    let (kind, lookup_id) = lookup;
     let parsed_base_url = parse_external_api_base_url(base_url, allow_insecure_http)?;
     let prefer_v1_contract = external_api_base_url_prefers_v1_contract(base_url);
     let trimmed_auth_token = auth_token.trim();
@@ -476,14 +496,24 @@ async fn fetch_external_api_lookup<T>(
 
     let request_url = build_external_api_lookup_url(&parsed_base_url, kind, lookup_id, true)?;
 
-    let response =
-        fetch_external_api_response(client, request_url.clone(), trimmed_auth_token).await?;
+    let response = fetch_external_api_response(
+        client,
+        request_url.clone(),
+        trimmed_auth_token,
+        force_refresh,
+    )
+    .await?;
 
     if response.status() == StatusCode::NOT_FOUND && !prefer_v1_contract {
         let legacy_request_url =
             build_external_api_lookup_url(&parsed_base_url, kind, lookup_id, false)?;
-        let legacy_response =
-            fetch_external_api_response(client, legacy_request_url, trimmed_auth_token).await?;
+        let legacy_response = fetch_external_api_response(
+            client,
+            legacy_request_url,
+            trimmed_auth_token,
+            force_refresh,
+        )
+        .await?;
         return read_external_api_json_response(legacy_response, parser).await;
     }
 
@@ -596,6 +626,7 @@ pub async fn probe_external_api_status(
         client,
         request_url.clone(),
         source_config.external_api_auth_token.trim(),
+        false,
     )
     .await?;
 
@@ -607,6 +638,7 @@ pub async fn probe_external_api_status(
             client,
             legacy_request_url,
             source_config.external_api_auth_token.trim(),
+            false,
         )
         .await?;
         return read_external_api_status_response(legacy_response).await;
@@ -663,9 +695,16 @@ async fn fetch_external_api_response(
     client: &Client,
     request_url: Url,
     bearer_token: &str,
+    force_refresh: bool,
 ) -> Result<Response, TrackingError> {
     for attempt in 1..=TRACKING_MAX_ATTEMPTS {
-        match send_external_api_request_with_hedge(client, request_url.clone(), bearer_token).await
+        match send_external_api_request_with_hedge(
+            client,
+            request_url.clone(),
+            bearer_token,
+            force_refresh,
+        )
+        .await
         {
             Ok(response) => {
                 if response.status().is_success()
@@ -705,11 +744,14 @@ async fn send_external_api_request(
     client: &Client,
     request_url: Url,
     api_token: String,
+    force_refresh: bool,
 ) -> Result<Response, reqwest::Error> {
-    apply_external_api_auth_headers(client.get(request_url), &api_token)
-        .header(ACCEPT, "application/json")
-        .send()
-        .await
+    let mut request = apply_external_api_auth_headers(client.get(request_url), &api_token)
+        .header(ACCEPT, "application/json");
+    if force_refresh {
+        request = request.header("x-shipflow-force-refresh", "true");
+    }
+    request.send().await
 }
 
 fn apply_external_api_auth_headers(request: RequestBuilder, api_token: &str) -> RequestBuilder {
@@ -722,8 +764,14 @@ async fn send_external_api_request_with_hedge(
     client: &Client,
     request_url: Url,
     bearer_token: &str,
+    force_refresh: bool,
 ) -> Result<Response, reqwest::Error> {
-    let primary = send_external_api_request(client, request_url.clone(), bearer_token.to_string());
+    let primary = send_external_api_request(
+        client,
+        request_url.clone(),
+        bearer_token.to_string(),
+        force_refresh,
+    );
     tokio::pin!(primary);
 
     tokio::select! {
@@ -738,6 +786,7 @@ async fn send_external_api_request_with_hedge(
                 client,
                 request_url,
                 bearer_token.to_string(),
+                force_refresh,
             );
             tokio::pin!(secondary);
 

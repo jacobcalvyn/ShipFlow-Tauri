@@ -1,32 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultWorkspaceState } from "./default-state";
-import {
-  syncWorkspaceStateToEngine,
-  WorkspaceEngineSyncCoordinator,
-} from "./engine-sync";
-import { updateActiveSheetInWorkspace } from "./actions";
-import {
-  createEngineSheet,
-  deleteSheet,
-  listEngineSheets,
-  querySheetRows,
-  upsertSheetRows,
-} from "../workspace-engine/client";
-
-vi.mock("../workspace-engine/client", () => ({
-  createEngineSheet: vi.fn(),
-  deleteSheet: vi.fn(),
-  listEngineSheets: vi.fn(),
-  querySheetRows: vi.fn(),
-  upsertSheetRows: vi.fn(),
-}));
-
-const createEngineSheetMock = vi.mocked(createEngineSheet);
-const deleteSheetMock = vi.mocked(deleteSheet);
-const listEngineSheetsMock = vi.mocked(listEngineSheets);
-const querySheetRowsMock = vi.mocked(querySheetRows);
-const upsertSheetRowsMock = vi.mocked(upsertSheetRows);
-
+import { syncWorkspaceStateToEngine, WorkspaceEngineSyncCoordinator } from "./engine-sync";
+import { restoreWorkspace } from "../workspace-engine/client";
+import { createTrackResponseFromProjection } from "../sheet/rust-row-window-adapter";
+vi.mock("../workspace-engine/client", () => ({ restoreWorkspace: vi.fn() }));
+const restoreMock = vi.mocked(restoreWorkspace);
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -40,213 +18,99 @@ function createDeferred<T>() {
 describe("workspace engine sync", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    createEngineSheetMock.mockResolvedValue({ payload: null } as never);
-    deleteSheetMock.mockResolvedValue({ payload: null } as never);
-    listEngineSheetsMock.mockResolvedValue({
-      payload: [],
-    } as never);
-    querySheetRowsMock.mockResolvedValue({
-      payload: {
-        sheetId: "default-sheet",
-        offset: 0,
-        limit: 1,
-        totalCount: 0,
-        hasMore: false,
-        nextOffset: null,
-        rows: [],
-      },
-    } as never);
-    upsertSheetRowsMock.mockResolvedValue({ payload: null } as never);
+    restoreMock.mockResolvedValue({ type: "sheets", payload: [] });
   });
 
-  it("syncs sheet metadata before replacing Rust rows", async () => {
-    let workspace = createDefaultWorkspaceState();
+  it("restores all document sheets and full tracking payloads in one atomic request", async () => {
+    const workspace = createDefaultWorkspaceState();
     const sheetId = workspace.activeSheetId;
-    workspace = {
-      ...workspace,
-      sheetMetaById: {
-        ...workspace.sheetMetaById,
-        [sheetId]: {
-          ...workspace.sheetMetaById[sheetId],
-          name: "Legacy Local",
-        },
-      },
-    };
-    workspace = updateActiveSheetInWorkspace(workspace, (sheet) => ({
-      ...sheet,
-      rows: sheet.rows.map((row, index) =>
-        index === 0
-          ? {
-              ...row,
-              key: "row-1",
-              trackingInput: " P2606020189412.30 ",
-            }
-          : row
-      ),
-    }));
-
-    await syncWorkspaceStateToEngine(workspace);
-
-    expect(createEngineSheetMock).toHaveBeenCalledWith({
-      sheetId,
-      name: "Legacy Local",
+    const row = workspace.sheetsById[sheetId].rows[0];
+    row.trackingInput = " P1.2 ";
+    row.shipment = createTrackResponseFromProjection({
+      rowId: row.key,
       position: 0,
+      displayTrackingId: "P1.2",
+      lookupTrackingId: "P1",
+      rowStatus: "loaded",
+      errorMessage: null,
+      statusJson: { status: "DELIVERED" },
+      detailJson: { shipment_header: { nomor_kiriman: "P1" } },
+      historyJson: {
+        url: "https://example.test/P1",
+        history: [{ status: "DELIVERED" }],
+        pod: { foto: "proof" },
+      },
     });
-    expect(upsertSheetRowsMock).toHaveBeenCalledWith({
-      sheetId,
-      replaceExisting: true,
-      rows: [
-        {
-          rowId: "row-1",
+    await syncWorkspaceStateToEngine(workspace);
+    expect(restoreMock).toHaveBeenCalledTimes(1);
+    expect(restoreMock).toHaveBeenCalledWith({
+      seedOnly: false,
+      sheets: [{
+        sheetId,
+        name: "Sheet 1",
+        position: 0,
+        rows: [{
+          rowId: row.key,
           position: 0,
-          displayTrackingId: "P2606020189412.30",
-        },
-      ],
+          displayTrackingId: "P1.2",
+          shipment: row.shipment,
+          rowStatus: "loaded",
+          errorMessage: null,
+        }],
+      }],
     });
-    expect(createEngineSheetMock.mock.invocationCallOrder[0]).toBeLessThan(
-      upsertSheetRowsMock.mock.invocationCallOrder[0]
+    expect(restoreMock.mock.calls[0][0].sheets[0].rows[0].shipment?.url).toBe(
+      "https://example.test/P1"
     );
   });
 
-  it("does not clear durable Rust rows when seeding an empty local mirror", async () => {
+  it("delegates empty-mirror seeding to the engine without replacing durable rows", async () => {
     const workspace = createDefaultWorkspaceState();
-    const sheetId = workspace.activeSheetId;
-
     await syncWorkspaceStateToEngine(workspace, { mode: "seed" });
-
-    expect(createEngineSheetMock).toHaveBeenCalledWith({
-      sheetId,
-      name: "Sheet 1",
-      position: 0,
-    });
-    expect(upsertSheetRowsMock).not.toHaveBeenCalled();
-  });
-
-  it("seeds local legacy rows only when the Rust sheet is empty", async () => {
-    let workspace = createDefaultWorkspaceState();
-    const sheetId = workspace.activeSheetId;
-    workspace = updateActiveSheetInWorkspace(workspace, (sheet) => ({
-      ...sheet,
-      rows: sheet.rows.map((row, index) =>
-        index === 0
-          ? {
-              ...row,
-              key: "row-legacy",
-              trackingInput: "PLEGACY1",
-            }
-          : row
-      ),
-    }));
-
-    await syncWorkspaceStateToEngine(workspace, { mode: "seed" });
-
-    expect(querySheetRowsMock).toHaveBeenCalledWith({
-      sheetId,
-      offset: 0,
-      limit: 1,
-      filters: [],
-      valueFilters: [],
-      sort: [],
-    });
-    expect(upsertSheetRowsMock).toHaveBeenCalledWith({
-      sheetId,
-      replaceExisting: true,
-      rows: [
-        {
-          rowId: "row-legacy",
-          position: 0,
-          displayTrackingId: "PLEGACY1",
-        },
-      ],
+    expect(restoreMock).toHaveBeenCalledWith({
+      seedOnly: true,
+      sheets: [{ sheetId: workspace.activeSheetId, name: "Sheet 1", position: 0, rows: [] }],
     });
   });
 
-  it("does not replace durable Rust rows when seed mode finds existing engine data", async () => {
-    let workspace = createDefaultWorkspaceState();
-    const sheetId = workspace.activeSheetId;
-    workspace = updateActiveSheetInWorkspace(workspace, (sheet) => ({
-      ...sheet,
-      rows: sheet.rows.map((row, index) =>
-        index === 0
-          ? {
-              ...row,
-              key: "row-legacy",
-              trackingInput: "PLEGACY1",
-            }
-          : row
-      ),
-    }));
-    querySheetRowsMock.mockResolvedValueOnce({
-      payload: {
-        sheetId,
-        offset: 0,
-        limit: 1,
-        totalCount: 1,
-        hasMore: false,
-        nextOffset: null,
-        rows: [
-          {
-            rowId: "rust-row-1",
-            position: 0,
-            displayTrackingId: "RUST1",
-            lookupTrackingId: "RUST1",
-            rowStatus: "loaded",
-            errorMessage: null,
-            statusJson: null,
-            detailJson: null,
-            historyJson: null,
-          },
-        ],
-      },
-    } as never);
-
-    await syncWorkspaceStateToEngine(workspace, { mode: "seed" });
-
-    expect(querySheetRowsMock).toHaveBeenCalledWith({
-      sheetId,
-      offset: 0,
-      limit: 1,
-      filters: [],
-      valueFilters: [],
-      sort: [],
-    });
-    expect(upsertSheetRowsMock).not.toHaveBeenCalled();
-  });
-
-  it("deletes engine sheets absent from a replacement workspace", async () => {
+  it("preserves sparse positions when seeding legacy rows", async () => {
     const workspace = createDefaultWorkspaceState();
-    listEngineSheetsMock.mockResolvedValueOnce({
-      payload: [
-        {
-          sheetId: workspace.activeSheetId,
-          workspaceId: "default-workspace",
-          name: "Sheet 1",
-          position: 0,
-          viewMode: "workspace",
-        },
-        {
-          sheetId: "stale-sheet",
-          workspaceId: "default-workspace",
-          name: "Stale",
-          position: 1,
-          viewMode: "workspace",
-        },
-      ],
-    } as never);
+    const row = workspace.sheetsById[workspace.activeSheetId].rows[2];
+    row.trackingInput = "P2";
+    await syncWorkspaceStateToEngine(workspace, { mode: "seed" });
+    expect(restoreMock.mock.calls[0][0]).toMatchObject({
+      seedOnly: true,
+      sheets: [{ rows: [{ rowId: row.key, position: 2, displayTrackingId: "P2" }] }],
+    });
+  });
 
+  it("preserves terminal errors and marks interrupted tracking as retryable", async () => {
+    const workspace = createDefaultWorkspaceState();
+    const rows = workspace.sheetsById[workspace.activeSheetId].rows;
+    Object.assign(rows[0], { trackingInput: "P1", loading: true });
+    Object.assign(rows[1], { trackingInput: "P2", error: "Not found" });
     await syncWorkspaceStateToEngine(workspace);
-
-    expect(deleteSheetMock).toHaveBeenCalledTimes(1);
-    expect(deleteSheetMock).toHaveBeenCalledWith({ sheetId: "stale-sheet" });
+    expect(restoreMock.mock.calls[0][0].sheets[0].rows).toEqual([
+      expect.objectContaining({
+        rowStatus: "failed",
+        errorMessage: "Tracking was interrupted. Retry this shipment.",
+      }),
+      expect.objectContaining({ rowStatus: "failed", errorMessage: "Not found" }),
+    ]);
   });
 
-  it("does not delete engine sheets while seeding a local mirror", async () => {
+  it("rejects a missing document sheet before any engine mutation", async () => {
     const workspace = createDefaultWorkspaceState();
+    workspace.sheetOrder.push("missing");
+    await expect(syncWorkspaceStateToEngine(workspace)).rejects.toThrow("Missing document sheet");
+    expect(restoreMock).not.toHaveBeenCalled();
+  });
 
-    await syncWorkspaceStateToEngine(workspace, { mode: "seed" });
-
-    expect(listEngineSheetsMock).not.toHaveBeenCalled();
-    expect(deleteSheetMock).not.toHaveBeenCalled();
+  it("propagates an atomic restore failure to the document controller", async () => {
+    restoreMock.mockRejectedValueOnce(new Error("Invalid document row"));
+    await expect(syncWorkspaceStateToEngine(createDefaultWorkspaceState())).rejects.toThrow(
+      "Invalid document row"
+    );
   });
 
   it("serializes document syncs and only commits the latest request", async () => {

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { access, mkdir } from "node:fs/promises";
+import { access, mkdir, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { app } from "electron";
 import { appLogger, pipeTextStreamToAppLogger } from "./app-logger";
@@ -52,6 +53,13 @@ const LONG_REQUEST_TIMEOUT_MS = 30 * 60_000;
 const MAX_REQUEST_TIMEOUT_MS = 2 * 60 * 60_000;
 
 function requestTimeoutMs(method: string, params: unknown) {
+  if (
+    method === "workspace.restore_file" ||
+    (method === "workspace.command" && params && typeof params === "object" &&
+      (params as { command?: unknown }).command === "restore_workspace")
+  ) {
+    return LONG_REQUEST_TIMEOUT_MS;
+  }
   if (method === "workspace.refresh_tracking_with_progress") {
     const rowCount =
       params && typeof params === "object" && Array.isArray((params as { rowIds?: unknown }).rowIds)
@@ -144,6 +152,27 @@ export class WorkspaceHostClient {
     onEvent?: (event: unknown) => void,
   ): Promise<T> {
     await this.start();
+    if (
+      method === "workspace.command" && params && typeof params === "object" &&
+      (params as { command?: unknown }).command === "restore_workspace"
+    ) {
+      const document = JSON.stringify((params as { payload: unknown }).payload);
+      if (Buffer.byteLength(document) > MAX_FRAME_BYTES / 2) {
+        const fileName = `workspace-restore-${randomUUID()}.json`;
+        const filePath = path.join(
+          path.dirname(workspaceDatabasePath(this.#windowLabel)),
+          fileName,
+        );
+        try {
+          await writeFile(filePath, document, { encoding: "utf8", mode: 0o600, flag: "wx" });
+          return await this.request<T>("workspace.restore_file", { fileName }, onEvent);
+        } finally {
+          await unlink(filePath).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT") appLogger.error("WorkspaceHost", error);
+          });
+        }
+      }
+    }
     const child = this.#child;
     if (!child || child.killed || !child.stdin.writable) {
       throw new Error("ShipFlow Workspace Host is not available.");

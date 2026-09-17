@@ -1200,7 +1200,11 @@ export function SheetAnalyticsView({
           />
         </div>
         <div className="analytics-content-stack">
-          {isPivotMode ? (
+          {summary.errorMessage ? (
+            <div role="alert" className="analytics-empty">
+              {summary.errorMessage}
+            </div>
+          ) : isPivotMode ? (
             <section className="analytics-summary-panel" aria-label="Tabel Pivot">
               <div className="analytics-panel-header">
                 <span>Pivot</span>

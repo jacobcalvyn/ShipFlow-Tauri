@@ -777,6 +777,8 @@ fn store_successful_tracking_response(
         status_json: serde_json::to_value(&response.status_akhir)?,
         detail_json: serde_json::to_value(&response.detail)?,
         history_json: json!({
+            "url": response.url,
+            "contact_enrichment": response.contact_enrichment,
             "pod": response.pod,
             "history": response.history,
             "history_summary": response.history_summary,

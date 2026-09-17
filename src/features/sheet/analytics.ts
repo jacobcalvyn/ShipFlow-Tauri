@@ -57,6 +57,7 @@ export type SheetAnalyticsPivotValueColumn = {
 };
 
 export type SheetAnalyticsSummary = {
+  errorMessage?: string;
   sourceRowCount: number;
   loadedRowCount: number;
   selectedRowCount: number;

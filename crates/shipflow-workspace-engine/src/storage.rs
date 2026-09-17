@@ -336,7 +336,213 @@ pub struct SqliteWorkspaceStore {
     connection: Connection,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreWorkspaceInput {
+    pub sheets: Vec<RestoreSheetInput>,
+    #[serde(default)]
+    pub seed_only: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreSheetInput {
+    pub sheet_id: String,
+    pub name: String,
+    pub position: u32,
+    pub rows: Vec<RestoreRowInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreRowInput {
+    pub row_id: String,
+    pub position: u32,
+    pub display_tracking_id: String,
+    pub shipment: Option<serde_json::Value>,
+    pub row_status: Option<SheetRowStatus>,
+    pub error_message: Option<String>,
+}
+
 impl SqliteWorkspaceStore {
+    pub fn restore_workspace(&mut self, input: &RestoreWorkspaceInput) -> WorkspaceStoreResult<()> {
+        let invalid = |field, value: &str| WorkspaceStoreError::InvalidValue {
+            field,
+            value: value.to_string(),
+        };
+        let workspace_id = self
+            .primary_workspace_id()?
+            .ok_or_else(|| invalid("workspace", "primary"))?;
+        if input.sheets.is_empty() {
+            return Err(invalid("sheets", "empty"));
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if !input.seed_only {
+            tx.execute(
+                "DELETE FROM sheets WHERE workspace_id = ?1",
+                params![workspace_id],
+            )?;
+        }
+        let now = now_utc_text();
+        let mut sheet_ids = std::collections::HashSet::new();
+        let mut sheet_positions = std::collections::HashSet::new();
+        let mut row_ids = std::collections::HashSet::new();
+        for sheet in &input.sheets {
+            if sheet.sheet_id.trim().is_empty()
+                || sheet.name.trim().is_empty()
+                || !sheet_ids.insert(&sheet.sheet_id)
+                || !sheet_positions.insert(sheet.position)
+            {
+                return Err(invalid("document_sheet", &sheet.sheet_id));
+            }
+            tx.execute(
+                "INSERT INTO sheets (id, workspace_id, name, position, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                 ON CONFLICT(id) DO UPDATE SET name=excluded.name, position=excluded.position, updated_at=excluded.updated_at
+                 WHERE sheets.workspace_id=excluded.workspace_id",
+                params![sheet.sheet_id, workspace_id, sheet.name.trim(), sheet.position, now],
+            )?;
+            let owner: String = tx.query_row(
+                "SELECT workspace_id FROM sheets WHERE id=?1",
+                params![sheet.sheet_id],
+                |row| row.get(0),
+            )?;
+            if owner != workspace_id {
+                return Err(invalid("document_sheet_owner", &sheet.sheet_id));
+            }
+            let existing: u32 = tx.query_row(
+                "SELECT COUNT(*) FROM sheet_rows WHERE sheet_id=?1",
+                params![sheet.sheet_id],
+                |row| row.get(0),
+            )?;
+            if input.seed_only && existing > 0 {
+                continue;
+            }
+            let mut positions = std::collections::HashSet::new();
+            for row in &sheet.rows {
+                if row.row_id.trim().is_empty()
+                    || row.display_tracking_id.trim().is_empty()
+                    || !row_ids.insert(&row.row_id)
+                    || !positions.insert(row.position)
+                {
+                    return Err(invalid("document_row", &row.row_id));
+                }
+                let resolved = crate::tracking::resolve_tracking_id(&row.display_tracking_id);
+                let row_status = match row.row_status {
+                    Some(SheetRowStatus::Loading | SheetRowStatus::Pending) => {
+                        SheetRowStatus::Failed
+                    }
+                    Some(status) => status,
+                    None if row.shipment.is_some() => SheetRowStatus::Loaded,
+                    None => SheetRowStatus::Empty,
+                };
+                upsert_sheet_row_on(
+                    &tx,
+                    &UpsertSheetRowInput {
+                        row_id: row.row_id.clone(),
+                        sheet_id: sheet.sheet_id.clone(),
+                        position: row.position,
+                        display_tracking_id: resolved.display_id.clone(),
+                        lookup_tracking_id: resolved.lookup_id.clone(),
+                        row_status,
+                        error_message: row.error_message.clone(),
+                    },
+                    &now,
+                )?;
+                if let Some(shipment) = &row.shipment {
+                    let mut history = shipment
+                        .as_object()
+                        .cloned()
+                        .ok_or_else(|| invalid("shipment", &row.row_id))?;
+                    let detail = history
+                        .remove("detail")
+                        .filter(|v| v.is_object())
+                        .ok_or_else(|| invalid("shipment_detail", &row.row_id))?;
+                    let status = history
+                        .remove("status_akhir")
+                        .filter(|v| v.is_object())
+                        .ok_or_else(|| invalid("shipment_status", &row.row_id))?;
+                    let record_id = format!("document:{}", next_row_generation());
+                    tx.execute(
+                        "INSERT INTO tracking_records (id, display_tracking_id, lookup_tracking_id, normalized_status, status_json, detail_json, history_json, fetched_at, source_url)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        params![record_id, resolved.display_id, resolved.lookup_id, status.get("status").and_then(|v| v.as_str()),
+                            serde_json::to_string(&status)?, serde_json::to_string(&detail)?, serde_json::to_string(&history)?, now,
+                            shipment.get("url").and_then(|v| v.as_str()).unwrap_or("")],
+                    )?;
+                    tx.execute(
+                        "UPDATE sheet_rows SET tracking_record_id=?2 WHERE id=?1",
+                        params![row.row_id, record_id],
+                    )?;
+                }
+            }
+            tx.execute(
+                "DELETE FROM analytics_cache WHERE sheet_id=?1",
+                params![sheet.sheet_id],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM tracking_records WHERE id LIKE 'document:%'
+             AND NOT EXISTS (SELECT 1 FROM sheet_rows WHERE tracking_record_id = tracking_records.id)",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn append_sheet_rows_atomic(
+        &mut self,
+        sheet_id: &str,
+        inputs: &[UpsertSheetRowInput],
+    ) -> WorkspaceStoreResult<()> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let start: u32 = tx.query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM sheet_rows WHERE sheet_id=?1",
+            params![sheet_id],
+            |row| row.get(0),
+        )?;
+        let now = now_utc_text();
+        for (index, input) in inputs.iter().enumerate() {
+            if input.sheet_id != sheet_id
+                || tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sheet_rows WHERE id=?1)",
+                    params![input.row_id],
+                    |row| row.get::<_, bool>(0),
+                )?
+            {
+                return Err(WorkspaceStoreError::InvalidValue {
+                    field: "append_row",
+                    value: input.row_id.clone(),
+                });
+            }
+            let position = u32::try_from(index)
+                .ok()
+                .and_then(|i| start.checked_add(i))
+                .ok_or_else(|| WorkspaceStoreError::InvalidValue {
+                    field: "append_position",
+                    value: index.to_string(),
+                })?;
+            upsert_sheet_row_on(
+                &tx,
+                &UpsertSheetRowInput {
+                    position,
+                    ..input.clone()
+                },
+                &now,
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM analytics_cache WHERE sheet_id=?1",
+            params![sheet_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn open(path: impl AsRef<Path>) -> WorkspaceStoreResult<Self> {
         let connection = Connection::open(path)?;
         Self::initialize(connection)
@@ -2719,10 +2925,10 @@ fn build_sheet_sort_sql(sort: &[SheetSort]) -> String {
 
 const DAYS_SINCE_TRANSACTION_FILTER_SQL: &str = "COALESCE(CAST(julianday(date('now', 'localtime')) - julianday(substr(json_extract(tr.detail_json, '$.origin_detail.tanggal_input'), 1, 10)) AS INTEGER), '')";
 const DAYS_SINCE_TRANSACTION_SORT_SQL: &str = "CAST(COALESCE(julianday(date('now', 'localtime')) - julianday(substr(json_extract(tr.detail_json, '$.origin_detail.tanggal_input'), 1, 10)), 0) AS REAL)";
-const DAYS_SINCE_LAST_UNBAGGING_FILTER_SQL: &str = "COALESCE((SELECT CAST(julianday(date('now', 'localtime')) - julianday(substr(json_extract(entry.value, '$.unbagging.tanggal'), 1, 10)) AS INTEGER) FROM json_each(json_extract(tr.history_json, '$.history_summary.bagging_unbagging')) AS entry WHERE json_type(entry.value, '$.unbagging') IS NOT NULL AND json_extract(entry.value, '$.unbagging.tanggal') IS NOT NULL ORDER BY COALESCE(julianday(json_extract(entry.value, '$.unbagging.tanggal') || ' ' || COALESCE(json_extract(entry.value, '$.unbagging.waktu'), '00:00:00')), 0) DESC, CAST(entry.key AS INTEGER) DESC LIMIT 1), '')";
-const DAYS_SINCE_LAST_UNBAGGING_SORT_SQL: &str = "CAST(COALESCE((SELECT julianday(date('now', 'localtime')) - julianday(substr(json_extract(entry.value, '$.unbagging.tanggal'), 1, 10)) FROM json_each(json_extract(tr.history_json, '$.history_summary.bagging_unbagging')) AS entry WHERE json_type(entry.value, '$.unbagging') IS NOT NULL AND json_extract(entry.value, '$.unbagging.tanggal') IS NOT NULL ORDER BY COALESCE(julianday(json_extract(entry.value, '$.unbagging.tanggal') || ' ' || COALESCE(json_extract(entry.value, '$.unbagging.waktu'), '00:00:00')), 0) DESC, CAST(entry.key AS INTEGER) DESC LIMIT 1), 0) AS REAL)";
-const LATEST_BAGGING_STATUS_FILTER_SQL: &str = "COALESCE((SELECT json_extract(entry.value, '$.nomor_kantung') || ' - ' || CASE WHEN json_type(entry.value, '$.unbagging') IS NOT NULL THEN 'Unbagging' ELSE 'Bagging' END FROM json_each(json_extract(tr.history_json, '$.history_summary.bagging_unbagging')) AS entry WHERE json_extract(entry.value, '$.nomor_kantung') IS NOT NULL AND (json_type(entry.value, '$.bagging') IS NOT NULL OR json_type(entry.value, '$.unbagging') IS NOT NULL) ORDER BY CAST(entry.key AS INTEGER) DESC LIMIT 1), '')";
-const LATEST_BAGGING_STATUS_SORT_SQL: &str = "COALESCE((SELECT json_extract(entry.value, '$.nomor_kantung') || ' - ' || CASE WHEN json_type(entry.value, '$.unbagging') IS NOT NULL THEN 'Unbagging' ELSE 'Bagging' END FROM json_each(json_extract(tr.history_json, '$.history_summary.bagging_unbagging')) AS entry WHERE json_extract(entry.value, '$.nomor_kantung') IS NOT NULL AND (json_type(entry.value, '$.bagging') IS NOT NULL OR json_type(entry.value, '$.unbagging') IS NOT NULL) ORDER BY CAST(entry.key AS INTEGER) DESC LIMIT 1), '') COLLATE NOCASE";
+const DAYS_SINCE_LAST_UNBAGGING_FILTER_SQL: &str = "COALESCE((SELECT CAST(julianday(date('now', 'localtime')) - julianday(substr(json_extract(entry.value, '$.unbagging.tanggal'), 1, 10)) AS INTEGER) FROM json_each(json_extract(tr.history_json, '$.history_summary.bagging_unbagging')) AS entry WHERE json_type(entry.value, '$.unbagging') = 'object' AND json_extract(entry.value, '$.unbagging.tanggal') IS NOT NULL ORDER BY COALESCE(julianday(json_extract(entry.value, '$.unbagging.tanggal') || ' ' || COALESCE(json_extract(entry.value, '$.unbagging.waktu'), '00:00:00')), 0) DESC, CAST(entry.key AS INTEGER) DESC LIMIT 1), '')";
+const DAYS_SINCE_LAST_UNBAGGING_SORT_SQL: &str = "CAST(COALESCE((SELECT julianday(date('now', 'localtime')) - julianday(substr(json_extract(entry.value, '$.unbagging.tanggal'), 1, 10)) FROM json_each(json_extract(tr.history_json, '$.history_summary.bagging_unbagging')) AS entry WHERE json_type(entry.value, '$.unbagging') = 'object' AND json_extract(entry.value, '$.unbagging.tanggal') IS NOT NULL ORDER BY COALESCE(julianday(json_extract(entry.value, '$.unbagging.tanggal') || ' ' || COALESCE(json_extract(entry.value, '$.unbagging.waktu'), '00:00:00')), 0) DESC, CAST(entry.key AS INTEGER) DESC LIMIT 1), 0) AS REAL)";
+const LATEST_BAGGING_STATUS_FILTER_SQL: &str = "COALESCE((SELECT json_extract(entry.value, '$.nomor_kantung') || ' - ' || CASE WHEN json_type(entry.value, '$.unbagging') = 'object' THEN 'Unbagging' ELSE 'Bagging' END FROM json_each(json_extract(tr.history_json, '$.history_summary.bagging_unbagging')) AS entry WHERE json_extract(entry.value, '$.nomor_kantung') IS NOT NULL AND (json_type(entry.value, '$.bagging') = 'object' OR json_type(entry.value, '$.unbagging') = 'object') ORDER BY CAST(entry.key AS INTEGER) DESC LIMIT 1), '')";
+const LATEST_BAGGING_STATUS_SORT_SQL: &str = "COALESCE((SELECT json_extract(entry.value, '$.nomor_kantung') || ' - ' || CASE WHEN json_type(entry.value, '$.unbagging') = 'object' THEN 'Unbagging' ELSE 'Bagging' END FROM json_each(json_extract(tr.history_json, '$.history_summary.bagging_unbagging')) AS entry WHERE json_extract(entry.value, '$.nomor_kantung') IS NOT NULL AND (json_type(entry.value, '$.bagging') = 'object' OR json_type(entry.value, '$.unbagging') = 'object') ORDER BY CAST(entry.key AS INTEGER) DESC LIMIT 1), '') COLLATE NOCASE";
 const LATEST_MANIFEST_R7_FILTER_SQL: &str = "COALESCE((SELECT json_extract(entry.value, '$.nomor_r7') FROM json_each(json_extract(tr.history_json, '$.history_summary.manifest_r7')) AS entry WHERE json_extract(entry.value, '$.nomor_r7') IS NOT NULL ORDER BY CAST(entry.key AS INTEGER) DESC LIMIT 1), '')";
 const LATEST_MANIFEST_R7_SORT_SQL: &str = "COALESCE((SELECT json_extract(entry.value, '$.nomor_r7') FROM json_each(json_extract(tr.history_json, '$.history_summary.manifest_r7')) AS entry WHERE json_extract(entry.value, '$.nomor_r7') IS NOT NULL ORDER BY CAST(entry.key AS INTEGER) DESC LIMIT 1), '') COLLATE NOCASE";
 const LATEST_DELIVERY_RUNSHEET_FILTER_SQL: &str = "COALESCE((SELECT COALESCE((SELECT json_extract(update_entry.value, '$.status') FROM json_each(json_extract(entry.value, '$.updates')) AS update_entry ORDER BY CAST(update_entry.key AS INTEGER) DESC LIMIT 1), json_extract(entry.value, '$.status'), 'Delivery Runsheet') || ' | ' || COALESCE(substr(COALESCE((SELECT json_extract(update_entry.value, '$.tanggal') FROM json_each(json_extract(entry.value, '$.updates')) AS update_entry ORDER BY CAST(update_entry.key AS INTEGER) DESC LIMIT 1), json_extract(entry.value, '$.tanggal')), 1, 10), '-') || ' | ' || COALESCE((SELECT json_extract(update_entry.value, '$.petugas') FROM json_each(json_extract(entry.value, '$.updates')) AS update_entry ORDER BY CAST(update_entry.key AS INTEGER) DESC LIMIT 1), json_extract(entry.value, '$.petugas_kurir'), json_extract(entry.value, '$.petugas_mandor'), json_extract(entry.value, '$.lokasi'), '-') FROM json_each(json_extract(tr.history_json, '$.history_summary.delivery_runsheet')) AS entry ORDER BY CAST(entry.key AS INTEGER) DESC LIMIT 1), '')";
@@ -4961,6 +5167,80 @@ mod tests {
         assert_eq!(unbag_values.values.len(), 1);
         assert_eq!(unbag_values.values[0].count, 1);
         assert!(unbag_values.values[0].value.parse::<i64>().is_ok());
+    }
+
+    #[test]
+    fn bagging_queries_distinguish_missing_null_and_object_unbagging() {
+        for unbagging in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!({"tanggal":"2026-09-17"})),
+        ] {
+            let mut store = prepared_store();
+            let mut entry =
+                serde_json::json!({"nomor_kantung":"BAG1", "bagging":{"tanggal":"2026-09-16"}});
+            let expected = if unbagging.as_ref().is_some_and(|v| v.is_object()) {
+                "BAG1 - Unbagging"
+            } else {
+                "BAG1 - Bagging"
+            };
+            if let Some(value) = unbagging {
+                entry["unbagging"] = value;
+            }
+            store
+                .upsert_sheet_row(&UpsertSheetRowInput {
+                    row_id: "row".into(),
+                    sheet_id: "sheet-1".into(),
+                    position: 0,
+                    display_tracking_id: "P1".into(),
+                    lookup_tracking_id: "P1".into(),
+                    row_status: SheetRowStatus::Loaded,
+                    error_message: None,
+                })
+                .unwrap();
+            store.upsert_tracking_record(&UpsertTrackingRecordInput {record_id:"record".into(),display_tracking_id:"P1".into(),lookup_tracking_id:"P1".into(),normalized_status:None,status_json:serde_json::json!({}),detail_json:serde_json::json!({}),history_json:serde_json::json!({"history_summary":{"bagging_unbagging":[entry]}}),raw_blob_id:None,source_url:String::new()}).unwrap();
+            store
+                .attach_tracking_record_to_sheet_row(&AttachTrackingRecordToSheetRowInput {
+                    row_id: "row".into(),
+                    tracking_record_id: "record".into(),
+                    row_status: SheetRowStatus::Loaded,
+                    error_message: None,
+                })
+                .unwrap();
+            let values = store
+                .query_sheet_field_values(
+                    &SheetFieldValuesQuery {
+                        sheet_id: "sheet-1".into(),
+                        field: "history_summary.latest_bagging_status".into(),
+                        filters: vec![],
+                        value_filters: vec![],
+                        limit: 10,
+                    },
+                    10,
+                )
+                .unwrap();
+            assert_eq!(values.values[0].value, expected);
+            let rows = store
+                .query_sheet_rows(
+                    &SheetRowsQuery {
+                        sheet_id: "sheet-1".into(),
+                        offset: 0,
+                        limit: 10,
+                        filters: vec![],
+                        value_filters: vec![SheetValueFilter {
+                            field: "history_summary.latest_bagging_status".into(),
+                            values: vec![expected.into()],
+                        }],
+                        sort: vec![SheetSort {
+                            field: "history_summary.latest_bagging_status".into(),
+                            direction: SortDirection::Asc,
+                        }],
+                    },
+                    10,
+                )
+                .unwrap();
+            assert_eq!(rows.total_count, 1);
+        }
     }
 
     #[test]

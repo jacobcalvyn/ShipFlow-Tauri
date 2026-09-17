@@ -108,6 +108,10 @@ pub struct ChartResult {
 pub enum AnalyticsEngineError {
     DuckDb(duckdb::Error),
     Store(WorkspaceStoreError),
+    OutputGroupLimitExceeded {
+        total_groups: usize,
+        max_groups: u32,
+    },
     SourceRowLimitExceeded {
         sheet_id: String,
         total_count: u32,
@@ -120,6 +124,8 @@ impl Display for AnalyticsEngineError {
         match self {
             Self::DuckDb(error) => write!(formatter, "duckdb error: {error}"),
             Self::Store(error) => write!(formatter, "{error}"),
+            Self::OutputGroupLimitExceeded { total_groups, max_groups } => write!(formatter,
+                "Pivot contains {total_groups} groups, exceeding the limit of {max_groups}. Narrow the source filters or remove grouping fields; no partial totals were returned."),
             Self::SourceRowLimitExceeded {
                 sheet_id,
                 total_count,
@@ -282,7 +288,12 @@ fn query_pivot_from_rows_on_date(
 
     let mut output_rows = query_duckdb_pivot_rows(&connection, &bindings, query)?;
     apply_pivot_sort(&mut output_rows, &query.sort);
-    output_rows.truncate(query.limit as usize);
+    if output_rows.len() > query.limit as usize {
+        return Err(AnalyticsEngineError::OutputGroupLimitExceeded {
+            total_groups: output_rows.len(),
+            max_groups: query.limit,
+        });
+    }
 
     Ok(PivotResult {
         sheet_id: query.sheet_id.clone(),
@@ -1561,13 +1572,21 @@ mod tests {
                         field: "share".to_string(),
                         direction: AnalyticsSortDirection::Desc,
                     }],
-                    limit: 10,
+                    limit: 12,
                 },
             )
             .expect("10k DuckDB pivot succeeds");
 
         assert_eq!(pivot.source_row_count, 10_000);
-        assert!(!pivot.rows.is_empty());
+        assert_eq!(pivot.rows.len(), 12);
+        assert_eq!(
+            pivot
+                .rows
+                .iter()
+                .map(|row| row["count"].as_u64().unwrap())
+                .sum::<u64>(),
+            10_000
+        );
         let max_elapsed = if std::env::var_os("CI").is_some() {
             Duration::from_secs(60)
         } else {
@@ -1638,6 +1657,37 @@ mod tests {
             })),
             history_json: Some(json!({})),
         }
+    }
+
+    #[test]
+    fn oversized_pivot_rejects_partial_totals_instead_of_truncating() {
+        let rows = vec![
+            row_projection("a", "P1", "A", "DELIVERED", 0, json!(1)),
+            row_projection("b", "P2", "B", "DELIVERED", 0, json!(1)),
+        ];
+        let mut query = PivotQuery {
+            sheet_id: "sheet-1".into(),
+            source_scope: AnalyticsSourceScope::AllRows,
+            filters: vec![],
+            value_filters: vec![],
+            selected_row_ids: vec![],
+            row_fields: vec!["detail.shipment_header.nomor_kiriman".into()],
+            column_fields: vec![],
+            values: vec![],
+            sort: vec![],
+            limit: 1,
+        };
+        assert!(matches!(
+            query_pivot_from_rows(&rows, &query),
+            Err(AnalyticsEngineError::OutputGroupLimitExceeded {
+                total_groups: 2,
+                max_groups: 1
+            })
+        ));
+        query.limit = 2;
+        let result = query_pivot_from_rows(&rows, &query).unwrap();
+        assert_eq!(result.source_row_count, 2);
+        assert_eq!(result.rows.len(), 2);
     }
 
     fn prepared_store() -> SqliteWorkspaceStore {

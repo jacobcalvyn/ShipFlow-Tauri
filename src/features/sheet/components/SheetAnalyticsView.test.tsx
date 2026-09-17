@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { render, screen } from "@testing-library/react";
 import type { SheetAnalyticsRow } from "../analytics";
+import { createDefaultSheetState } from "../default-state";
+import { createEmptySheetAnalyticsSummary } from "../rust-analytics-adapter";
 import {
   createDonutBackground,
   selectChartRows,
+  SheetAnalyticsView,
 } from "./SheetAnalyticsView";
 
 function createRow({
@@ -33,6 +37,28 @@ function createRow({
 }
 
 describe("SheetAnalyticsView chart helpers", () => {
+  it("shows an actionable query error instead of partial pivot results", () => {
+    const sheet = createDefaultSheetState();
+    const message = "Pivot contains 10001 groups. Narrow the source filters.";
+    render(
+      <SheetAnalyticsView
+        analytics={{ ...sheet.analytics, chartType: "pivot" }}
+        groupByOptions={[]}
+        metricOptions={[]}
+        summary={{ ...createEmptySheetAnalyticsSummary(sheet), errorMessage: message }}
+        onSourceScopeChange={() => undefined}
+        onRowPathsChange={() => undefined}
+        onColumnPathsChange={() => undefined}
+        onValueMetricsChange={() => undefined}
+        onMetricAggregationChange={() => undefined}
+        onChartTypeChange={() => undefined}
+      />
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+    expect(screen.queryByRole("region", { name: "Tabel Pivot" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
   it("ranks chart rows by the selected metric instead of shipment share", () => {
     const lowMetricHighCount = createRow({
       key: "high-count",

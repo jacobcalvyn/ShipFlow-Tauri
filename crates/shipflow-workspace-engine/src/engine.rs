@@ -258,6 +258,39 @@ where
         &mut self.store
     }
 
+    /// Used only by the trusted main-process transport, never by renderer commands.
+    pub fn restore_workspace_file(
+        &mut self,
+        file_name: &str,
+    ) -> WorkspaceEngineRuntimeResult<Vec<SheetRecord>> {
+        let valid_name = file_name
+            .strip_prefix("workspace-restore-")
+            .and_then(|name| name.strip_suffix(".json"))
+            .is_some_and(|nonce| {
+                nonce.len() == 36 && nonce.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+            });
+        let directory = self
+            .blob_root_path
+            .as_ref()
+            .filter(|_| valid_name)
+            .ok_or_else(|| WorkspaceStoreError::InvalidValue {
+                field: "restore_file",
+                value: "invalid staging filename".into(),
+            })?;
+        let file_path = directory.join(file_name);
+        if !std::fs::symlink_metadata(&file_path)?.file_type().is_file() {
+            return Err(WorkspaceStoreError::InvalidValue {
+                field: "restore_file",
+                value: "not a regular staging file".into(),
+            }
+            .into());
+        }
+        let reader = std::io::BufReader::new(std::fs::File::open(file_path)?);
+        let input = serde_json::from_reader(reader).map_err(WorkspaceStoreError::from)?;
+        self.store.restore_workspace(&input)?;
+        Ok(self.store.list_sheets()?)
+    }
+
     pub fn import_source(&self) -> &Source {
         &self.import_source
     }
@@ -297,6 +330,10 @@ where
             WorkspaceEngineCommand::ListSheets => {
                 let sheets = self.store.list_sheets()?;
                 Ok(WorkspaceEngineResponse::Sheets(sheets))
+            }
+            WorkspaceEngineCommand::RestoreWorkspace(request) => {
+                self.store.restore_workspace(&request)?;
+                Ok(WorkspaceEngineResponse::Sheets(self.store.list_sheets()?))
             }
             WorkspaceEngineCommand::CreateSheet(request) => {
                 let sheet = self.create_sheet(request)?;
@@ -524,8 +561,23 @@ where
                 })
             })
             .collect::<Vec<_>>();
-        self.store
-            .upsert_sheet_rows_atomic(&request.sheet_id, &rows, request.replace_existing)?;
+        if request.append_at_end {
+            if request.replace_existing {
+                return Err(WorkspaceStoreError::InvalidValue {
+                    field: "append_at_end",
+                    value: "cannot replace existing rows".into(),
+                }
+                .into());
+            }
+            self.store
+                .append_sheet_rows_atomic(&request.sheet_id, &rows)?;
+        } else {
+            self.store.upsert_sheet_rows_atomic(
+                &request.sheet_id,
+                &rows,
+                request.replace_existing,
+            )?;
+        }
 
         self.query_first_sheet_row_window(request.sheet_id)
     }
@@ -759,6 +811,173 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restore_workspace_preserves_payloads_and_rolls_back_invalid_documents() {
+        let mut runtime = prepared_runtime(FakeImportSource::default());
+        let payload = serde_json::json!({
+            "sheets": [{"sheetId":"restored", "name":"Restored", "position":0,
+                "rows":[{"rowId":"saved-row", "position":2, "displayTrackingId":"P1.2",
+                    "shipment":{"url":"https://example.test/P1", "detail":{"shipment_header":{"nomor_kiriman":"P1"}},
+                        "status_akhir":{"status":"DELIVERED"}, "history":[{"status":"DELIVERED"}],
+                        "pod":{"foto":"proof"}, "history_summary":{"bagging_unbagging":[]},
+                        "contact_enrichment":{"status":"complete"}}, "rowStatus":"loaded"}]}]
+        });
+        let command = serde_json::from_value(
+            serde_json::json!({"command":"restore_workspace", "payload":payload}),
+        )
+        .unwrap();
+        runtime.handle_command(command).await.unwrap();
+        let row = runtime.store().get_sheet_row("saved-row").unwrap().unwrap();
+        assert_eq!(row.lookup_tracking_id, "P1");
+        assert_eq!(row.status_json.as_ref().unwrap()["status"], "DELIVERED");
+        assert_eq!(
+            row.history_json.as_ref().unwrap()["url"],
+            "https://example.test/P1"
+        );
+        assert_eq!(row.history_json.as_ref().unwrap()["pod"]["foto"], "proof");
+        assert_eq!(
+            row.history_json.as_ref().unwrap()["contact_enrichment"]["status"],
+            "complete"
+        );
+        assert!(runtime.store().get_sheet("sheet-1").unwrap().is_none());
+
+        let invalid = serde_json::from_value(
+            serde_json::json!({"command":"restore_workspace", "payload":{
+                "sheets":[{"sheetId":"first", "name":"First", "position":0, "rows":[]},
+                    {"sheetId":"second", "name":"Second", "position":1, "rows":[
+                        {"rowId":"duplicate", "position":0, "displayTrackingId":"P2"},
+                        {"rowId":"duplicate", "position":1, "displayTrackingId":"P3"}]}]
+            }}),
+        )
+        .unwrap();
+        assert!(runtime.handle_command(invalid).await.is_err());
+        assert_eq!(runtime.store().list_sheets().unwrap().len(), 1);
+        assert_eq!(
+            runtime.store().get_sheet_row("saved-row").unwrap().unwrap(),
+            row
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_keeps_sheet_snapshots_distinct_and_seed_preserves_durable_rows() {
+        let mut runtime = prepared_runtime(FakeImportSource::default());
+        let sheets: Vec<_> = ["DELIVERED", "INVEHICLE"]
+            .into_iter()
+            .enumerate()
+            .map(|(position, status)| {
+                serde_json::json!({
+                    "sheetId": format!("sheet-{position}"), "name": status, "position": position,
+                    "rows": [{"rowId":format!("row-{position}"), "position":0, "displayTrackingId":"P1",
+                        "shipment":{"detail":{}, "status_akhir":{"status":status}}}]
+                })
+            })
+            .collect();
+        let command = serde_json::from_value(serde_json::json!({
+            "command":"restore_workspace", "payload":{"sheets":sheets}
+        }))
+        .unwrap();
+        runtime.handle_command(command).await.unwrap();
+        let first = runtime.store().get_sheet_row("row-0").unwrap().unwrap();
+        let second = runtime.store().get_sheet_row("row-1").unwrap().unwrap();
+        assert_eq!(first.status_json.as_ref().unwrap()["status"], "DELIVERED");
+        assert_eq!(second.status_json.as_ref().unwrap()["status"], "INVEHICLE");
+
+        let seed = serde_json::from_value(serde_json::json!({
+            "command":"restore_workspace", "payload":{"seedOnly":true, "sheets":[{
+                "sheetId":"sheet-0", "name":"Seed", "position":0,
+                "rows":[{"rowId":"mirror-row", "position":0, "displayTrackingId":"P2"}]
+            }]}
+        }))
+        .unwrap();
+        runtime.handle_command(seed).await.unwrap();
+        assert_eq!(
+            runtime.store().get_sheet_row("row-0").unwrap().unwrap(),
+            first
+        );
+        assert_eq!(
+            runtime.store().get_sheet_row("row-1").unwrap().unwrap(),
+            second
+        );
+        assert!(runtime
+            .store()
+            .get_sheet_row("mirror-row")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn staged_restore_validates_files_and_preserves_workspace_on_parse_failure() {
+        let db_path = temp_db_path("staged-restore");
+        let directory = db_path.parent().unwrap();
+        fs::create_dir_all(directory).unwrap();
+        let mut runtime = prepared_runtime(FakeImportSource::default());
+        runtime.blob_root_path = Some(directory.to_path_buf());
+        let file_name = "workspace-restore-00000000-0000-0000-0000-000000000001.json";
+        let file_path = directory.join(file_name);
+        assert!(runtime.restore_workspace_file("../workspace.json").is_err());
+        fs::write(&file_path, "invalid document").unwrap();
+        assert!(runtime.restore_workspace_file(file_name).is_err());
+        assert!(runtime.store().get_sheet("sheet-1").unwrap().is_some());
+        fs::write(
+            &file_path,
+            serde_json::to_vec(&serde_json::json!({
+                "sheets": [{"sheetId":"staged", "name":"Staged", "position":0,
+                    "rows":[{"rowId":"staged-row", "position":0, "displayTrackingId":"P1"}]}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        runtime.restore_workspace_file(file_name).unwrap();
+        assert!(runtime
+            .store()
+            .get_sheet_row("staged-row")
+            .unwrap()
+            .is_some());
+        assert!(runtime.store().get_sheet("sheet-1").unwrap().is_none());
+        #[cfg(unix)]
+        {
+            let link_name = "workspace-restore-00000000-0000-0000-0000-000000000002.json";
+            std::os::unix::fs::symlink(&file_path, directory.join(link_name)).unwrap();
+            assert!(runtime.restore_workspace_file(link_name).is_err());
+        }
+        cleanup_temp_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn append_positions_are_allocated_after_sparse_rows_inside_the_engine() {
+        let mut runtime = prepared_runtime(FakeImportSource::default());
+        for (id, position) in [("A", 0), ("B", 2)] {
+            runtime
+                .store_mut()
+                .upsert_sheet_row(&UpsertSheetRowInput {
+                    row_id: id.into(),
+                    sheet_id: "sheet-1".into(),
+                    position,
+                    display_tracking_id: id.into(),
+                    lookup_tracking_id: id.into(),
+                    row_status: SheetRowStatus::Empty,
+                    error_message: None,
+                })
+                .unwrap();
+        }
+        for id in ["C", "D"] {
+            let command = serde_json::from_value(
+                serde_json::json!({"command":"upsert_sheet_rows", "payload":{
+                    "sheetId":"sheet-1", "appendAtEnd":true,
+                    "rows":[{"rowId":id,"position":2,"displayTrackingId":id}]
+                }}),
+            )
+            .unwrap();
+            runtime.handle_command(command).await.unwrap();
+        }
+        for (id, position) in [("A", 0), ("B", 2), ("C", 3), ("D", 4)] {
+            assert_eq!(
+                runtime.store().get_sheet_row(id).unwrap().unwrap().position,
+                position
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn runtime_dispatches_import_and_query_commands() {
         let mut source = FakeImportSource::default();
         source.push_bag(
@@ -929,6 +1148,7 @@ mod tests {
                 UpsertSheetRowsRequest {
                     sheet_id: "sheet-1".to_string(),
                     replace_existing: false,
+                    append_at_end: false,
                     rows: vec![
                         UpsertSheetRowRequest {
                             row_id: "ui-row-1".to_string(),
@@ -971,6 +1191,7 @@ mod tests {
                 UpsertSheetRowsRequest {
                     sheet_id: "sheet-1".to_string(),
                     replace_existing: true,
+                    append_at_end: false,
                     rows: vec![UpsertSheetRowRequest {
                         row_id: "ui-row-1".to_string(),
                         position: 0,
@@ -1005,6 +1226,7 @@ mod tests {
                 UpsertSheetRowsRequest {
                     sheet_id: "sheet-1".to_string(),
                     replace_existing: false,
+                    append_at_end: false,
                     rows: vec![UpsertSheetRowRequest {
                         row_id: "ui-row-1".to_string(),
                         position: 0,
@@ -1121,6 +1343,7 @@ mod tests {
                 UpsertSheetRowsRequest {
                     sheet_id: "sheet-2".to_string(),
                     replace_existing: false,
+                    append_at_end: false,
                     rows: vec![UpsertSheetRowRequest {
                         row_id: "ui-row-1".to_string(),
                         position: 0,
@@ -1175,6 +1398,7 @@ mod tests {
                 UpsertSheetRowsRequest {
                     sheet_id: "sheet-1".to_string(),
                     replace_existing: false,
+                    append_at_end: false,
                     rows: vec![
                         UpsertSheetRowRequest {
                             row_id: "ui-row-1".to_string(),

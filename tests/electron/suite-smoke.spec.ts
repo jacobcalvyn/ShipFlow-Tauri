@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import net from "node:net";
 import os from "node:os";
@@ -218,6 +218,7 @@ async function startSuite(): Promise<SmokeRuntime> {
     SHIPFLOW_SERVICE_AGENT_STATE_DIR: serviceStateDirectory,
     SHIPFLOW_LOG_FILE: logFilePath,
     SHIPFLOW_SERVICE_LOG_FILE: serviceLogFilePath,
+    SHIPFLOW_CONTACT_STORE_PATH: path.join(rootDirectory, "contacts.sqlite3"),
   };
   const application = await electron.launch({
     executablePath,
@@ -466,6 +467,27 @@ test("Electron suite owns Desktop, isolated Service settings, and single-instanc
     expect(runtime.application.windows().length).toBe(
       windowCountBeforeSettings + 1,
     );
+    // Only replace the OS integration in this isolated Electron test process.
+    // Saving fixture settings must never change the user's login items.
+    await runtime.application.evaluate(({ app }) => {
+      app.setLoginItemSettings = () => undefined;
+    });
+    await workspace.evaluate(() => window.shipflow!.requestWorkspace("workspace.command", { command: "list_sheets" }));
+    const hostLogBeforePreferences = await readFile(runtime.logFilePath, "utf8");
+    const hostStopsBefore = hostLogBeforePreferences.match(/workspace_host_stop_requested/g)?.length ?? 0;
+    const hostStartsBefore = hostLogBeforePreferences.match(/workspace_host_started/g)?.length ?? 0;
+    expect(hostStartsBefore).toBeGreaterThan(0);
+    for (const keepRunningInTray of [true, false]) {
+      await serviceSettings.evaluate(async (tray) => {
+        const config = await window.shipflow!.invoke<import("../../src/types").ServiceConfig>("load_saved_api_service_config");
+        await window.shipflow!.invoke("configure_api_service", { config: { ...config, keepRunningInTray: tray } });
+      }, keepRunningInTray);
+      await workspace.evaluate(() => window.shipflow!.requestWorkspace("workspace.command", { command: "list_sheets" }));
+    }
+    await expect.poll(async () => (await readFile(runtime.logFilePath, "utf8")).match(/service_config_saved/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    const hostLogAfterPreferences = await readFile(runtime.logFilePath, "utf8");
+    expect(hostLogAfterPreferences.match(/workspace_host_stop_requested/g)?.length ?? 0).toBe(hostStopsBefore);
+    expect(hostLogAfterPreferences.match(/workspace_host_started/g)?.length ?? 0).toBe(hostStartsBefore);
     const settingsScreenshotPath = testInfo.outputPath(
       "isolated-service-settings.png",
     );
@@ -498,6 +520,56 @@ test("Electron suite owns Desktop, isolated Service settings, and single-instanc
       { headers: { Authorization: `Bearer ${runtime.publicToken}` } },
     );
     expect(publicAuthResponse.ok).toBe(true);
+
+    // Exercise the private staging transport with a document above the 16 MiB
+    // NDJSON frame limit. Query one row to keep the response independently small.
+    const largeRestore = await workspace.evaluate(async () => {
+      const padding = "x".repeat(16 * 1024);
+      await window.shipflow!.requestWorkspace("workspace.command", {
+        command: "restore_workspace",
+        payload: {
+          sheets: [{
+            sheetId: "large-document",
+            name: "Large document",
+            position: 0,
+            rows: Array.from({ length: 1200 }, (_, position) => ({
+              rowId: `large-${position}`,
+              position,
+              displayTrackingId: `P${position}`,
+              shipment: {
+                url: "https://example.test/track",
+                detail: { shipment_header: { nomor_kiriman: `P${position}` } },
+                status_akhir: { status: "DELIVERED" },
+                history: [{ description: padding }],
+              },
+            })),
+          }],
+        },
+      });
+      const result = await window.shipflow!.requestWorkspace<{
+        payload: { totalCount: number; rows: { statusJson: { status: string }; historyJson: { history: { description: string }[] } }[] };
+      }>("workspace.command", {
+        command: "query_sheet_rows",
+        payload: { query: { sheetId: "large-document", offset: 1199, limit: 1, filters: [], valueFilters: [], sort: [] } },
+      });
+      return {
+        totalCount: result.payload.totalCount,
+        status: result.payload.rows[0].statusJson.status,
+        historyBytes: result.payload.rows[0].historyJson.history[0].description.length,
+      };
+    });
+    expect(largeRestore).toEqual({ totalCount: 1200, status: "DELIVERED", historyBytes: 16 * 1024 });
+    const stagingFiles = await readdir(path.join(runtime.rootDirectory, "desktop", "workspace-engine"));
+    expect(stagingFiles.filter((name) => name.startsWith("workspace-restore-"))).toEqual([]);
+    const privateRestoreError = await workspace.evaluate(async () => {
+      try {
+        await window.shipflow!.requestWorkspace("workspace.restore_file" as "workspace.command", { fileName: "workspace-restore-00000000-0000-0000-0000-000000000001.json" });
+        return null;
+      } catch (error) {
+        return String(error);
+      }
+    });
+    expect(privateRestoreError).toContain("Unsupported Workspace Engine method");
 
     const originalServicePid = await readManagedServicePid(
       runtime.serviceStateDirectory,

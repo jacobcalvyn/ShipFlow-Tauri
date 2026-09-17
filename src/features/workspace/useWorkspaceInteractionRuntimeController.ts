@@ -1177,7 +1177,10 @@ export function useWorkspaceInteractionRuntimeController({
         const existingTrackingIdSet = new Set<string>();
         if (mode === "append") {
           const existingRows = await queryAllImportCommitRows(activeSheetId);
-          startPosition = existingRows.totalCount;
+          startPosition = existingRows.rows.reduce(
+            (next, row) => Math.max(next, row.position + 1),
+            0
+          );
           const existingRowIdsByTrackingId = new Map<string, string>();
           existingRows.rows.forEach((row) => {
             const normalizedTrackingId = normalizeImportTrackingId(
@@ -1222,7 +1225,7 @@ export function useWorkspaceInteractionRuntimeController({
         if (rows.length > 0 || mode === "replace") {
           await upsertSheetRows({
             sheetId: activeSheetId,
-            ...(mode === "replace" ? { replaceExisting: true } : {}),
+            ...(mode === "replace" ? { replaceExisting: true } : { appendAtEnd: true }),
             rows,
           });
           committedToSheet = true;

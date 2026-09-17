@@ -487,10 +487,11 @@ export class ServiceAgentManager {
       }
       return this.status();
     }
-    return this.configure({
+    const result = await this.configure({
       ...current,
       enabled,
     });
+    return result.status;
   }
 
   async connection() {
@@ -583,7 +584,7 @@ export class ServiceAgentManager {
     if (next.enabled) {
       await this.connection();
     }
-    return this.status();
+    return { status: await this.status(), connectionChanged: requiresRestart };
   }
 
   async testExternalSource(frontendConfig: ServiceConfig) {

@@ -113,7 +113,15 @@ export function createTrackResponseFromProjection(
     : fallback.history_summary;
 
   return {
-    url: "",
+    url: typeof normalizedHistoryJson.url === "string"
+      ? normalizedHistoryJson.url
+      : "",
+    ...(isObject(normalizedHistoryJson.contact_enrichment)
+      ? {
+          contact_enrichment: normalizedHistoryJson.contact_enrichment as
+            TrackResponse["contact_enrichment"],
+        }
+      : {}),
     detail: {
       ...fallback.detail,
       ...normalizedDetailJson,

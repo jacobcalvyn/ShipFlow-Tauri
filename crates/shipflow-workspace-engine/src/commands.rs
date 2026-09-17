@@ -130,6 +130,8 @@ pub struct UpsertSheetRowsRequest {
     pub rows: Vec<UpsertSheetRowRequest>,
     #[serde(default)]
     pub replace_existing: bool,
+    #[serde(default)]
+    pub append_at_end: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +145,7 @@ pub struct UpsertSheetRowRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "command", content = "payload", rename_all = "snake_case")]
 pub enum WorkspaceEngineCommand {
+    RestoreWorkspace(crate::storage::RestoreWorkspaceInput),
     CreateImportJob(CreateImportJobRequest),
     RunImportJob(JobIdRequest),
     RetryImportJobFailed(JobIdRequest),
@@ -219,6 +222,7 @@ mod tests {
             sheet_id: "sheet-1".to_string(),
             rows: vec![],
             replace_existing: true,
+            append_at_end: false,
         });
         let json = serde_json::to_string(&command).expect("command serializes");
 

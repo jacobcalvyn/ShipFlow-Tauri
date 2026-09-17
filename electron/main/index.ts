@@ -1380,8 +1380,10 @@ async function handleCommand(
     case "get_api_service_status":
       return serviceAgent.status();
     case "configure_api_service": {
-      const status = await serviceAgent.configure(args.config as ServiceConfig);
-      stopAllWorkspaceHosts();
+      const { status, connectionChanged } = await serviceAgent.configure(
+        args.config as ServiceConfig,
+      );
+      if (connectionChanged) stopAllWorkspaceHosts();
       void refreshTrayContextMenu();
       return status;
     }

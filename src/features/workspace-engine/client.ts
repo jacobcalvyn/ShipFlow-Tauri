@@ -197,10 +197,25 @@ export type RefreshSheetRowsTrackingRequest = {
 export type UpsertSheetRowsRequest = {
   sheetId: string;
   replaceExisting?: boolean;
+  appendAtEnd?: boolean;
   rows: Array<{
     rowId: string;
     position: number;
     displayTrackingId: string;
+  }>;
+};
+
+export type RestoreWorkspaceRequest = {
+  seedOnly: boolean;
+  sheets: Array<CreateSheetRequest & {
+    rows: Array<{
+      rowId: string;
+      position: number;
+      displayTrackingId: string;
+      shipment: import("../../types").TrackResponse | null;
+      rowStatus: SheetRowStatus;
+      errorMessage: string | null;
+    }>;
   }>;
 };
 
@@ -352,6 +367,7 @@ export type ResolvedTrackingId = {
 };
 
 export type WorkspaceEngineCommand =
+  | { command: "restore_workspace"; payload: RestoreWorkspaceRequest }
   | {
       command: "create_import_job";
       payload: CreateImportJobRequest;
@@ -675,6 +691,10 @@ export function upsertSheetRows(payload: UpsertSheetRowsRequest) {
     command: "upsert_sheet_rows",
     payload,
   });
+}
+
+export function restoreWorkspace(payload: RestoreWorkspaceRequest) {
+  return workspaceEngineCommand<SheetsResponse>({ command: "restore_workspace", payload });
 }
 
 export function refreshSheetRowTracking(payload: RefreshSheetRowTrackingRequest) {

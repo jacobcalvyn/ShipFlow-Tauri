@@ -223,10 +223,6 @@ function getVisibleTextFilters(
     .filter((filter) => filter.value !== "");
 }
 
-function hasIncompleteTrackingRows(rows: SheetRow[]) {
-  return rows.some((row) => row.trackingInput.trim() !== "" && row.shipment === null);
-}
-
 export function canRustQueryField(path: string) {
   const column = COLUMN_BY_PATH.get(path);
   return Boolean(
@@ -308,13 +304,6 @@ export function createRustSheetRowsQuery(params: {
     : [];
 
   if (sortPath && !canRustQueryField(sortPath)) {
-    return null;
-  }
-
-  if (
-    (filters.length > 0 || valueFilters.length > 0 || sort.length > 0) &&
-    hasIncompleteTrackingRows(nonEmptyRows)
-  ) {
     return null;
   }
 

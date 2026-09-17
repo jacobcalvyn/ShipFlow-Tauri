@@ -489,9 +489,21 @@ export function useWorkspaceSheetViewModel(
       previousRustProjectedTableRowsRef.current?.windowKey === windowKey
         ? previousRustProjectedTableRowsRef.current.rows
         : [];
+    const hasFilters = Boolean(
+      rustSheetRowsQuery?.filters.length || rustSheetRowsQuery?.valueFilters?.length
+    );
+    const matchingLocalKeys = new Set(legacyDisplayedRows.map((row) => row.key));
+    const projectedRowIds = new Set(
+      authoritativeRustDisplayedRowsWindow.rows.map((row) => row.rowId)
+    );
+    const localRows = hasFilters
+      ? activeSheet.rows.filter(
+          (row) => projectedRowIds.has(row.key) || matchingLocalKeys.has(row.key)
+        )
+      : activeSheet.rows;
     const rows = createSheetTableRowsFromRustWindow(
       authoritativeRustDisplayedRowsWindow,
-      activeSheet.rows,
+      localRows,
       previousRows
     );
 
@@ -501,6 +513,8 @@ export function useWorkspaceSheetViewModel(
     activeSheet.rows,
     authoritativeRustDisplayedRowsWindow,
     isDisplayedRowsQueryPending,
+    legacyDisplayedRows,
+    rustSheetRowsQuery,
   ]);
   const displayedTableRows = rustProjectedTableRows ?? legacyDisplayedTableRows;
   const displayedRowWindow = isDisplayedRowsQueryPending
@@ -754,9 +768,12 @@ export function useWorkspaceSheetViewModel(
 
         setRustAnalyticsSummary(response);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!cancelled) {
-          setRustAnalyticsSummary(null);
+          setRustAnalyticsSummary({
+            ...createEmptySheetAnalyticsSummary(activeSheet),
+            errorMessage: error instanceof Error ? error.message : String(error),
+          });
         }
       });
 

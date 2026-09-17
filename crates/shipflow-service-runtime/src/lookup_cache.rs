@@ -342,9 +342,17 @@ impl LookupCacheState {
     {
         let cache_key = build_cache_key(kind, &source_fingerprint, &normalized_id);
         let mut loader = Some(loader);
+        let mut bypass_ready = options.force_refresh;
 
         loop {
-            let action = self.next_action(&cache_key, kind, &normalized_id, options);
+            let action = self.next_action(
+                &cache_key,
+                kind,
+                &normalized_id,
+                LookupRequestOptions {
+                    force_refresh: bypass_ready,
+                },
+            );
 
             match action {
                 LookupCacheAction::Return(entry) => match entry.value {
@@ -369,6 +377,9 @@ impl LookupCacheState {
                 },
                 LookupCacheAction::Wait(notified) => {
                     notified.await;
+                    // A joined lookup is fresh for this caller. Keep persistent-cache
+                    // bypass enabled if cancellation requires us to fetch again.
+                    bypass_ready = false;
                 }
                 LookupCacheAction::Reject(error) => return Err(error),
                 LookupCacheAction::StartFetch {
@@ -1129,9 +1140,14 @@ where
                 let _permit = acquire_fetch_permit()
                     .await
                     .map_err(LookupLoaderError::non_cacheable)?;
-                resolve_tracking_request(&lookup_client, &tracking_source, &lookup_id)
-                    .await
-                    .map_err(LookupLoaderError::cacheable)
+                resolve_tracking_request(
+                    &lookup_client,
+                    &tracking_source,
+                    &lookup_id,
+                    options.force_refresh,
+                )
+                .await
+                .map_err(LookupLoaderError::cacheable)
             },
         )
         .await?;
@@ -1359,7 +1375,7 @@ where
                 let _permit = acquire_fetch_permit()
                     .await
                     .map_err(LookupLoaderError::non_cacheable)?;
-                resolve_bag_request(&client, &tracking_source, &lookup_id)
+                resolve_bag_request(&client, &tracking_source, &lookup_id, options.force_refresh)
                     .await
                     .map_err(LookupLoaderError::cacheable)
             },
@@ -1396,9 +1412,14 @@ where
                 let _permit = acquire_fetch_permit()
                     .await
                     .map_err(LookupLoaderError::non_cacheable)?;
-                resolve_manifest_request(&client, &tracking_source, &lookup_id)
-                    .await
-                    .map_err(LookupLoaderError::cacheable)
+                resolve_manifest_request(
+                    &client,
+                    &tracking_source,
+                    &lookup_id,
+                    options.force_refresh,
+                )
+                .await
+                .map_err(LookupLoaderError::cacheable)
             },
         )
         .await
@@ -2249,5 +2270,195 @@ mod tests {
             assert_eq!(stale_fetch_count.load(Ordering::SeqCst), 1);
             assert_eq!(fresh_fetch_count.load(Ordering::SeqCst), 1);
         });
+    }
+}
+
+#[cfg(test)]
+mod refresh_regression_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[tokio::test]
+    async fn coalesces_parallel_forced_refreshes() {
+        let cache = LookupCacheState::default();
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..3 {
+            let cache = cache.clone();
+            let count = count.clone();
+            handles.push(tokio::spawn(async move {
+                cache
+                    .resolve_cached_lookup(
+                        LookupKind::Bag,
+                        "BAG1".into(),
+                        "fixture".into(),
+                        LookupRequestOptions {
+                            force_refresh: true,
+                        },
+                        move || async move {
+                            let n = count.fetch_add(1, Ordering::SeqCst) + 1;
+                            tokio::time::sleep(Duration::from_millis(40)).await;
+                            Ok(serde_json::json!({"version":n}))
+                        },
+                    )
+                    .await
+                    .unwrap()
+            }));
+        }
+        for handle in handles {
+            assert_eq!(handle.await.unwrap(), serde_json::json!({"version":1}));
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn forced_waiter_recovers_when_the_joined_loader_is_cancelled() {
+        let cache = LookupCacheState::default();
+        let owner = tokio::spawn({
+            let cache = cache.clone();
+            async move {
+                cache
+                    .resolve_cached_lookup::<serde_json::Value, _, _>(
+                        LookupKind::Bag,
+                        "BAG1".into(),
+                        "fixture".into(),
+                        LookupRequestOptions {
+                            force_refresh: true,
+                        },
+                        || async { std::future::pending().await },
+                    )
+                    .await
+            }
+        });
+        while cache.snapshot().loading == 0 {
+            tokio::task::yield_now().await;
+        }
+        let waiter = tokio::spawn({
+            let cache = cache.clone();
+            async move {
+                cache
+                    .resolve_cached_lookup(
+                        LookupKind::Bag,
+                        "BAG1".into(),
+                        "fixture".into(),
+                        LookupRequestOptions {
+                            force_refresh: true,
+                        },
+                        || async { Ok(serde_json::json!({"version":2})) },
+                    )
+                    .await
+            }
+        });
+        while cache.inner.lock().unwrap().metrics.overall.coalesced == 0 {
+            tokio::task::yield_now().await;
+        }
+        owner.abort();
+        assert!(owner.await.unwrap_err().is_cancelled());
+        let result = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, serde_json::json!({"version":2}));
+        assert_eq!(cache.snapshot().loading, 0);
+    }
+
+    #[tokio::test]
+    async fn forwards_force_refresh_for_all_external_lookup_kinds_and_legacy_fallback() {
+        for kind in [LookupKind::Track, LookupKind::Bag, LookupKind::Manifest] {
+            for force_refresh in [false, true] {
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let addr = listener.local_addr().unwrap();
+                let server = std::thread::spawn(move || {
+                    let mut captured = Vec::new();
+                    // A v1 404 forces a second request through the legacy path.
+                    for status in ["404 Not Found", "200 OK"] {
+                        let (mut conn, _) = listener.accept().unwrap();
+                        conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                        let mut bytes = Vec::new();
+                        while !bytes.ends_with(b"\r\n\r\n") {
+                            let mut byte = [0];
+                            conn.read_exact(&mut byte).unwrap();
+                            bytes.push(byte[0]);
+                            assert!(bytes.len() < 8192);
+                        }
+                        captured.push(String::from_utf8(bytes).unwrap().to_lowercase());
+                        let body = match kind {
+                            LookupKind::Track => serde_json::to_string(&TrackResponse {
+                                url: "https://example.test/track/P1".into(),
+                                detail: Default::default(),
+                                status_akhir: Default::default(),
+                                pod: Default::default(),
+                                history: vec![],
+                                history_summary: Default::default(),
+                                shipment_identity: Default::default(),
+                                multi_koli: Default::default(),
+                                contact_enrichment: None,
+                            })
+                            .unwrap(),
+                            _ => r#"{"url":"https://example.test/lookup","items":[]}"#.into(),
+                        };
+                        write!(conn, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+                    }
+                    captured
+                });
+                let config = TrackingSourceConfig {
+                    tracking_source: TrackingSource::ExternalApi,
+                    external_api_base_url: format!("http://{addr}"),
+                    external_api_auth_token: "test-fixture".into(),
+                    allow_insecure_external_api_http: true,
+                };
+                let cache = LookupCacheState::default();
+                let client = reqwest::Client::new();
+                let options = LookupRequestOptions { force_refresh };
+                match kind {
+                    LookupKind::Track => {
+                        resolve_tracking_request_cached(
+                            &cache,
+                            &ContactCacheState::default(),
+                            &client,
+                            &config,
+                            "P1",
+                            options,
+                            TrackingPermitProviders {
+                                primary: || async { Ok(()) },
+                                contact: || async { Ok(()) },
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    LookupKind::Bag => {
+                        resolve_bag_request_cached(
+                            &cache,
+                            &client,
+                            &config,
+                            "BAG1",
+                            options,
+                            || async { Ok(()) },
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    LookupKind::Manifest => {
+                        resolve_manifest_request_cached(
+                            &cache,
+                            &client,
+                            &config,
+                            "MAN1",
+                            options,
+                            || async { Ok(()) },
+                        )
+                        .await
+                        .unwrap();
+                    }
+                }
+                for headers in server.join().unwrap() {
+                    assert_eq!(
+                        headers.contains("x-shipflow-force-refresh: true"),
+                        force_refresh
+                    );
+                }
+            }
+        }
     }
 }

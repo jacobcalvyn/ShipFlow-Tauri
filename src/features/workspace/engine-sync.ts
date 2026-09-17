@@ -1,9 +1,6 @@
 import {
-  createEngineSheet,
-  deleteSheet,
-  listEngineSheets,
-  querySheetRows,
-  upsertSheetRows,
+  restoreWorkspace,
+  type RestoreWorkspaceRequest,
 } from "../workspace-engine/client";
 import { WorkspaceState } from "./types";
 
@@ -49,61 +46,31 @@ export async function syncWorkspaceStateToEngine(
   workspaceState: WorkspaceState,
   options: WorkspaceEngineSyncOptions = {}
 ) {
-  const mode = options.mode ?? "replace";
-  const desiredSheetIds = new Set(workspaceState.sheetOrder);
-
-  for (const [position, sheetId] of workspaceState.sheetOrder.entries()) {
-    const sheet = workspaceState.sheetsById[sheetId];
-    if (!sheet) {
-      continue;
-    }
-
-    await createEngineSheet({
-      sheetId,
-      name: workspaceState.sheetMetaById[sheetId]?.name ?? `Sheet ${position + 1}`,
-      position,
-    });
-
-    const rows = sheet.rows
-      .map((row, rowPosition) => ({
-        rowId: row.key,
-        position: rowPosition,
-        displayTrackingId: row.trackingInput.trim(),
-      }))
-      .filter((row) => row.displayTrackingId !== "");
-
-    if (mode === "seed" && rows.length === 0) {
-      continue;
-    }
-
-    if (mode === "seed") {
-      const existingRows = await querySheetRows({
+  const sheets: RestoreWorkspaceRequest["sheets"] = workspaceState.sheetOrder.map(
+    (sheetId, position) => {
+      const sheet = workspaceState.sheetsById[sheetId];
+      if (!sheet) throw new Error(`Missing document sheet: ${sheetId}`);
+      return {
         sheetId,
-        offset: 0,
-        limit: 1,
-        filters: [],
-        valueFilters: [],
-        sort: [],
-      });
-
-      if (existingRows.payload.totalCount > 0) {
-        continue;
-      }
+        name: workspaceState.sheetMetaById[sheetId]?.name ?? `Sheet ${position + 1}`,
+        position,
+        rows: sheet.rows
+          .map((row, rowPosition) => ({
+            rowId: row.key,
+            position: rowPosition,
+            displayTrackingId: row.trackingInput.trim(),
+            shipment: row.shipment,
+            rowStatus: row.loading || row.queued || row.error
+              ? "failed" as const
+              : row.stale ? "stale" as const
+              : row.shipment ? "loaded" as const : "empty" as const,
+            errorMessage: row.error || (row.loading || row.queued
+              ? "Tracking was interrupted. Retry this shipment."
+              : null),
+          }))
+          .filter((row) => row.displayTrackingId !== ""),
+      };
     }
-
-    await upsertSheetRows({
-      sheetId,
-      replaceExisting: true,
-      rows,
-    });
-  }
-
-  if (mode === "replace") {
-    const response = await listEngineSheets();
-    for (const engineSheet of response.payload) {
-      if (!desiredSheetIds.has(engineSheet.sheetId)) {
-        await deleteSheet({ sheetId: engineSheet.sheetId });
-      }
-    }
-  }
+  );
+  await restoreWorkspace({ sheets, seedOnly: options.mode === "seed" });
 }

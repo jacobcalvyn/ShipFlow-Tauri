@@ -714,7 +714,7 @@ describe("useWorkspaceInteractionRuntimeController", () => {
         totalCount: 1,
         hasMore: false,
         nextOffset: null,
-        rows: [],
+        rows: [{ rowId: "existing-row", position: 4, displayTrackingId: "PEXISTING", lookupTrackingId: "PEXISTING", rowStatus: "empty", errorMessage: null, statusJson: null, detailJson: null, historyJson: null }],
       },
     });
     mocks.upsertSheetRowsMock.mockResolvedValue({
@@ -739,7 +739,7 @@ describe("useWorkspaceInteractionRuntimeController", () => {
           {
             rowId: "sheet-1:import:batch:0",
             sheetId: "sheet-1",
-            position: 1,
+            position: 5,
             displayTrackingId: "P2606020189412.30",
             lookupTrackingId: "P2606020189412",
             rowStatus: "loaded",
@@ -854,9 +854,10 @@ describe("useWorkspaceInteractionRuntimeController", () => {
     });
     expect(mocks.upsertSheetRowsMock).toHaveBeenCalledWith({
       sheetId: "sheet-1",
+      appendAtEnd: true,
       rows: [
         expect.objectContaining({
-          position: 1,
+          position: 5,
           displayTrackingId: "P2606020189412.30",
         }),
       ],

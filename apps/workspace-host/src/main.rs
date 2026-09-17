@@ -687,6 +687,20 @@ async fn handle_request(
 ) -> Result<(), RpcError> {
     request.validate()?;
     match request.method.as_str() {
+        "workspace.restore_file" => {
+            let file_name = request
+                .params
+                .get("fileName")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    RpcError::new("invalid_params", "Missing restore staging filename.")
+                })?;
+            let sheets = runtime
+                .restore_workspace_file(file_name)
+                .map_err(|error| RpcError::new("workspace_error", error.to_string()))?;
+            send_result(output, &request.id, WorkspaceEngineResponse::Sheets(sheets))
+                .map_err(|error| RpcError::new("transport_error", error))
+        }
         "workspace.command" => {
             let command: WorkspaceEngineCommand = serde_json::from_value(request.params)
                 .map_err(|error| RpcError::new("invalid_params", error.to_string()))?;

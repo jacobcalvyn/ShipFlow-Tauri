@@ -426,7 +426,7 @@ describe("Rust row query adapter", () => {
     expect(query?.valueFilters).toBeUndefined();
   });
 
-  it("keeps filtered or sorted incomplete tracking rows on the legacy path", () => {
+  it("keeps engine filters authoritative when the mirror contains an incomplete draft", () => {
     const sheet = createDefaultSheetState();
     const row = {
       ...sheet.rows[0],
@@ -447,7 +447,10 @@ describe("Rust row query adapter", () => {
       ...context,
     });
 
-    expect(query).toBeNull();
+    expect(query).toMatchObject({
+      sheetId: "sheet-1",
+      filters: [{ field: "status_akhir.status", value: "IN" }],
+    });
   });
 
   it("keeps filtered dirty rows on the Rust query path", () => {
