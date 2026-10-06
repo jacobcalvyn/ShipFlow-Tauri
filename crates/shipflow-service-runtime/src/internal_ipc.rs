@@ -452,6 +452,7 @@ mod tests {
 
     fn test_state() -> HttpApiState {
         HttpApiState {
+            runtime_options: Default::default(),
             client: reqwest::Client::new(),
             auth_token: "sf_public".into(),
             internal_auth_token: "sf_internal".into(),

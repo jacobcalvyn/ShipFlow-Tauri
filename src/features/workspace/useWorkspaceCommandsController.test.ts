@@ -1,3 +1,4 @@
+import { replaceScopedWorkspace } from "../workspace-engine/document-scope";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -276,6 +277,49 @@ describe("useWorkspaceCommandsController", () => {
     });
   });
 
+  it.each(["deleteAllRows", "deleteSelectedRows"] as const)("ignores %s completion after document replacement with reused sheet ids", async (command) => {
+    const options = buildOptions();
+    options.activeSheetDeleteAllArmed = true;
+    options.deleteSelectedArmedSheetId = "sheet-1";
+    options.selectedEngineRowIds = ["row-1"];
+    const deletion = createDeferred<unknown>();
+    (command === "deleteAllRows" ? workspaceEngineMocks.clearSheetRows : workspaceEngineMocks.deleteSheetRows).mockReturnValueOnce(deletion.promise);
+    const { result } = renderHook(() => useWorkspaceCommandsController(options as never));
+    let pending!: Promise<void>;
+    act(() => { pending = result.current[command](); });
+    await replaceScopedWorkspace({ command: "restore_workspace", payload: { sheets: [] } });
+    await act(async () => { deletion.resolve({ payload: null }); await pending; });
+    expect(options.setWorkspaceState).not.toHaveBeenCalled();
+    expect(options.updateActiveSheet).not.toHaveBeenCalled();
+    expect(options.onWorkspaceEngineMutation).not.toHaveBeenCalled();
+  });
+
+  it.each(["exportCsv", "copyAllTrackingIds", "retrackAllRows"] as const)("cancels paged %s after replacement without emitting mixed output", async (command) => {
+    const options = buildOptions();
+    options.selectedEngineRowIds = [];
+    options.selectedVisibleRowKeys = [];
+    options.rustExportRowsQuery = { sheetId: "sheet-1", offset: 0, limit: 1000,
+      filters: [{ field: "rowStatus", value: "loaded" }], sort: [] };
+    const page = (offset: number, count: number, hasMore: boolean) => ({ type: "sheet_rows", payload: {
+      sheetId: "sheet-1", offset, limit: 1000, totalCount: 1001, hasMore, nextOffset: hasMore ? 1000 : null,
+      rows: Array.from({ length: count }, (_, i) => ({ rowId: `old-${offset + i}`, position: offset + i,
+        displayTrackingId: `P${offset + i}`, lookupTrackingId: `P${offset + i}`, rowStatus: "loaded",
+        errorMessage: null, statusJson: null, detailJson: null, historyJson: null })),
+    } });
+    const second = createDeferred<ReturnType<typeof page>>();
+    workspaceEngineMocks.querySheetRows.mockResolvedValueOnce(page(0, 1000, true)).mockReturnValueOnce(second.promise);
+    const { result } = renderHook(() => useWorkspaceCommandsController(options as never));
+    act(() => { result.current[command](); });
+    await waitFor(() => expect(workspaceEngineMocks.querySheetRows).toHaveBeenCalledTimes(2));
+    const firstScope = workspaceEngineMocks.querySheetRows.mock.calls[0][1];
+    expect(workspaceEngineMocks.querySheetRows.mock.calls[1][1]).toBe(firstScope);
+    await replaceScopedWorkspace({ command: "restore_workspace", payload: { sheets: [] } });
+    await act(async () => { second.resolve(page(1000, 1, false)); await Promise.resolve(); });
+    expect(exportWorkspaceCsvMock).not.toHaveBeenCalled();
+    expect(options.copyText).not.toHaveBeenCalled();
+    expect(workspaceEngineMocks.refreshSheetRowsTracking).not.toHaveBeenCalled();
+  });
+
   it("deletes selected Rust rows by engine row id instead of the UI key", async () => {
     const options = buildOptions();
     options.deleteSelectedArmedSheetId = "sheet-1";
@@ -293,13 +337,14 @@ describe("useWorkspaceCommandsController", () => {
     expect(workspaceEngineMocks.deleteSheetRows).toHaveBeenCalledWith({
       sheetId: "sheet-1",
       rowIds: ["rust-row-1"],
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(options.abortRowTrackingWork).toHaveBeenCalledWith(
       "sheet-1",
       ["legacy-visible-key", "rust-row-1"],
       "selected_rows_deleted"
     );
-    expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
+    expect(options.updateActiveSheet).not.toHaveBeenCalled();
+    expect(options.setWorkspaceState).toHaveBeenCalledTimes(1);
   });
 
   it("removes selected local rows only after the engine delete succeeds", async () => {
@@ -336,10 +381,11 @@ describe("useWorkspaceCommandsController", () => {
       await Promise.resolve();
     });
 
-    expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
-    const updater = vi.mocked(options.updateActiveSheet).mock.calls[0]?.[0];
+    expect(options.updateActiveSheet).not.toHaveBeenCalled();
+    expect(options.setWorkspaceState).toHaveBeenCalledTimes(1);
+    const updater = vi.mocked(options.setWorkspaceState).mock.calls[0]?.[0];
     expect(updater).toBeTypeOf("function");
-    const nextSheet = updater({
+    const sheet = {
       ...createDefaultSheetState(),
       rows: [
         {
@@ -348,7 +394,13 @@ describe("useWorkspaceCommandsController", () => {
         },
       ],
       selectedRowKeys: ["row-1"],
-    });
+    };
+    const switchedWorkspace = { ...options.workspaceRef.current, activeSheetId: "sheet-2",
+      sheetsById: { "sheet-1": sheet, "sheet-2": createDefaultSheetState() } };
+    const nextWorkspace = updater(switchedWorkspace);
+    expect(nextWorkspace.activeSheetId).toBe("sheet-2");
+    expect(nextWorkspace.sheetsById["sheet-2"]).toBe(switchedWorkspace.sheetsById["sheet-2"]);
+    const nextSheet = nextWorkspace.sheetsById["sheet-1"];
     expect(nextSheet.rows[0]?.trackingInput).toBe("");
     expect(nextSheet.selectedRowKeys).toEqual([]);
   });
@@ -396,8 +448,9 @@ describe("useWorkspaceCommandsController", () => {
 
     expect(workspaceEngineMocks.clearSheetRows).toHaveBeenCalledWith({
       sheetId: "sheet-1",
-    });
-    expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
+    expect(options.updateActiveSheet).not.toHaveBeenCalled();
+    expect(options.setWorkspaceState).toHaveBeenCalledTimes(1);
     expect(options.focusFirstTrackingInput).toHaveBeenCalledTimes(1);
   });
 
@@ -433,10 +486,11 @@ describe("useWorkspaceCommandsController", () => {
       await Promise.resolve();
     });
 
-    expect(options.updateActiveSheet).toHaveBeenCalledTimes(1);
-    const updater = vi.mocked(options.updateActiveSheet).mock.calls[0]?.[0];
+    expect(options.updateActiveSheet).not.toHaveBeenCalled();
+    expect(options.setWorkspaceState).toHaveBeenCalledTimes(1);
+    const updater = vi.mocked(options.setWorkspaceState).mock.calls[0]?.[0];
     expect(updater).toBeTypeOf("function");
-    const nextSheet = updater({
+    const sheet = {
       ...createDefaultSheetState(),
       rows: [
         {
@@ -446,7 +500,13 @@ describe("useWorkspaceCommandsController", () => {
       ],
       selectedRowKeys: ["row-1"],
       deleteAllArmed: true,
-    });
+    };
+    const switchedWorkspace = { ...options.workspaceRef.current, activeSheetId: "sheet-2",
+      sheetsById: { "sheet-1": sheet, "sheet-2": createDefaultSheetState() } };
+    const nextWorkspace = updater(switchedWorkspace);
+    expect(nextWorkspace.activeSheetId).toBe("sheet-2");
+    expect(nextWorkspace.sheetsById["sheet-2"]).toBe(switchedWorkspace.sheetsById["sheet-2"]);
+    const nextSheet = nextWorkspace.sheetsById["sheet-1"];
     expect(nextSheet.rows[0]?.trackingInput).toBe("");
     expect(nextSheet.selectedRowKeys).toEqual([]);
     expect(nextSheet.deleteAllArmed).toBe(false);
@@ -487,7 +547,7 @@ describe("useWorkspaceCommandsController", () => {
       sheetId: expect.any(String),
       name: "Sheet 2",
       position: 1,
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(options.setWorkspaceState).toHaveBeenCalledTimes(1);
     const nextWorkspace = vi.mocked(options.setWorkspaceState).mock.calls[0]?.[0];
     if (typeof nextWorkspace === "function") {
@@ -665,11 +725,11 @@ describe("useWorkspaceCommandsController", () => {
       sheetId: expect.any(String),
       name: "Sheet 1 - 1",
       position: 1,
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(workspaceEngineMocks.copySheetRows).toHaveBeenCalledWith({
       sourceSheetId: "sheet-1",
       targetSheetId: expect.any(String),
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(options.setWorkspaceState).toHaveBeenCalledTimes(1);
     const nextWorkspace = vi.mocked(options.setWorkspaceState).mock.calls[0]?.[0];
     expect(typeof nextWorkspace).toBe("object");
@@ -885,7 +945,7 @@ describe("useWorkspaceCommandsController", () => {
       filters: [],
       valueFilters: [],
       sort: [],
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(workspaceEngineMocks.querySheetRows).toHaveBeenNthCalledWith(2, {
       ...options.rustExportRowsQuery,
       offset: 1_000,
@@ -893,7 +953,7 @@ describe("useWorkspaceCommandsController", () => {
       filters: [],
       valueFilters: [],
       sort: [],
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     const csvContent = exportWorkspaceCsvMock.mock.calls[0]?.[0].csvContent ?? "";
     expect(csvContent.indexOf("RUST-1500")).toBeLessThan(
       csvContent.indexOf("RUST-2")
@@ -985,12 +1045,12 @@ describe("useWorkspaceCommandsController", () => {
       ...options.rustExportRowsQuery,
       offset: 0,
       limit: 1_000,
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(workspaceEngineMocks.querySheetRows).toHaveBeenNthCalledWith(2, {
       ...options.rustExportRowsQuery,
       offset: 1_000,
       limit: 1_000,
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     const csvContent = exportWorkspaceCsvMock.mock.calls[0]?.[0].csvContent ?? "";
     expect(csvContent).toContain("RUST-A");
     expect(csvContent).toContain("RUST-B");
@@ -1074,12 +1134,12 @@ describe("useWorkspaceCommandsController", () => {
       ...options.rustExportRowsQuery,
       offset: 0,
       limit: 1_000,
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(workspaceEngineMocks.querySheetRows).toHaveBeenNthCalledWith(2, {
       ...options.rustExportRowsQuery,
       offset: 1_000,
       limit: 1_000,
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(options.copyText).toHaveBeenCalledWith("RUST-A\nRUST-B");
   });
 
@@ -1150,7 +1210,7 @@ describe("useWorkspaceCommandsController", () => {
         runId: expect.any(String),
       }),
       expect.any(Function)
-    );
+    , expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(options.refreshTrackingRows).not.toHaveBeenCalled();
     expect(workspaceEngineMocks.querySheetRows).not.toHaveBeenCalled();
     expect(options.updateActiveSheet).not.toHaveBeenCalled();
@@ -1473,7 +1533,7 @@ describe("useWorkspaceCommandsController", () => {
         runId: expect.any(String),
       }),
       expect.any(Function)
-    );
+    , expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(workspaceEngineMocks.querySheetRows).not.toHaveBeenCalled();
     expect(options.refreshTrackingRows).not.toHaveBeenCalled();
     expect(options.updateActiveSheet).not.toHaveBeenCalled();
@@ -1555,13 +1615,13 @@ describe("useWorkspaceCommandsController", () => {
         runId: expect.any(String),
       }),
       expect.any(Function)
-    );
+    , expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(workspaceEngineMocks.querySheetRows).toHaveBeenCalledTimes(1);
     expect(workspaceEngineMocks.querySheetRows).toHaveBeenCalledWith({
       ...options.rustExportRowsQuery,
       offset: 0,
       limit: 1_000,
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(options.refreshTrackingRows).not.toHaveBeenCalled();
     expect(options.updateActiveSheet).not.toHaveBeenCalled();
     expect(options.onWorkspaceEngineMutation).toHaveBeenCalledWith("sheet-1");

@@ -22,29 +22,38 @@ export function createTestBridge(options?: {
   requestWorkspace?: ShipFlowBridge["requestWorkspace"];
 }): ShipFlowBridge {
   const invoke = options?.invoke ?? vi.fn(async () => undefined);
+  let documentGeneration = 0;
 
   return {
     invoke: (command, args) => invoke(command, args) as Promise<never>,
     on: options?.on ?? (() => () => undefined),
-    requestWorkspace:
-      options?.requestWorkspace ??
-      (async (method, params, onEvent) => {
-        if (method === "workspace.command") {
-          return invoke("workspace_engine_command", {
-            command: params,
-          });
-        }
-
-        const legacyCommand = LEGACY_WORKSPACE_METHODS[method];
-        if (!legacyCommand) {
-          throw new Error(`Unsupported workspace test method: ${method}`);
-        }
-
-        return invoke(legacyCommand, {
-          request: params,
-          onEvent: onEvent ? { onmessage: onEvent } : undefined,
+    requestWorkspace: (async (method, params, onEvent) => {
+      if (method === "workspace.document_generation") return { documentGeneration };
+      if (options?.requestWorkspace) return onEvent
+        ? options.requestWorkspace(method, params, onEvent)
+        : options.requestWorkspace(method, params);
+      const { documentGeneration: _scope, ...legacyParams } = params as Record<string, unknown>;
+      if (method === "workspace.command") {
+        const result = await invoke("workspace_engine_command", {
+          command: legacyParams,
         });
-      }) as ShipFlowBridge["requestWorkspace"],
+        if (legacyParams.command === "restore_workspace") {
+          if (!(legacyParams.payload as { seedOnly?: boolean }).seedOnly) documentGeneration += 1;
+          return { ...(result as object), documentGeneration };
+        }
+        return result;
+      }
+
+      const legacyCommand = LEGACY_WORKSPACE_METHODS[method];
+      if (!legacyCommand) {
+        throw new Error(`Unsupported workspace test method: ${method}`);
+      }
+
+      return invoke(legacyCommand, {
+        request: legacyParams,
+        onEvent: onEvent ? { onmessage: onEvent } : undefined,
+      });
+    }) as ShipFlowBridge["requestWorkspace"],
   };
 }
 

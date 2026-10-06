@@ -1,3 +1,4 @@
+import { replaceScopedWorkspace } from "../workspace-engine/document-scope";
 import {
   type SheetRowsQuery,
   type SheetRowsResponse,
@@ -29,6 +30,18 @@ function createEngineRowsResponse(
 }
 
 describe("engine document snapshot", () => {
+  it("rejects a save snapshot when replacement occurs between native pages", async () => {
+    const workspace = createDefaultWorkspaceState();
+    const queryRows = vi.fn(async (query: SheetRowsQuery) => {
+      if (query.offset === 1000) {
+        await replaceScopedWorkspace({ command: "restore_workspace", payload: { sheets: [] } });
+      }
+      return createEngineRowsResponse(query, [], { totalCount: 1001, hasMore: query.offset === 0, nextOffset: query.offset === 0 ? 1000 : null });
+    });
+    await expect(createWorkspaceDocumentStateFromEngine(workspace, queryRows)).rejects.toThrow("Dokumen berubah");
+    expect(queryRows).toHaveBeenCalledTimes(2);
+  });
+
   it("builds saved workspace rows only from paginated Rust row windows", async () => {
     const workspace = createDefaultWorkspaceState();
     const sheetId = workspace.activeSheetId;

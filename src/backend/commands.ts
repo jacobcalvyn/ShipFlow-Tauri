@@ -196,3 +196,15 @@ export function takePendingWorkspaceWindowRequest() {
 export function resolveWindowCloseRequest(action: WindowCloseAction) {
   return invokeCommand<void>("resolve_window_close_request", { action });
 }
+
+export function getDockerServiceStatus() {
+  return invokeCommand<import("./docker-contract").DockerDeploymentStatus>("docker_service_status");
+}
+export function saveDockerServiceConfig(config: import("./docker-contract").DockerServiceConfig, externalToken?: string) {
+  return invokeCommand<void>("docker_service_save", { config, ...(externalToken === undefined ? {} : { externalToken }) });
+}
+export function runDockerServiceAction(action: import("./docker-contract").DockerAction) {
+  return invokeCommand<void>("docker_service_action", { action });
+}
+export function getDockerServiceLogs() { return invokeCommand<string>("docker_service_logs"); }
+export function copyDockerServiceToken() { return invokeCommand<boolean>("docker_service_copy_token"); }

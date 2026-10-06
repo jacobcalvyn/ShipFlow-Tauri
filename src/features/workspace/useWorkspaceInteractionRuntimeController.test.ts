@@ -851,7 +851,7 @@ describe("useWorkspaceInteractionRuntimeController", () => {
       filters: [],
       valueFilters: [],
       sort: [],
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(mocks.upsertSheetRowsMock).toHaveBeenCalledWith({
       sheetId: "sheet-1",
       appendAtEnd: true,
@@ -861,7 +861,7 @@ describe("useWorkspaceInteractionRuntimeController", () => {
           displayTrackingId: "P2606020189412.30",
         }),
       ],
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(mocks.refreshSheetRowsTrackingMock).toHaveBeenCalledWith(
       expect.objectContaining({
         sheetId: "sheet-1",
@@ -870,7 +870,7 @@ describe("useWorkspaceInteractionRuntimeController", () => {
         runId: expect.any(String),
       }),
       expect.any(Function)
-    );
+    , expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(onWorkspaceEngineMutation).toHaveBeenCalledTimes(2);
     expect(workspaceRef.current.sheetsById["sheet-1"].importSourceModalKind).toBeNull();
     expect(
@@ -1006,7 +1006,7 @@ describe("useWorkspaceInteractionRuntimeController", () => {
           displayTrackingId: "REPLACEMENT-ID",
         }),
       ],
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(mocks.querySheetRowsMock).not.toHaveBeenCalled();
     expect(invalidateSheetTrackingWork).not.toHaveBeenCalled();
     expect(
@@ -1211,7 +1211,7 @@ describe("useWorkspaceInteractionRuntimeController", () => {
         offset: 1000,
         limit: 1000,
       })
-    );
+    , expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(mocks.upsertSheetRowsMock).not.toHaveBeenCalled();
     expect(mocks.refreshSheetRowsTrackingMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1220,7 +1220,7 @@ describe("useWorkspaceInteractionRuntimeController", () => {
         forceRefresh: true,
       }),
       expect.any(Function)
-    );
+    , expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
   });
 
   it("wires runtime commands and table controllers together", () => {

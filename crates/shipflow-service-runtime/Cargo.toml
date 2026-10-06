@@ -27,3 +27,6 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 tower = { workspace = true }
+
+[build-dependencies]
+serde_json = { workspace = true }

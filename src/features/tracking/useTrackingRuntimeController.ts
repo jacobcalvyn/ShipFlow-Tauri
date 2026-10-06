@@ -1,3 +1,9 @@
+import {
+  captureWorkspaceDocumentScope,
+  assertWorkspaceDocumentScope,
+  isWorkspaceDocumentScopeCurrent,
+  type WorkspaceDocumentScope,
+} from "../workspace-engine/document-scope";
 import { ClipboardEvent, FocusEvent, MutableRefObject, useCallback, useEffect, useRef } from "react";
 import {
   applyBulkPasteToSheet,
@@ -593,7 +599,8 @@ export function useTrackingRuntimeController({
         position?: number;
         engineRowId?: string;
       }>,
-      sheetState?: SheetState
+      sheetState?: SheetState,
+      documentScope?: WorkspaceDocumentScope
     ) => {
       const rows = createEngineRowsFromEntries(
         sheetState ?? workspaceRef.current.sheetsById[sheetId],
@@ -606,7 +613,7 @@ export function useTrackingRuntimeController({
       await upsertSheetRows({
         sheetId,
         rows,
-      });
+      }, documentScope);
       onWorkspaceEngineMutation?.(sheetId);
     },
     [onWorkspaceEngineMutation, workspaceRef]
@@ -633,12 +640,16 @@ export function useTrackingRuntimeController({
       rowId: string,
       mutation: () => Promise<void>
     ) => {
+      const documentScope = captureWorkspaceDocumentScope();
       const mutationKey = getSheetRequestKey(sheetId, rowId);
       const previousMutation =
         engineMutationQueueByRowRef.current.get(mutationKey) ?? Promise.resolve();
       const currentMutation = previousMutation
         .catch(() => undefined)
-        .then(mutation);
+        .then(() => {
+          assertWorkspaceDocumentScope(documentScope);
+          return mutation();
+        });
 
       engineMutationQueueByRowRef.current.set(mutationKey, currentMutation);
 
@@ -826,6 +837,7 @@ export function useTrackingRuntimeController({
       shipmentId: string,
       options?: FetchRuntimeOptions
     ) => {
+      const documentScope = captureWorkspaceDocumentScope();
       const displayShipmentId = sanitizeTrackingInput(shipmentId);
       const requestKey = getSheetRequestKey(sheetId, rowKey);
       const requestEpoch = getSheetEpoch(requestEpochBySheetRef, sheetId);
@@ -847,10 +859,15 @@ export function useTrackingRuntimeController({
         requestControllersRef.current.delete(requestKey);
         requestMetaRef.current.delete(requestKey);
         const engineRowId = options?.engineRowId?.trim() || rowKey;
-        await queueTrackingRowEngineMutation(sheetId, engineRowId, () =>
-          deleteTrackingRowsFromEngine(sheetId, [engineRowId])
-        );
-        updateSheet(sheetId, (current) => clearTrackingCellInSheet(current, rowKey));
+        try {
+          await queueTrackingRowEngineMutation(sheetId, engineRowId, () =>
+            deleteTrackingRowsFromEngine(sheetId, [engineRowId])
+          );
+          assertWorkspaceDocumentScope(documentScope);
+          updateSheet(sheetId, (current) => clearTrackingCellInSheet(current, rowKey));
+        } catch (error) {
+          if (isWorkspaceDocumentScopeCurrent(documentScope)) throw error;
+        }
         return;
       }
 
@@ -899,6 +916,7 @@ export function useTrackingRuntimeController({
             },
           ])
         );
+        assertWorkspaceDocumentScope(documentScope);
         controller.signal.throwIfAborted();
         const abortPromise = new Promise<never>((_, reject) => {
           if (controller.signal.aborted) {
@@ -915,7 +933,7 @@ export function useTrackingRuntimeController({
           refreshSheetRowTracking({
             rowId: options?.engineRowId?.trim() || rowKey,
             forceRefresh: options?.forceRefresh === true,
-          }),
+          }, documentScope),
           abortPromise,
         ]);
         const rowProjection = response.payload;
@@ -961,6 +979,7 @@ export function useTrackingRuntimeController({
           durationMs: Math.round(performance.now() - requestMeta.startedAt),
         });
       } catch (error) {
+        if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
         if (error instanceof DOMException && error.name === "AbortError") {
           if (requestMetaRef.current.get(requestKey) === requestMeta) {
             emitTrackingTelemetry("abort", requestMeta, {
@@ -1105,6 +1124,7 @@ export function useTrackingRuntimeController({
       }>,
       options?: FetchRuntimeOptions
     ) => {
+      const documentScope = captureWorkspaceDocumentScope();
       const validEntries = entries
         .map((entry) => ({
           key: entry.key,
@@ -1150,13 +1170,14 @@ export function useTrackingRuntimeController({
           })
         );
         try {
-          await upsertTrackingRowsIntoEngine(sheetId, validEntries, options?.sheetState);
+          await upsertTrackingRowsIntoEngine(sheetId, validEntries, options?.sheetState, documentScope);
           emitTrackingRunLog("queued_entries_upserted", {
             sheetId,
             activeRunToken,
             queuedCount: validEntries.length,
           });
         } catch (error) {
+          if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
           const message = markTrackingEntriesFailed(sheetId, validEntries, error);
           emitTrackingRunLog("queued_entries_upsert_failed", {
             sheetId,
@@ -1266,13 +1287,14 @@ export function useTrackingRuntimeController({
           queuedCount: queueUpdates.length,
         });
         try {
-          await upsertTrackingRowsIntoEngine(sheetId, queueUpdates, options?.sheetState);
+          await upsertTrackingRowsIntoEngine(sheetId, queueUpdates, options?.sheetState, documentScope);
           emitTrackingRunLog("run_upserted", {
             sheetId,
             runToken: bulkRunToken,
             queuedCount: queueUpdates.length,
           });
         } catch (error) {
+          if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
           const message = markTrackingEntriesFailed(sheetId, queueUpdates, error);
           emitTrackingRunLog("run_upsert_failed", {
             sheetId,
@@ -1295,6 +1317,7 @@ export function useTrackingRuntimeController({
         }
 
         try {
+          assertWorkspaceDocumentScope(documentScope);
           const response = await refreshSheetRowsTrackingWithProgress(
             {
               sheetId,
@@ -1375,7 +1398,8 @@ export function useTrackingRuntimeController({
                   displayTrackingId: row.displayTrackingId,
                 });
               }
-            }
+            },
+            documentScope
           );
           onWorkspaceEngineMutation?.(sheetId);
 
@@ -1463,6 +1487,7 @@ export function useTrackingRuntimeController({
             });
           });
         } catch (error) {
+          if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
           const message = markTrackingEntriesFailed(sheetId, queueUpdates, error);
           emitTrackingRunLog("run_failed", {
             sheetId,
@@ -1483,6 +1508,13 @@ export function useTrackingRuntimeController({
           });
         }
       } finally {
+        if (!isWorkspaceDocumentScopeCurrent(documentScope)) {
+          if (activeBulkRunTokenBySheetRef.current.get(sheetId) === bulkRunToken) {
+            activeBulkRunTokenBySheetRef.current.delete(sheetId);
+            pendingBulkEntriesBySheetRef.current.delete(sheetId);
+          }
+          return;
+        }
         if (activeBulkRunTokenBySheetRef.current.get(sheetId) !== bulkRunToken) {
           emitTrackingRunLog("run_finally_skipped_token_replaced", {
             sheetId,
@@ -1555,6 +1587,7 @@ export function useTrackingRuntimeController({
         return;
       }
 
+      const documentScope = captureWorkspaceDocumentScope();
       void (async () => {
         const targetEntries =
           displayedRows.length > 0 &&
@@ -1566,6 +1599,7 @@ export function useTrackingRuntimeController({
                 displayedRows,
                 startOffset: options.queryOffset,
                 rowsQuery: options.rowsQuery,
+                loadRows: (query) => querySheetRows(query, documentScope),
               })
             : displayedRows.length > 0
               ? createBulkPasteTargetEntries({
@@ -1605,6 +1639,7 @@ export function useTrackingRuntimeController({
                     startPosition: options?.position,
                     startEngineRowId: options?.engineRowId,
                   });
+        assertWorkspaceDocumentScope(documentScope);
         const latestSheet = workspaceRef.current.sheetsById[sheetId];
         if (!latestSheet || targetEntries.length === 0) {
           return;
@@ -1630,6 +1665,7 @@ export function useTrackingRuntimeController({
           { sheetState: result.sheetState }
         );
       })().catch((error) => {
+        if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
         console.error("[ShipFlowWorkspace] bulk paste failed", error);
         updateSheet(sheetId, (current) =>
           setRowErrorInSheet(

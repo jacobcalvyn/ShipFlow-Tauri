@@ -99,11 +99,24 @@ pub struct LookupCacheSnapshot {
     pub byte_capacity: usize,
 }
 
-#[derive(Default)]
 struct LookupCacheInner {
+    max_entries: usize,
+    max_bytes: usize,
     entries: HashMap<String, LookupCacheSlot>,
     generation: u64,
     metrics: LookupCacheMetrics,
+}
+
+impl Default for LookupCacheInner {
+    fn default() -> Self {
+        Self {
+            max_entries: MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES,
+            max_bytes: MAX_IN_MEMORY_LOOKUP_CACHE_BYTES,
+            entries: HashMap::new(),
+            generation: 0,
+            metrics: LookupCacheMetrics::default(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -299,10 +312,33 @@ impl LookupCacheState {
         snapshot_lookup_cache(&inner)
     }
 
-    pub fn flush_persistent_store(&self) {
+    pub fn flush_persistent_store(&self) -> Result<(), String> {
         if let Some(store) = &self.persistent_store {
-            store.flush();
+            store.flush()?;
         }
+        Ok(())
+    }
+    pub fn check_persistence(&self) -> Result<(), String> {
+        self.persistent_store
+            .as_ref()
+            .ok_or("Persistent lookup store is not configured.")?
+            .check_persistence()
+    }
+    pub fn configure(mut self, options: &crate::runtime_options::RuntimeOptions) -> Self {
+        self.policy.track_ttl = Duration::from_secs(options.track_ttl_seconds);
+        self.policy.bag_ttl = Duration::from_secs(options.bag_ttl_seconds);
+        self.policy.manifest_ttl = Duration::from_secs(options.manifest_ttl_seconds);
+        {
+            let mut inner = self.inner.lock().expect("lookup cache lock poisoned");
+            inner.max_entries = options.cache_entries;
+            inner.max_bytes = options.cache_mib * 1024 * 1024;
+        }
+        self
+    }
+    pub fn metrics(&self) -> serde_json::Value {
+        let inner = self.inner.lock().expect("lookup cache lock poisoned");
+        let m = &inner.metrics.overall;
+        serde_json::json!({"hits": m.hits, "misses": m.misses, "coalesced": m.coalesced, "errors": m.store_errors})
     }
 
     pub fn prune_expired_and_over_capacity(&self) -> LookupCacheSnapshot {
@@ -617,7 +653,7 @@ impl LookupCacheState {
                         .metrics
                         .record_event(kind, LookupCacheMetricEvent::Miss);
                     prune_lookup_cache(&mut inner, now);
-                    if inner.entries.len() >= MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES {
+                    if inner.entries.len() >= inner.max_entries {
                         (
                             LookupCacheAction::Reject(TrackingError::ServiceUnavailable(
                                 "The in-memory lookup cache is at capacity. Please retry shortly."
@@ -819,8 +855,8 @@ impl CachedLookupEntry {
 
 fn snapshot_lookup_cache(inner: &LookupCacheInner) -> LookupCacheSnapshot {
     let mut snapshot = LookupCacheSnapshot {
-        capacity: MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES,
-        byte_capacity: MAX_IN_MEMORY_LOOKUP_CACHE_BYTES,
+        capacity: inner.max_entries,
+        byte_capacity: inner.max_bytes,
         ..LookupCacheSnapshot::default()
     };
     for slot in inner.entries.values() {
@@ -836,12 +872,7 @@ fn snapshot_lookup_cache(inner: &LookupCacheInner) -> LookupCacheSnapshot {
 }
 
 fn prune_lookup_cache(inner: &mut LookupCacheInner, now: Instant) -> usize {
-    prune_lookup_cache_with_limits(
-        inner,
-        now,
-        MAX_IN_MEMORY_LOOKUP_CACHE_ENTRIES,
-        MAX_IN_MEMORY_LOOKUP_CACHE_BYTES,
-    )
+    prune_lookup_cache_with_limits(inner, now, inner.max_entries, inner.max_bytes)
 }
 
 fn prune_lookup_cache_with_limits(
@@ -1443,6 +1474,20 @@ mod tests {
         BagResponse, LookupKind, TrackingError, TrackingSource, TrackingSourceConfig,
     };
     use tokio::sync::Barrier;
+
+    #[test]
+    fn runtime_options_control_cache_capacity_and_expiry() {
+        let options = crate::runtime_options::RuntimeOptions {
+            cache_entries: 37,
+            cache_mib: 4,
+            track_ttl_seconds: 7,
+            ..Default::default()
+        };
+        let cache = LookupCacheState::default().configure(&options);
+        assert_eq!(cache.snapshot().capacity, 37);
+        assert_eq!(cache.snapshot().byte_capacity, 4 * 1024 * 1024);
+        assert_eq!(cache.policy.track_ttl, Duration::from_secs(7));
+    }
 
     fn create_test_policy() -> LookupCachePolicy {
         LookupCachePolicy {

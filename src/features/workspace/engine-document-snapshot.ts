@@ -1,3 +1,8 @@
+import {
+  captureWorkspaceDocumentScope,
+  assertWorkspaceDocumentScope,
+  type WorkspaceDocumentScope,
+} from "../workspace-engine/document-scope";
 import { ensureTrailingEmptyRows } from "../sheet/utils";
 import { createTrackResponseFromProjection } from "../sheet/rust-row-window-adapter";
 import type { SheetRow } from "../sheet/types";
@@ -63,8 +68,15 @@ async function collectEngineRowsForDocument(
 
 export async function createWorkspaceDocumentStateFromEngine(
   workspaceState: WorkspaceState,
-  queryRows: QuerySheetRowsClient = querySheetRows
+  queryRows?: QuerySheetRowsClient,
+  scope: WorkspaceDocumentScope = captureWorkspaceDocumentScope()
 ): Promise<WorkspaceState> {
+  const scopedQuery: QuerySheetRowsClient = async (query) => {
+    assertWorkspaceDocumentScope(scope);
+    const result = await (queryRows ? queryRows(query) : querySheetRows(query, scope));
+    assertWorkspaceDocumentScope(scope);
+    return result;
+  };
   const sheetsById = { ...workspaceState.sheetsById };
 
   for (const sheetId of workspaceState.sheetOrder) {
@@ -75,7 +87,7 @@ export async function createWorkspaceDocumentStateFromEngine(
 
     sheetsById[sheetId] = {
       ...sheet,
-      rows: await collectEngineRowsForDocument(sheetId, queryRows),
+      rows: await collectEngineRowsForDocument(sheetId, scopedQuery),
     };
   }
 

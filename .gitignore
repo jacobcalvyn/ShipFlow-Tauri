@@ -8,3 +8,5 @@ target
 .env
 .playwright-cli/
 EX-SCRAP/
+
+build/

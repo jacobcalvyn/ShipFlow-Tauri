@@ -1,3 +1,4 @@
+import { DockerServiceSettings } from "./components/DockerServiceSettings";
 import { useCallback, useEffect, useState } from "react";
 import {
   closeCurrentWindow,
@@ -7,7 +8,7 @@ import { IntegratedServiceSettings } from "./components/IntegratedServiceSetting
 import type { ServiceSettingsView } from "./components/ServiceSettingsWindow";
 
 export function ServiceSettingsApp() {
-  const [activeView, setActiveView] = useState<ServiceSettingsView>("general");
+  const [activeView, setActiveView] = useState<ServiceSettingsView | "docker">("general");
 
   const closeWindow = useCallback(() => {
     void closeCurrentWindow();
@@ -79,13 +80,15 @@ export function ServiceSettingsApp() {
             >
               API Publik
             </button>
+            <button type="button" id="service-settings-docker-tab" className={`settings-nav-button ${activeView === "docker" ? "is-active" : ""}`} role="tab" aria-selected={activeView === "docker"} aria-controls="service-settings-docker-panel" onClick={() => setActiveView("docker")}>Docker</button>
           </nav>
 
           <div className="settings-content service-window-content">
-            <IntegratedServiceSettings
-              activeView={activeView}
+            <div hidden={activeView === "docker"}><IntegratedServiceSettings
+              activeView={activeView === "docker" ? "general" : activeView}
               onClose={closeWindow}
-            />
+            /></div>
+            {activeView === "docker" && <DockerServiceSettings />}
           </div>
         </div>
       </section>

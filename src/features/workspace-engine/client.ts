@@ -1,4 +1,4 @@
-import { getShipFlowBridge } from "../../backend/bridge";
+import { requestScopedWorkspace, replaceScopedWorkspace, type WorkspaceDocumentScope } from "./document-scope";
 
 export type ImportKind = "bag" | "manifest";
 export type ImportMode = "replace" | "append";
@@ -556,8 +556,8 @@ export type ResolvedTrackingIdResponse = Extract<
 
 export function workspaceEngineCommand<
   Response extends WorkspaceEngineResponse = WorkspaceEngineResponse,
->(command: WorkspaceEngineCommand) {
-  return getShipFlowBridge().requestWorkspace<Response>("workspace.command", command);
+>(command: WorkspaceEngineCommand, scope?: WorkspaceDocumentScope) {
+  return requestScopedWorkspace<Response>("workspace.command", command, undefined, scope);
 }
 
 export function createImportJob(payload: CreateImportJobRequest) {
@@ -578,7 +578,7 @@ export function runImportJobWithProgress(
   jobId: string,
   onEvent: (event: WorkspaceEngineEvent) => void,
 ) {
-  return getShipFlowBridge().requestWorkspace<ImportJobDetailResponse>(
+  return requestScopedWorkspace<ImportJobDetailResponse>(
     "workspace.run_import_job_with_progress",
     { jobId },
     (event) => onEvent(event as WorkspaceEngineEvent),
@@ -596,7 +596,7 @@ export function retryImportJobFailedWithProgress(
   jobId: string,
   onEvent: (event: WorkspaceEngineEvent) => void,
 ) {
-  return getShipFlowBridge().requestWorkspace<ImportJobDetailResponse>(
+  return requestScopedWorkspace<ImportJobDetailResponse>(
     "workspace.retry_import_job_with_progress",
     { jobId },
     (event) => onEvent(event as WorkspaceEngineEvent),
@@ -623,95 +623,100 @@ export function listEngineSheets() {
   });
 }
 
-export function createEngineSheet(payload: CreateSheetRequest) {
+export function createEngineSheet(payload: CreateSheetRequest, scope?: WorkspaceDocumentScope) {
   return workspaceEngineCommand<SheetResponse>({
     command: "create_sheet",
     payload,
-  });
+  }, scope);
 }
 
-export function renameEngineSheet(payload: RenameSheetRequest) {
+export function renameEngineSheet(payload: RenameSheetRequest, scope?: WorkspaceDocumentScope) {
   return workspaceEngineCommand<SheetResponse>({
     command: "rename_sheet",
     payload,
-  });
+  }, scope);
 }
 
-export function querySheetRows(query: SheetRowsQuery) {
+export function querySheetRows(query: SheetRowsQuery, scope?: WorkspaceDocumentScope) {
   return workspaceEngineCommand<SheetRowsResponse>({
     command: "query_sheet_rows",
     payload: { query },
-  });
+  }, scope);
 }
 
-export function querySheetFieldValues(query: SheetFieldValuesQuery) {
+export function querySheetFieldValues(query: SheetFieldValuesQuery, scope?: WorkspaceDocumentScope) {
   return workspaceEngineCommand<SheetFieldValuesResponse>({
     command: "query_sheet_field_values",
     payload: { query },
-  });
+  }, scope);
 }
 
-export function clearSheetRows(payload: ClearSheetRowsRequest) {
+export function clearSheetRows(payload: ClearSheetRowsRequest, scope?: WorkspaceDocumentScope) {
   return workspaceEngineCommand<SheetRowsResponse>({
     command: "clear_sheet_rows",
     payload,
-  });
+  }, scope);
 }
 
-export function deleteSheet(payload: DeleteSheetRequest) {
+export function deleteSheet(payload: DeleteSheetRequest, scope?: WorkspaceDocumentScope) {
   return workspaceEngineCommand<SheetDeletedResponse>({
     command: "delete_sheet",
     payload,
-  });
+  }, scope);
 }
 
-export function deleteSheetRows(payload: DeleteSheetRowsRequest) {
+export function deleteSheetRows(payload: DeleteSheetRowsRequest, scope?: WorkspaceDocumentScope) {
   return workspaceEngineCommand<SheetRowsResponse>({
     command: "delete_sheet_rows",
     payload,
-  });
+  }, scope);
 }
 
-export function transferSheetRows(payload: TransferSheetRowsRequest) {
+export function transferSheetRows(payload: TransferSheetRowsRequest, scope?: WorkspaceDocumentScope) {
   return workspaceEngineCommand<SheetRowsResponse>({
     command: "transfer_sheet_rows",
     payload,
-  });
+  }, scope);
 }
 
-export function copySheetRows(payload: CopySheetRowsRequest) {
+export function copySheetRows(payload: CopySheetRowsRequest, scope?: WorkspaceDocumentScope) {
   return workspaceEngineCommand<SheetRowsResponse>({
     command: "copy_sheet_rows",
     payload,
-  });
+  }, scope);
 }
 
-export function upsertSheetRows(payload: UpsertSheetRowsRequest) {
+export function upsertSheetRows(payload: UpsertSheetRowsRequest, scope?: WorkspaceDocumentScope) {
   return workspaceEngineCommand<SheetRowsResponse>({
     command: "upsert_sheet_rows",
     payload,
-  });
+  }, scope);
 }
 
 export function restoreWorkspace(payload: RestoreWorkspaceRequest) {
-  return workspaceEngineCommand<SheetsResponse>({ command: "restore_workspace", payload });
+  const command = { command: "restore_workspace" as const, payload };
+  return payload.seedOnly
+    ? workspaceEngineCommand<SheetsResponse>(command)
+    : replaceScopedWorkspace<SheetsResponse>(command);
 }
 
-export function refreshSheetRowTracking(payload: RefreshSheetRowTrackingRequest) {
+export function refreshSheetRowTracking(payload: RefreshSheetRowTrackingRequest, scope?: WorkspaceDocumentScope) {
   return workspaceEngineCommand<SheetRowResponse>({
     command: "refresh_sheet_row_tracking",
     payload,
-  });
+  }, scope);
 }
 
 export function refreshSheetRowsTrackingWithProgress(
   payload: RefreshSheetRowsTrackingRequest,
   onEvent: (event: WorkspaceEngineEvent) => void,
+  scope?: WorkspaceDocumentScope,
 ) {
-  return getShipFlowBridge().requestWorkspace<SheetRowsTrackingRefreshResponse>(
+  return requestScopedWorkspace<SheetRowsTrackingRefreshResponse>(
     "workspace.refresh_tracking_with_progress",
     payload,
     (event) => onEvent(event as WorkspaceEngineEvent),
+    scope,
   );
 }
 
@@ -725,24 +730,24 @@ export function previewImportSource(payload: ImportSourcePreviewRequest) {
 export function cancelImportSourcePreview(
   payload: CancelImportSourcePreviewRequest,
 ) {
-  return getShipFlowBridge().requestWorkspace<{ cancelled: boolean }>(
+  return requestScopedWorkspace<{ cancelled: boolean }>(
     "workspace.cancel_import_preview",
     payload,
   );
 }
 
-export function queryPivot(payload: PivotQuery) {
+export function queryPivot(payload: PivotQuery, scope?: WorkspaceDocumentScope) {
   return workspaceEngineCommand<PivotResponse>({
     command: "query_pivot",
     payload,
-  });
+  }, scope);
 }
 
-export function queryChart(payload: ChartQuery) {
+export function queryChart(payload: ChartQuery, scope?: WorkspaceDocumentScope) {
   return workspaceEngineCommand<ChartResponse>({
     command: "query_chart",
     payload,
-  });
+  }, scope);
 }
 
 export function resolveTrackingId(displayId: string) {

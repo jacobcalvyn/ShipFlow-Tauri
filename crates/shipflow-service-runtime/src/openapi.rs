@@ -43,6 +43,18 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
         "servers": servers,
         "security": [{ "bearerAuth": [] }],
         "paths": {
+            "/v1/readiness": {
+                "get": {
+                    "summary": "Verify compiled release identity and writable persistent service storage",
+                    "operationId": "getReadiness",
+                    "tags": ["Discovery"],
+                    "responses": {
+                        "200": { "description": "Readiness with build, configId, storageHealthy and cacheMetrics", "content": { "application/json": { "schema": { "type": "object", "required": ["data"], "properties": { "data": { "type": "object", "required": ["product", "ready", "build", "configId", "persistenceRequired", "storageHealthy"], "properties": { "product": {"type": "string"}, "ready": {"type": "boolean"}, "build": {"type": "object"}, "configId": {"type": "string"}, "persistenceRequired": {"type": "boolean"}, "storageHealthy": {"type": "boolean"}, "cacheMetrics": {"type": "object"}, "limits": {"type": "object"} } } } } } } },
+                        "401": { "$ref": "#/components/responses/Unauthorized" },
+                        "503": { "description": "Required persistent storage is unavailable" }
+                    }
+                }
+            },
             "/v1/openapi.json": {
                 "get": {
                     "summary": "Read the ShipFlow Service OpenAPI document",

@@ -1,3 +1,5 @@
+import { verifyDockerBundle } from "./docker/verify-bundle.mjs";
+import { releaseIdentity } from "./prepare-release.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -73,6 +75,19 @@ if (!nativeDirectory) {
       verifyPackagedFileMatchesSource(fileName, filePath);
     }
   }
+}
+
+if (process.platform === "win32" && nativeDirectory) {
+  try { await verifyDockerBundle(path.join(path.dirname(nativeDirectory), "docker")); }
+  catch (error) { errors.push(`Packaged Docker bundle verification failed: ${error.message}`); }
+}
+
+if (nativeDirectory) {
+  try {
+    const identity = JSON.parse(readFileSync(path.join(path.dirname(nativeDirectory), "release.json"), "utf8"));
+    const expected = releaseIdentity();
+    for (const field of Object.keys(expected)) if (identity[field] !== expected[field]) throw new Error(`Mismatched ${field}.`);
+  } catch (error) { errors.push(`Packaged release identity verification failed: ${error.message}`); }
 }
 
 const appArchive = entries.find((entry) => entry.endsWith(`${path.sep}app.asar`));

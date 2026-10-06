@@ -455,6 +455,20 @@ test("Electron suite owns Desktop, isolated Service settings, and single-instanc
     await expect(
       serviceSettings.getByRole("heading", { name: "API Publik" }),
     ).toBeVisible();
+    await serviceSettings.getByRole("tab", { name: "Docker", exact: true }).click();
+    await expect(serviceSettings.getByRole("heading", { name: "Docker API" })).toBeVisible();
+    if (process.platform !== "win32") {
+      await expect(serviceSettings.getByRole("button", { name: "Deploy / Redeploy" })).toHaveCount(0);
+      await expect(serviceSettings.getByText("Tersedia di Windows", { exact: true })).toBeVisible();
+      await expect(serviceSettings.getByLabel("Port host", { exact: true })).toHaveCount(0);
+      await expect(serviceSettings.getByText("Belum sinkron", { exact: true })).toHaveCount(0);
+      await expect(serviceSettings.getByText("Belum terverifikasi", { exact: true })).toHaveCount(0);
+    }
+    if (process.env.SHIPFLOW_EXPECT_DOCKER === "1") {
+      await expect(serviceSettings.getByText("Terhubung", { exact: true })).toBeVisible();
+      await serviceSettings.screenshot({ path: testInfo.outputPath("docker-detection.png") });
+    }
+    await serviceSettings.getByRole("tab", { name: "API Publik" }).click();
     await serviceSettings.waitForTimeout(5_000);
     expect(serviceSettingsCrashCount).toBe(0);
     await expect(
@@ -472,7 +486,10 @@ test("Electron suite owns Desktop, isolated Service settings, and single-instanc
     await runtime.application.evaluate(({ app }) => {
       app.setLoginItemSettings = () => undefined;
     });
-    await workspace.evaluate(() => window.shipflow!.requestWorkspace("workspace.command", { command: "list_sheets" }));
+    await workspace.evaluate(async () => {
+      const scope = await window.shipflow!.requestWorkspace<{ documentGeneration: number }>("workspace.document_generation", {});
+      return window.shipflow!.requestWorkspace("workspace.command", { ...scope, command: "list_sheets" });
+    });
     const hostLogBeforePreferences = await readFile(runtime.logFilePath, "utf8");
     const hostStopsBefore = hostLogBeforePreferences.match(/workspace_host_stop_requested/g)?.length ?? 0;
     const hostStartsBefore = hostLogBeforePreferences.match(/workspace_host_started/g)?.length ?? 0;
@@ -482,7 +499,10 @@ test("Electron suite owns Desktop, isolated Service settings, and single-instanc
         const config = await window.shipflow!.invoke<import("../../src/types").ServiceConfig>("load_saved_api_service_config");
         await window.shipflow!.invoke("configure_api_service", { config: { ...config, keepRunningInTray: tray } });
       }, keepRunningInTray);
-      await workspace.evaluate(() => window.shipflow!.requestWorkspace("workspace.command", { command: "list_sheets" }));
+      await workspace.evaluate(async () => {
+      const scope = await window.shipflow!.requestWorkspace<{ documentGeneration: number }>("workspace.document_generation", {});
+      return window.shipflow!.requestWorkspace("workspace.command", { ...scope, command: "list_sheets" });
+    });
     }
     await expect.poll(async () => (await readFile(runtime.logFilePath, "utf8")).match(/service_config_saved/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
     const hostLogAfterPreferences = await readFile(runtime.logFilePath, "utf8");
@@ -524,8 +544,10 @@ test("Electron suite owns Desktop, isolated Service settings, and single-instanc
     // Exercise the private staging transport with a document above the 16 MiB
     // NDJSON frame limit. Query one row to keep the response independently small.
     const largeRestore = await workspace.evaluate(async () => {
+      const scope = await window.shipflow!.requestWorkspace<{ documentGeneration: number }>("workspace.document_generation", {});
       const padding = "x".repeat(16 * 1024);
-      await window.shipflow!.requestWorkspace("workspace.command", {
+      const restored = await window.shipflow!.requestWorkspace<{ documentGeneration: number }>("workspace.command", {
+        ...scope,
         command: "restore_workspace",
         payload: {
           sheets: [{
@@ -549,6 +571,7 @@ test("Electron suite owns Desktop, isolated Service settings, and single-instanc
       const result = await window.shipflow!.requestWorkspace<{
         payload: { totalCount: number; rows: { statusJson: { status: string }; historyJson: { history: { description: string }[] } }[] };
       }>("workspace.command", {
+        documentGeneration: restored.documentGeneration,
         command: "query_sheet_rows",
         payload: { query: { sheetId: "large-document", offset: 1199, limit: 1, filters: [], valueFilters: [], sort: [] } },
       });
@@ -632,5 +655,221 @@ test("Electron suite owns Desktop, isolated Service settings, and single-instanc
     if (cleanupError) {
       throw cleanupError;
     }
+  }
+});
+
+test("Docker configuration exposes advanced fields only when expanded", async ({}, testInfo) => {
+  const runtime = await startSuite();
+  try {
+    const workspace = await runtime.application.firstWindow();
+    await expect(workspace.getByRole("tab", { name: "Workspace" })).toBeVisible();
+    const { DEFAULT_DOCKER_CONFIG } = await import("../../src/backend/docker-contract");
+    // Exercise the supported-platform form without enabling Docker mutations.
+    await runtime.application.evaluate(({ ipcMain }, config) => {
+      const channel = "shipflow:invoke";
+      const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => Promise<unknown>> })._invokeHandlers;
+      const handler = handlers.get(channel);
+      if (!handler) throw new Error("Missing command IPC handler.");
+      ipcMain.removeHandler(channel);
+      ipcMain.handle(channel, (event, command, args) => {
+        if (command === "docker_service_status") return {
+          supported: true, dockerReady: true, bundleReady: true, phase: "stopped", busy: false, error: null,
+          installedRelease: "ui-fixture", runningRelease: null, synchronized: false, apiReady: false,
+          storageHealthy: false, configPending: true, config, externalTokenConfigured: false,
+          endpoint: null, metrics: null, activeRequests: null, queuedRequests: null,
+        };
+        if (command.startsWith("docker_service_")) throw new Error("Docker mutations are forbidden in this UI fixture.");
+        return handler(event, command, args);
+      });
+    }, DEFAULT_DOCKER_CONFIG);
+    const settings = await openServiceSettingsWindow(runtime);
+    await settings.getByRole("tab", { name: "Docker", exact: true }).click();
+    await expect(settings.getByLabel("Port host", { exact: true })).toBeVisible();
+    await expect(settings.getByLabel("Akses API")).toBeVisible();
+    await expect(settings.getByLabel("Memori container (MiB)")).toBeHidden();
+    await expect(settings.getByLabel("Sumber lacak Docker")).toBeHidden();
+    await settings.screenshot({ path: testInfo.outputPath("docker-basic-settings.png") });
+    await settings.getByText("Pengaturan lanjutan", { exact: true }).click();
+    await expect(settings.getByLabel("Memori container (MiB)")).toBeVisible();
+    await settings.getByLabel("Sumber lacak Docker").selectOption("externalApi");
+    await expect(settings.getByLabel("URL API eksternal Docker")).toBeVisible();
+    await expect(settings.getByLabel("Lookup paralel total")).toBeHidden();
+    await settings.getByText("Performa dan cache", { exact: true }).click();
+    await expect(settings.getByLabel("Lookup paralel total")).toBeVisible();
+    await settings.getByText("Pengaturan lanjutan", { exact: true }).click();
+    await expect(settings.getByLabel("URL API eksternal Docker")).toBeHidden();
+  } finally {
+    await closeApplication(runtime);
+    await rm(runtime.rootDirectory, { recursive: true, force: true });
+  }
+});
+
+test("Service settings keeps the unsaved-workspace quit dialog accessible", async ({}, testInfo) => {
+  const runtime = await startSuite();
+  const desktopPid = runtime.application.process().pid;
+  try {
+    const workspace = await runtime.application.firstWindow();
+    await expect(workspace.getByRole("tab", { name: "Workspace" })).toBeVisible();
+    await expect.poll(() => readServiceStatus(runtime).catch(() => null))
+      .toMatchObject({ status: "running" });
+    const nativeWorkspace = await runtime.application.browserWindow(workspace);
+    const expectDirtyWorkspace = () => expect.poll(() =>
+      nativeWorkspace.evaluate((window) => window.getTitle())).toMatch(/^\*/);
+    await workspace.getByRole("tab", { name: "Pivot/Grafik" }).click();
+    await expectDirtyWorkspace();
+    const servicePid = await readManagedServicePid(runtime.serviceStateDirectory);
+    expect(servicePid).not.toBeNull();
+
+    const settings = await openServiceSettingsWindow(runtime);
+    await settings.getByRole("tab", { name: "API Publik" }).click();
+    await settings.getByLabel("Port", { exact: true }).fill("19422");
+
+    const requestQuit = () => runtime.application.evaluate(({ Menu }) => {
+      const quit = Menu.getApplicationMenu()?.items
+        .flatMap((item) => item.submenu?.items ?? [])
+        .find((item) => item.label === "Keluar ShipFlow");
+      if (!quit) throw new Error("Quit menu item is unavailable.");
+      quit.click();
+    });
+    await requestQuit();
+    const confirmation = workspace.getByRole("dialog", { name: "Tutup Dokumen" });
+    await expect(confirmation).toBeVisible();
+    // DOM visibility alone misses native sheets that prevent any user input.
+    expect(await nativeWorkspace.evaluate((window) => window.getChildWindows()
+      .filter((child) => child.isModal() && child.isVisible()).length)).toBe(0);
+    await expect.poll(() => nativeWorkspace.evaluate((window) => window.isFocused())).toBe(true);
+    await workspace.screenshot({ path: testInfo.outputPath("accessible-quit-confirmation.png") });
+
+    await confirmation.getByRole("button", { name: "Batal", exact: true }).click();
+    await expect(confirmation).toBeHidden();
+    await expectDirtyWorkspace();
+    await expect(settings.getByLabel("Port", { exact: true })).toHaveValue("19422");
+
+    // Closing the settings window must leave the dirty workspace intact.
+    const nativeSettings = await runtime.application.browserWindow(settings);
+    await nativeSettings.evaluate((window) => window.close());
+    await expect.poll(() => settings.isClosed()).toBe(true);
+    await expectDirtyWorkspace();
+    await openServiceSettingsWindow(runtime);
+
+    const savedPath = path.join(runtime.rootDirectory, "Saved-before-quit.shipflow");
+    await runtime.application.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ canceled: false, filePath });
+    }, savedPath);
+    await requestQuit();
+    await expect(confirmation).toBeVisible();
+    const exited = runtime.application.waitForEvent("close");
+    await confirmation.getByRole("button", { name: "Simpan & Tutup", exact: true }).click();
+    await exited;
+    const saved = JSON.parse(await readFile(savedPath, "utf8"));
+    expect(saved.workspace.sheetsById["default-sheet"].activeMode).toBe("analytics");
+    expect(await waitForProcessIdExit(servicePid!, 5_000)).toBe(true);
+    const log = await readFile(runtime.logFilePath, "utf8");
+    expect(log).toContain("event=native_shutdown_completed");
+    expect(log).toContain("event=app_exit");
+  } finally {
+    if (processIdIsAlive(desktopPid)) {
+      await closeApplication(runtime);
+    }
+    await rm(runtime.rootDirectory, { recursive: true, force: true });
+  }
+});
+
+test("document replacement fences an armed delete and preserves autosaved native rows", async () => {
+  const runtime = await startSuite();
+  try {
+    const page = await runtime.application.firstWindow();
+    page.on("dialog", (dialog) => dialog.accept());
+    await expect(page.getByRole("tab", { name: "Workspace" })).toBeVisible();
+    const { createDefaultWorkspaceState } = await import("../../src/features/workspace/default-state");
+    const { createEmptyRow } = await import("../../src/features/sheet/utils");
+    const paths = [path.join(runtime.rootDirectory, "A.shipflow"), path.join(runtime.rootDirectory, "B.shipflow")];
+    for (const [index, documentPath] of paths.entries()) {
+      const workspace = createDefaultWorkspaceState();
+      workspace.sheetsById["default-sheet"].rows = [
+        { ...createEmptyRow(), key: "reused-row", trackingInput: index ? "DOCUMENT-B" : "DOCUMENT-A" },
+        createEmptyRow(),
+      ];
+      await writeFile(documentPath, JSON.stringify({ version: 1, app: "shipflow-desktop", savedAt: new Date().toISOString(), workspace }));
+    }
+    const openFixture = async (documentPath: string) => {
+      await runtime.application.evaluate(({ dialog }, fixture) => {
+        dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [fixture] });
+      }, documentPath);
+      await page.getByRole("button", { name: "File", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Buka", exact: true }).click();
+    };
+    await openFixture(paths[0]);
+    await expect.poll(() => runtime.application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle())).toContain("A.shipflow");
+    const oldScope = await page.evaluate(() => window.shipflow!.requestWorkspace<{ documentGeneration: number }>("workspace.document_generation", {}));
+    await page.getByRole("button", { name: "File", exact: true }).click();
+    await page.getByRole("checkbox", { name: "Simpan Otomatis" }).check();
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Hapus Semua", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Konfirmasi Hapus Semua", exact: true })).toBeVisible();
+
+    // Interpose only the isolated test process's existing IPC handler. The
+    // renderer still invokes the real preload, host, database and document flow.
+    await runtime.application.evaluate(({ ipcMain }) => {
+      const channel = "shipflow:workspace-request";
+      const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => Promise<unknown>> })._invokeHandlers;
+      const handler = handlers.get(channel);
+      if (!handler) throw new Error("Missing workspace IPC handler");
+      const state = globalThis as unknown as { restoreEntered: boolean; releaseRestore: () => void };
+      state.restoreEntered = false;
+      const barrier = new Promise<void>((resolve) => { state.releaseRestore = resolve; });
+      ipcMain.removeHandler(channel);
+      ipcMain.handle(channel, async (event, request) => {
+        if (request.params?.command === "restore_workspace") {
+          state.restoreEntered = true;
+          await barrier;
+        }
+        return handler(event, request);
+      });
+    });
+    await openFixture(paths[1]);
+    await expect.poll(() => runtime.application.evaluate(() => (globalThis as unknown as { restoreEntered: boolean }).restoreEntered)).toBe(true);
+    await page.getByRole("button", { name: "Konfirmasi Hapus Semua", exact: true }).click();
+    await runtime.application.evaluate(() => (globalThis as unknown as { releaseRestore: () => void }).releaseRestore());
+    await expect.poll(() => runtime.application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle())).toContain("B.shipflow");
+    const verification = await page.evaluate(async (staleScope) => {
+      const staleErrors: string[] = [];
+      for (const command of ["clear_sheet_rows", "delete_sheet_rows", "query_sheet_rows"]) {
+        try {
+          await window.shipflow!.requestWorkspace("workspace.command", {
+            ...staleScope, command,
+            payload: command === "query_sheet_rows"
+              ? { query: { sheetId: "default-sheet", offset: 0, limit: 1000, filters: [], sort: [] } }
+              : { sheetId: "default-sheet", rowIds: ["reused-row"] },
+          });
+        } catch (error) { staleErrors.push(String(error)); }
+      }
+      const scope = await window.shipflow!.requestWorkspace<{ documentGeneration: number }>("workspace.document_generation", {});
+      const result = await window.shipflow!.requestWorkspace<{ payload: { totalCount: number; rows: { displayTrackingId: string }[] } }>("workspace.command", {
+        ...scope, command: "query_sheet_rows", payload: { query: { sheetId: "default-sheet", offset: 0, limit: 1000, filters: [], sort: [] } },
+      });
+      return { staleErrors, total: result.payload.totalCount, ids: result.payload.rows.map((row) => row.displayTrackingId) };
+    }, oldScope);
+    expect(verification.staleErrors).toHaveLength(3);
+    expect(verification.staleErrors.every((error) => error.includes("Document changed"))).toBe(true);
+    expect(verification.ids).toEqual(["DOCUMENT-B"]);
+    expect(verification.total).toBe(1);
+    // Change persisted sheet metadata to force an autosave, then reopen the file.
+    await page.getByRole("tab", { name: "Pivot/Grafik" }).click();
+    await expect.poll(async () => {
+      const saved = JSON.parse(await readFile(paths[1], "utf8"));
+      return saved.workspace.sheetsById["default-sheet"].activeMode;
+    }).toBe("analytics");
+    const saved = JSON.parse(await readFile(paths[1], "utf8"));
+    expect(saved.workspace.sheetsById["default-sheet"].rows.filter((row: { trackingInput: string }) => row.trackingInput).map((row: { trackingInput: string }) => row.trackingInput)).toEqual(["DOCUMENT-B"]);
+    await openFixture(paths[0]);
+    await expect.poll(() => runtime.application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle())).toContain("A.shipflow");
+    await openFixture(paths[1]);
+    await expect.poll(() => runtime.application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle())).toContain("B.shipflow");
+    await page.getByRole("tab", { name: "Workspace" }).click();
+    await expect(page.locator('input[value="DOCUMENT-B"]')).toBeVisible();
+  } finally {
+    await closeApplication(runtime);
+    await rm(runtime.rootDirectory, { recursive: true, force: true });
   }
 });

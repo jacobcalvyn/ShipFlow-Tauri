@@ -76,6 +76,7 @@ const SERVICE_HTTP_HANDLER_DEADLINE_SECS: u64 =
 
 #[derive(Clone)]
 pub struct HttpApiState {
+    pub runtime_options: crate::runtime_options::RuntimeOptions,
     pub client: Client,
     pub auth_token: String,
     pub internal_auth_token: String,
@@ -162,6 +163,7 @@ struct AuthCheckResponse {
 struct CapabilitiesResponse {
     product: &'static str,
     api_version: &'static str,
+    build: crate::build_identity::BuildIdentity,
     auth: &'static str,
     force_refresh_header: &'static str,
     routes: Vec<&'static str>,
@@ -370,6 +372,14 @@ fn tracking_source_redirects_allowed(tracking_source: &TrackingSourceConfig) -> 
 }
 
 pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), String> {
+    run_service_with_options(config, crate::runtime_options::RuntimeOptions::default()).await
+}
+
+pub async fn run_service_with_options(
+    config: ServiceRuntimeConfig,
+    options: crate::runtime_options::RuntimeOptions,
+) -> Result<(), String> {
+    options.validate()?;
     let bind_address = config.mode.bind_address_label().to_string();
     validate_service_runtime_config(&config)?;
 
@@ -386,14 +396,34 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
         })?;
 
     let shutdown_signal = ShutdownSignal::new();
-    let lookup_cache = match PersistentLookupStore::try_open_default() {
-        Ok(store) => LookupCacheState::default().with_persistent_store(store),
-        Err(error) => {
-            shipflow_core::shipflow_log!(
-                "[ShipFlowLifecycle] persistent_lookup_disabled error={error}"
-            );
-            LookupCacheState::default()
-        }
+    let (lookup_cache, contact_cache, bag_route_cache) = if options.require_persistence {
+        let directory = options
+            .data_directory
+            .as_ref()
+            .ok_or("Missing data directory.")?;
+        (
+            LookupCacheState::default().with_persistent_store(PersistentLookupStore::open_strict(
+                directory.join("lookup-store.sqlite3"),
+                options.persistent_entries,
+            )?),
+            ContactCacheState::open_strict(directory.join("contact-store.sqlite3"))?,
+            BagRouteCacheState::open_strict(directory.join("bag-route-store.sqlite3"))?,
+        )
+    } else {
+        let cache = match PersistentLookupStore::try_open_default() {
+            Ok(store) => LookupCacheState::default().with_persistent_store(store),
+            Err(error) => {
+                shipflow_core::shipflow_log!(
+                    "[ShipFlowLifecycle] persistent_lookup_disabled error={error}"
+                );
+                LookupCacheState::default()
+            }
+        };
+        (
+            cache,
+            ContactCacheState::default(),
+            BagRouteCacheState::default(),
+        )
     };
     let app_state = HttpApiState {
         client,
@@ -403,13 +433,30 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
         bind_address,
         port: config.port,
         tracking_source,
-        lookup_cache,
-        contact_cache: ContactCacheState::default(),
-        bag_route_cache: BagRouteCacheState::default(),
-        public_upstream_backpressure: UpstreamBackpressure::public_default(),
-        upstream_backpressure: UpstreamBackpressure::default(),
-        contact_backpressure: UpstreamBackpressure::contact_default(),
-        http_ingress_backpressure: UpstreamBackpressure::http_ingress_default(),
+        lookup_cache: lookup_cache.configure(&options),
+        contact_cache,
+        bag_route_cache,
+        public_upstream_backpressure: UpstreamBackpressure::with_limits(
+            options.public_concurrency,
+            options.lookup_queue,
+            options.lookup_wait(),
+        ),
+        upstream_backpressure: UpstreamBackpressure::with_limits(
+            options.lookup_concurrency,
+            options.lookup_queue + 60,
+            options.lookup_wait(),
+        ),
+        contact_backpressure: UpstreamBackpressure::with_limits(
+            options.contact_concurrency,
+            150,
+            Duration::from_secs(30),
+        ),
+        http_ingress_backpressure: UpstreamBackpressure::with_limits(
+            options.http_concurrency,
+            options.http_queue,
+            Duration::from_secs(5),
+        ),
+        runtime_options: options,
         shutdown_signal: shutdown_signal.clone(),
         started_at: Instant::now(),
     };
@@ -463,7 +510,7 @@ pub async fn run_service_process(config: ServiceRuntimeConfig) -> Result<(), Str
     os_signal_handle.abort();
     tokio::task::spawn_blocking(move || shutdown_lookup_cache.flush_persistent_store())
         .await
-        .map_err(|error| format!("Unable to flush persistent lookup cache: {error}"))?;
+        .map_err(|error| format!("Unable to flush persistent lookup cache: {error}"))??;
     shipflow_core::shipflow_log!(
         "[ShipFlowLifecycle] service_stopped pid={} result={}",
         std::process::id(),
@@ -502,6 +549,7 @@ async fn wait_for_os_shutdown_signal() {
 fn build_router(app_state: HttpApiState) -> Router {
     Router::new()
         .route("/v1/status", get(v1_status_handler))
+        .route("/v1/readiness", get(v1_readiness_handler))
         .route("/v1/auth/check", get(v1_auth_check_handler))
         .route("/v1/openapi.json", get(v1_openapi_handler))
         .route("/v1/capabilities", get(v1_capabilities_handler))
@@ -680,6 +728,49 @@ async fn v1_status_handler(
     ))
 }
 
+async fn v1_readiness_handler(
+    State(state): State<HttpApiState>,
+    headers: HeaderMap,
+) -> Result<Json<crate::api_contract::ApiEnvelope<Value>>, ApiErrorResponse> {
+    let request_id = authorize_request_id(&headers);
+    authorize_state_request(&headers, &state).map_err(|message| {
+        error_response_v1(
+            StatusCode::UNAUTHORIZED,
+            "shipflow.service.readiness.v1",
+            request_id.clone(),
+            &message,
+        )
+    })?;
+    let probe = state.clone();
+    let storage = tokio::task::spawn_blocking(move || {
+        probe.lookup_cache.check_persistence()?;
+        probe.contact_cache.check_persistence()?;
+        probe.bag_route_cache.check_persistence()
+    })
+    .await
+    .map_err(|_| "Storage probe task failed.".to_string())
+    .and_then(|v| v);
+    if storage.is_err() && state.runtime_options.require_persistence {
+        return Err(error_response_v1(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "shipflow.service.readiness.v1",
+            request_id,
+            "Required service storage is not healthy.",
+        ));
+    }
+    Ok(envelope(
+        "shipflow.service.readiness.v1",
+        request_id,
+        serde_json::json!({
+            "product": SERVICE_STATUS_PRODUCT, "ready": true,
+            "build": crate::build_identity::build_identity(), "configId": state.runtime_options.config_id,
+            "persistenceRequired": state.runtime_options.require_persistence,
+            "storageHealthy": storage.is_ok(), "cacheMetrics": state.lookup_cache.metrics(),
+            "limits": state.runtime_options
+        }),
+    ))
+}
+
 async fn v1_auth_check_handler(
     State(state): State<HttpApiState>,
     headers: HeaderMap,
@@ -725,11 +816,13 @@ async fn v1_capabilities_handler(
         CapabilitiesResponse {
             product: SERVICE_STATUS_PRODUCT,
             api_version: "v1",
+            build: crate::build_identity::build_identity(),
             auth: "bearer",
             force_refresh_header: FORCE_REFRESH_HEADER_NAME,
             routes: vec![
                 "GET /v1/openapi.json",
                 "GET /v1/status",
+                "GET /v1/readiness",
                 "GET /v1/auth/check",
                 "GET /v1/capabilities",
                 "GET /v1/diagnostics",
@@ -2012,6 +2105,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn readiness_requires_auth_and_rejects_failed_persistence() {
+        let directory = std::env::temp_dir().join(format!(
+            "shipflow-readiness-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut state = test_state();
+        state.runtime_options.require_persistence = true;
+        state.runtime_options.config_id = "fixture-config".into();
+        let lookup_path = directory.join("lookup.sqlite3");
+        state.lookup_cache = LookupCacheState::default().with_persistent_store(
+            crate::persistent_store::PersistentLookupStore::open_strict(lookup_path.clone(), 10)
+                .unwrap(),
+        );
+        state.contact_cache =
+            ContactCacheState::open_strict(directory.join("contact.sqlite3")).unwrap();
+        state.bag_route_cache =
+            BagRouteCacheState::open_strict(directory.join("bag.sqlite3")).unwrap();
+        let router = build_router(state);
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/readiness")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let authenticated = || {
+            Request::builder()
+                .uri("/v1/readiness")
+                .header(AUTHORIZATION, "Bearer secret-token")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let response = router.clone().oneshot(authenticated()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["data"]["configId"], "fixture-config");
+        assert_eq!(payload["data"]["storageHealthy"], true);
+        assert_eq!(
+            payload["data"]["build"]["releaseId"],
+            crate::build_identity::build_identity().release_id
+        );
+        let connection = rusqlite::Connection::open(lookup_path).unwrap();
+        connection.execute_batch("CREATE TRIGGER reject_probe BEFORE UPDATE ON shipflow_storage_probe BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END;").unwrap();
+        let response = router.oneshot(authenticated()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        drop(connection);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
     async fn diagnostics_require_auth_and_report_bounded_runtime_state() {
         let router = build_router(test_state());
         let unauthenticated = router
@@ -2204,6 +2358,7 @@ mod tests {
 
     fn test_state() -> HttpApiState {
         HttpApiState {
+            runtime_options: Default::default(),
             client: reqwest::Client::new(),
             auth_token: "secret-token".into(),
             internal_auth_token: "internal-token".into(),
@@ -2225,6 +2380,7 @@ mod tests {
 
     fn external_api_test_state() -> HttpApiState {
         HttpApiState {
+            runtime_options: Default::default(),
             tracking_source: TrackingSourceConfig {
                 tracking_source: TrackingSource::ExternalApi,
                 external_api_base_url: "https://scrappid3.example.test".into(),
@@ -2242,6 +2398,7 @@ mod tests {
         permit_timeout: Duration,
     ) -> HttpApiState {
         HttpApiState {
+            runtime_options: Default::default(),
             tracking_source: TrackingSourceConfig {
                 tracking_source: TrackingSource::ExternalApi,
                 external_api_base_url: external_api_base_url.into(),

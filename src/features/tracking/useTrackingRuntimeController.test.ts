@@ -1,3 +1,8 @@
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { installTestBridge } from "../../test/bridge";
+import { replaceScopedWorkspace } from "../workspace-engine/document-scope";
+import { createDefaultWorkspaceState } from "../workspace/default-state";
+import { useTrackingRuntimeController } from "./useTrackingRuntimeController";
 import { describe, expect, it, vi } from "vitest";
 import { createDefaultSheetState } from "../sheet/default-state";
 import {
@@ -7,6 +12,26 @@ import {
 } from "./useTrackingRuntimeController";
 
 describe("tracking runtime controller helpers", () => {
+  it("drops an empty-row completion when its document was replaced", async () => {
+    let finishDelete!: (value: unknown) => void;
+    const deleted = new Promise((resolve) => { finishDelete = resolve; });
+    const invoke = vi.fn(async (_name, args) => {
+      if (args?.command?.command === "delete_sheet_rows") return deleted;
+      return { payload: [] };
+    });
+    installTestBridge({ invoke });
+    const workspace = createDefaultWorkspaceState();
+    const options = { workspaceRef: { current: workspace }, updateSheet: vi.fn(), disarmDeleteAll: vi.fn(), onWorkspaceEngineMutation: vi.fn() };
+    const { result } = renderHook(() => useTrackingRuntimeController(options));
+    let pending!: Promise<void>;
+    act(() => { pending = result.current.fetchRow("default-sheet", workspace.sheetsById["default-sheet"].rows[0].key, ""); });
+    await waitFor(() => expect(invoke).toHaveBeenCalled());
+    await replaceScopedWorkspace({ command: "restore_workspace", payload: { sheets: [] } });
+    await act(async () => { finishDelete({ payload: null }); await pending; });
+    expect(options.updateSheet).not.toHaveBeenCalled();
+    expect(options.onWorkspaceEngineMutation).not.toHaveBeenCalled();
+  });
+
   it("creates local draft rows for projected Rust bulk paste targets", () => {
     const sheet = createDefaultSheetState();
 

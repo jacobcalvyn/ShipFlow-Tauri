@@ -4301,3 +4301,18 @@ html[data-platform="macos"] {
   border: 2px solid transparent;
   background-clip: padding-box;
 }
+
+.docker-status-grid {
+  display: grid;
+  grid-template-columns: minmax(9rem, auto) minmax(0, 1fr);
+  gap: 0.45rem 1rem;
+  margin: 1rem 0;
+}
+.docker-status-grid dd { margin: 0; overflow-wrap: anywhere; }
+.docker-release-id { overflow-wrap: anywhere; }
+.docker-config-fields { display: grid; gap: 0.8rem; padding: 1rem; min-width: 0; }
+.docker-config-fields label { display: grid; gap: 0.3rem; }
+.docker-config-fields input, .docker-config-fields select { max-width: 100%; padding: 0.4rem; }
+.docker-config-fields details { padding: 0.5rem 0; }
+.docker-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1rem 0; }
+.docker-log-output { max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }

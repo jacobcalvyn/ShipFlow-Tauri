@@ -334,6 +334,7 @@ pub struct RawBlobRecord {
 
 pub struct SqliteWorkspaceStore {
     connection: Connection,
+    expected_document_generation: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -365,6 +366,74 @@ pub struct RestoreRowInput {
 }
 
 impl SqliteWorkspaceStore {
+    pub fn document_generation(&self) -> WorkspaceStoreResult<i64> {
+        Ok(self.connection.query_row(
+            "SELECT generation FROM workspace_document_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    // Tracking uses separate database connections. Recheck this binding inside
+    // the setup transaction; host admission alone cannot fence a later restore.
+    pub fn bind_document_generation(&mut self, expected: i64) -> WorkspaceStoreResult<()> {
+        self.expected_document_generation = Some(expected);
+        self.check_document_generation()
+    }
+
+    pub fn check_document_generation(&self) -> WorkspaceStoreResult<()> {
+        if let Some(expected) = self.expected_document_generation {
+            if self.document_generation()? != expected {
+                return Err(WorkspaceStoreError::InvalidValue {
+                    field: "document_generation",
+                    value: "Document changed; retry in the current document.".into(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn atomic_write<T, E>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: Display + From<WorkspaceStoreError>,
+    {
+        self.connection
+            .execute_batch("SAVEPOINT shipflow_atomic_write")
+            .map_err(WorkspaceStoreError::from)?;
+        let result = operation(self);
+        match result {
+            Ok(value) => {
+                if let Err(error) = self
+                    .connection
+                    .execute_batch("RELEASE shipflow_atomic_write")
+                {
+                    self.connection
+                        .execute_batch(
+                            "ROLLBACK TO shipflow_atomic_write; RELEASE shipflow_atomic_write",
+                        )
+                        .map_err(WorkspaceStoreError::from)?;
+                    return Err(WorkspaceStoreError::from(error).into());
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                if let Err(rollback) = self.connection.execute_batch(
+                    "ROLLBACK TO shipflow_atomic_write; RELEASE shipflow_atomic_write",
+                ) {
+                    return Err(WorkspaceStoreError::InvalidValue {
+                        field: "transaction_recovery",
+                        value: format!("{error}; rollback failed: {rollback}"),
+                    }
+                    .into());
+                }
+                Err(error)
+            }
+        }
+    }
+
     pub fn restore_workspace(&mut self, input: &RestoreWorkspaceInput) -> WorkspaceStoreResult<()> {
         let invalid = |field, value: &str| WorkspaceStoreError::InvalidValue {
             field,
@@ -380,6 +449,10 @@ impl SqliteWorkspaceStore {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if !input.seed_only {
+            tx.execute(
+                "UPDATE workspace_document_state SET generation = generation + 1 WHERE id = 1",
+                [],
+            )?;
             tx.execute(
                 "DELETE FROM sheets WHERE workspace_id = ?1",
                 params![workspace_id],
@@ -554,7 +627,10 @@ impl SqliteWorkspaceStore {
     }
 
     fn initialize(connection: Connection) -> WorkspaceStoreResult<Self> {
-        let store = Self { connection };
+        let store = Self {
+            connection,
+            expected_document_generation: None,
+        };
         store.apply_migrations()?;
         Ok(store)
     }
@@ -814,6 +890,25 @@ impl SqliteWorkspaceStore {
         inputs: &[UpsertSheetRowInput],
         replace_existing: bool,
     ) -> WorkspaceStoreResult<()> {
+        self.upsert_sheet_rows_with_mode(sheet_id, inputs, replace_existing, false)
+    }
+
+    pub fn edit_sheet_rows_atomic(
+        &mut self,
+        sheet_id: &str,
+        inputs: &[UpsertSheetRowInput],
+        replace_existing: bool,
+    ) -> WorkspaceStoreResult<()> {
+        self.upsert_sheet_rows_with_mode(sheet_id, inputs, replace_existing, true)
+    }
+
+    fn upsert_sheet_rows_with_mode(
+        &mut self,
+        sheet_id: &str,
+        inputs: &[UpsertSheetRowInput],
+        replace_existing: bool,
+        preserve_tracking_state: bool,
+    ) -> WorkspaceStoreResult<()> {
         if inputs.iter().any(|input| input.sheet_id != sheet_id) {
             return Err(WorkspaceStoreError::InvalidValue {
                 field: "sheet_row_sheet_id",
@@ -831,7 +926,7 @@ impl SqliteWorkspaceStore {
         }
         let now = now_utc_text();
         for input in inputs {
-            upsert_sheet_row_on(&transaction, input, &now)?;
+            upsert_sheet_row_with_mode(&transaction, input, &now, preserve_tracking_state)?;
         }
         transaction.execute(
             "DELETE FROM analytics_cache WHERE sheet_id = ?1",
@@ -1104,9 +1199,10 @@ impl SqliteWorkspaceStore {
         expected_lookup_tracking_id: &str,
         expected_row_generation: &str,
     ) -> WorkspaceStoreResult<bool> {
-        let now = now_utc_text();
-        let changed = self.connection.execute(
-            r#"
+        self.atomic_write(|store| {
+            let now = now_utc_text();
+            let changed = store.connection.execute(
+                r#"
             UPDATE sheet_rows
             SET row_status = ?2,
                 error_message = ?3,
@@ -1115,21 +1211,22 @@ impl SqliteWorkspaceStore {
               AND lookup_tracking_id = ?5
               AND row_generation = ?6
             "#,
-            params![
-                input.row_id,
-                sheet_row_status_to_db(input.row_status),
-                input.error_message,
-                now,
-                expected_lookup_tracking_id,
-                expected_row_generation
-            ],
-        )?;
+                params![
+                    input.row_id,
+                    sheet_row_status_to_db(input.row_status),
+                    input.error_message,
+                    now,
+                    expected_lookup_tracking_id,
+                    expected_row_generation
+                ],
+            )?;
 
-        if changed > 0 {
-            self.invalidate_analytics_cache_for_row(&input.row_id)?;
-        }
+            if changed > 0 {
+                store.invalidate_analytics_cache_for_row(&input.row_id)?;
+            }
 
-        Ok(changed > 0)
+            Ok(changed > 0)
+        })
     }
 
     pub fn upsert_raw_blob(&mut self, input: &UpsertRawBlobInput) -> WorkspaceStoreResult<()> {
@@ -2676,6 +2773,15 @@ fn upsert_sheet_row_on(
     input: &UpsertSheetRowInput,
     now: &str,
 ) -> WorkspaceStoreResult<()> {
+    upsert_sheet_row_with_mode(connection, input, now, false)
+}
+
+fn upsert_sheet_row_with_mode(
+    connection: &Connection,
+    input: &UpsertSheetRowInput,
+    now: &str,
+    preserve_tracking_state: bool,
+) -> WorkspaceStoreResult<()> {
     let existing_sheet_id = connection
         .query_row(
             "SELECT sheet_id FROM sheet_rows WHERE id = ?1",
@@ -2729,8 +2835,12 @@ fn upsert_sheet_row_on(
               THEN excluded.row_generation
             ELSE sheet_rows.row_generation
           END,
-          row_status = excluded.row_status,
-          error_message = excluded.error_message,
+          row_status = CASE
+            WHEN ?10 AND sheet_rows.lookup_tracking_id = excluded.lookup_tracking_id
+              THEN sheet_rows.row_status ELSE excluded.row_status END,
+          error_message = CASE
+            WHEN ?10 AND sheet_rows.lookup_tracking_id = excluded.lookup_tracking_id
+              THEN sheet_rows.error_message ELSE excluded.error_message END,
           updated_at = excluded.updated_at
         "#,
         params![
@@ -2742,7 +2852,8 @@ fn upsert_sheet_row_on(
             next_row_generation(),
             sheet_row_status_to_db(input.row_status),
             input.error_message,
-            now
+            now,
+            preserve_tracking_state
         ],
     )?;
     Ok(())
@@ -3549,6 +3660,169 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+
+    struct UnavailableTrackingSource;
+
+    impl crate::tracking::TrackingLookupSource for UnavailableTrackingSource {
+        fn fetch_tracking<'a>(
+            &'a mut self,
+            _: &'a str,
+            _: bool,
+        ) -> crate::tracking::TrackingLookupFuture<'a> {
+            Box::pin(async {
+                Err(crate::tracking::TrackingLookupFailure::new(
+                    "fixture unavailable",
+                ))
+            })
+        }
+    }
+
+    fn seed_refresh_rows(store: &mut SqliteWorkspaceStore) {
+        for position in 0..3 {
+            store
+                .upsert_sheet_row(&UpsertSheetRowInput {
+                    row_id: format!("row-{position}"),
+                    sheet_id: "sheet-1".into(),
+                    position,
+                    display_tracking_id: format!("P{position}"),
+                    lookup_tracking_id: format!("P{position}"),
+                    row_status: SheetRowStatus::Failed,
+                    error_message: Some("original error".into()),
+                })
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_setup_rolls_back_and_can_retry_without_restart() {
+        for (row, status) in [
+            ("row-1", "pending"),
+            ("row-0", "loading"),
+            ("row-1", "loading"),
+        ] {
+            let mut store = prepared_store();
+            seed_refresh_rows(&mut store);
+            store
+                .connection
+                .execute_batch(&format!(
+                    "CREATE TRIGGER reject_refresh BEFORE UPDATE OF row_status ON sheet_rows
+                 WHEN NEW.id = '{row}' AND NEW.row_status = '{status}'
+                 BEGIN SELECT RAISE(ABORT, 'injected setup failure'); END;"
+                ))
+                .unwrap();
+            let mut source = UnavailableTrackingSource;
+            let mut events = Vec::new();
+            let result = crate::tracking::TrackingEngine::new(&mut store, &mut source)
+                .refresh_sheet_rows_with_progress("sheet-1", &[], true, None, |event| {
+                    events.push(event)
+                })
+                .await;
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("injected setup failure"));
+            assert!(events.is_empty(), "uncommitted progress must not escape");
+            for position in 0..3 {
+                let row = store
+                    .get_sheet_row(&format!("row-{position}"))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(row.row_status, SheetRowStatus::Failed);
+                assert_eq!(row.error_message.as_deref(), Some("original error"));
+            }
+            store
+                .connection
+                .execute_batch("DROP TRIGGER reject_refresh")
+                .unwrap();
+            let result = crate::tracking::TrackingEngine::new(&mut store, &mut source)
+                .refresh_sheet_rows_with_progress("sheet-1", &[], true, None, |_| {})
+                .await
+                .unwrap();
+            assert_eq!(result.failed_count, 3);
+            assert!(result
+                .rows
+                .iter()
+                .all(|row| row.error_message.as_deref() == Some("fixture unavailable")));
+        }
+    }
+
+    #[test]
+    fn status_and_analytics_invalidation_roll_back_together() {
+        let mut store = prepared_store();
+        seed_refresh_rows(&mut store);
+        seed_analytics_cache(&mut store, "sheet-1", "fixture-cache");
+        store
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER reject_cache BEFORE DELETE ON analytics_cache
+            BEGIN SELECT RAISE(ABORT, 'injected invalidation failure'); END;",
+            )
+            .unwrap();
+        let original = store.get_sheet_row("row-0").unwrap().unwrap();
+        let result = store.update_sheet_row_status_if_lookup_matches(
+            &UpdateSheetRowStatusInput {
+                row_id: original.row_id.clone(),
+                row_status: SheetRowStatus::Loading,
+                error_message: None,
+            },
+            &original.lookup_tracking_id,
+            &original.row_generation,
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("injected invalidation failure"));
+        assert_eq!(store.get_sheet_row("row-0").unwrap().unwrap(), original);
+        assert_eq!(analytics_cache_count(&store, "sheet-1"), 1);
+    }
+
+    #[tokio::test]
+    async fn document_generation_advances_only_on_committed_replacement_and_fences_tracking() {
+        let mut store = prepared_store();
+        seed_refresh_rows(&mut store);
+        let generation = store.document_generation().unwrap();
+        let mut replacement = RestoreWorkspaceInput {
+            seed_only: false,
+            sheets: vec![RestoreSheetInput {
+                sheet_id: "sheet-1".into(),
+                name: "Replacement".into(),
+                position: 0,
+                rows: vec![RestoreRowInput {
+                    row_id: "row-0".into(),
+                    position: 0,
+                    display_tracking_id: "P0".into(),
+                    shipment: None,
+                    row_status: None,
+                    error_message: None,
+                }],
+            }],
+        };
+        store.restore_workspace(&replacement).unwrap();
+        assert_eq!(store.document_generation().unwrap(), generation + 1);
+        replacement.seed_only = true;
+        store.restore_workspace(&replacement).unwrap();
+        assert_eq!(store.document_generation().unwrap(), generation + 1);
+        replacement.seed_only = false;
+        let duplicate = replacement.sheets[0].rows[0].clone();
+        replacement.sheets[0].rows.push(duplicate);
+        assert!(store.restore_workspace(&replacement).is_err());
+        assert_eq!(store.document_generation().unwrap(), generation + 1);
+        let original = store.get_sheet_row("row-0").unwrap().unwrap();
+        // Simulate replacement between initial RPC validation and tracking setup.
+        store.expected_document_generation = Some(generation);
+        let mut source = UnavailableTrackingSource;
+        let error = crate::tracking::TrackingEngine::new(&mut store, &mut source)
+            .refresh_sheet_row("row-0", true)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Document changed"));
+        let error = crate::tracking::TrackingEngine::new(&mut store, &mut source)
+            .refresh_sheet_rows_with_progress("sheet-1", &[], true, None, |_| {})
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Document changed"));
+        assert_eq!(store.get_sheet_row("row-0").unwrap().unwrap(), original);
+    }
 
     #[test]
     fn query_window_is_limited_by_engine_cap() {

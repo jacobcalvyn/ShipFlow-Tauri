@@ -686,6 +686,29 @@ async fn handle_request(
     output: &Output,
 ) -> Result<(), RpcError> {
     request.validate()?;
+    if request.method == "workspace.document_generation" {
+        let generation = runtime
+            .store()
+            .document_generation()
+            .map_err(|error| RpcError::new("workspace_error", error.to_string()))?;
+        return send_result(
+            output,
+            &request.id,
+            serde_json::json!({"documentGeneration": generation}),
+        )
+        .map_err(|error| RpcError::new("transport_error", error));
+    }
+    let generation = request
+        .params
+        .get("documentGeneration")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or_else(|| RpcError::new("invalid_params", "Missing document generation."))?;
+    // The serial actor orders restore with ordinary commands. Tracking also
+    // checks this binding inside its separate connection's setup transaction.
+    runtime
+        .store_mut()
+        .bind_document_generation(generation)
+        .map_err(|error| RpcError::new("stale_document", error.to_string()))?;
     match request.method.as_str() {
         "workspace.restore_file" => {
             let file_name = request
@@ -698,7 +721,14 @@ async fn handle_request(
             let sheets = runtime
                 .restore_workspace_file(file_name)
                 .map_err(|error| RpcError::new("workspace_error", error.to_string()))?;
-            send_result(output, &request.id, WorkspaceEngineResponse::Sheets(sheets))
+            let mut result = serde_json::to_value(WorkspaceEngineResponse::Sheets(sheets))
+                .map_err(|error| RpcError::new("workspace_error", error.to_string()))?;
+            result["documentGeneration"] = runtime
+                .store()
+                .document_generation()
+                .map_err(|error| RpcError::new("workspace_error", error.to_string()))?
+                .into();
+            send_result(output, &request.id, result)
                 .map_err(|error| RpcError::new("transport_error", error))
         }
         "workspace.command" => {
@@ -714,6 +744,13 @@ async fn handle_request(
                 .handle_command(command)
                 .await
                 .map_err(|error| RpcError::new("workspace_error", error.to_string()))?;
+            let mut result = serde_json::to_value(result)
+                .map_err(|error| RpcError::new("workspace_error", error.to_string()))?;
+            result["documentGeneration"] = runtime
+                .store()
+                .document_generation()
+                .map_err(|error| RpcError::new("workspace_error", error.to_string()))?
+                .into();
             send_result(output, &request.id, result)
                 .map_err(|error| RpcError::new("transport_error", error))
         }

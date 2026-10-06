@@ -8,6 +8,12 @@ pub const SQLITE_PRAGMAS: &[&str] = &[
 ];
 
 pub const SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS workspace_document_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  generation INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO workspace_document_state (id, generation) VALUES (1, 0);
+
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,

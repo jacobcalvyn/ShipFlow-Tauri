@@ -3,7 +3,9 @@
 use std::env;
 
 use shipflow_core::model::{TrackingSource, TrackingSourceConfig};
-use shipflow_service_runtime::{run_service_process, ServiceRuntimeConfig, ServiceRuntimeMode};
+use shipflow_service_runtime::{
+    run_service_with_options, ServiceRuntimeConfig, ServiceRuntimeMode,
+};
 
 #[derive(Clone, Debug)]
 struct CliConfig {
@@ -89,6 +91,38 @@ fn parse_args() -> Result<Option<CliConfig>, String> {
     Ok(Some(config))
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LaunchConfig {
+    schema_version: u32,
+    service: ServiceRuntimeConfig,
+    runtime: shipflow_service_runtime::runtime_options::RuntimeOptions,
+}
+
+fn read_launch_config() -> Result<Option<LaunchConfig>, String> {
+    use std::io::Read;
+    let Some(path) = env::var_os("SHIPFLOW_CONFIG_FILE") else {
+        return Ok(None);
+    };
+    let file =
+        std::fs::File::open(&path).map_err(|_| "Unable to read service configuration file.")?;
+    let mut bytes = Vec::new();
+    file.take(65537)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Unable to read service configuration file.")?;
+    if bytes.len() > 65536 {
+        return Err("Service configuration exceeds 64 KiB.".into());
+    }
+    let config: LaunchConfig =
+        serde_json::from_slice(&bytes).map_err(|_| "Invalid service configuration file.")?;
+    if config.schema_version != 1 {
+        return Err("Unsupported service configuration version.".into());
+    }
+    shipflow_service_runtime::validate_service_runtime_config(&config.service)?;
+    config.runtime.validate()?;
+    Ok(Some(config))
+}
+
 fn main() {
     std::panic::set_hook(Box::new(|panic_info| {
         shipflow_core::shipflow_log!(
@@ -97,26 +131,77 @@ fn main() {
         );
     }));
 
-    let Some(config) = parse_args().unwrap_or_else(|error| {
-        shipflow_core::shipflow_log!("[ShipFlowLifecycle] invalid_arguments error={error:?}");
-        shipflow_core::shipflow_log!(
-            "[ShipFlowLifecycle] invalid_arguments_help command=shipflow-service--help"
+    if env::args().any(|arg| arg == "--print-build") {
+        println!(
+            "{}",
+            serde_json::to_string(&shipflow_service_runtime::build_identity::build_identity())
+                .unwrap()
         );
-        std::process::exit(2);
-    }) else {
-        print_help();
         return;
-    };
+    }
+    let launch = read_launch_config().unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(2);
+    });
+    if env::args().any(|arg| arg == "--healthcheck") {
+        let Some(config) = launch else {
+            std::process::exit(2);
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let healthy = runtime.block_on(async {
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(20))
+                .build()
+                .ok()?;
+            let response = client
+                .get(format!(
+                    "http://127.0.0.1:{}/v1/readiness",
+                    config.service.port
+                ))
+                .bearer_auth(config.service.auth_token)
+                .send()
+                .await
+                .ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            let value: serde_json::Value =
+                serde_json::from_slice(&response.bytes().await.ok()?).ok()?;
+            (value["data"]["ready"] == true && value["data"]["storageHealthy"] == true)
+                .then_some(())
+        });
+        std::process::exit(if healthy.is_some() { 0 } else { 1 });
+    }
+    let (runtime_config, options) = if let Some(config) = launch {
+        (config.service, config.runtime)
+    } else {
+        let Some(config) = parse_args().unwrap_or_else(|error| {
+            shipflow_core::shipflow_log!("[ShipFlowLifecycle] invalid_arguments error={error:?}");
+            shipflow_core::shipflow_log!(
+                "[ShipFlowLifecycle] invalid_arguments_help command=shipflow-service--help"
+            );
+            std::process::exit(2);
+        }) else {
+            print_help();
+            return;
+        };
 
-    let runtime_config = ServiceRuntimeConfig {
-        mode: config.mode,
-        port: config.port,
-        auth_token: config.auth_token,
-        internal_auth_token: env::var("SHIPFLOW_INTERNAL_SERVICE_TOKEN").unwrap_or_default(),
-        internal_ipc_endpoint: env::var("SHIPFLOW_INTERNAL_IPC_ENDPOINT")
-            .ok()
-            .filter(|endpoint| !endpoint.trim().is_empty()),
-        tracking_source: config.tracking_source,
+        let runtime_config = ServiceRuntimeConfig {
+            mode: config.mode,
+            port: config.port,
+            auth_token: config.auth_token,
+            internal_auth_token: env::var("SHIPFLOW_INTERNAL_SERVICE_TOKEN").unwrap_or_default(),
+            internal_ipc_endpoint: env::var("SHIPFLOW_INTERNAL_IPC_ENDPOINT")
+                .ok()
+                .filter(|endpoint| !endpoint.trim().is_empty()),
+            tracking_source: config.tracking_source,
+        };
+
+        (runtime_config, Default::default())
     };
 
     shipflow_core::shipflow_log!(
@@ -131,7 +216,7 @@ fn main() {
         .build()
         .expect("failed to create ShipFlow Service runtime");
 
-    if let Err(error) = runtime.block_on(run_service_process(runtime_config)) {
+    if let Err(error) = runtime.block_on(run_service_with_options(runtime_config, options)) {
         shipflow_core::shipflow_log!(
             "[ShipFlowLifecycle] service_failed processId={} error={error:?}",
             std::process::id()

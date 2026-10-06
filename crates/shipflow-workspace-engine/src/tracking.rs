@@ -218,23 +218,25 @@ where
         row_id: &str,
         force_refresh: bool,
     ) -> TrackingEngineResult<SheetRowProjection> {
-        let row = self
-            .store
-            .get_sheet_row(row_id)?
-            .ok_or_else(|| TrackingEngineError::MissingSheetRow(row_id.to_string()))?;
-
-        let updated = self.store.update_sheet_row_status_if_lookup_matches(
-            &UpdateSheetRowStatusInput {
-                row_id: row.row_id.clone(),
-                row_status: SheetRowStatus::Loading,
-                error_message: None,
-            },
-            &row.lookup_tracking_id,
-            &row.row_generation,
-        )?;
-        if !updated {
-            return Err(TrackingEngineError::MissingSheetRow(row.row_id));
-        }
+        let row = self.store.atomic_write(|store| {
+            store.check_document_generation()?;
+            let row = store
+                .get_sheet_row(row_id)?
+                .ok_or_else(|| TrackingEngineError::MissingSheetRow(row_id.to_string()))?;
+            let updated = store.update_sheet_row_status_if_lookup_matches(
+                &UpdateSheetRowStatusInput {
+                    row_id: row.row_id.clone(),
+                    row_status: SheetRowStatus::Loading,
+                    error_message: None,
+                },
+                &row.lookup_tracking_id,
+                &row.row_generation,
+            )?;
+            if !updated {
+                return Err(TrackingEngineError::MissingSheetRow(row.row_id));
+            }
+            Ok::<_, TrackingEngineError>(row)
+        })?;
 
         match self
             .source
@@ -313,83 +315,94 @@ where
         let mut duplicate_or_empty_row_count = 0;
         let mut stale_or_missing_row_count = 0;
 
-        for row_id in row_ids {
-            let row_id = row_id.trim();
-            if row_id.is_empty() || !seen.insert(row_id.to_string()) {
-                duplicate_or_empty_row_count += 1;
-                continue;
-            }
-            if !self.store.sheet_row_belongs_to_sheet(row_id, sheet_id)? {
-                stale_or_missing_row_count += 1;
-                continue;
+        // Publish progress only after all setup writes commit; no transaction
+        // remains open while waiting for upstream lookups.
+        let mut setup_events = Vec::new();
+        let (total_count, mut next_lookup_to_activate) = self.store.atomic_write(|store| {
+            store.check_document_generation()?;
+            for row_id in row_ids {
+                let row_id = row_id.trim();
+                if row_id.is_empty() || !seen.insert(row_id.to_string()) {
+                    duplicate_or_empty_row_count += 1;
+                    continue;
+                }
+                if !store.sheet_row_belongs_to_sheet(row_id, sheet_id)? {
+                    stale_or_missing_row_count += 1;
+                    continue;
+                }
+
+                let Some(row) = store.get_sheet_row(row_id)? else {
+                    stale_or_missing_row_count += 1;
+                    continue;
+                };
+                let updated = store.update_sheet_row_status_if_lookup_matches(
+                    &UpdateSheetRowStatusInput {
+                        row_id: row.row_id.clone(),
+                        row_status: SheetRowStatus::Pending,
+                        error_message: None,
+                    },
+                    &row.lookup_tracking_id,
+                    &row.row_generation,
+                )?;
+                if !updated {
+                    continue;
+                }
+                let mut row = row;
+                row.row_status = SheetRowStatus::Pending;
+                row.error_message = None;
+                target_rows.push((
+                    row.row_id.clone(),
+                    row.lookup_tracking_id.clone(),
+                    row.row_generation.clone(),
+                ));
+
+                if let Some((_, grouped_rows)) = rows_by_lookup_id
+                    .iter_mut()
+                    .find(|(lookup_id, _)| lookup_id == &row.lookup_tracking_id)
+                {
+                    grouped_rows.push(row);
+                } else {
+                    lookup_ids.push(row.lookup_tracking_id.clone());
+                    rows_by_lookup_id.push((row.lookup_tracking_id.clone(), vec![row]));
+                }
             }
 
-            let Some(row) = self.store.get_sheet_row(row_id)? else {
-                stale_or_missing_row_count += 1;
-                continue;
-            };
-            let updated = self.store.update_sheet_row_status_if_lookup_matches(
-                &UpdateSheetRowStatusInput {
-                    row_id: row.row_id.clone(),
-                    row_status: SheetRowStatus::Pending,
-                    error_message: None,
-                },
-                &row.lookup_tracking_id,
-                &row.row_generation,
-            )?;
-            if !updated {
-                continue;
-            }
-            let mut row = row;
-            row.row_status = SheetRowStatus::Pending;
-            row.error_message = None;
-            target_rows.push((
-                row.row_id.clone(),
-                row.lookup_tracking_id.clone(),
-                row.row_generation.clone(),
-            ));
+            let total_count = rows_by_lookup_id
+                .iter()
+                .map(|(_, grouped_rows)| grouped_rows.len() as u32)
+                .sum::<u32>();
 
-            if let Some((_, grouped_rows)) = rows_by_lookup_id
-                .iter_mut()
-                .find(|(lookup_id, _)| lookup_id == &row.lookup_tracking_id)
-            {
-                grouped_rows.push(row);
-            } else {
-                lookup_ids.push(row.lookup_tracking_id.clone());
-                rows_by_lookup_id.push((row.lookup_tracking_id.clone(), vec![row]));
-            }
-        }
-
-        let total_count = rows_by_lookup_id
-            .iter()
-            .map(|(_, grouped_rows)| grouped_rows.len() as u32)
-            .sum::<u32>();
-        let mut storage_error = None;
-
-        let mut next_lookup_to_activate = rows_by_lookup_id
-            .len()
-            .min(MAX_CONCURRENT_TRACKING_REFRESH_LOOKUPS);
-        eprintln!(
-            "[ShipFlowWorkspaceEngine] tracking_batch_start sheetId={} requestedRows={} targetRows={} lookupGroups={} concurrency={} skippedDuplicateOrEmpty={} skippedStaleOrMissing={} forceRefresh={}",
-            sheet_id,
-            row_ids.len(),
-            total_count,
-            rows_by_lookup_id.len(),
-            MAX_CONCURRENT_TRACKING_REFRESH_LOOKUPS,
-            duplicate_or_empty_row_count,
-            stale_or_missing_row_count,
-            force_refresh
-        );
-        for (_, grouped_rows) in rows_by_lookup_id.iter_mut().take(next_lookup_to_activate) {
-            let mut activation_context = TrackingLookupActivationContext {
+            let next_lookup_to_activate = rows_by_lookup_id
+                .len()
+                .min(MAX_CONCURRENT_TRACKING_REFRESH_LOOKUPS);
+            eprintln!(
+                "[ShipFlowWorkspaceEngine] tracking_batch_start sheetId={} requestedRows={} targetRows={} lookupGroups={} concurrency={} skippedDuplicateOrEmpty={} skippedStaleOrMissing={} forceRefresh={}",
                 sheet_id,
-                run_id: run_id.as_deref(),
+                row_ids.len(),
                 total_count,
-                success_count,
-                failed_count,
-                on_progress: &mut on_progress,
-            };
-            activate_tracking_lookup_group(self.store, &mut activation_context, grouped_rows)?;
+                rows_by_lookup_id.len(),
+                MAX_CONCURRENT_TRACKING_REFRESH_LOOKUPS,
+                duplicate_or_empty_row_count,
+                stale_or_missing_row_count,
+                force_refresh
+            );
+            for (_, grouped_rows) in rows_by_lookup_id.iter_mut().take(next_lookup_to_activate) {
+                let mut activation_context = TrackingLookupActivationContext {
+                    sheet_id,
+                    run_id: run_id.as_deref(),
+                    total_count,
+                    success_count,
+                    failed_count,
+                    on_progress: &mut |event| setup_events.push(event),
+                };
+                activate_tracking_lookup_group(store, &mut activation_context, grouped_rows)?;
+            }
+
+            Ok::<_, TrackingEngineError>((total_count, next_lookup_to_activate))
+        })?;
+        let mut storage_error = None;
+        for event in setup_events {
+            on_progress(event);
         }
 
         for (_, grouped_rows) in rows_by_lookup_id.iter() {

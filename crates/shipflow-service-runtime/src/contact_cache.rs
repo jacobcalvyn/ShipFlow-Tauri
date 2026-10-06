@@ -122,6 +122,27 @@ impl Default for ContactCacheState {
 }
 
 impl ContactCacheState {
+    pub fn open_strict(path: PathBuf) -> Result<Self, String> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut connection = open_initialized_database(&path).map_err(|e| e.to_string())?;
+        crate::runtime_options::probe_storage(&mut connection)?;
+        Ok(Self {
+            path: Arc::new(path),
+            connection: Arc::new(Mutex::new(connection)),
+            in_flight: Arc::new(Mutex::new(HashMap::new())),
+        })
+    }
+    pub fn check_persistence(&self) -> Result<(), String> {
+        crate::runtime_options::probe_storage(
+            &mut *self
+                .connection
+                .lock()
+                .map_err(|_| "Cache storage lock failed.")?,
+        )
+    }
+
     pub fn open_default() -> Self {
         if let Some(configured_path) = std::env::var_os("SHIPFLOW_CONTACT_STORE_PATH") {
             return Self::open(PathBuf::from(configured_path));

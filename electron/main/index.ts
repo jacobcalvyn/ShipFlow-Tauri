@@ -1,3 +1,6 @@
+import { dockerService } from "./docker-service";
+import { validateDockerConfig, type DockerAction } from "../../src/backend/docker-contract";
+import { validateExternalApiDestination } from "./external-api-policy";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import os from "node:os";
@@ -231,6 +234,12 @@ const COMMON_COMMANDS = new Set<ShipFlowCommand>([
   "install_app_update",
 ]);
 const SERVICE_SETTINGS_ONLY_COMMANDS = new Set<ShipFlowCommand>([
+  "docker_service_status",
+  "docker_service_save",
+  "docker_service_action",
+  "docker_service_logs",
+  "docker_service_copy_token",
+
   "close_current_window",
   "load_saved_api_service_config",
   "copy_public_api_token",
@@ -256,6 +265,7 @@ const WORKSPACE_ONLY_COMMANDS = new Set<ShipFlowCommand>([
   "resolve_window_close_request",
 ]);
 const ALLOWED_WORKSPACE_METHODS = new Set<ShipFlowWorkspaceRequest["method"]>([
+  "workspace.document_generation",
   "workspace.command",
   "workspace.cancel_import_preview",
   "workspace.run_import_job_with_progress",
@@ -832,9 +842,7 @@ function createWindow(
     (isServiceSettings ? "service-settings" : `workspace-${windowSequence}`);
   const width = isServiceSettings ? 960 : 1280;
   const height = isServiceSettings ? 720 : 860;
-  const parentWindow = isServiceSettings
-    ? focusedWorkspaceRecord()?.window
-    : undefined;
+  // Service settings must not block dirty-workspace confirmations during quit.
   const window = new BrowserWindow({
     title: isServiceSettings ? "ShipFlow Service" : PRODUCT_NAME,
     width,
@@ -842,12 +850,6 @@ function createWindow(
     minWidth: isServiceSettings ? 760 : 900,
     minHeight: isServiceSettings ? 560 : 640,
     show: false,
-    ...(parentWindow
-      ? {
-          parent: parentWindow,
-          modal: true,
-        }
-      : {}),
     backgroundColor: "#f8fafc",
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.cjs"),
@@ -1358,6 +1360,32 @@ async function handleCommand(
       return checkForUpdates();
     case "install_app_update":
       return installUpdate();
+    case "docker_service_status":
+      return dockerService().status();
+    case "docker_service_logs":
+      return dockerService().logs();
+    case "docker_service_save": {
+      const config = validateDockerConfig(args.config);
+      if (config.trackingSource === "externalApi") await validateExternalApiDestination(config.externalApiBaseUrl, config.allowInsecureExternalApiHttp);
+      const token = args.externalToken === undefined ? undefined : requireString(args, "externalToken");
+      await dockerService().save(config, token);
+      return;
+    }
+    case "docker_service_action": {
+      const action = requireString(args, "action");
+      if (!["deploy", "start", "stop", "restart", "recover"].includes(action)) throw new Error("Unsupported Docker action.");
+      await dockerService().action(action as DockerAction);
+      return;
+    }
+    case "docker_service_copy_token": {
+      const result = await dialog.showMessageBox(record.window, {
+        type: "warning", title: "Copy Docker API Token", message: "Copy the Docker service token to the clipboard?",
+        buttons: ["Cancel", "Copy Token"], defaultId: 0, cancelId: 0, noLink: true,
+      });
+      if (result.response !== 1) return false;
+      clipboard.writeText(await dockerService().publicToken());
+      return true;
+    }
     case "load_saved_api_service_config":
       return serviceAgent.loadFrontendConfig();
     case "copy_public_api_token": {

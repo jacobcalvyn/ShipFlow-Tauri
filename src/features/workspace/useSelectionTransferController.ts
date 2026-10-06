@@ -1,4 +1,9 @@
 import {
+  captureWorkspaceDocumentScope,
+  isWorkspaceDocumentScopeCurrent,
+  type WorkspaceDocumentScope,
+} from "../workspace-engine/document-scope";
+import {
   DragEvent as ReactDragEvent,
   Dispatch,
   MutableRefObject,
@@ -98,7 +103,7 @@ export function useSelectionTransferController({
         })),
     [activeSheetId, workspaceTabs]
   );
-  const resolveSelectedEngineMutationRowIds = useCallback(async () => {
+  const resolveSelectedEngineMutationRowIds = useCallback(async (documentScope: WorkspaceDocumentScope) => {
     if (selectedEngineRowIds.length > 0) {
       return selectedEngineRowIds;
     }
@@ -109,7 +114,7 @@ export function useSelectionTransferController({
       limit: TRANSFER_ROW_RESOLUTION_LIMIT,
       filters: [],
       sort: [],
-    });
+    }, documentScope);
     const rowIdsByTrackingId = new Map<string, string[]>();
     for (const row of response.payload.rows) {
       const trackingId = row.displayTrackingId.trim();
@@ -183,6 +188,7 @@ export function useSelectionTransferController({
         return;
       }
 
+      const documentScope = captureWorkspaceDocumentScope();
       disarmDeleteAll();
       disarmDeleteSelected();
       setHoveredColumn(null);
@@ -198,22 +204,23 @@ export function useSelectionTransferController({
 
       setWorkspaceState(emptyTargetWorkspace);
       try {
-        const rowIds = await resolveSelectedEngineMutationRowIds();
+        const rowIds = await resolveSelectedEngineMutationRowIds(documentScope);
         const metadata = getEngineSheetMetadata(emptyTargetWorkspace, targetSheetId);
         if (!metadata) {
           throw new Error("Missing target sheet metadata.");
         }
-        await createEngineSheet(metadata);
+        await createEngineSheet(metadata, documentScope);
         await transferSheetRows({
           sourceSheetId: activeSheetId,
           targetSheetId,
           rowIds,
           mode,
-        });
+        }, documentScope);
         flushSync(() => {
           onWorkspaceEngineMutation?.([activeSheetId, targetSheetId]);
         });
       } catch (error) {
+        if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
         showNotice({
           tone: "error",
           message:
@@ -221,7 +228,7 @@ export function useSelectionTransferController({
               ? error.message
               : "Gagal memindahkan ID lewat engine.",
         });
-        void deleteSheet({ sheetId: targetSheetId }).catch(() => undefined);
+        void deleteSheet({ sheetId: targetSheetId }, documentScope).catch(() => undefined);
         setWorkspaceState((current) =>
           deleteSheetInWorkspace(current, targetSheetId)
         );
@@ -297,23 +304,25 @@ export function useSelectionTransferController({
         return;
       }
 
+      const documentScope = captureWorkspaceDocumentScope();
       disarmDeleteAll();
       disarmDeleteSelected();
 
       const currentWorkspace = workspaceRef.current;
       const targetSheetName = currentWorkspace.sheetMetaById[targetSheetId]?.name ?? "Sheet";
       try {
-        const rowIds = await resolveSelectedEngineMutationRowIds();
+        const rowIds = await resolveSelectedEngineMutationRowIds(documentScope);
         await transferSheetRows({
           sourceSheetId: activeSheetId,
           targetSheetId,
           rowIds,
           mode,
-        });
+        }, documentScope);
         flushSync(() => {
           onWorkspaceEngineMutation?.([activeSheetId, targetSheetId]);
         });
       } catch (error) {
+        if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
         showNotice({
           tone: "error",
           message:

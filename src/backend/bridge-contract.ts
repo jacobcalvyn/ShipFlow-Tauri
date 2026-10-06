@@ -4,6 +4,12 @@ export const SHIPFLOW_WORKSPACE_REQUEST_CHANNEL = "shipflow:workspace-request";
 export const SHIPFLOW_WORKSPACE_EVENT_CHANNEL = "shipflow:workspace-event";
 
 export type ShipFlowCommand =
+  | "docker_service_status"
+  | "docker_service_save"
+  | "docker_service_action"
+  | "docker_service_logs"
+  | "docker_service_copy_token"
+
   | "resolve_pod_image"
   | "open_external_url"
   | "copy_to_clipboard"
@@ -35,6 +41,7 @@ export type ShipFlowCommand =
   | "resolve_window_close_request";
 
 export type ShipFlowWorkspaceMethod =
+  | "workspace.document_generation"
   | "workspace.command"
   | "workspace.cancel_import_preview"
   | "workspace.run_import_job_with_progress"

@@ -2,6 +2,7 @@
 
 pub mod api_contract;
 pub mod bag_route_cache;
+pub mod build_identity;
 pub mod contact_cache;
 mod diagnostics;
 pub mod http_api;
@@ -10,11 +11,12 @@ pub mod lookup_cache;
 pub mod model;
 pub mod openapi;
 pub mod persistent_store;
+pub mod runtime_options;
 mod upstream_backpressure;
 
 pub const FORCE_REFRESH_HEADER_NAME: &str = "x-shipflow-force-refresh";
 
-pub use http_api::run_service_process;
+pub use http_api::{run_service_process, run_service_with_options};
 pub use lookup_cache::{
     resolve_bag_request_cached, resolve_manifest_request_cached, resolve_tracking_request_cached,
     LookupCacheState, LookupRequestOptions,

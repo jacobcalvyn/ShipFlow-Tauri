@@ -35,7 +35,15 @@ module.exports = {
     output: "release",
   },
   files: ["out/**/*", "package.json"],
+  beforePack: async () => {
+    if (isWindows) {
+      const { verifyDockerBundle } = await import("./scripts/docker/verify-bundle.mjs");
+      await verifyDockerBundle(path.resolve("build/docker"));
+    }
+  },
   extraResources: [
+    { from: "build/release.json", to: "release.json" },
+    ...(isWindows ? [{ from: "build/docker", to: "docker", filter: ["service-image.tar", "manifest.json", "manifest.sig"] }] : []),
     ...nativeResources,
     {
       from: "assets/icons",

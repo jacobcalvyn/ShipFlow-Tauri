@@ -119,15 +119,17 @@ The cross-platform evidence procedure is documented in
 1. Only one Electron suite instance may run per OS user.
 2. A second launch focuses the existing workspace or opens the dedicated Service Settings window.
 3. The tray belongs to Electron, never to a Rust child process.
-4. Closing windows keeps the Service running only when tray persistence is enabled.
-5. Quit and updater installation stop all Workspace Hosts and the managed Service.
+4. Closing all windows keeps the native Service running only when tray persistence is enabled.
+5. Confirmed Quit and updater installation stop all Workspace Hosts and the native managed Service. The separately deployed Docker API container remains running.
 6. A foreign or stale Service occupying the configured port is detected before spawn and reported explicitly.
 7. Unexpected Service exits are restarted after 1, 2, 5, 10, and 30 seconds.
 8. More than five unexpected exits inside a two-minute window stop automatic restart and require an explicit lifecycle action.
 
 Service Settings is a dedicated application window with its own HTML entry,
-renderer bundle, and persistent Electron session partition. It does not import
-or evaluate the workspace application bundle. It belongs to the same
+renderer bundle, and persistent Electron session partition. It is a standalone,
+non-modal window so workspace save/close confirmations remain accessible during
+application quit. Closing Service Settings leaves workspace windows open.
+It does not import or evaluate the workspace application bundle. It belongs to the same
 single-instance application and controls the same managed Service process.
 Workspace display settings remain in the workspace window. Tray, menu, and
 `--service-settings` entry points focus the existing Service Settings window or
@@ -135,6 +137,21 @@ create exactly one when none exists. Service Settings has no Workspace Engine
 access, while workspace renderers no longer mount Service configuration UI.
 On Windows, renderer crash-loop accounting is scoped to workspace windows;
 a Service Settings renderer failure cannot enable workspace hardware safe mode.
+
+Quit requests collect dirty workspace decisions before native shutdown. **Batal**
+cancels Quit and preserves changes; **Simpan & Tutup** must save successfully
+before closing; **Jangan Simpan** explicitly discards unsaved changes. A visible
+Service Settings window must not block or cover the active confirmation as a
+native modal child. The regression procedure is in
+[runtime-log-audit.md](./runtime-log-audit.md#unsaved-workspace-quit-with-service-settings-open).
+
+The Docker tab uses separate deployment configuration and persistent container
+storage. Production deployment is enabled for Windows Docker Desktop; normal
+macOS builds only probe the local Linux engine. Unsupported platforms omit
+deployment controls and unchecked container status. On supported platforms,
+resource and concurrency overrides remain under **Pengaturan lanjutan**.
+See [docker-service.md](./docker-service.md) for the deployment lifecycle and
+release-identity requirements.
 
 The managed Service exposes authenticated `/v1/diagnostics` data for uptime,
 current-suite restart count, RSS, cache sizes, and active or queued

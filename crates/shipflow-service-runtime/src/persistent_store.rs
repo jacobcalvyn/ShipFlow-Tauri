@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,7 @@ pub struct PersistentLookupStore {
 struct PersistentLookupStoreInner {
     reader: Mutex<Connection>,
     writer: PersistentLookupWriter,
+    failed: Arc<AtomicBool>,
 }
 
 struct PersistentLookupWriter {
@@ -54,7 +56,7 @@ enum PersistentWriteCommand {
         key: String,
         acknowledgement: Option<mpsc::Sender<bool>>,
     },
-    Flush(mpsc::Sender<()>),
+    Flush(mpsc::Sender<Result<(), String>>),
     Shutdown,
 }
 
@@ -104,11 +106,34 @@ impl PersistentLookupStore {
         requested_path: PathBuf,
         legacy_entries: Vec<(String, LegacyPersistentLookupEntry)>,
     ) -> Result<Self, String> {
-        let (path, reader) = match prepare_database_path(&requested_path)
+        Self::open_configured(
+            requested_path,
+            legacy_entries,
+            false,
+            MAX_PERSISTED_LOOKUP_ENTRIES,
+        )
+    }
+
+    pub fn open_strict(path: PathBuf, max_entries: usize) -> Result<Self, String> {
+        Self::open_configured(path, Vec::new(), true, max_entries)
+    }
+
+    fn open_configured(
+        requested_path: PathBuf,
+        legacy_entries: Vec<(String, LegacyPersistentLookupEntry)>,
+        strict: bool,
+        max_entries: usize,
+    ) -> Result<Self, String> {
+        let (path, mut reader) = match prepare_database_path(&requested_path)
             .and_then(|path| open_database(&path).map(|connection| (path, connection)))
         {
             Ok(opened) => opened,
             Err(primary_error) => {
+                if strict {
+                    return Err(format!(
+                        "Required persistent store is unavailable: {primary_error}"
+                    ));
+                }
                 shipflow_core::shipflow_log!(
                     "[ShipFlowService] persistent_lookup_primary_open_failed path={} error={primary_error}",
                     requested_path.display()
@@ -127,18 +152,24 @@ impl PersistentLookupStore {
                     })?
             }
         };
+        if strict {
+            crate::runtime_options::probe_storage(&mut reader)?;
+        }
         import_legacy_entries(&reader, legacy_entries);
+        let failed = Arc::new(AtomicBool::new(false));
+        let writer_failed = failed.clone();
 
         let (sender, receiver) = mpsc::sync_channel(MAX_BUFFERED_PERSISTENT_WRITES);
         let writer_path = path.clone();
         let handle = thread::Builder::new()
             .name("shipflow-lookup-writer".into())
-            .spawn(move || run_persistent_writer(writer_path, receiver))
+            .spawn(move || run_persistent_writer(writer_path, receiver, writer_failed, max_entries))
             .map_err(|error| format!("Unable to start persistent lookup writer: {error}"))?;
 
         Ok(Self {
             inner: Arc::new(PersistentLookupStoreInner {
                 reader: Mutex::new(reader),
+                failed,
                 writer: PersistentLookupWriter {
                     sender,
                     handle: Mutex::new(Some(handle)),
@@ -276,17 +307,43 @@ impl PersistentLookupStore {
             .is_ok()
     }
 
-    pub fn flush(&self) {
+    pub fn flush(&self) -> Result<(), String> {
         let (acknowledgement, response) = mpsc::channel();
-        if self
-            .inner
-            .writer
-            .sender
-            .send(PersistentWriteCommand::Flush(acknowledgement))
-            .is_ok()
-        {
-            let _ = response.recv();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut command = PersistentWriteCommand::Flush(acknowledgement);
+        loop {
+            match self.inner.writer.sender.try_send(command) {
+                Ok(()) => break,
+                Err(TrySendError::Disconnected(_)) => {
+                    return Err("Persistent writer is unavailable.".into())
+                }
+                Err(TrySendError::Full(pending)) => {
+                    if Instant::now() >= deadline {
+                        return Err("Persistent writer flush queue timed out.".into());
+                    }
+                    command = pending;
+                    thread::sleep(Duration::from_millis(2));
+                }
+            }
         }
+        response
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| "Persistent writer did not acknowledge flush.".to_string())??;
+        if self.inner.failed.load(Ordering::Acquire) {
+            return Err("A persistent write failed during this service lifetime.".into());
+        }
+        Ok(())
+    }
+
+    pub fn check_persistence(&self) -> Result<(), String> {
+        self.flush()?;
+        crate::runtime_options::probe_storage(
+            &mut *self
+                .inner
+                .reader
+                .lock()
+                .map_err(|_| "Persistent reader lock failed.")?,
+        )
     }
 }
 
@@ -305,7 +362,12 @@ impl Drop for PersistentLookupStoreInner {
     }
 }
 
-fn run_persistent_writer(path: PathBuf, receiver: Receiver<PersistentWriteCommand>) {
+fn run_persistent_writer(
+    path: PathBuf,
+    receiver: Receiver<PersistentWriteCommand>,
+    failed: Arc<AtomicBool>,
+    max_entries: usize,
+) {
     let mut connection = match open_database(&path) {
         Ok(connection) => connection,
         Err(error) => {
@@ -326,22 +388,32 @@ fn run_persistent_writer(path: PathBuf, receiver: Receiver<PersistentWriteComman
         while commands.len() < MAX_WRITES_PER_TRANSACTION {
             match receiver.try_recv() {
                 Ok(PersistentWriteCommand::Shutdown) => {
-                    process_write_batch(&mut connection, commands);
+                    if !process_write_batch(&mut connection, commands, max_entries) {
+                        failed.store(true, Ordering::Release);
+                    }
                     return;
                 }
                 Ok(command) => commands.push(command),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    process_write_batch(&mut connection, commands);
+                    if !process_write_batch(&mut connection, commands, max_entries) {
+                        failed.store(true, Ordering::Release);
+                    }
                     return;
                 }
             }
         }
-        process_write_batch(&mut connection, commands);
+        if !process_write_batch(&mut connection, commands, max_entries) {
+            failed.store(true, Ordering::Release);
+        }
     }
 }
 
-fn process_write_batch(connection: &mut Connection, commands: Vec<PersistentWriteCommand>) {
+fn process_write_batch(
+    connection: &mut Connection,
+    commands: Vec<PersistentWriteCommand>,
+    max_entries: usize,
+) -> bool {
     let transaction = match connection.transaction() {
         Ok(transaction) => transaction,
         Err(error) => {
@@ -349,7 +421,7 @@ fn process_write_batch(connection: &mut Connection, commands: Vec<PersistentWrit
                 "[ShipFlowService] Unable to start persistent lookup transaction: {error}"
             );
             acknowledge_failed_batch(commands);
-            return;
+            return false;
         }
     };
 
@@ -392,7 +464,7 @@ fn process_write_batch(connection: &mut Connection, commands: Vec<PersistentWrit
     }
 
     if !failed {
-        failed = prune_lookup_entries(&transaction).is_err();
+        failed = prune_lookup_entries_with_limit(&transaction, max_entries).is_err();
     }
     let committed = !failed && transaction.commit().is_ok();
     if !committed {
@@ -404,8 +476,13 @@ fn process_write_batch(connection: &mut Connection, commands: Vec<PersistentWrit
         let _ = acknowledgement.send(committed && result);
     }
     for acknowledgement in flushes {
-        let _ = acknowledgement.send(());
+        let _ = acknowledgement.send(if committed {
+            Ok(())
+        } else {
+            Err("Persistent transaction failed.".into())
+        });
     }
+    committed
 }
 
 fn reject_pending_commands(receiver: Receiver<PersistentWriteCommand>) {
@@ -422,7 +499,7 @@ fn reject_pending_commands(receiver: Receiver<PersistentWriteCommand>) {
                 }
             }
             PersistentWriteCommand::Flush(acknowledgement) => {
-                let _ = acknowledgement.send(());
+                let _ = acknowledgement.send(Err("Persistent writer failed.".into()));
             }
             PersistentWriteCommand::Shutdown => return,
         }
@@ -443,7 +520,7 @@ fn acknowledge_failed_batch(commands: Vec<PersistentWriteCommand>) {
                 }
             }
             PersistentWriteCommand::Flush(acknowledgement) => {
-                let _ = acknowledgement.send(());
+                let _ = acknowledgement.send(Err("Persistent writer failed.".into()));
             }
             PersistentWriteCommand::Shutdown => {}
         }
@@ -468,7 +545,10 @@ fn upsert_lookup_entry(
     Ok(())
 }
 
-fn prune_lookup_entries(transaction: &Transaction<'_>) -> rusqlite::Result<()> {
+fn prune_lookup_entries_with_limit(
+    transaction: &Transaction<'_>,
+    max_entries: usize,
+) -> rusqlite::Result<()> {
     transaction.execute(
         "DELETE FROM lookup_cache
          WHERE expires_at_unix_ms <= ?1
@@ -487,7 +567,7 @@ fn prune_lookup_entries(transaction: &Transaction<'_>) -> rusqlite::Result<()> {
              ORDER BY expires_at_unix_ms ASC, updated_at_unix_ms ASC
              LIMIT MAX(0, (SELECT COUNT(*) FROM lookup_cache) - ?1)
          )",
-        params![MAX_PERSISTED_LOOKUP_ENTRIES as i64],
+        params![max_entries as i64],
     )?;
     Ok(())
 }
@@ -774,6 +854,40 @@ mod tests {
     }
 
     #[test]
+    fn strict_storage_rejects_an_unusable_location_without_fallback() {
+        let path = unique_store_path();
+        std::fs::write(&path, b"not a directory").unwrap();
+        assert!(PersistentLookupStore::open_strict(path.join("cache.sqlite3"), 20).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn flush_reports_a_rolled_back_write_even_in_an_earlier_batch() {
+        let path = unique_store_path();
+        let store = PersistentLookupStore::open_strict(path.clone(), 20).unwrap();
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TRIGGER reject_lookup BEFORE INSERT ON lookup_cache BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").unwrap();
+        assert!(!store.store_success("failed".into(), "{}".into(), Duration::from_secs(60)));
+        assert!(store.flush().is_err());
+        assert!(store.check_persistence().is_err());
+        assert!(store.load_success("failed").is_none());
+    }
+
+    #[test]
+    fn configured_disk_capacity_is_enforced() {
+        let store = PersistentLookupStore::open_strict(unique_store_path(), 2).unwrap();
+        for key in ["a", "b", "c"] {
+            assert!(store.store_success(key.into(), "{}".into(), Duration::from_secs(60)));
+        }
+        store.flush().unwrap();
+        let reader = store.inner.reader.lock().unwrap();
+        let count: i64 = reader
+            .query_row("SELECT COUNT(*) FROM lookup_cache", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
     fn stores_and_loads_success_payload() {
         let path = unique_store_path();
         let store = PersistentLookupStore::open(path.clone());
@@ -782,7 +896,7 @@ mod tests {
             "{\"ok\":true}".into(),
             Duration::from_secs(60),
         ));
-        store.flush();
+        store.flush().expect("persistent writes should flush");
 
         let reopened = PersistentLookupStore::open(path);
         assert_eq!(
@@ -810,7 +924,7 @@ mod tests {
         for writer in writers {
             writer.join().expect("lookup store writer should finish");
         }
-        store.flush();
+        store.flush().expect("persistent writes should flush");
 
         let reopened = PersistentLookupStore::open(path);
         for index in 0..64 {
@@ -832,7 +946,7 @@ mod tests {
                 Duration::from_secs(60),
             ));
         }
-        store.flush();
+        store.flush().expect("persistent writes should flush");
 
         let reopened = PersistentLookupStore::open(path);
         for index in 0..128 {

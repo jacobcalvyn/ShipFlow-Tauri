@@ -1,4 +1,10 @@
 import {
+  captureWorkspaceDocumentScope,
+  assertWorkspaceDocumentScope,
+  isWorkspaceDocumentScopeCurrent,
+  type WorkspaceDocumentScope,
+} from "../workspace-engine/document-scope";
+import {
   Dispatch,
   MutableRefObject,
   SetStateAction,
@@ -388,7 +394,7 @@ function createPendingImportRowProjection(
   };
 }
 
-async function queryAllImportCommitRows(sheetId: string) {
+async function queryAllImportCommitRows(sheetId: string, scope: WorkspaceDocumentScope) {
   const firstPage = await querySheetRows({
     sheetId,
     offset: 0,
@@ -396,7 +402,8 @@ async function queryAllImportCommitRows(sheetId: string) {
     filters: [],
     valueFilters: [],
     sort: [],
-  });
+  }, scope);
+  assertWorkspaceDocumentScope(scope);
 
   const rows = [...firstPage.payload.rows];
   let currentPage = firstPage.payload;
@@ -414,7 +421,8 @@ async function queryAllImportCommitRows(sheetId: string) {
       filters: [],
       valueFilters: [],
       sort: [],
-    });
+    }, scope);
+    assertWorkspaceDocumentScope(scope);
 
     currentPage = page.payload;
     if (currentPage.rows.length === 0) {
@@ -1123,6 +1131,7 @@ export function useWorkspaceInteractionRuntimeController({
 
   const importSourceTrackingIds = useCallback(
     async (kind: ImportSourceModalKind, mode: "replace" | "append") => {
+      const documentScope = captureWorkspaceDocumentScope();
       const sourceLabel = kind === "bag" ? "Bag" : "Manifest";
       const currentLookupState =
         workspaceRef.current.sheetsById[activeSheetId]?.importSourceLookupStates[
@@ -1176,7 +1185,7 @@ export function useWorkspaceInteractionRuntimeController({
         let rowIdsToRefresh: string[] = [];
         const existingTrackingIdSet = new Set<string>();
         if (mode === "append") {
-          const existingRows = await queryAllImportCommitRows(activeSheetId);
+          const existingRows = await queryAllImportCommitRows(activeSheetId, documentScope);
           startPosition = existingRows.rows.reduce(
             (next, row) => Math.max(next, row.position + 1),
             0
@@ -1227,7 +1236,8 @@ export function useWorkspaceInteractionRuntimeController({
             sheetId: activeSheetId,
             ...(mode === "replace" ? { replaceExisting: true } : { appendAtEnd: true }),
             rows,
-          });
+          }, documentScope);
+          assertWorkspaceDocumentScope(documentScope);
           committedToSheet = true;
         }
 
@@ -1321,8 +1331,10 @@ export function useWorkspaceInteractionRuntimeController({
                     })
                   );
                 }
-              }
+              },
+              documentScope
             );
+            assertWorkspaceDocumentScope(documentScope);
             if (
               refreshResult.payload.runId === trackingRunId &&
               refreshResult.payload.rows.length > 0
@@ -1335,12 +1347,14 @@ export function useWorkspaceInteractionRuntimeController({
               );
             }
           } catch (error) {
+            if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
             const message = getRuntimeErrorMessage(error);
             updateSheet(activeSheetId, (current) =>
               failTrackingRunInSheet(current, trackingRunId, message)
             );
             throw error;
           } finally {
+            if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
             updateSheet(activeSheetId, (current) =>
               clearTrackingRunInSheet(current, trackingRunId)
             );
@@ -1361,6 +1375,7 @@ export function useWorkspaceInteractionRuntimeController({
                   : `${rows.length} nomor kiriman dari ${sourceLabel} ditambahkan, ${trackingIds.length - rows.length} dilacak ulang.`,
         });
       } catch (error) {
+        if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
         const message = getRuntimeErrorMessage(error);
         if (committedToSheet) {
           onWorkspaceEngineMutation?.(activeSheetId);

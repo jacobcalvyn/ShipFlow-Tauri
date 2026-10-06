@@ -1,0 +1,49 @@
+name: Build ShipFlow Docker Bundle
+
+on:
+  workflow_call:
+    inputs:
+      signed:
+        type: boolean
+        default: false
+    secrets:
+      SHIPFLOW_BUNDLE_SIGNING_KEY:
+        required: false
+      SHIPFLOW_BUNDLE_PUBLIC_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Build offline Linux service image
+        env:
+          SHIPFLOW_DOCKER_PLATFORM: linux/amd64
+          SHIPFLOW_REQUIRE_BUNDLE_SIGNATURE: ${{ inputs.signed }}
+          SHIPFLOW_BUNDLE_SIGNING_KEY: ${{ inputs.signed && secrets.SHIPFLOW_BUNDLE_SIGNING_KEY || '' }}
+          SHIPFLOW_BUNDLE_PUBLIC_KEY: ${{ inputs.signed && secrets.SHIPFLOW_BUNDLE_PUBLIC_KEY || '' }}
+        run: node scripts/docker/bundle.mjs
+      - name: Verify offline bundle
+        env:
+          SHIPFLOW_REQUIRE_BUNDLE_SIGNATURE: ${{ inputs.signed }}
+          SHIPFLOW_BUNDLE_PUBLIC_KEY: ${{ inputs.signed && secrets.SHIPFLOW_BUNDLE_PUBLIC_KEY || '' }}
+        run: node scripts/docker/verify-bundle.mjs
+      - name: Smoke test service image and persistent volume
+        run: |
+          npm ci --ignore-scripts
+          docker context create desktop-linux --docker host=unix:///var/run/docker.sock
+          node scripts/docker/smoke.mjs
+      - uses: actions/upload-artifact@v6
+        with:
+          name: shipflow-docker-bundle
+          path: build/docker/
+          if-no-files-found: error
+          retention-days: 14

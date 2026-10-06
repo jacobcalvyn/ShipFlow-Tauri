@@ -33,11 +33,33 @@ The private suite credential is generated and encrypted by Electron and is not
 shown in the UI. The public API token shown in Service Settings is only for
 third-party clients.
 
-Service Settings uses a dedicated Electron window, HTML entry, renderer bundle,
+Service Settings uses a standalone, non-modal Electron window, HTML entry, renderer bundle,
 and persistent session partition. It remains part of the same installed
 application and controls the same managed Rust Service process, but it does not
 load workspace UI code and a renderer failure cannot take down or reload the
 workspace renderer.
+Closing Service Settings leaves workspace windows open. During application
+quit, unsaved-workspace confirmations remain accessible even when Service
+Settings is open.
+
+## Managed Docker API
+
+The **Docker** tab in Service Settings manages a separate API container on
+Windows Docker Desktop using Linux containers. Its default host endpoint is
+`http://127.0.0.1:18424`, separate from the native desktop Service on port 18422.
+Deployment requires the signed offline bundle matching the installed build.
+The container and its persistent cache volume survive normal desktop app exit.
+
+On macOS, ShipFlow checks Docker connectivity but does not enable deployment.
+**Docker: Terhubung** and **Deployment: Tersedia di Windows** describe separate
+capabilities. Container, synchronization, and storage status are not displayed
+when those checks have not run.
+
+The basic deployment form contains the host port and API access. Optional
+CPU/memory, tracking-source, concurrency, and cache settings are under
+**Pengaturan lanjutan**; their existing values are retained while collapsed.
+See [docs/docker-service.md](./docs/docker-service.md) for setup, status meanings,
+release signing, recovery, and the remaining Windows acceptance checks.
 
 ## Requirements
 
@@ -98,8 +120,10 @@ Service crash recovery. Artifact workflows then build, verify, and upload the
 installer without repeating the full suites. Publishing a release remains a
 separate, explicit operation with release credentials.
 
-Unsigned workflows omit signing credentials entirely and disable certificate
-auto-discovery. Unsigned macOS artifacts receive a complete ad-hoc signature so
+Unsigned OS builds omit platform code-signing credentials and disable certificate
+auto-discovery. Docker bundle signatures are separate: Windows artifact workflows
+still require the bundle signing keys documented in
+[docs/docker-service.md](./docs/docker-service.md). Unsigned macOS artifacts receive a complete ad-hoc signature so
 their bundle integrity remains verifiable, while signed workflows inject
 platform credentials only after their dedicated credential validation step
 succeeds.
@@ -199,3 +223,6 @@ Current completion target is **native runtime readiness before signing**:
 - quality, Rust, security, and packaged-content gates pass;
 - signing, notarization, signed updater publication, and Windows manual install
   smoke remain blocked until credentials and the target OS are available.
+- managed Docker deployment requires separate acceptance on Windows Docker
+  Desktop with a signed matching bundle; local macOS UI and development-container
+  checks do not establish that coverage.

@@ -1,3 +1,9 @@
+import {
+  captureWorkspaceDocumentScope,
+  assertWorkspaceDocumentScope,
+  isWorkspaceDocumentScopeCurrent,
+  type WorkspaceDocumentScope,
+} from "../workspace-engine/document-scope";
 import { Dispatch, MutableRefObject, SetStateAction, useCallback, useEffect, useRef } from "react";
 import { flushSync } from "react-dom";
 import { exportWorkspaceCsv } from "../../backend/commands";
@@ -66,7 +72,7 @@ function createWorkspaceTrackingRunId(sheetId: string, reason: string) {
     .slice(2, 10)}`;
 }
 
-async function collectRustExportRows(query: SheetRowsQuery) {
+async function collectRustExportRows(query: SheetRowsQuery, scope = captureWorkspaceDocumentScope()) {
   const rows: SheetTableRow[] = [];
   let offset = 0;
 
@@ -75,7 +81,8 @@ async function collectRustExportRows(query: SheetRowsQuery) {
       ...query,
       offset,
       limit: CSV_RUST_EXPORT_WINDOW_LIMIT,
-    });
+    }, scope);
+    assertWorkspaceDocumentScope(scope);
     rows.push(
       ...getExportableTableRows(
         createSheetTableRowsFromRustWindow(response.payload, []),
@@ -99,7 +106,8 @@ async function collectRustExportRows(query: SheetRowsQuery) {
 
 async function collectRustSelectedRows(
   query: SheetRowsQuery,
-  selectedRowIds: string[]
+  selectedRowIds: string[],
+  scope: WorkspaceDocumentScope = captureWorkspaceDocumentScope()
 ) {
   const orderedRowIds = Array.from(
     new Set(selectedRowIds.map((rowId) => rowId.trim()).filter(Boolean))
@@ -120,7 +128,8 @@ async function collectRustSelectedRows(
       filters: [],
       valueFilters: [],
       sort: [],
-    });
+    }, scope);
+    assertWorkspaceDocumentScope(scope);
     const selectedProjections = response.payload.rows.filter((row) =>
       selectedRowIdSet.has(row.rowId)
     );
@@ -161,7 +170,7 @@ async function collectRustSelectedRows(
   return orderedRowIds.map((rowId) => rowsById.get(rowId)!);
 }
 
-async function collectRustRefreshRowIds(query: SheetRowsQuery) {
+async function collectRustRefreshRowIds(query: SheetRowsQuery, scope = captureWorkspaceDocumentScope()) {
   const rowIds: string[] = [];
   let offset = 0;
 
@@ -170,7 +179,8 @@ async function collectRustRefreshRowIds(query: SheetRowsQuery) {
       ...query,
       offset,
       limit: CSV_RUST_EXPORT_WINDOW_LIMIT,
-    });
+    }, scope);
+    assertWorkspaceDocumentScope(scope);
     response.payload.rows.forEach((row) => {
       if (row.rowId.trim() !== "") {
         rowIds.push(row.rowId);
@@ -191,7 +201,7 @@ async function collectRustRefreshRowIds(query: SheetRowsQuery) {
   return rowIds;
 }
 
-async function collectRustTrackingIds(query: SheetRowsQuery) {
+async function collectRustTrackingIds(query: SheetRowsQuery, scope = captureWorkspaceDocumentScope()) {
   const trackingIds: string[] = [];
   let offset = 0;
 
@@ -200,7 +210,8 @@ async function collectRustTrackingIds(query: SheetRowsQuery) {
       ...query,
       offset,
       limit: CSV_RUST_EXPORT_WINDOW_LIMIT,
-    });
+    }, scope);
+    assertWorkspaceDocumentScope(scope);
     response.payload.rows.forEach((row) => {
       const trackingId = row.displayTrackingId.trim();
       if (trackingId !== "") {
@@ -329,11 +340,12 @@ export function useWorkspaceCommandsController({
 }: UseWorkspaceCommandsControllerOptions) {
   const trackingProgressEngineSyncTimeoutRef = useRef<number | null>(null);
   const trackingProgressEngineSyncSheetIdsRef = useRef<Set<string>>(new Set());
-  const trackingCommandSheetIdsRef = useRef<Set<string>>(new Set());
+  const trackingCommandSheetIdsRef = useRef<Map<string, WorkspaceDocumentScope>>(new Map());
 
   const updateSheetById = useCallback(
-    (sheetId: string, updater: (sheetState: SheetState) => SheetState) => {
+    (sheetId: string, updater: (sheetState: SheetState) => SheetState, scope = captureWorkspaceDocumentScope()) => {
       setWorkspaceState((current) => {
+        if (!isWorkspaceDocumentScopeCurrent(scope)) return current;
         const sheetState = current.sheetsById[sheetId];
         if (!sheetState) {
           return current;
@@ -357,9 +369,10 @@ export function useWorkspaceCommandsController({
   );
 
   const startTrackingCommand = useCallback(
-    (sheetId: string) => {
+    (sheetId: string, scope: WorkspaceDocumentScope) => {
+      const activeScope = trackingCommandSheetIdsRef.current.get(sheetId);
       if (
-        trackingCommandSheetIdsRef.current.has(sheetId) ||
+        (activeScope && isWorkspaceDocumentScopeCurrent(activeScope)) ||
         workspaceRef.current.sheetsById[sheetId]?.activeTrackingRunId
       ) {
         showNotice({
@@ -369,14 +382,14 @@ export function useWorkspaceCommandsController({
         return false;
       }
 
-      trackingCommandSheetIdsRef.current.add(sheetId);
+      trackingCommandSheetIdsRef.current.set(sheetId, scope);
       return true;
     },
     [showNotice, workspaceRef]
   );
 
-  const finishTrackingCommand = useCallback((sheetId: string) => {
-    trackingCommandSheetIdsRef.current.delete(sheetId);
+  const finishTrackingCommand = useCallback((sheetId: string, scope: WorkspaceDocumentScope) => {
+    if (trackingCommandSheetIdsRef.current.get(sheetId) === scope) trackingCommandSheetIdsRef.current.delete(sheetId);
   }, []);
 
   const scheduleTrackingProgressEngineSync = useCallback(
@@ -442,13 +455,14 @@ export function useWorkspaceCommandsController({
       return;
     }
 
+    const documentScope = captureWorkspaceDocumentScope();
     void (async () => {
       const trackingIds =
         rustExportRowsQuery && selectedEngineRowIds.length > 0
           ? (
               await collectRustSelectedRows(
                 rustExportRowsQuery,
-                selectedEngineRowIds
+                selectedEngineRowIds, documentScope
               )
             )
               .map((row) => row.trackingInput.trim())
@@ -457,6 +471,7 @@ export function useWorkspaceCommandsController({
       if (trackingIds.length === 0) {
         return;
       }
+      assertWorkspaceDocumentScope(documentScope);
       await copyText(trackingIds.join("\n"));
     })().catch(() =>
       showNotice({
@@ -477,14 +492,16 @@ export function useWorkspaceCommandsController({
       return;
     }
 
+    const documentScope = captureWorkspaceDocumentScope();
     void (async () => {
       const trackingIds = rustExportRowsQuery
-        ? await collectRustTrackingIds(rustExportRowsQuery)
+        ? await collectRustTrackingIds(rustExportRowsQuery, documentScope)
         : allTrackingIds;
       if (trackingIds.length === 0) {
         return;
       }
 
+      assertWorkspaceDocumentScope(documentScope);
       await copyText(trackingIds.join("\n"));
     })().catch(() =>
       showNotice({
@@ -527,7 +544,8 @@ export function useWorkspaceCommandsController({
 
     disarmDeleteAll();
     const targetSheetId = activeSheetId;
-    if (!startTrackingCommand(targetSheetId)) {
+    const documentScope = captureWorkspaceDocumentScope();
+    if (!startTrackingCommand(targetSheetId, documentScope)) {
       return;
     }
 
@@ -542,7 +560,7 @@ export function useWorkspaceCommandsController({
           tone: "error",
           message: "Lacak ulang gagal: target row Rust belum lengkap.",
         });
-        finishTrackingCommand(targetSheetId);
+        finishTrackingCommand(targetSheetId, documentScope);
         return;
       }
 
@@ -582,9 +600,11 @@ export function useWorkspaceCommandsController({
               scheduleTrackingProgressEngineSync(targetSheetId);
             }
           }
-        }
+        },
+        documentScope
       )
         .then((refreshResult) => {
+          assertWorkspaceDocumentScope(documentScope);
           if (refreshResult.payload.runId !== trackingRunId) {
             return;
           }
@@ -611,6 +631,7 @@ export function useWorkspaceCommandsController({
           });
         })
         .catch((error) => {
+        if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
           const message =
             error instanceof Error ? error.message : "Lacak ulang gagal.";
           updateSheetById(targetSheetId, (current) =>
@@ -622,10 +643,11 @@ export function useWorkspaceCommandsController({
           });
         })
         .finally(() => {
+          finishTrackingCommand(targetSheetId, documentScope);
+          if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
           updateSheetById(targetSheetId, (current) =>
             clearTrackingRunInSheet(current, trackingRunId)
           );
-          finishTrackingCommand(targetSheetId);
         });
       return;
     }
@@ -639,13 +661,14 @@ export function useWorkspaceCommandsController({
       forceRefresh: true,
     })
       .catch((error) => {
+        if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
         showNotice({
           tone: "error",
           message: error instanceof Error ? error.message : "Lacak ulang gagal.",
         });
       })
       .finally(() => {
-        finishTrackingCommand(targetSheetId);
+        finishTrackingCommand(targetSheetId, documentScope);
       });
   }, [
     activeSheetId,
@@ -677,6 +700,7 @@ export function useWorkspaceCommandsController({
     }
 
     const targetSheetId = activeSheetId;
+    const documentScope = captureWorkspaceDocumentScope();
     const selectedRowKeysSnapshot = Array.from(
       new Set([...selectedVisibleRowKeys, ...selectedEngineRowIds])
     );
@@ -693,9 +717,11 @@ export function useWorkspaceCommandsController({
       await deleteSheetRows({
         sheetId: targetSheetId,
         rowIds: engineRowIds,
-      });
-      updateActiveSheet((current) =>
-        clearSelectionInSheet(deleteRowsInSheet(current, selectedRowKeysSnapshot))
+      }, documentScope);
+      assertWorkspaceDocumentScope(documentScope);
+      updateSheetById(targetSheetId, (current) =>
+        clearSelectionInSheet(deleteRowsInSheet(current, selectedRowKeysSnapshot)),
+        documentScope
       );
       onWorkspaceEngineMutation?.(targetSheetId);
     } catch (error) {
@@ -715,7 +741,7 @@ export function useWorkspaceCommandsController({
     selectedVisibleRowKeys,
     onWorkspaceEngineMutation,
     showNotice,
-    updateActiveSheet,
+    updateSheetById,
   ]);
 
   const deleteAllRows = useCallback(async () => {
@@ -729,6 +755,7 @@ export function useWorkspaceCommandsController({
     }
 
     const targetSheetId = activeSheetId;
+    const documentScope = captureWorkspaceDocumentScope();
 
     disarmDeleteAll();
     disarmDeleteSelected();
@@ -737,8 +764,9 @@ export function useWorkspaceCommandsController({
     try {
       await clearSheetRows({
         sheetId: targetSheetId,
-      });
-      updateActiveSheet(clearAllDataInSheet);
+      }, documentScope);
+      assertWorkspaceDocumentScope(documentScope);
+      updateSheetById(targetSheetId, clearAllDataInSheet, documentScope);
       focusFirstTrackingInput();
       onWorkspaceEngineMutation?.(targetSheetId);
     } catch (error) {
@@ -760,7 +788,7 @@ export function useWorkspaceCommandsController({
     onWorkspaceEngineMutation,
     rustExportRowsQuery,
     showNotice,
-    updateActiveSheet,
+    updateSheetById,
   ]);
 
   const exportCsv = useCallback(() => {
@@ -780,11 +808,12 @@ export function useWorkspaceCommandsController({
       return;
     }
 
+    const documentScope = captureWorkspaceDocumentScope();
     void (async () => {
       const rows = rustExportRowsQuery
         ? selectedEngineRowIds.length > 0
-          ? await collectRustSelectedRows(rustExportRowsQuery, selectedEngineRowIds)
-          : await collectRustExportRows(rustExportRowsQuery)
+          ? await collectRustSelectedRows(rustExportRowsQuery, selectedEngineRowIds, documentScope)
+          : await collectRustExportRows(rustExportRowsQuery, documentScope)
         : exportableTableRows;
 
       if (rows.length === 0) {
@@ -805,6 +834,7 @@ export function useWorkspaceCommandsController({
           ? `shipflow-selected-${dateSuffix}.csv`
           : `shipflow-view-${dateSuffix}.csv`;
 
+      assertWorkspaceDocumentScope(documentScope);
       const result = await exportWorkspaceCsv({
         suggestedName,
         csvContent,
@@ -840,7 +870,8 @@ export function useWorkspaceCommandsController({
     }
 
     const targetSheetId = activeSheetId;
-    if (!startTrackingCommand(targetSheetId)) {
+    const documentScope = captureWorkspaceDocumentScope();
+    if (!startTrackingCommand(targetSheetId, documentScope)) {
       return;
     }
 
@@ -858,9 +889,10 @@ export function useWorkspaceCommandsController({
         );
       });
       void Promise.resolve(
-        isScopedRustQuery ? collectRustRefreshRowIds(rustExportRowsQuery) : []
+        isScopedRustQuery ? collectRustRefreshRowIds(rustExportRowsQuery, documentScope) : []
       )
         .then((rowIds) => {
+          assertWorkspaceDocumentScope(documentScope);
           if (isScopedRustQuery && rowIds.length === 0) {
             return null;
           }
@@ -887,10 +919,12 @@ export function useWorkspaceCommandsController({
                   scheduleTrackingProgressEngineSync(targetSheetId);
                 }
               }
-            }
+            },
+            documentScope
           );
         })
         .then((refreshResult) => {
+          assertWorkspaceDocumentScope(documentScope);
           if (!refreshResult) {
             return;
           }
@@ -920,6 +954,7 @@ export function useWorkspaceCommandsController({
           });
         })
         .catch((error) => {
+        if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
           const message =
             error instanceof Error ? error.message : "Lacak ulang gagal.";
           updateSheetById(targetSheetId, (current) =>
@@ -931,10 +966,11 @@ export function useWorkspaceCommandsController({
           });
         })
         .finally(() => {
+          finishTrackingCommand(targetSheetId, documentScope);
+          if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
           updateSheetById(targetSheetId, (current) =>
             clearTrackingRunInSheet(current, trackingRunId)
           );
-          finishTrackingCommand(targetSheetId);
         });
       return;
     }
@@ -944,6 +980,7 @@ export function useWorkspaceCommandsController({
       forceRefresh: true,
     })
       .then(() => {
+        if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
         const refreshedRows =
           workspaceRef.current.sheetsById[targetSheetId]?.rows.filter((row) =>
             retrackableKeySet.has(row.key)
@@ -957,13 +994,14 @@ export function useWorkspaceCommandsController({
         });
       })
       .catch((error) => {
+        if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
         showNotice({
           tone: "error",
           message: error instanceof Error ? error.message : "Lacak ulang gagal.",
         });
       })
       .finally(() => {
-        finishTrackingCommand(targetSheetId);
+        finishTrackingCommand(targetSheetId, documentScope);
       });
   }, [
     activeSheetId,
@@ -1005,6 +1043,7 @@ export function useWorkspaceCommandsController({
     disarmDeleteAll();
     disarmDeleteSelected();
     setHoveredColumn(null);
+    const documentScope = captureWorkspaceDocumentScope();
     const nextWorkspace = createSheetInWorkspace(workspaceRef.current);
     const targetSheetId = nextWorkspace.activeSheetId;
     const metadata = getEngineSheetMetadata(nextWorkspace, targetSheetId);
@@ -1017,7 +1056,8 @@ export function useWorkspaceCommandsController({
     }
 
     setWorkspaceState(nextWorkspace);
-    void createEngineSheet(metadata).catch((error) => {
+    void createEngineSheet(metadata, documentScope).catch((error) => {
+      if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
       showNotice({
         tone: "error",
         message: error instanceof Error ? error.message : "Gagal membuat sheet.",
@@ -1038,6 +1078,7 @@ export function useWorkspaceCommandsController({
       disarmDeleteAll();
       disarmDeleteSelected();
       setHoveredColumn(null);
+      const documentScope = captureWorkspaceDocumentScope();
       const nextWorkspace = createSheetInWorkspace(workspaceRef.current, {
         sourceSheetId: sheetId,
       });
@@ -1052,19 +1093,20 @@ export function useWorkspaceCommandsController({
       }
       setWorkspaceState(nextWorkspace);
       try {
-        await createEngineSheet(metadata);
+        await createEngineSheet(metadata, documentScope);
         await copySheetRows({
           sourceSheetId: sheetId,
           targetSheetId,
-        });
+        }, documentScope);
         onWorkspaceEngineMutation?.([sheetId, targetSheetId]);
       } catch (error) {
+        if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
         showNotice({
           tone: "error",
           message:
             error instanceof Error ? error.message : "Gagal menduplikasi sheet.",
         });
-        void deleteSheet({ sheetId: targetSheetId }).catch(() => undefined);
+        void deleteSheet({ sheetId: targetSheetId }, documentScope).catch(() => undefined);
         setWorkspaceState((current) =>
           deleteSheetInWorkspace(current, targetSheetId)
         );
@@ -1092,6 +1134,7 @@ export function useWorkspaceCommandsController({
         return;
       }
 
+      const documentScope = captureWorkspaceDocumentScope();
       const previousName =
         workspaceRef.current.sheetMetaById[sheetId]?.name ?? "";
       const nextWorkspace = renameSheetInWorkspace(workspaceRef.current, sheetId, name);
@@ -1105,6 +1148,7 @@ export function useWorkspaceCommandsController({
         sheetId,
         name: meta.name,
       }).catch((error) => {
+        if (!isWorkspaceDocumentScopeCurrent(documentScope)) return;
         showNotice({
           tone: "error",
           message:

@@ -1527,7 +1527,7 @@ fn parse_irregularity_detail(
     Option<String>,
 ) {
     let text = raw.trim();
-    let lower = text.to_lowercase();
+    let lower = text.to_ascii_lowercase();
 
     let mut status = None;
     if let Some(idx) = lower.find("dengan status (") {
@@ -1574,7 +1574,7 @@ fn parse_irregularity_detail(
 }
 
 fn parse_oleh_di(raw: &str) -> (Option<String>, Option<String>) {
-    let lower = raw.to_lowercase();
+    let lower = raw.to_ascii_lowercase();
     let mut petugas = None;
     let mut lokasi = None;
 
@@ -1613,8 +1613,8 @@ fn parse_oleh_di(raw: &str) -> (Option<String>, Option<String>) {
 }
 
 fn extract_bag_id(raw: &str, key: &str) -> Option<String> {
-    let lower = raw.to_lowercase();
-    let key_lower = key.to_lowercase();
+    let lower = raw.to_ascii_lowercase();
+    let key_lower = key.to_ascii_lowercase();
     let idx = lower.find(&key_lower)?;
     let start = idx + key_lower.len();
     let rest = raw[start..].trim_start();
@@ -1632,7 +1632,7 @@ fn extract_bag_id(raw: &str, key: &str) -> Option<String> {
 
 fn extract_coordinate(raw: &str) -> Option<String> {
     let text = raw.trim();
-    let lower = text.to_lowercase();
+    let lower = text.to_ascii_lowercase();
     let idx_coord = lower.find("[coordinate")?;
     let idx_colon = lower[idx_coord..].find(':')?;
     let start = idx_coord + idx_colon + 1;
@@ -1655,7 +1655,7 @@ fn extract_coordinate(raw: &str) -> Option<String> {
 
 fn extract_diterima_oleh(raw: &str) -> Option<String> {
     let text = raw.trim();
-    let lower = text.to_lowercase();
+    let lower = text.to_ascii_lowercase();
     let (_, name_start) = find_diterima_oleh(&lower)?;
     let after = &text[name_start..];
 
@@ -1766,7 +1766,7 @@ fn parse_manifest_r7_detail(
     Option<String>,
 ) {
     let text = raw.trim();
-    let lower = text.to_lowercase();
+    let lower = text.to_ascii_lowercase();
 
     let mut nomor_r7 = None;
     if let Some(idx) = lower.find("nomor r7") {
@@ -1843,7 +1843,7 @@ fn parse_manifest_r7_detail(
 
 fn parse_proses_antaran_status(raw: &str) -> ProsesAntaranDetail {
     let text = raw.trim();
-    let lower = text.to_lowercase();
+    let lower = text.to_ascii_lowercase();
 
     let mut petugas = None;
     if let Some(idx_oleh) = lower.find(" oleh ") {
@@ -1964,7 +1964,7 @@ fn parse_proses_antaran_status(raw: &str) -> ProsesAntaranDetail {
 
 fn parse_successful_delivery_status(raw: &str) -> Option<ProsesAntaranDetail> {
     let text = raw.trim();
-    let lower = text.to_lowercase();
+    let lower = text.to_ascii_lowercase();
     let delivered_key = "telah diantar oleh ";
     let recipient_key = " dan diterima oleh ";
     let delivered_idx = lower.find(delivered_key)?;
@@ -2096,6 +2096,63 @@ mod tests {
         include_str!("../tests/fixtures/pos_tracking_runsheet_failedtoddelivered.html");
     const DELIVERY_STATUS_CATALOG_HTML: &str =
         include_str!("../tests/fixtures/pos_tracking_delivery_status_catalog.html");
+
+    #[test]
+    fn unicode_history_offsets_preserve_original_fields() {
+        for prefix in ["İ", "İİ", "KK", "&#304;", "&#x130;", "<b>İ</b>", "ASCII"] {
+            for recipient in ["Émile", "Budi"] {
+                let html = format!(
+                    r#"
+                <table><tr><td>Nomor Kiriman</td><td>P1</td></tr></table>
+                <table><tr><td>TANGGAL UPDATE</td><td>DETAIL HISTORY</td></tr>
+                <tr><td>2026-09-30 10:00:00</td><td>{prefix} PrOsEs DeliveryRunsheet OlEh İ dI Zürich dan diterima oleh {recipient}</td></tr>
+                <tr><td>2026-09-30 10:01:00</td><td>{prefix} PrOsEs irregularity dengan status (Rusak) OlEh İ dI Zürich, [Coordinate : -2.5,140.7]</td></tr>
+                <tr><td>2026-09-30 10:02:00</td><td>{prefix} PrOsEs bagging nomor bag BAG1 OlEh İ dI Zürich</td></tr>
+                <tr><td>2026-09-30 10:03:00</td><td>{prefix} PrOsEs ManifestR7 OlEh İ dI Zürich DeNgAn TuJuAn Jayapura DaN NoMoR R7 R71</td></tr>
+                <tr><td>2026-09-30 10:04:00</td><td>{prefix} PrOsEs antaran oleh İ dengan keterangan (RUMAH KOSONG)</td></tr>
+                </table>"#
+                );
+                let response = parse_tracking_html("https://example.test", &html).unwrap();
+                let summary = response.history_summary;
+                let runsheet = &summary.delivery_runsheet[0];
+                assert_eq!(runsheet.petugas_mandor.as_deref(), Some("İ"));
+                assert_eq!(runsheet.petugas_kurir.as_deref(), Some(recipient));
+                assert_eq!(runsheet.lokasi.as_deref(), Some("Zürich"));
+                assert_eq!(runsheet.koordinat, None);
+                assert_eq!(runsheet.updates[0].petugas.as_deref(), Some("İ"));
+                assert_eq!(
+                    runsheet.updates[0].status.as_deref(),
+                    Some("FAILEDTODELIVERED")
+                );
+                let irregularity = &summary.irregularity[0];
+                assert_eq!(irregularity.status.as_deref(), Some("Rusak"));
+                assert_eq!(irregularity.petugas.as_deref(), Some("İ"));
+                assert_eq!(irregularity.lokasi.as_deref(), Some("Zürich"));
+                assert_eq!(irregularity.koordinat.as_deref(), Some("-2.5,140.7"));
+                assert_eq!(summary.bagging_unbagging[0].nomor_kantung, "BAG1");
+                let manifest = &summary.manifest_r7[0];
+                assert_eq!(manifest.nomor_r7.as_deref(), Some("R71"));
+                assert_eq!(manifest.petugas.as_deref(), Some("İ"));
+                assert_eq!(manifest.lokasi.as_deref(), Some("Zürich"));
+                assert_eq!(manifest.tujuan.as_deref(), Some("Jayapura"));
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_successful_delivery_preserves_courier_and_description() {
+        let html = r#"<table><tr><td>Nomor Kiriman</td><td>P1</td></tr></table>
+            <table><tr><td>TANGGAL UPDATE</td><td>DETAIL HISTORY</td></tr>
+            <tr><td>2026-09-30 10:00:00</td><td>İ telah diantar oleh İ dan diterima oleh Émile (DITERIMA YANG BERSANGKUTAN)</td></tr></table>"#;
+        let response = parse_tracking_html("https://example.test", html).unwrap();
+        let update = &response.history_summary.delivery_runsheet[0].updates[0];
+        assert_eq!(update.petugas.as_deref(), Some("İ"));
+        assert_eq!(update.status.as_deref(), Some("DELIVERED"));
+        assert_eq!(
+            update.keterangan_status.as_deref(),
+            Some("DITERIMA YANG BERSANGKUTAN")
+        );
+    }
 
     #[test]
     fn parse_tracking_html_matches_track_response_shape() {

@@ -15,6 +15,12 @@ const ALLOWED_EVENTS = new Set([
   "shipflow://window-close-requested",
 ]);
 const ALLOWED_COMMANDS = new Set<ShipFlowCommand>([
+  "docker_service_status",
+  "docker_service_save",
+  "docker_service_action",
+  "docker_service_logs",
+  "docker_service_copy_token",
+
   "resolve_pod_image",
   "open_external_url",
   "copy_to_clipboard",

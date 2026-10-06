@@ -132,7 +132,7 @@ describe("useSelectionTransferController", () => {
       targetSheetId,
       rowIds: ["rust-source-row-1"],
       mode: "copy",
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(onWorkspaceEngineMutation).toHaveBeenCalledWith([
       sourceSheetId,
       targetSheetId,
@@ -221,13 +221,13 @@ describe("useSelectionTransferController", () => {
       limit: 100_000,
       filters: [],
       sort: [],
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(transferSheetRowsMock).toHaveBeenCalledWith({
       sourceSheetId,
       targetSheetId,
       rowIds: [`${sourceSheetId}:row:0`],
       mode: "copy",
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
   });
 
   it("creates the Rust target sheet before copying selected rows into a new sheet", async () => {
@@ -289,13 +289,13 @@ describe("useSelectionTransferController", () => {
       sheetId: expect.any(String),
       name: "Sheet 1 - 1",
       position: 1,
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(transferSheetRowsMock).toHaveBeenCalledWith({
       sourceSheetId,
       targetSheetId: expect.any(String),
       rowIds: ["rust-source-row-1"],
       mode: "copy",
-    });
+    }, expect.objectContaining({ available: true, epoch: expect.any(Number), generation: expect.any(Promise) }));
     expect(onWorkspaceEngineMutation).toHaveBeenCalledWith([
       sourceSheetId,
       expect.any(String),

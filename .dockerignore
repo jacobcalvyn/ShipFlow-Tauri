@@ -1,0 +1,14 @@
+**
+!Cargo.toml
+!Cargo.lock
+!apps/
+!apps/**
+!crates/
+!crates/**
+!build/
+!build/release.json
+!docker/
+!docker/service/
+!docker/service/Dockerfile
+**/target
+**/.env*

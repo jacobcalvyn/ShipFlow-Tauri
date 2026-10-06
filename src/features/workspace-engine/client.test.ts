@@ -23,6 +23,7 @@ describe("workspace engine client", () => {
     const response = await resolveTrackingId("P2606020189412.30");
 
     expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      documentGeneration: 0,
       command: "resolve_tracking_id",
       payload: {
         display_id: "P2606020189412.30",
@@ -49,6 +50,7 @@ describe("workspace engine client", () => {
     const response = await listEngineSheets();
 
     expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      documentGeneration: 0,
       command: "list_sheets",
     });
     expect(response.payload[0]?.sheetId).toBe("sheet-1");
@@ -77,6 +79,7 @@ describe("workspace engine client", () => {
     });
 
     expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      documentGeneration: 0,
       command: "refresh_sheet_row_tracking",
       payload: {
         rowId: "row-1",
@@ -122,6 +125,7 @@ describe("workspace engine client", () => {
     });
 
     expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      documentGeneration: 0,
       command: "query_sheet_rows",
       payload: {
         query: {
@@ -162,6 +166,7 @@ describe("workspace engine client", () => {
     });
 
     expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      documentGeneration: 0,
       command: "query_sheet_field_values",
       payload: {
         query: {
@@ -215,6 +220,7 @@ describe("workspace engine client", () => {
     });
 
     expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      documentGeneration: 0,
       command: "preview_import_source",
       payload: {
         kind: "manifest",
@@ -238,6 +244,7 @@ describe("workspace engine client", () => {
     expect(requestWorkspaceMock).toHaveBeenCalledWith(
       "workspace.cancel_import_preview",
       {
+        documentGeneration: 0,
         scopeKey: "sheet-1:manifest",
         requestKey: "request-1",
       },
@@ -283,6 +290,7 @@ describe("workspace engine client", () => {
     });
 
     expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      documentGeneration: 0,
       command: "query_pivot",
       payload: {
           sheetId: "sheet-1",
@@ -352,6 +360,7 @@ describe("workspace engine client", () => {
     });
 
     expect(requestWorkspaceMock).toHaveBeenCalledWith("workspace.command", {
+      documentGeneration: 0,
       command: "query_chart",
       payload: {
           pivotQuery: {

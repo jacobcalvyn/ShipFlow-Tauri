@@ -8,7 +8,16 @@ permissions:
   contents: read
 
 jobs:
+  docker-bundle:
+    uses: ./.github/workflows/build-docker-bundle.yml
+    with:
+      signed: true
+    secrets:
+      SHIPFLOW_BUNDLE_SIGNING_KEY: ${{ secrets.SHIPFLOW_BUNDLE_SIGNING_KEY }}
+      SHIPFLOW_BUNDLE_PUBLIC_KEY: ${{ secrets.SHIPFLOW_BUNDLE_PUBLIC_KEY }}
+
   updater:
+    needs: docker-bundle
     if: github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
@@ -24,6 +33,8 @@ jobs:
     timeout-minutes: 90
     env:
       DUCKDB_DOWNLOAD_LIB: "1"
+      SHIPFLOW_REQUIRE_BUNDLE_SIGNATURE: true
+      SHIPFLOW_BUNDLE_PUBLIC_KEY: ${{ secrets.SHIPFLOW_BUNDLE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -40,6 +51,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/windows/prepare-duckdb-download.ps1
+      - name: Download matching Docker bundle
+        if: runner.os == 'Windows'
+        uses: actions/download-artifact@v6
+        with:
+          name: shipflow-docker-bundle
+          path: build/docker
       - name: Install dependencies
         run: npm ci
       - name: Check security baseline

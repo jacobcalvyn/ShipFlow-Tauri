@@ -48,6 +48,40 @@ Perform the same run on a packaged macOS and Windows build:
 Do not intentionally kill production work. Use an isolated test workspace and
 non-sensitive shipment identifiers.
 
+## Unsaved Workspace Quit With Service Settings Open
+
+Use a disposable workspace and a temporary document path:
+
+1. Change a workspace setting, such as the active Pivot/Grafik mode, and confirm
+   the native window title has the unsaved-change marker (`*`).
+2. Open Service Settings and leave it open. Request **Keluar ShipFlow** from the
+   application menu.
+3. Verify **Tutup Dokumen** is visible, focused, and clickable. Checking renderer
+   DOM visibility alone is insufficient: no visible native modal child may block
+   the workspace.
+4. Select **Batal**. Confirm the workspace remains dirty and settings drafts are
+   retained. No native shutdown should begin for the canceled request.
+5. Close only Service Settings. Confirm the dirty workspace remains open, then
+   reopen Service Settings.
+6. Request Quit again and choose **Simpan & Tutup**, saving to the temporary path.
+   Confirm the saved document contains the changes and the app exits normally.
+7. Verify `native_shutdown_completed` and `app_exit` in the desktop log, and check
+   that the native managed Service exited. An independently deployed Docker API
+   container must remain unaffected by desktop Quit.
+
+The automated regression uses an isolated runtime and a controlled save-dialog
+path. It reproduced the blocking modal sheet before the fix and passed after
+Service Settings became a standalone window. Run it after building with:
+
+```sh
+npx playwright test tests/electron/suite-smoke.spec.ts \
+  -g 'Service settings keeps the unsaved-workspace quit dialog accessible'
+```
+
+The regression passed locally on macOS on 2026-10-06. Repeat the native-window
+interaction on Windows before claiming Windows acceptance. A force-close does
+not count as a successful Quit test or a successful save.
+
 ## Analyze
 
 From the repository:
@@ -84,7 +118,9 @@ insufficient.
 - no `service_restart_exhausted`;
 - each `service_process_started` has a `service_ready` or an explained
   `service_process_exited`;
-- each normal quit reaches `native_shutdown_completed` and `app_exit`;
+- each confirmed normal quit reaches `native_shutdown_completed` and `app_exit`;
+- canceling an unsaved-workspace quit leaves the workspace and native Service
+  running, with the confirmation accessible while Service Settings is open;
 - no repeated `workspace_host_exited` outside an explicit window close;
 - HTTP request completion uses the same request ID returned in
   `x-shipflow-request-id` and the JSON envelope;

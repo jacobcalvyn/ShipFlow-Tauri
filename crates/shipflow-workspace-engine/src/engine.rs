@@ -572,7 +572,7 @@ where
             self.store
                 .append_sheet_rows_atomic(&request.sheet_id, &rows)?;
         } else {
-            self.store.upsert_sheet_rows_atomic(
+            self.store.edit_sheet_rows_atomic(
                 &request.sheet_id,
                 &rows,
                 request.replace_existing,
@@ -974,6 +974,77 @@ mod tests {
                 runtime.store().get_sheet_row(id).unwrap().unwrap().position,
                 position
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn display_edits_preserve_tracking_state_until_lookup_changes() {
+        for status in [SheetRowStatus::Loaded, SheetRowStatus::Failed] {
+            let mut source = FakeImportSource::default();
+            source.push_tracking("P1", Ok(track_response("P1")));
+            let mut runtime = prepared_runtime(source);
+            runtime
+                .store_mut()
+                .upsert_sheet_row(&UpsertSheetRowInput {
+                    row_id: "row-edit".into(),
+                    sheet_id: "sheet-1".into(),
+                    position: 0,
+                    display_tracking_id: "P1".into(),
+                    lookup_tracking_id: "P1".into(),
+                    row_status: status,
+                    error_message: Some("Original failure".into()),
+                })
+                .unwrap();
+            runtime
+                .handle_command(WorkspaceEngineCommand::RefreshSheetRowTracking(
+                    RefreshSheetRowTrackingRequest {
+                        row_id: "row-edit".into(),
+                        force_refresh: true,
+                    },
+                ))
+                .await
+                .unwrap();
+            runtime
+                .store_mut()
+                .update_sheet_row_status(&crate::storage::UpdateSheetRowStatusInput {
+                    row_id: "row-edit".into(),
+                    row_status: status,
+                    error_message: Some("Original failure".into()),
+                })
+                .unwrap();
+            let original = runtime.store().get_sheet_row("row-edit").unwrap().unwrap();
+            assert_eq!(
+                original.status_json.as_ref().unwrap()["status"],
+                "DELIVERED"
+            );
+            for display in [" P1 ", "P1.2"] {
+                let command = serde_json::from_value(serde_json::json!({
+                    "command":"upsert_sheet_rows", "payload":{"sheetId":"sheet-1",
+                    "rows":[{"rowId":"row-edit","position":0,"displayTrackingId":display}]}
+                }))
+                .unwrap();
+                runtime.handle_command(command).await.unwrap();
+                let edited = runtime.store().get_sheet_row("row-edit").unwrap().unwrap();
+                assert_eq!(edited.row_status, original.row_status);
+                assert_eq!(edited.error_message, original.error_message);
+                assert_eq!(edited.row_generation, original.row_generation);
+                assert_eq!(edited.status_json, original.status_json);
+                assert_eq!(edited.detail_json, original.detail_json);
+                assert_eq!(edited.history_json, original.history_json);
+            }
+            let command = serde_json::from_value(serde_json::json!({
+                "command":"upsert_sheet_rows", "payload":{"sheetId":"sheet-1",
+                "rows":[{"rowId":"row-edit","position":0,"displayTrackingId":"P2"}]}
+            }))
+            .unwrap();
+            runtime.handle_command(command).await.unwrap();
+            let edited = runtime.store().get_sheet_row("row-edit").unwrap().unwrap();
+            assert_eq!(edited.row_status, SheetRowStatus::Empty);
+            assert_eq!(edited.error_message, None);
+            assert_eq!(edited.status_json, None);
+            assert_eq!(edited.detail_json, None);
+            assert_eq!(edited.history_json, None);
+            assert_ne!(edited.row_generation, original.row_generation);
         }
     }
 

@@ -2180,6 +2180,9 @@ dependencies = [
 name = "shipflow-service"
 version = "0.1.0"
 dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
  "shipflow-core",
  "shipflow-service-runtime",
  "tokio",

@@ -1,8 +1,15 @@
 import {
+  beginWorkspaceDocumentHandoff,
+  captureWorkspaceDocumentScope,
+  assertWorkspaceDocumentScope,
+  isWorkspaceDocumentScopeCurrent,
+} from "../workspace-engine/document-scope";
+import {
   Dispatch,
   SetStateAction,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -123,6 +130,7 @@ export function useWorkspaceDocumentController({
   const documentAutosaveTimeoutRef = useRef<number | null>(null);
   const documentHydrationKeyRef = useRef<string | null>(null);
   const startupEngineSyncKeyRef = useRef<string | null>(null);
+  const pendingDocumentHandoffRef = useRef<((committed?: boolean) => void) | null>(null);
   const workspaceEngineSyncCoordinatorRef = useRef(
     new WorkspaceEngineSyncCoordinator()
   );
@@ -141,17 +149,34 @@ export function useWorkspaceDocumentController({
       nextWorkspace: WorkspaceState,
       options?: { mode?: WorkspaceEngineSyncMode }
     ) => {
-      const isCurrent = await workspaceEngineSyncCoordinatorRef.current.run(
-        nextWorkspace,
-        options
-      );
-      if (isCurrent) {
-        setWorkspaceEngineSyncGeneration((current) => current + 1);
+      const finishHandoff = options?.mode === "seed" ? null : beginWorkspaceDocumentHandoff();
+      try {
+        const isCurrent = await workspaceEngineSyncCoordinatorRef.current.run(nextWorkspace, options);
+        if (isCurrent) {
+          if (finishHandoff) {
+            setWorkspaceState(nextWorkspace);
+            pendingDocumentHandoffRef.current?.();
+            pendingDocumentHandoffRef.current = finishHandoff;
+          }
+          setWorkspaceEngineSyncGeneration((current) => current + 1);
+        } else {
+          finishHandoff?.();
+        }
+        return isCurrent;
+      } catch (error) {
+        finishHandoff?.();
+        throw error;
       }
-      return isCurrent;
     },
-    []
+    [setWorkspaceState]
   );
+
+  useLayoutEffect(() => {
+    pendingDocumentHandoffRef.current?.(true);
+    pendingDocumentHandoffRef.current = null;
+  }, [workspaceEngineSyncGeneration]);
+
+  useEffect(() => () => pendingDocumentHandoffRef.current?.(), []);
 
   if (documentBaselineRef.current === "__unset__") {
     documentBaselineRef.current = serializeWorkspaceStateForDocument(workspaceState);
@@ -323,6 +348,7 @@ export function useWorkspaceDocumentController({
         return false;
       }
 
+      const documentScope = captureWorkspaceDocumentScope();
       documentSaveInFlightRef.current = true;
       setDocumentMeta((current) => ({
         ...current,
@@ -333,8 +359,9 @@ export function useWorkspaceDocumentController({
       try {
         const workspaceAtSaveStart = workspaceRef.current;
         const workspaceForDocument = await createWorkspaceDocumentStateFromEngine(
-          workspaceAtSaveStart
+          workspaceAtSaveStart, undefined, documentScope
         );
+        assertWorkspaceDocumentScope(documentScope);
 
         const savedAt = new Date().toISOString();
         const serializedWorkspace =
@@ -347,6 +374,7 @@ export function useWorkspaceDocumentController({
           writeWorkspaceDocument(trimmedPath, document)
         );
 
+        if (!isWorkspaceDocumentScopeCurrent(documentScope)) return false;
         const workspaceChangedDuringSave =
           workspaceRef.current !== workspaceAtSaveStart;
         documentBaselineRef.current = serializedWorkspace;
@@ -374,6 +402,7 @@ export function useWorkspaceDocumentController({
 
         return true;
       } catch (error) {
+        if (!isWorkspaceDocumentScopeCurrent(documentScope)) return false;
         const message =
           error instanceof Error ? error.message : "Gagal menyimpan dokumen.";
 
@@ -413,7 +442,6 @@ export function useWorkspaceDocumentController({
       }
       const serializedWorkspace = serializeWorkspaceStateForDocument(normalizedWorkspace);
       documentBaselineRef.current = serializedWorkspace;
-      setWorkspaceState(normalizedWorkspace);
       setDocumentMeta({
         path,
         name: getWorkspaceDocumentName(path),

@@ -165,7 +165,10 @@ export class WorkspaceHostClient {
         );
         try {
           await writeFile(filePath, document, { encoding: "utf8", mode: 0o600, flag: "wx" });
-          return await this.request<T>("workspace.restore_file", { fileName }, onEvent);
+          return await this.request<T>("workspace.restore_file", {
+            fileName,
+            documentGeneration: (params as { documentGeneration?: number }).documentGeneration,
+          }, onEvent);
         } finally {
           await unlink(filePath).catch((error: NodeJS.ErrnoException) => {
             if (error.code !== "ENOENT") appLogger.error("WorkspaceHost", error);
