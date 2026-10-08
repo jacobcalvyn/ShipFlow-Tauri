@@ -1092,7 +1092,12 @@ pub(crate) async fn resolve_tracking_payload(
         Ok(mut response) => {
             if timeout(
                 Duration::from_secs(BAG_ROUTE_ENRICHMENT_BUDGET_SECS),
-                enrich_tracking_bag_routes(state, &mut response, request_id),
+                enrich_tracking_bag_routes(
+                    state,
+                    &mut response,
+                    request_id,
+                    request_options.force_refresh,
+                ),
             )
             .await
             .is_err()
@@ -1121,6 +1126,7 @@ async fn enrich_tracking_bag_routes(
     state: &HttpApiState,
     response: &mut TrackResponse,
     request_id: &str,
+    force_refresh: bool,
 ) {
     if state.tracking_source.tracking_source != TrackingSource::Default {
         return;
@@ -1150,7 +1156,9 @@ async fn enrich_tracking_bag_routes(
             let task_state = state.clone();
             let task_request_id = request_id.to_string();
             tasks.spawn(async move {
-                let route = resolve_cached_bag_route(&task_state, &bag_id, &task_request_id).await;
+                let route =
+                    resolve_cached_bag_route(&task_state, &bag_id, &task_request_id, force_refresh)
+                        .await;
                 (bag_id, route)
             });
         }
@@ -1172,7 +1180,13 @@ async fn resolve_cached_bag_route(
     state: &HttpApiState,
     bag_id: &str,
     request_id: &str,
+    mut force_refresh: bool,
 ) -> Option<BagRoute> {
+    let manifest_route = state
+        .bag_route_cache
+        .get_manifest_bag_route_async(bag_id)
+        .await;
+    let mut known_route = None;
     loop {
         if let Some(entry) = state.bag_route_cache.get_async(bag_id).await {
             shipflow_core::shipflow_log!(
@@ -1180,11 +1194,25 @@ async fn resolve_cached_bag_route(
                 entry.bag_id,
                 entry.status
             );
-            return entry.route;
+            let retry_due = entry.retry_due();
+            known_route = entry.route;
+            if !force_refresh && !retry_due {
+                return select_bag_route(known_route, manifest_route);
+            }
+        }
+        if !force_refresh
+            && manifest_route
+                .as_ref()
+                .is_some_and(|route| route.lokasi_asal.is_some() && route.tujuan.is_some())
+        {
+            return select_bag_route(known_route, manifest_route);
         }
 
         match state.bag_route_cache.begin_fetch(bag_id) {
-            BagRouteFetchAction::Wait(waiter) => waiter.await,
+            BagRouteFetchAction::Wait(waiter) => {
+                waiter.await;
+                force_refresh = false;
+            }
             BagRouteFetchAction::Start(fetch_lease) => {
                 let _fetch_lease = fetch_lease;
                 let permit = match state
@@ -1198,7 +1226,7 @@ async fn resolve_cached_bag_route(
                             "[ShipFlowBagRouteCache] permit_failed id={} error={error:?}",
                             bag_id
                         );
-                        return None;
+                        return select_bag_route(known_route, manifest_route);
                     }
                 };
                 let fetch_result = timeout(
@@ -1217,27 +1245,43 @@ async fn resolve_cached_bag_route(
                             entry.status,
                             entry.route.as_ref().is_some_and(|route| route.tujuan.is_some())
                         );
-                        return entry.route;
+                        return select_bag_route(entry.route, manifest_route);
                     }
                     Ok(Err(error)) => {
-                        state.bag_route_cache.store_failure_async(bag_id).await;
+                        let entry = state.bag_route_cache.store_failure_async(bag_id).await;
                         shipflow_core::shipflow_log!(
                             "[ShipFlowBagRouteCache] fetch_failed id={} error={error:?}",
                             bag_id
                         );
-                        return None;
+                        return select_bag_route(entry.route, manifest_route);
                     }
                     Err(_) => {
-                        state.bag_route_cache.store_failure_async(bag_id).await;
+                        let entry = state.bag_route_cache.store_failure_async(bag_id).await;
                         shipflow_core::shipflow_log!(
                             "[ShipFlowBagRouteCache] fetch_timeout id={} timeoutSec={BAG_ROUTE_LOOKUP_TIMEOUT_SECS}",
                             bag_id
                         );
-                        return None;
+                        return select_bag_route(entry.route, manifest_route);
                     }
                 }
             }
         }
+    }
+}
+
+fn select_bag_route(label: Option<BagRoute>, manifest: Option<BagRoute>) -> Option<BagRoute> {
+    if label
+        .as_ref()
+        .is_some_and(|route| route.lokasi_asal.is_some() && route.tujuan.is_some())
+    {
+        label
+    } else if manifest
+        .as_ref()
+        .is_some_and(|route| route.lokasi_asal.is_some() && route.tujuan.is_some())
+    {
+        manifest
+    } else {
+        label.or(manifest)
     }
 }
 
@@ -1256,9 +1300,11 @@ fn apply_bag_route(response: &mut TrackResponse, route: &BagRoute) {
         if bagging.lokasi.is_none() {
             bagging.lokasi = route.lokasi_asal.clone();
         }
-        bagging.tujuan = route.tujuan.clone();
+        if route.tujuan.is_some() {
+            bagging.tujuan = route.tujuan.clone();
+        }
         summary.unbagging_sesuai_tujuan = match (
-            route.tujuan.as_deref(),
+            bagging.tujuan.as_deref(),
             summary
                 .unbagging
                 .as_ref()
@@ -1335,10 +1381,8 @@ pub(crate) async fn resolve_bag_payload(
     let backpressure = state.upstream_backpressure.clone();
     let permit_request_id = request_id.to_string();
     let permit_lookup_id = normalized_id.clone();
-    with_lookup_deadline(
-        route,
-        &normalized_id,
-        resolve_bag_request_cached(
+    with_lookup_deadline(route, &normalized_id, async {
+        let mut response = resolve_bag_request_cached(
             &state.lookup_cache,
             &state.client,
             &state.tracking_source,
@@ -1355,8 +1399,28 @@ pub(crate) async fn resolve_bag_payload(
                 )
                 .await
             },
-        ),
-    )
+        )
+        .await?;
+        if state.tracking_source.tracking_source == TrackingSource::Default {
+            match timeout(
+                Duration::from_secs(BAG_ROUTE_ENRICHMENT_BUDGET_SECS),
+                resolve_cached_bag_route(
+                    state,
+                    &normalized_id.to_ascii_uppercase(),
+                    request_id,
+                    request_options.force_refresh,
+                ),
+            )
+            .await
+            {
+                Ok(route) => response.bag_detail = route,
+                Err(_) => shipflow_core::shipflow_log!(
+                    "[ShipFlowBagRouteCache] bag_metadata_budget_exhausted id={normalized_id}"
+                ),
+            }
+        }
+        Ok(response)
+    })
     .await
 }
 
@@ -1378,6 +1442,7 @@ pub(crate) async fn resolve_manifest_payload(
         &normalized_id,
         resolve_manifest_request_cached(
             &state.lookup_cache,
+            &state.bag_route_cache,
             &state.client,
             &state.tracking_source,
             &normalized_id,

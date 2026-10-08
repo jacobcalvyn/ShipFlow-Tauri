@@ -73,7 +73,7 @@ The reusable `build-docker-bundle.yml` workflow builds, verifies, smoke-tests, a
 | Resource | Purpose |
 | --- | --- |
 | `shipflow-service-api` | Current API container |
-| `shipflow-service-api-data` | Persistent SQLite lookup, contact, and bag-route caches |
+| `shipflow-service-api-data` | Persistent SQLite lookup, contact, bag-route, and manifest Print caches |
 | `shipflow-service-api-backup` | Most recent consistent redeployment snapshot |
 | AppData `docker-service/deployment.json` | Desired/active configuration and durable operation journal; credentials encrypted with Electron safeStorage |
 
@@ -85,9 +85,23 @@ If the app exits mid-deployment, the journal remains pending and the next sessio
 
 Docker mode requires all three cache databases in `/data` and does not fall back to temporary storage or RAM. Readiness performs committed writes. Lookup writer failures propagate through flush and readiness rather than being acknowledged as successful persistence. Container configuration is copied as an owner-readable file for UID 10001; tokens are absent from command arguments and container environment values.
 
+Manifest Print snapshots and their bag-route index share
+`/data/bag-route-store.sqlite3`; they do not introduce a fourth database.
+Restart and redeployment backups preserve these tables with the existing bag
+label cache. The container's stores remain separate from the native Service
+and Extension browser storage.
+
 ## Concurrency and cache
 
 Defaults preserve the existing service profile: 128 HTTP handlers, a 512-entry ingress queue, 30 total upstream lookups, 24 public lookups, and 15 contact lookups. Identical lookups coalesce. Tracking/bag/manifest cache TTLs default to 30/60/90 seconds; memory lookup cache defaults to 10,000 entries/128 MiB and disk lookup cache to 2,000 entries. The UI's disk limit applies to the lookup cache; existing contact and bag-route retention policies remain separate.
+
+Phone values retain a 90-day TTL; missing or partial acquisitions retry after
+five minutes. Complete label routes have no normal age expiry. Print snapshots
+refresh on lookup after 24 hours and are retained for 90 days, bounded to
+1,000 records and 64 MiB of serialized payloads. These policies are not changed
+by the operational manifest lookup TTL or the UI's disk lookup-entry limit.
+See [Tracking Data Integration](./data-integration.md#cache-and-storage) for
+the separate capacities, failed-refresh behavior, and force-refresh rules.
 
 Increasing container resources alone does not increase application concurrency. Increase bounded service settings only after measuring latency, queue depth, cache hit rate, memory use, and upstream throttling under the intended workload. This patch does not establish new throughput guarantees or test live POS scraping.
 

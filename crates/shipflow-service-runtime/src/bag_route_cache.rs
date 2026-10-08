@@ -25,7 +25,7 @@ pub struct BagRouteCacheSnapshot {
 #[derive(Clone)]
 pub struct BagRouteCacheState {
     path: Arc<PathBuf>,
-    connection: Arc<Mutex<Connection>>,
+    pub(crate) connection: Arc<Mutex<Connection>>,
     in_flight: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
 }
 
@@ -42,6 +42,7 @@ impl std::fmt::Debug for BagRouteCacheState {
 pub enum BagRouteCacheEntryStatus {
     #[default]
     Ok,
+    Partial,
     Missing,
     Failed,
 }
@@ -50,6 +51,7 @@ impl BagRouteCacheEntryStatus {
     fn as_str(self) -> &'static str {
         match self {
             Self::Ok => "ok",
+            Self::Partial => "partial",
             Self::Missing => "missing",
             Self::Failed => "failed",
         }
@@ -58,6 +60,7 @@ impl BagRouteCacheEntryStatus {
     fn from_str(value: &str) -> Option<Self> {
         match value {
             "ok" => Some(Self::Ok),
+            "partial" => Some(Self::Partial),
             "missing" => Some(Self::Missing),
             "failed" => Some(Self::Failed),
             _ => None,
@@ -70,6 +73,40 @@ pub struct BagRouteCacheEntry {
     pub bag_id: String,
     pub route: Option<BagRoute>,
     pub status: BagRouteCacheEntryStatus,
+    pub fetched_at_unix_ms: u128,
+}
+
+impl BagRouteCacheEntry {
+    pub(crate) fn retry_due(&self) -> bool {
+        self.status != BagRouteCacheEntryStatus::Ok
+            && unix_ms().saturating_sub(self.fetched_at_unix_ms) >= BAG_ROUTE_RETRY_CACHE_TTL_MS
+    }
+}
+
+fn route_status(route: Option<&BagRoute>) -> BagRouteCacheEntryStatus {
+    match route {
+        Some(route) if route.lokasi_asal.is_some() && route.tujuan.is_some() => {
+            BagRouteCacheEntryStatus::Ok
+        }
+        Some(route) if route.lokasi_asal.is_some() || route.tujuan.is_some() => {
+            BagRouteCacheEntryStatus::Partial
+        }
+        _ => BagRouteCacheEntryStatus::Missing,
+    }
+}
+
+fn normalize_route(mut route: BagRoute) -> BagRoute {
+    let office = |value: Option<String>| {
+        value.filter(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "" | "-" | "null" | "undefined"
+            )
+        })
+    };
+    route.lokasi_asal = office(route.lokasi_asal);
+    route.tujuan = office(route.tujuan);
+    route
 }
 
 pub(crate) enum BagRouteFetchAction {
@@ -213,8 +250,10 @@ impl BagRouteCacheState {
             return None;
         };
         let fetched_at_unix_ms = stored.2.max(0) as u128;
-        if status != BagRouteCacheEntryStatus::Ok
-            && now.saturating_sub(fetched_at_unix_ms) >= BAG_ROUTE_RETRY_CACHE_TTL_MS
+        if matches!(
+            status,
+            BagRouteCacheEntryStatus::Missing | BagRouteCacheEntryStatus::Failed
+        ) && now.saturating_sub(fetched_at_unix_ms) >= BAG_ROUTE_RETRY_CACHE_TTL_MS
         {
             let _ = connection.execute(
                 "DELETE FROM bag_route_cache WHERE bag_id = ?1",
@@ -225,7 +264,7 @@ impl BagRouteCacheState {
 
         let route = match stored.0 {
             Some(route_json) => match serde_json::from_str::<BagRoute>(&route_json) {
-                Ok(route) => Some(route),
+                Ok(route) => Some(normalize_route(route)),
                 Err(error) => {
                     shipflow_core::shipflow_log!(
                         "[ShipFlowBagRouteCache] decode_error id={bag_id} error={error}"
@@ -249,8 +288,13 @@ impl BagRouteCacheState {
 
         Some(BagRouteCacheEntry {
             bag_id: bag_id.to_string(),
+            status: if status == BagRouteCacheEntryStatus::Ok {
+                route_status(route.as_ref())
+            } else {
+                status
+            },
             route,
-            status,
+            fetched_at_unix_ms,
         })
     }
 
@@ -307,11 +351,8 @@ impl BagRouteCacheState {
     }
 
     pub async fn store_async(&self, bag_id: &str, route: BagRoute) -> BagRouteCacheEntry {
-        let status = if route.tujuan.is_some() {
-            BagRouteCacheEntryStatus::Ok
-        } else {
-            BagRouteCacheEntryStatus::Missing
-        };
+        let route = normalize_route(route);
+        let status = route_status(Some(&route));
         let state = self.clone();
         let bag_id = bag_id.to_string();
         let fallback_bag_id = bag_id.clone();
@@ -327,6 +368,7 @@ impl BagRouteCacheState {
                     bag_id: fallback_bag_id,
                     route: Some(fallback_route),
                     status,
+                    fetched_at_unix_ms: unix_ms(),
                 }
             })
     }
@@ -348,6 +390,7 @@ impl BagRouteCacheState {
                 bag_id: fallback_bag_id,
                 route: None,
                 status: BagRouteCacheEntryStatus::Failed,
+                fetched_at_unix_ms: unix_ms(),
             }
         })
     }
@@ -373,17 +416,43 @@ impl BagRouteCacheState {
     fn store(
         &self,
         bag_id: &str,
-        route: Option<BagRoute>,
-        status: BagRouteCacheEntryStatus,
+        mut route: Option<BagRoute>,
+        mut status: BagRouteCacheEntryStatus,
     ) -> BagRouteCacheEntry {
         let now = unix_ms();
-        let route_json = route
-            .as_ref()
-            .and_then(|route| serde_json::to_string(route).ok());
         let connection = self
             .connection
             .lock()
             .expect("bag route cache connection lock poisoned");
+        let previous = connection
+            .query_row(
+                "SELECT route_json FROM bag_route_cache WHERE bag_id = ?1",
+                params![bag_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .flatten()
+            .and_then(|json| serde_json::from_str::<BagRoute>(&json).ok())
+            .map(normalize_route);
+        if let Some(previous) = previous {
+            if let Some(route) = route.as_mut() {
+                if route.lokasi_asal.is_none() {
+                    route.lokasi_asal = previous.lokasi_asal;
+                }
+                if route.tujuan.is_none() {
+                    route.tujuan = previous.tujuan;
+                }
+                status = route_status(Some(route));
+            } else {
+                route = Some(previous);
+                status = BagRouteCacheEntryStatus::Partial;
+            }
+        }
+        let route_json = route
+            .as_ref()
+            .and_then(|route| serde_json::to_string(route).ok());
         if let Err(error) = connection.execute(
             "INSERT INTO bag_route_cache (
                  bag_id, route_json, status, fetched_at_unix_ms, last_used_at_unix_ms
@@ -412,6 +481,7 @@ impl BagRouteCacheState {
             bag_id: bag_id.to_string(),
             route,
             status,
+            fetched_at_unix_ms: now,
         }
     }
 
@@ -454,6 +524,7 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
                  ON bag_route_cache(last_used_at_unix_ms);",
         )
         .map_err(|error| format!("Unable to initialize bag route cache database: {error}"))?;
+    crate::manifest_cache::initialize_database(connection)?;
     Ok(())
 }
 
@@ -461,7 +532,7 @@ fn prune_connection(connection: &Connection, now_unix_ms: u128) {
     let retry_cutoff = now_unix_ms.saturating_sub(BAG_ROUTE_RETRY_CACHE_TTL_MS);
     if let Err(error) = connection.execute(
         "DELETE FROM bag_route_cache
-         WHERE status != 'ok' AND fetched_at_unix_ms <= ?1",
+         WHERE status IN ('missing', 'failed') AND fetched_at_unix_ms <= ?1",
         params![to_sql_millis(retry_cutoff)],
     ) {
         shipflow_core::shipflow_log!(
@@ -541,6 +612,55 @@ mod tests {
             entry.route.and_then(|route| route.tujuan).as_deref(),
             Some("DC JAYAPURA 9910A")
         );
+        cleanup_sqlite(path);
+    }
+
+    #[tokio::test]
+    async fn destination_without_origin_is_not_a_complete_route() {
+        let path = test_path("partial-route");
+        let cache = BagRouteCacheState::open(path.clone());
+        let entry = cache
+            .store_async(
+                "PID96722106",
+                BagRoute {
+                    nomor_kantung: "PID96722106".into(),
+                    lokasi_asal: None,
+                    tujuan: Some("DC JAYAPURA 9910A".into()),
+                    url: "https://example.test/print-bag".into(),
+                },
+            )
+            .await;
+        assert_ne!(entry.status, BagRouteCacheEntryStatus::Ok);
+        cleanup_sqlite(path);
+    }
+
+    #[tokio::test]
+    async fn partial_route_survives_retry_window_and_failed_refresh() {
+        let path = test_path("partial-retention");
+        let cache = BagRouteCacheState::open(path.clone());
+        cache
+            .store_async(
+                "PID96722106",
+                BagRoute {
+                    nomor_kantung: "PID96722106".into(),
+                    lokasi_asal: None,
+                    tujuan: Some("DC JAYAPURA 9910A".into()),
+                    url: "https://example.test/label".into(),
+                },
+            )
+            .await;
+        cache.set_fetched_at_for_test("PID96722106", unix_ms() - BAG_ROUTE_RETRY_CACHE_TTL_MS - 1);
+        let entry = cache.get_async("PID96722106").await.unwrap();
+        assert!(entry.retry_due());
+        let refreshed = cache.store_failure_async("PID96722106").await;
+        assert_eq!(
+            refreshed.route.unwrap().tujuan.as_deref(),
+            Some("DC JAYAPURA 9910A")
+        );
+        let retained = cache.get_async("PID96722106").await.unwrap();
+        assert!(!retained.retry_due());
+        assert_eq!(retained.status, BagRouteCacheEntryStatus::Partial);
+        drop(cache);
         cleanup_sqlite(path);
     }
 

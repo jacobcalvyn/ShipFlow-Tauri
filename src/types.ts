@@ -155,7 +155,7 @@ export type HistorySummary = {
 };
 
 export type ContactEnrichmentMetadata = {
-  source: "lacak_mitra";
+  source: "lacak_mitra" | "pid_detail" | "mixed";
   status: "cache_hit" | "fetched" | "missing" | "failed" | "skipped";
   sender_phone_present: boolean;
   recipient_phone_present: boolean;
@@ -214,6 +214,12 @@ export type BagItem = {
 export type BagResponse = {
   url: string;
   nomor_kantung?: string;
+  bag_detail?: {
+    nomor_kantung: string;
+    lokasi_asal: string | null;
+    tujuan: string | null;
+    url: string;
+  } | null;
   items: BagItem[];
 };
 
@@ -226,11 +232,32 @@ export type ManifestItem = {
   status?: string;
   lokasi_akhir?: string;
   tanggal?: string;
+  lokasi_asal?: string | null;
+  tujuan?: string | null;
+};
+
+export type ManifestDetail = {
+  nomor_manifest: string;
+  task_id: string;
+  lokasi_asal: string | null;
+  tujuan: string | null;
+  nomor_smu: string | null;
+  angkutan: string | null;
+  mode: string | null;
+  tanggal: string | null;
+  jumlah_kantung: number;
+  total_berat_kg: number;
+  rekap_layanan: Array<{ jenis_layanan: string | null; jumlah_kantung: number; berat_kg: number }>;
+  source_url: string;
+  fetched_at: string;
+  cache_status: "fetched" | "cache_hit" | "stale";
+  status_source: "pid" | "unavailable";
 };
 
 export type ManifestResponse = {
   url: string;
   total_berat?: string;
+  manifest_detail?: ManifestDetail | null;
   items: ManifestItem[];
 };
 

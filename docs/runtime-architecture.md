@@ -43,8 +43,9 @@ the connection or reaches its timeout, the Service drops the in-flight lookup
 future so abandoned requests release their upstream concurrency slot.
 The Service accepts at most 128 simultaneous internal IPC connections. Reading
 and writing an IPC frame each has a 10-second limit, while the native client
-allows 130 seconds for the complete request so the Service's 120-second lookup
-deadline remains authoritative.
+allows 130 seconds for the complete request. Primary Service lookups have a
+120-second deadline. Optional tracking bag-route enrichment has a separate
+20-second budget, but remains subject to the client's total request timeout.
 
 ## Storage
 
@@ -74,6 +75,33 @@ for the OS user and Desktop data identity. If a Service survives an unexpected
 Electron exit, the next launch authenticates it through private IPC, asks it to
 stop, waits for the endpoint to close, and starts a fresh supervised process.
 It is never adopted through the public API.
+
+## Tracking Metadata Acquisition
+
+The Service uses the same acquisition and cache path for public `/v1` lookups
+and native IPC. The default POS source adds phone enrichment, bag routes, and
+validated manifest Print snapshots. An external API source supplies its own
+lookup payloads without these local source requests.
+
+| Data | Acquisition | Persistent state |
+| --- | --- | --- |
+| Phones | Primary PID fields, exact-shipment contact cache, Lacak Mitra, then PID detail on source failure | `contact-store.sqlite3`; complete and partial values retain a 90-day TTL, incomplete attempts retry after five minutes |
+| Bag offices | Complete label route, or the bag's own row in a cached Print snapshot | `bag-route-store.sqlite3`; partial routes remain retryable |
+| Manifest metadata | Exact R7 list search followed by the server-provided Print `taskId` | `manifest_print_cache` and `manifest_print_bags` inside `bag-route-store.sqlite3` |
+
+Manifest snapshots refresh on demand after 24 hours and remain usable for
+90 days. Snapshot and bag-index replacement share one SQLite transaction.
+Failed refreshes retain known values and the original Print acquisition time.
+Operational status keeps the separate short lookup TTL.
+
+Desktop does not read the Extension's `chrome.storage.local` or require an
+Extension snapshot bridge. The current Mile list and Print acquisition works
+without a browser session. Print contains bag membership and routing, but no
+shipment IDs or phone numbers. PID bag detail supplies the next relationship.
+
+See [Tracking Data Integration](./data-integration.md) for exact requests,
+validation, source precedence, response fields, cache limits, and verification
+boundaries.
 
 ## Runtime Logs
 

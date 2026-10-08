@@ -199,6 +199,11 @@ backpressure.
 See [docs/service-api-v1.md](./docs/service-api-v1.md) and
 [docs/runtime-architecture.md](./docs/runtime-architecture.md).
 
+Phone acquisition, bag origin/destination metadata, and persistent manifest
+Print snapshots are documented in
+[docs/data-integration.md](./docs/data-integration.md). The existing endpoints
+expose these fields through both the public API and Desktop's native IPC path.
+
 ## Repository Layout
 
 - `electron/main`: Electron lifecycle, tray, Service Agent, updater, documents,

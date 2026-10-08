@@ -13,9 +13,11 @@ use shipflow_core::{
         LookupKind, ManifestResponse, TrackResponse, TrackingError, TrackingSource,
         TrackingSourceConfig,
     },
-    parser::{parse_lacak_mitra_contact_html_checked, populate_shipment_structure},
+    parser::{
+        normalize_contact_phone, parse_shipment_contact_html_checked, populate_shipment_structure,
+    },
     upstream::{
-        build_lacak_mitra_tracking_url, normalize_and_validate_bag_id,
+        build_lacak_mitra_tracking_url, build_tracking_url, normalize_and_validate_bag_id,
         normalize_and_validate_manifest_id, normalize_and_validate_shipment_id,
         read_response_text_limited, resolve_bag_request, resolve_manifest_request,
         resolve_tracking_request,
@@ -24,6 +26,7 @@ use shipflow_core::{
 use tokio::sync::{futures::OwnedNotified, Notify};
 use tokio::time::timeout;
 
+use crate::bag_route_cache::BagRouteCacheState;
 use crate::contact_cache::{
     ContactCacheEntry, ContactCacheEntryStatus, ContactCacheState, ContactFetchAction,
 };
@@ -1190,6 +1193,7 @@ where
         source_config,
         &normalized_shipment_id,
         result,
+        options.force_refresh,
         acquire_contact_permit,
     )
     .await
@@ -1201,6 +1205,7 @@ async fn enrich_tracking_contacts<ContactF, ContactFut, ContactPermit>(
     source_config: &TrackingSourceConfig,
     shipment_id: &str,
     mut response: TrackResponse,
+    mut force_refresh: bool,
     acquire_contact_permit: ContactF,
 ) -> Result<TrackResponse, TrackingError>
 where
@@ -1226,15 +1231,24 @@ where
         return Ok(response);
     }
 
+    let sender_missing = !contact_phone_present(&response.detail.actors.pengirim.telepon);
+    let recipient_missing = !contact_phone_present(&response.detail.actors.penerima.telepon);
     loop {
         if let Some(entry) = contact_cache.get_async(shipment_id).await {
             apply_cached_contact(&mut response, shipment_id, &entry);
-            return Ok(response);
+            if !force_refresh
+                && (!entry.retry_due()
+                    || (contact_phone_present(&response.detail.actors.pengirim.telepon)
+                        && contact_phone_present(&response.detail.actors.penerima.telepon)))
+            {
+                return Ok(response);
+            }
         }
 
         match contact_cache.begin_fetch(shipment_id) {
             ContactFetchAction::Wait(waiter) => {
                 waiter.await;
+                force_refresh = false;
             }
             ContactFetchAction::Start(fetch_lease) => {
                 let _fetch_lease = fetch_lease;
@@ -1257,16 +1271,28 @@ where
                 drop(permit);
 
                 match fetch_result {
-                    Ok(contact) => {
-                        let entry = contact_cache.store_async(shipment_id, contact).await;
-                        merge_contact_enrichment(&mut response, &entry.contact);
+                    Ok((contact, source)) => {
+                        let entry = contact_cache
+                            .store_from_source_async(shipment_id, contact, source)
+                            .await;
+                        if sender_missing {
+                            response.detail.actors.pengirim.telepon =
+                                entry.contact.pengirim.telepon.clone();
+                        }
+                        if recipient_missing {
+                            response.detail.actors.penerima.telepon =
+                                entry.contact.penerima.telepon.clone();
+                        }
                         let status = match entry.status {
-                            ContactCacheEntryStatus::Ok => ContactEnrichmentStatus::Fetched,
+                            ContactCacheEntryStatus::Ok | ContactCacheEntryStatus::Partial => {
+                                ContactEnrichmentStatus::Fetched
+                            }
                             ContactCacheEntryStatus::Missing => ContactEnrichmentStatus::Missing,
                             ContactCacheEntryStatus::Failed => ContactEnrichmentStatus::Failed,
                         };
                         response.contact_enrichment =
                             Some(contact_enrichment_metadata(status, &response));
+                        response.contact_enrichment.as_mut().unwrap().source = entry.source;
                         shipflow_core::shipflow_log!(
                             "[ShipFlowContactCache] fetch_ok id={} status={:?} sender_phone_present={} recipient_phone_present={}",
                             shipment_id,
@@ -1276,11 +1302,13 @@ where
                         );
                     }
                     Err(error) => {
-                        contact_cache.store_failure_async(shipment_id).await;
+                        let entry = contact_cache.store_failure_async(shipment_id).await;
+                        merge_contact_enrichment(&mut response, &entry.contact);
                         response.contact_enrichment = Some(contact_enrichment_metadata(
                             ContactEnrichmentStatus::Failed,
                             &response,
                         ));
+                        response.contact_enrichment.as_mut().unwrap().source = entry.source;
                         shipflow_core::shipflow_log!(
                             "[ShipFlowContactCache] fetch_failed id={} error={:?}",
                             shipment_id,
@@ -1298,31 +1326,60 @@ where
 async fn fetch_contact_enrichment(
     client: &reqwest::Client,
     shipment_id: &str,
+) -> Result<(ContactEnrichment, &'static str), TrackingError> {
+    let primary = build_lacak_mitra_tracking_url(shipment_id);
+    let fallback = build_tracking_url(
+        "https://pid.posindonesia.co.id/lacak/admin/detail_lacak_bagdetil.php",
+        shipment_id,
+    );
+    fetch_contact_from_sources(client, shipment_id, &primary, &fallback).await
+}
+
+async fn fetch_contact_from_sources(
+    client: &reqwest::Client,
+    shipment_id: &str,
+    primary: &str,
+    fallback: &str,
+) -> Result<(ContactEnrichment, &'static str), TrackingError> {
+    match fetch_contact_html(client, shipment_id, primary).await {
+        Ok(contact) => Ok((contact, "lacak_mitra")),
+        Err(primary_error) => {
+            shipflow_core::shipflow_log!("[ShipFlowContactCache] primary_failed id={shipment_id} error={primary_error:?}; trying PID detail");
+            fetch_contact_html(client, shipment_id, fallback)
+                .await
+                .map(|contact| (contact, "pid_detail"))
+        }
+    }
+}
+
+async fn fetch_contact_html(
+    client: &reqwest::Client,
+    shipment_id: &str,
+    url: &str,
 ) -> Result<ContactEnrichment, TrackingError> {
-    let url = build_lacak_mitra_tracking_url(shipment_id);
     match timeout(CONTACT_LOOKUP_TIMEOUT, async {
-        let upstream_response = client.get(&url).send().await.map_err(|error| {
-            TrackingError::Upstream(format!("Lacak Mitra contact request failed: {error}"))
+        let upstream_response = client.get(url).send().await.map_err(|error| {
+            TrackingError::Upstream(format!("Contact source request failed: {error}"))
         })?;
         if !upstream_response.status().is_success() {
             return Err(TrackingError::Upstream(format!(
-                "Lacak Mitra contact endpoint returned HTTP {}.",
+                "Contact source endpoint returned HTTP {}.",
                 upstream_response.status()
             )));
         }
         let html = read_response_text_limited(
             upstream_response,
             MAX_CONTACT_RESPONSE_BYTES,
-            "Lacak Mitra contact response",
+            "Contact source response",
         )
         .await?;
-        parse_lacak_mitra_contact_html_checked(&html)
+        parse_shipment_contact_html_checked(&html, shipment_id)
     })
     .await
     {
         Ok(result) => result,
         Err(_) => Err(TrackingError::Upstream(format!(
-            "Lacak Mitra contact request timed out after {} seconds.",
+            "Contact source request timed out after {} seconds.",
             CONTACT_LOOKUP_TIMEOUT.as_secs()
         ))),
     }
@@ -1335,11 +1392,14 @@ fn apply_cached_contact(
 ) {
     merge_contact_enrichment(response, &entry.contact);
     let status = match entry.status {
-        ContactCacheEntryStatus::Ok => ContactEnrichmentStatus::CacheHit,
+        ContactCacheEntryStatus::Ok | ContactCacheEntryStatus::Partial => {
+            ContactEnrichmentStatus::CacheHit
+        }
         ContactCacheEntryStatus::Missing => ContactEnrichmentStatus::Missing,
         ContactCacheEntryStatus::Failed => ContactEnrichmentStatus::Failed,
     };
     response.contact_enrichment = Some(contact_enrichment_metadata(status, response));
+    response.contact_enrichment.as_mut().unwrap().source = entry.source.clone();
     shipflow_core::shipflow_log!(
         "[ShipFlowContactCache] cache_hit id={} status={:?} sender_phone_present={} recipient_phone_present={}",
         shipment_id,
@@ -1351,10 +1411,18 @@ fn apply_cached_contact(
 
 fn merge_contact_enrichment(response: &mut TrackResponse, contact: &ContactEnrichment) {
     if !contact_phone_present(&response.detail.actors.pengirim.telepon) {
-        response.detail.actors.pengirim.telepon = contact.pengirim.telepon.clone();
+        response.detail.actors.pengirim.telepon = contact
+            .pengirim
+            .telepon
+            .as_deref()
+            .and_then(normalize_contact_phone);
     }
     if !contact_phone_present(&response.detail.actors.penerima.telepon) {
-        response.detail.actors.penerima.telepon = contact.penerima.telepon.clone();
+        response.detail.actors.penerima.telepon = contact
+            .penerima
+            .telepon
+            .as_deref()
+            .and_then(normalize_contact_phone);
     }
 }
 
@@ -1371,10 +1439,7 @@ fn contact_enrichment_metadata(
 }
 
 fn contact_phone_present(value: &Option<String>) -> bool {
-    value.as_deref().is_some_and(|value| {
-        let normalized = value.trim();
-        !normalized.is_empty() && normalized != "-"
-    })
+    value.as_deref().and_then(normalize_contact_phone).is_some()
 }
 
 pub async fn resolve_bag_request_cached<F, Fut, Permit>(
@@ -1416,6 +1481,7 @@ where
 
 pub async fn resolve_manifest_request_cached<F, Fut, Permit>(
     lookup_cache: &LookupCacheState,
+    metadata_cache: &BagRouteCacheState,
     client: &reqwest::Client,
     source_config: &TrackingSourceConfig,
     manifest_id: &str,
@@ -1432,6 +1498,7 @@ where
     let client = client.clone();
     let tracking_source = source_config.clone();
     let lookup_id = normalized_manifest_id.clone();
+    let metadata_cache = metadata_cache.clone();
 
     lookup_cache
         .resolve_cached_lookup(
@@ -1443,17 +1510,143 @@ where
                 let _permit = acquire_fetch_permit()
                     .await
                     .map_err(LookupLoaderError::non_cacheable)?;
-                resolve_manifest_request(
-                    &client,
-                    &tracking_source,
-                    &lookup_id,
-                    options.force_refresh,
-                )
-                .await
-                .map_err(LookupLoaderError::cacheable)
+                if tracking_source.tracking_source != TrackingSource::Default {
+                    return resolve_manifest_request(
+                        &client,
+                        &tracking_source,
+                        &lookup_id,
+                        options.force_refresh,
+                    )
+                    .await
+                    .map_err(LookupLoaderError::cacheable);
+                }
+                let (operational, print) = tokio::join!(
+                    resolve_manifest_request(
+                        &client,
+                        &tracking_source,
+                        &lookup_id,
+                        options.force_refresh
+                    ),
+                    resolve_manifest_snapshot(
+                        &metadata_cache,
+                        &client,
+                        &lookup_id,
+                        options.force_refresh
+                    ),
+                );
+                merge_manifest_sources(operational, print).map_err(LookupLoaderError::cacheable)
             },
         )
         .await
+}
+
+async fn resolve_manifest_snapshot(
+    cache: &BagRouteCacheState,
+    client: &reqwest::Client,
+    manifest_id: &str,
+    force_refresh: bool,
+) -> Result<ManifestResponse, TrackingError> {
+    let cached = cache.get_manifest_async(manifest_id).await;
+    if !force_refresh
+        && cached
+            .as_ref()
+            .and_then(|snapshot| snapshot.manifest_detail.as_ref())
+            .is_some_and(|detail| detail.cache_status == "cache_hit")
+    {
+        return Ok(cached.unwrap());
+    }
+    let fetched = timeout(
+        Duration::from_secs(15),
+        shipflow_core::manifest_print::fetch_manifest_print(client, manifest_id),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(TrackingError::Upstream(
+            "Mile manifest Print request timed out after 15 seconds.".into(),
+        ))
+    });
+    match fetched {
+        Ok(mut snapshot) => {
+            snapshot.manifest_detail.as_mut().unwrap().fetched_at =
+                crate::api_contract::generated_at_iso8601();
+            if let Err(error) = cache.store_manifest_async(manifest_id, &snapshot).await {
+                shipflow_core::shipflow_log!(
+                    "[ShipFlowManifestCache] store_failed id={manifest_id} error={error}"
+                );
+            }
+            Ok(snapshot)
+        }
+        Err(error) => {
+            shipflow_core::shipflow_log!(
+                "[ShipFlowManifestCache] fetch_failed id={manifest_id} error={error:?}"
+            );
+            if let Some(mut snapshot) = cached {
+                snapshot.manifest_detail.as_mut().unwrap().cache_status = "stale".into();
+                Ok(snapshot)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+fn merge_manifest_sources(
+    operational: Result<ManifestResponse, TrackingError>,
+    print: Result<ManifestResponse, TrackingError>,
+) -> Result<ManifestResponse, TrackingError> {
+    match (operational, print) {
+        (Ok(mut operational), Ok(print)) => {
+            let routes: HashMap<_, _> = print
+                .items
+                .iter()
+                .filter_map(|item| {
+                    Some((item.nomor_kantung.as_deref()?.to_ascii_uppercase(), item))
+                })
+                .collect();
+            for item in &mut operational.items {
+                if let Some(route) = item
+                    .nomor_kantung
+                    .as_deref()
+                    .and_then(|id| routes.get(&id.to_ascii_uppercase()))
+                {
+                    item.lokasi_asal = route.lokasi_asal.clone();
+                    item.tujuan = route.tujuan.clone();
+                }
+            }
+            // Keep PID status rows; include Print bags that PID has not indexed yet.
+            let known: std::collections::HashSet<_> = operational
+                .items
+                .iter()
+                .filter_map(|item| item.nomor_kantung.as_deref().map(str::to_ascii_uppercase))
+                .collect();
+            operational
+                .items
+                .extend(print.items.into_iter().filter(|item| {
+                    item.nomor_kantung
+                        .as_deref()
+                        .is_some_and(|id| !known.contains(&id.to_ascii_uppercase()))
+                }));
+            if operational.items.len() > 10_000 {
+                return Err(TrackingError::Upstream(
+                    "Combined manifest response exceeds the 10000-item limit.".into(),
+                ));
+            }
+            operational.manifest_detail = print.manifest_detail;
+            operational.manifest_detail.as_mut().unwrap().status_source = "pid".into();
+            if operational.total_berat.is_none() {
+                operational.total_berat = print.total_berat;
+            }
+            Ok(operational)
+        }
+        (Ok(operational), Err(_)) => Ok(operational),
+        (Err(error), Ok(print)) => {
+            shipflow_core::shipflow_log!(
+                "[ShipFlowManifestCache] PID_status_unavailable error={error:?}"
+            );
+            Ok(print)
+        }
+        (Err(error), Err(_)) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -2487,6 +2680,7 @@ mod refresh_regression_tests {
                     LookupKind::Manifest => {
                         resolve_manifest_request_cached(
                             &cache,
+                            &BagRouteCacheState::default(),
                             &client,
                             &config,
                             "MAN1",
@@ -2505,5 +2699,216 @@ mod refresh_regression_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod enrichment_regression_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn contact_page(id: &str, sender: &str, recipient: &str) -> String {
+        format!("<table><tr><td>Nomor Kiriman</td><td>{id}</td></tr><tr><td>Pengirim</td><td>Sender;{sender};Address;99100</td></tr><tr><td>Penerima</td><td>Recipient;{recipient};Address;99100</td></tr></table>")
+    }
+
+    fn source_server(
+        responses: Vec<(u16, String)>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, body) in responses {
+                let (mut connection, _) = listener.accept().unwrap();
+                connection
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = [0_u8; 4096];
+                let count = connection.read(&mut bytes).unwrap();
+                requests.push(
+                    String::from_utf8_lossy(&bytes[..count])
+                        .lines()
+                        .next()
+                        .unwrap()
+                        .to_owned(),
+                );
+                write!(connection, "HTTP/1.1 {status} Response\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+            requests
+        });
+        (url, worker)
+    }
+
+    #[tokio::test]
+    async fn uses_pid_fallback_for_failed_or_mismatched_primary_response() {
+        for primary in [
+            (524, String::new()),
+            (200, contact_page("P2", "081234567890", "081234567891")),
+            (200, "<form>Login</form>".into()),
+        ] {
+            let (url, worker) = source_server(vec![
+                primary,
+                (200, contact_page("P1", "081234567890", "081234567891")),
+            ]);
+            let (contact, source) = fetch_contact_from_sources(
+                &reqwest::Client::new(),
+                "P1",
+                &format!("{url}/mitra"),
+                &format!("{url}/pid"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(source, "pid_detail");
+            assert_eq!(contact.penerima.telepon.as_deref(), Some("081234567891"));
+            assert_eq!(worker.join().unwrap().len(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn valid_missing_contacts_do_not_trigger_another_source() {
+        let (url, worker) = source_server(vec![(200, contact_page("P1", "0", "-"))]);
+        let (contact, source) = fetch_contact_from_sources(
+            &reqwest::Client::new(),
+            "P1",
+            &format!("{url}/mitra"),
+            &format!("{url}/pid"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(source, "lacak_mitra");
+        assert!(contact.pengirim.telepon.is_none() && contact.penerima.telepon.is_none());
+        assert_eq!(worker.join().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rejects_wrong_shipment_from_both_sources() {
+        let (url, worker) = source_server(vec![
+            (200, contact_page("P1", "081234567890", "")),
+            (200, contact_page("P1", "081234567890", "")),
+        ]);
+        assert!(fetch_contact_from_sources(
+            &reqwest::Client::new(),
+            "P1.1",
+            &format!("{url}/mitra"),
+            &format!("{url}/pid")
+        )
+        .await
+        .is_err());
+        assert_eq!(worker.join().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn partial_contacts_retry_after_cooldown_and_force_refresh_bypasses_it() {
+        let path = std::env::temp_dir().join(format!(
+            "shipflow-contact-retry-{}-{}.sqlite3",
+            std::process::id(),
+            crate::api_contract::generated_at_iso8601()
+        ));
+        let cache = ContactCacheState::open(path.clone());
+        cache.store(
+            "P1",
+            ContactEnrichment {
+                pengirim: shipflow_core::model::ContactDetail {
+                    telepon: Some("081234567890".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let attempts = AtomicUsize::new(0);
+        let client = reqwest::Client::new();
+        for (force, aged, expected) in [(false, false, 0), (true, false, 1), (false, true, 2)] {
+            if aged {
+                cache.set_fetched_at_for_test(
+                    "P1",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis()
+                        - 5 * 60 * 1000
+                        - 1,
+                );
+            }
+            let response = enrich_tracking_contacts(
+                &cache,
+                &client,
+                &TrackingSourceConfig::default(),
+                "P1",
+                TrackResponse {
+                    url: String::new(),
+                    detail: Default::default(),
+                    status_akhir: Default::default(),
+                    pod: Default::default(),
+                    history: Vec::new(),
+                    history_summary: Default::default(),
+                    shipment_identity: Default::default(),
+                    multi_koli: Default::default(),
+                    contact_enrichment: None,
+                },
+                force,
+                || {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    async {
+                        Err::<(), _>(TrackingError::ServiceUnavailable(
+                            "Test acquisition unavailable".into(),
+                        ))
+                    }
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(attempts.load(Ordering::SeqCst), expected);
+            assert_eq!(
+                response.detail.actors.pengirim.telepon.as_deref(),
+                Some("081234567890")
+            );
+        }
+        drop(cache);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn merges_manifest_routes_without_overwriting_pid_status() {
+        let print = shipflow_core::manifest_print::parse_manifest_print_html(
+            include_str!("../../shipflow-core/tests/fixtures/mile_manifest_print.html"),
+            "https://posindo.mile.app/manifestR7/print?taskId=8932c2f5a5706c9c8224",
+            "P20260929082013165",
+            10,
+        )
+        .unwrap();
+        let pid = ManifestResponse {
+            url: "https://pid.example/manifest".into(),
+            items: vec![shipflow_core::model::ManifestItem {
+                nomor_kantung: Some("PID108132707".into()),
+                status: Some("inBag".into()),
+                lokasi_akhir: Some("Actual office".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let response = merge_manifest_sources(Ok(pid), Ok(print.clone())).unwrap();
+        assert_eq!(response.items.len(), 10);
+        assert_eq!(response.items[0].status.as_deref(), Some("inBag"));
+        assert_eq!(
+            response.items[0].lokasi_akhir.as_deref(),
+            Some("Actual office")
+        );
+        assert_eq!(
+            response.items[0].tujuan.as_deref(),
+            Some("DC JAYAPURA 9910A")
+        );
+        assert_eq!(response.manifest_detail.unwrap().status_source, "pid");
+        let print_only = merge_manifest_sources(
+            Err(TrackingError::Upstream("PID unavailable".into())),
+            Ok(print),
+        )
+        .unwrap();
+        assert_eq!(print_only.items.len(), 10);
+        assert_eq!(
+            print_only.manifest_detail.unwrap().status_source,
+            "unavailable"
+        );
     }
 }

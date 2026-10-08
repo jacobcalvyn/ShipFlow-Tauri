@@ -101,6 +101,7 @@ pub fn parse_manifest_html(html: &str, url: &str) -> Result<ManifestResponse, St
                 status: get_text(4),
                 lokasi_akhir: get_text(5),
                 tanggal: get_text(6),
+                ..ManifestItem::default()
             };
 
             if item.no.is_none()
@@ -128,6 +129,7 @@ pub fn parse_manifest_html(html: &str, url: &str) -> Result<ManifestResponse, St
     Ok(ManifestResponse {
         url: url.to_string(),
         total_berat,
+        manifest_detail: None,
         items,
     })
 }

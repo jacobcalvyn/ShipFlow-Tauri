@@ -321,6 +321,8 @@ pub struct BagItem {
 pub struct BagResponse {
     pub url: String,
     pub nomor_kantung: Option<String>,
+    #[serde(default)]
+    pub bag_detail: Option<BagRoute>,
     pub items: Vec<BagItem>,
 }
 
@@ -334,12 +336,44 @@ pub struct ManifestItem {
     pub status: Option<String>,
     pub lokasi_akhir: Option<String>,
     pub tanggal: Option<String>,
+    #[serde(default)]
+    pub lokasi_asal: Option<String>,
+    #[serde(default)]
+    pub tujuan: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ManifestProductSummary {
+    pub jenis_layanan: Option<String>,
+    pub jumlah_kantung: usize,
+    pub berat_kg: f64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ManifestDetail {
+    pub nomor_manifest: String,
+    pub task_id: String,
+    pub lokasi_asal: Option<String>,
+    pub tujuan: Option<String>,
+    pub nomor_smu: Option<String>,
+    pub angkutan: Option<String>,
+    pub mode: Option<String>,
+    pub tanggal: Option<String>,
+    pub jumlah_kantung: usize,
+    pub total_berat_kg: f64,
+    pub rekap_layanan: Vec<ManifestProductSummary>,
+    pub source_url: String,
+    pub fetched_at: String,
+    pub cache_status: String,
+    pub status_source: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ManifestResponse {
     pub url: String,
     pub total_berat: Option<String>,
+    #[serde(default)]
+    pub manifest_detail: Option<ManifestDetail>,
     pub items: Vec<ManifestItem>,
 }
 

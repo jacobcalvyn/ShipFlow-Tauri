@@ -8,6 +8,7 @@ mod diagnostics;
 pub mod http_api;
 mod internal_ipc;
 pub mod lookup_cache;
+mod manifest_cache;
 pub mod model;
 pub mod openapi;
 pub mod persistent_store;

@@ -616,8 +616,7 @@ pub fn parse_lacak_mitra_contact_html_checked(
     for tr in document.select(&tr_selector) {
         let cells: Vec<String> = tr
             .select(&cell_selector)
-            .map(|cell| normalize_text(&cell.text().collect::<String>()))
-            .filter(|text| !text.is_empty())
+            .map(|cell| normalize_text(&cell.text().collect::<Vec<_>>().join(" ")))
             .collect();
 
         if cells.len() < 2 {
@@ -643,9 +642,8 @@ pub fn parse_lacak_mitra_contact_html_checked(
         ));
     }
 
-    let valid_phone = |value: Option<String>| {
-        value.filter(|phone| phone.chars().filter(char::is_ascii_digit).count() >= 6)
-    };
+    let valid_phone =
+        |value: Option<String>| value.and_then(|phone| normalize_contact_phone(&phone));
     enrichment.pengirim.telepon = valid_phone(enrichment.pengirim.telepon);
     enrichment.penerima.telepon = valid_phone(enrichment.penerima.telepon);
     enrichment.pengirim.nama = None;
@@ -656,6 +654,49 @@ pub fn parse_lacak_mitra_contact_html_checked(
     enrichment.penerima.kode_pos = None;
 
     Ok(enrichment)
+}
+
+/// Validate the response identity before contacts enter the shipment cache.
+pub fn parse_shipment_contact_html_checked(
+    html: &str,
+    shipment_id: &str,
+) -> Result<ContactEnrichment, TrackingError> {
+    let document = ScraperHtml::parse_document(html);
+    let rows = Selector::parse("tr").expect("valid selector");
+    let cells = Selector::parse("td, th").expect("valid selector");
+    let identity = document.select(&rows).find_map(|row| {
+        let values: Vec<_> = row
+            .select(&cells)
+            .map(|cell| normalize_text(&cell.text().collect::<Vec<_>>().join(" ")))
+            .collect();
+        if values.len() >= 2 && normalize_label(&values[0]).trim_end_matches(':') == "NOMOR KIRIMAN"
+        {
+            values[1].split_whitespace().next().map(str::to_owned)
+        } else {
+            None
+        }
+    });
+    if !identity
+        .as_deref()
+        .is_some_and(|id| id.eq_ignore_ascii_case(shipment_id))
+    {
+        return Err(TrackingError::Upstream(
+            "Contact response shipment identity does not match the requested shipment.".into(),
+        ));
+    }
+    parse_lacak_mitra_contact_html_checked(html)
+}
+
+pub fn normalize_contact_phone(value: &str) -> Option<String> {
+    let value = normalize_text(value);
+    let digits = value.chars().filter(char::is_ascii_digit).count();
+    ((7..=30).contains(&value.len())
+        && (7..=16).contains(&digits)
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || matches!(ch, '+' | ' ' | '(' | ')' | '-'))
+        && value.chars().any(|ch| matches!(ch, '1'..='9')))
+    .then_some(value)
 }
 
 fn normalize_text(input: &str) -> String {
@@ -918,10 +959,11 @@ fn parse_sla_status(raw: &str) -> (Option<String>, Option<i32>) {
 }
 
 fn split_semicolon_segments(raw: &str) -> Vec<String> {
-    raw.split(';')
-        .map(normalize_text)
-        .filter(|value| !value.is_empty())
-        .collect()
+    let mut parts: Vec<_> = raw.split(';').map(normalize_text).collect();
+    while parts.last().is_some_and(|part| part.is_empty()) {
+        parts.pop();
+    }
+    parts
 }
 
 fn parse_pengirim(raw: &str) -> ContactDetail {
@@ -943,7 +985,9 @@ fn parse_contact(raw: &str) -> ContactDetail {
     }
 
     let nama = Some(parts[0].clone());
-    let telepon = parts.get(1).cloned();
+    let telepon = parts
+        .get(1)
+        .and_then(|phone| normalize_contact_phone(phone));
 
     let (alamat, kode_pos) = if parts.len() >= 4 {
         let kode_pos = parts.last().cloned();
@@ -1024,14 +1068,7 @@ fn parse_labeled_contact(raw: &str) -> Option<ContactDetail> {
         match label {
             "alamat" => contact.alamat = value,
             "tlp pengirim" | "tlp penerima" => {
-                contact.telepon = value.filter(|phone| {
-                    phone.chars().all(|ch| {
-                        ch.is_ascii_digit()
-                            || ch.is_whitespace()
-                            || matches!(ch, '+' | '-' | '(' | ')')
-                    }) && phone.chars().filter(char::is_ascii_digit).count() >= 6
-                        && phone.chars().any(|ch| matches!(ch, '1'..='9'))
-                });
+                contact.telepon = value.and_then(|phone| normalize_contact_phone(&phone));
             }
             _ => {}
         }

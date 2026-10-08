@@ -25,7 +25,13 @@ pub fn parse_bag_route_html(html: &str, bag_id: &str, url: &str) -> Result<BagRo
         let value = text
             .split_once(':')
             .map(|(_, value)| value.trim())
-            .filter(|value| !value.is_empty())
+            .filter(|value| {
+                !value.is_empty()
+                    && !matches!(
+                        value.to_ascii_lowercase().as_str(),
+                        "-" | "null" | "undefined"
+                    )
+            })
             .map(str::to_string);
 
         match label.as_str() {

@@ -1054,6 +1054,7 @@ mod tests {
         source.push_bag(
             "PID1",
             Ok(BagResponse {
+                bag_detail: None,
                 url: "https://example.test/bag/PID1".to_string(),
                 nomor_kantung: Some("PID1".to_string()),
                 items: vec![BagItem {
@@ -1168,6 +1169,7 @@ mod tests {
         source.push_bag(
             "PID1",
             Ok(BagResponse {
+                bag_detail: None,
                 url: "https://example.test/bag/PID1".to_string(),
                 nomor_kantung: Some("PID1".to_string()),
                 items: vec![BagItem {
@@ -1537,6 +1539,7 @@ mod tests {
         source.push_bag(
             "PID1",
             Ok(BagResponse {
+                bag_detail: None,
                 url: "https://example.test/bag/PID1".to_string(),
                 nomor_kantung: Some("PID1".to_string()),
                 items: vec![BagItem {
@@ -1592,6 +1595,7 @@ mod tests {
         source.push_bag(
             "PID1",
             Ok(BagResponse {
+                bag_detail: None,
                 url: "https://example.test/bag/PID1".to_string(),
                 nomor_kantung: Some("PID1".to_string()),
                 items: vec![BagItem {
@@ -1992,6 +1996,7 @@ mod tests {
             source.push_bag(
                 "PID1",
                 Ok(BagResponse {
+                    bag_detail: None,
                     url: "https://example.test/bag/PID1".to_string(),
                     nomor_kantung: Some("PID1".to_string()),
                     items: vec![BagItem {
@@ -2242,6 +2247,7 @@ mod tests {
             source.push_bag(
                 "PID_RESUME",
                 Ok(BagResponse {
+                    bag_detail: None,
                     url: "https://example.test/bag/PID_RESUME".to_string(),
                     nomor_kantung: Some("PID_RESUME".to_string()),
                     items: vec![BagItem {
@@ -2256,6 +2262,7 @@ mod tests {
                 source.push_bag(
                     &source_id,
                     Ok(BagResponse {
+                        bag_detail: None,
                         url: format!("https://example.test/bag/{source_id}"),
                         nomor_kantung: Some(source_id.clone()),
                         items: vec![BagItem {
@@ -2470,6 +2477,7 @@ mod tests {
 
     fn manifest_response(bag_ids: &[&str]) -> ManifestResponse {
         ManifestResponse {
+            manifest_detail: None,
             url: "https://example.test/manifest".to_string(),
             total_berat: None,
             items: bag_ids

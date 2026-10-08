@@ -959,6 +959,7 @@ mod tests {
         source.push_bag(
             "PID_10K",
             Ok(BagResponse {
+                bag_detail: None,
                 url: "https://example.test/bag/PID_10K".to_string(),
                 nomor_kantung: Some("PID_10K".to_string()),
                 items: tracking_ids
@@ -1457,6 +1458,7 @@ mod tests {
 
     fn bag_response(tracking_ids: &[&str]) -> BagResponse {
         BagResponse {
+            bag_detail: None,
             url: "https://example.test/bag".to_string(),
             nomor_kantung: Some("PID".to_string()),
             items: tracking_ids
@@ -1471,6 +1473,7 @@ mod tests {
 
     fn manifest_response(bag_ids: &[&str]) -> ManifestResponse {
         ManifestResponse {
+            manifest_detail: None,
             url: "https://example.test/manifest".to_string(),
             total_berat: None,
             items: bag_ids

@@ -1,6 +1,7 @@
 pub mod bag;
 pub mod bag_route;
 pub mod manifest;
+pub mod manifest_print;
 pub mod model;
 pub mod parser;
 pub mod runtime_log;

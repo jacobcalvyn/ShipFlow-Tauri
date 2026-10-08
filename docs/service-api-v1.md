@@ -308,9 +308,14 @@ Lookup schema versions:
 - `shipflow.tracking.bag.v1`
 - `shipflow.tracking.manifest.v1`
 
-The `data` object is the same normalized response shape returned through Desktop's native IPC path. Shipment tracking can use the active Service source, either internal POS scraping or the configured external ShipFlow API. Bag and manifest lookup paths currently use the internal POS scraper.
+The `data` object is the same normalized response shape returned through Desktop's native IPC path. Shipment tracking can use the active Service source, either internal POS scraping or the configured external ShipFlow API. Bag and manifest lookups use the active Service source as well. The metadata acquisition described below applies only to the internal POS source; external API responses retain their own metadata.
 
-For the internal POS scraper, `detail_lacak_banyak.php` remains the primary tracking source for shipment status, SLA, history, POD, bagging, manifest, delivery, names, and addresses. ShipFlow Service may call `https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=<shipment_id>` only as a best-effort contact enrichment source for missing sender/recipient phone numbers. `lacak-mitra` data must not overwrite primary tracking fields.
+See [Tracking Data Integration](./data-integration.md) for the acquisition
+sequence, source precedence, storage relationships, and verified examples.
+
+### Shipment phones and identity
+
+For the internal POS scraper, `detail_lacak_banyak.php` remains the primary tracking source for shipment status, SLA, history, POD, bagging, manifest, delivery, names, and addresses. ShipFlow Service calls `https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=<shipment_id>` as a best-effort contact enrichment source for missing sender/recipient phone numbers. Request, HTTP, schema, or identity failures trigger the PID fallback `detail_lacak_bagdetil.php?id=<encodedShipmentId>`. Both responses must identify the exact requested shipment, including any `X13` or koli suffix. A valid primary page that reports missing phones is authoritative and does not trigger the fallback. `lacak-mitra` data must not overwrite primary tracking fields.
 
 For international `LNINCOMING` shipments, the scraper reads names, addresses,
 and phone numbers from the labeled `Alamat`, `Tlp Pengirim`, and `Tlp Penerima`
@@ -328,7 +333,9 @@ If the final-status timestamp is missing, `datetime`, `date`, and `time` remain
 the date label. A receiving event is not used to invent a delivery time. Empty
 POD image placeholders likewise remain `null`.
 
-Bagging history may also receive best-effort route enrichment from the POS Mile bag label. The first successful lookup for a normalized bag ID is stored persistently in `bag-route-store.sqlite3`; later shipments referencing the same bag use the cached route without calling the label endpoint again. A label lookup failure never fails the primary tracking response, and failed lookups are retried only after a short negative-cache window.
+### Bag route metadata
+
+Bagging history may also receive best-effort route enrichment from the POS Mile bag label. A complete label route for a normalized bag ID is stored persistently in `bag-route-store.sqlite3`; later shipments referencing the same bag reuse that route. A route with only one office remains partial and can be retried after five minutes. A failed refresh retains previously known offices. Validated manifest Print snapshots also supply individual bag routes when the label route is unavailable or incomplete. A label lookup failure never fails the primary tracking response, and failed lookups are retried only after a short negative-cache window.
 
 ```json
 {
@@ -352,6 +359,55 @@ Bagging history may also receive best-effort route enrichment from the POS Mile 
 
 `bagging.tujuan` is the expected destination printed when the bag was created. `unbagging.lokasi` remains the actual unbagging office. `unbagging_sesuai_tujuan` is `true` when their normalized office codes match, `false` when they differ, and `null` when either side is unavailable.
 
+Bag responses add nullable `bag_detail` containing `nomor_kantung`, `lokasi_asal`, `tujuan`, and the label or Print source `url`. These fields describe the bag route; item `kantor_kirim` remains the individual shipment's sending office. A metadata failure leaves the original bag items available.
+
+The following fragment shows `data.bag_detail`; the original `items` array is
+unchanged:
+
+```json
+{
+  "bag_detail": {
+    "nomor_kantung": "PID108157373",
+    "lokasi_asal": "SPP JAYAPURA 99100",
+    "tujuan": "LE MUARA TAMI 99351D1",
+    "url": "https://posindo.mile.app/manifestR7/print?taskId=8932c2f5a5706c9c8224"
+  }
+}
+```
+
+### Manifest Print metadata
+
+Manifest responses add nullable `manifest_detail` and nullable `items[].lokasi_asal` / `items[].tujuan`. Metadata includes `nomor_manifest`, `task_id`, manifest offices, `nomor_smu`, `angkutan`, `mode`, `tanggal`, `jumlah_kantung`, `total_berat_kg`, and `rekap_layanan`. Individual bag offices come from each Print row and may differ from the manifest header destination.
+
+The Service resolves an exact R7 number through anonymous `POST https://posindo.mile.app/api/manifestR7-filter`, then reads its same-origin `/manifestR7/print?taskId=...` link. The list filter requires a date range: R7 identifiers with a valid encoded calendar date after their first letter supply that date. Unsupported identifier formats can still use PID tracking but cannot resolve Print metadata through this filter. The Service validates the returned R7 identity, distinct bag identifiers, list/Print counts, product summaries, and total weights before storing a snapshot. Print does not provide shipment IDs or phone numbers.
+
+Validated snapshots and their bag indexes share `bag-route-store.sqlite3`. Snapshot replacement and index replacement occur in one transaction, so an incomplete or failed refresh retains the previous snapshot. Snapshots refresh after 24 hours, expire after 90 days, and are bounded to 1,000 records / 64 MiB of serialized payloads, with an 8 MiB per-snapshot limit. These snapshots do not change the short TTL of operational PID status data.
+
+`manifest_detail.source_url` identifies Print; `fetched_at` records its acquisition time. `cache_status` is `fetched`, `cache_hit`, or `stale` if a refresh failed or the snapshot is older than 24 hours. PID status and final-location fields remain intact when sources are combined. Print bags missing from PID are included with null status fields. If PID is unavailable, a valid Print snapshot can supply the manifest response with `status_source: "unavailable"`; otherwise `status_source` is `"pid"`. Clients must not interpret Print metadata as proof of a bag's current status.
+
+`manifest_detail` fields have these source meanings:
+
+| Fields | Meaning |
+| --- | --- |
+| `nomor_manifest`, `task_id`, `source_url` | Verified R7 identity and its server-provided Print link |
+| `lokasi_asal`, `tujuan`, `nomor_smu`, `angkutan`, `mode`, `tanggal` | Manifest header metadata; nullable when absent |
+| `jumlah_kantung`, `total_berat_kg`, `rekap_layanan` | Counts and weights of the validated Print snapshot |
+| `fetched_at` | Original Print acquisition time, UTC RFC 3339 |
+| `cache_status` | Print acquisition/reuse state: `fetched`, `cache_hit`, or `stale` |
+| `status_source` | `pid` when PID operational data is available, otherwise `unavailable` |
+
+Print row routes become `items[].lokasi_asal` and `items[].tujuan`. They do not
+replace `items[].lokasi_akhir`, which remains an operational field. Metadata
+counts describe Print; merged `items` can also contain PID-only bags. Existing
+`total_berat` retains PID's value when present.
+
+The outer lookup cache can return a previously assembled response, including
+its previous `cache_status`. Treat that field as Print acquisition provenance;
+use `fetched_at` to assess age. The complete metadata example is in
+[Manifest acquisition and validation](./data-integration.md#manifest-acquisition-and-validation).
+
+### Contact enrichment metadata
+
 Tracking responses may include optional contact enrichment metadata:
 
 ```json
@@ -366,6 +422,13 @@ Tracking responses may include optional contact enrichment metadata:
 ```
 
 Supported enrichment statuses are `cache_hit`, `fetched`, `missing`, `failed`, and `skipped`. A `failed` or `missing` enrichment status does not make the tracking lookup fail if the primary PID tracking lookup succeeded.
+
+`source` is `lacak_mitra`, `pid_detail`, or `mixed` when valid phones from
+different acquisitions are combined. A partial record reports `fetched` or
+`cache_hit`; inspect the sender and recipient presence flags to determine
+completeness. `skipped` means no local source request was needed or allowed.
+
+### Shipment structure and delivery history
 
 Tracking responses also include additive shipment identity and history-derived
 multi-koli metadata. Existing `detail`, `status_akhir`, `pod`, `history`, and
@@ -489,19 +552,21 @@ curl \
 
 Every HTTP route first passes through a bounded ingress lane with 128 active
 request permits, a 512-request queue, and a five-second queue deadline. Request
-bodies are capped at 64 KiB. Handler execution is capped at 130 seconds, which
-leaves a small response-assembly margin beyond the 120-second lookup deadline.
+bodies are capped at 64 KiB. Handler execution is capped at 150 seconds,
+including a 20-second tracking bag-route enrichment budget and a
+response-assembly margin.
 Ingress overload returns `429` or `503`; a handler deadline returns `504`.
 
 Bulk tracking is intentionally driven through bounded direct `GET /v1/track/:shipment_id` requests. ShipFlow Service applies a shared 30-permit concurrency gate and a 300-request queue to every Service route that can perform upstream scraping: direct tracking, raw tracking HTML, bag lookup, and manifest lookup. Public HTTP traffic has an additional 24-permit lane and a 240-request queue, leaving at least six shared permits available to Desktop's internal IPC traffic. Each primary gate has a 60-second wait limit; a public request that must wait at both gates can therefore wait for up to 120 seconds before its upstream request starts.
 
-Every public and internal lookup also has one 120-second end-to-end deadline
-covering queue waits, upstream I/O, parsing, contact enrichment, and response
-assembly. The caller receives `503 Service Unavailable` when this deadline
-expires. Cancellation releases acquired permits and removes an owned in-flight
+Primary public and internal lookups have a 120-second deadline covering queue
+waits, upstream I/O, parsing, and contact enrichment. Bag metadata is inside the
+bag lookup deadline. Tracking bag-route enrichment follows the primary lookup
+with a separate 20-second best-effort budget. A primary deadline expiry returns
+`503 Service Unavailable`. Cancellation releases acquired permits and removes an owned in-flight
 cache slot so another request can retry instead of waiting forever.
 
-Phone-number enrichment uses a separate 15-permit gate and a 150-request queue with a 30-second wait limit. Concurrent enrichment requests for the same shipment ID are coalesced into one upstream Lacak Mitra fetch. A contact-enrichment overload does not discard the primary tracking result; the response reports failed enrichment metadata and the contact attempt can be retried after its short failure-cache TTL.
+Phone-number enrichment uses a separate 15-permit gate and a 150-request queue with a 30-second wait limit. Concurrent enrichment requests for the same shipment ID share one source acquisition, including its PID fallback when required. A contact-enrichment overload does not discard the primary tracking result; the response reports failed enrichment metadata and the contact attempt can be retried after its short failure-cache TTL.
 
 Additional upstream lookup requests wait for the next Service permit instead of creating extra upstream pressure. Runtime logs include `[ShipFlowBackpressure]` when a request waits or is rejected. These queues are bounded in-process queues, not durable jobs: clients should retry `429` and `503` responses with bounded exponential backoff.
 
@@ -538,7 +603,22 @@ Existing `lookup-store.json` data is imported automatically into
 `lookup-store.sqlite3`; an in-place JSON migration preserves a
 `lookup-store.legacy.json` backup.
 
-Contact enrichment is persisted separately in SQLite with WAL mode. Existing `contact-store.json` data is migrated automatically, successful and missing-contact entries retain the existing long TTL, and transient failures use a short TTL to avoid immediate retry storms.
+Contact enrichment is persisted separately in SQLite with WAL mode. Existing `contact-store.json` data is migrated automatically. Complete and partial contact values are retained for 90 days. Missing results and transient failures use a five-minute TTL. Partial results remain available and become eligible for another acquisition after five minutes; a failed acquisition never deletes previously valid phone values.
+
+Separate enrichment stores use these default policies:
+
+| Cache | Retention | Retry or refresh |
+| --- | --- | --- |
+| Contacts with known phones | 90 days; 20,000 records | Partial records retry after five minutes |
+| Contacts with no known phones | Five minutes | Missing and failed attempts retry after expiry |
+| Bag label routes with known offices | No normal age expiry; 20,000 records | Partial routes retry after five minutes |
+| Bag routes with no known offices | Five minutes | Missing and failed attempts retry after expiry |
+| Validated Print snapshots | 90 days; 1,000 records / 64 MiB of serialized payloads | Refresh on lookup after 24 hours |
+
+Print uses `manifest_print_cache` and `manifest_print_bags` inside
+`bag-route-store.sqlite3`. Snapshot and index replacement are atomic. Failed
+refreshes preserve known values; retained Print responses are marked `stale`.
+The default operational tracking/bag/manifest TTLs remain 30/60/90 seconds.
 
 Manual refresh flows should send:
 
@@ -546,7 +626,7 @@ Manual refresh flows should send:
 x-shipflow-force-refresh: true
 ```
 
-Contact enrichment uses a separate persistent contact cache keyed by exact shipment ID. Once phone numbers are found, later tracking lookups reuse the cached contact values and do not call `lacak-mitra` again for that shipment ID. Logs must report only presence flags such as `sender_phone_present=true`; they must not print raw phone numbers.
+Contact enrichment uses a separate persistent contact cache keyed by exact shipment ID. When both phone numbers are available, later tracking lookups reuse the cached values. When only one is available, later lookups retry after the five-minute cooldown. `x-shipflow-force-refresh: true` bypasses both the primary lookup cache and the contact/bag metadata cooldown. Phone values preserve leading zeros and international formatting; placeholders, all-zero values, and invalid strings remain null. Acquisition metadata records `lacak_mitra`, `pid_detail`, or `mixed` when valid cached values from different sources are combined. The refresh header also requests fresh Print metadata. Tracking can still skip optional acquisition when both primary phones are already valid. Logs must report only presence flags such as `sender_phone_present=true`; they must not print raw phone numbers.
 
 ## External API Source Performance
 

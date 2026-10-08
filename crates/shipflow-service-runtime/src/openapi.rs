@@ -524,7 +524,7 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                     "required": ["source", "status", "sender_phone_present", "recipient_phone_present"],
                     "description": "Best-effort contact enrichment metadata. The primary tracking data remains sourced from POS PID detail; lacak-mitra is used only to fill sender/recipient phone numbers.",
                     "properties": {
-                        "source": { "type": "string", "const": "lacak_mitra" },
+                        "source": { "type": "string", "enum": ["lacak_mitra", "pid_detail", "mixed"] },
                         "status": {
                             "type": "string",
                             "enum": ["cache_hit", "fetched", "missing", "failed", "skipped"]
@@ -673,6 +673,7 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                     "properties": {
                         "url": { "type": "string" },
                         "nomor_kantung": { "type": ["string", "null"] },
+                        "bag_detail": { "anyOf": [{ "$ref": "#/components/schemas/BagRoute" }, { "type": "null" }] },
                         "items": {
                             "type": "array",
                             "items": { "$ref": "#/components/schemas/BagItem" }
@@ -700,6 +701,7 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                     "properties": {
                         "url": { "type": "string" },
                         "total_berat": { "type": ["string", "null"] },
+                        "manifest_detail": { "anyOf": [{ "$ref": "#/components/schemas/ManifestDetail" }, { "type": "null" }] },
                         "items": {
                             "type": "array",
                             "items": { "$ref": "#/components/schemas/ManifestItem" }
@@ -716,7 +718,9 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                         "berat": { "type": ["string", "null"] },
                         "status": { "type": ["string", "null"] },
                         "lokasi_akhir": { "type": ["string", "null"] },
-                        "tanggal": { "type": ["string", "null"] }
+                        "tanggal": { "type": ["string", "null"] },
+                        "lokasi_asal": { "type": ["string", "null"] },
+                        "tujuan": { "type": ["string", "null"] }
                     }
                 }
             }
@@ -728,6 +732,30 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
     document["components"]["schemas"]["TrackingHtmlResponse"] = tracking_html_response_schema();
     document["components"]["schemas"]["Diagnostics"] = diagnostics_response_schema();
     document["components"]["schemas"]["CacheDiagnostics"] = cache_diagnostics_schema();
+    document["components"]["schemas"]["BagRoute"] = json!({
+        "type": "object", "required": ["nomor_kantung", "lokasi_asal", "tujuan", "url"],
+        "properties": {
+            "nomor_kantung": { "type": "string" }, "lokasi_asal": { "type": ["string", "null"] },
+            "tujuan": { "type": ["string", "null"] }, "url": { "type": "string", "format": "uri" }
+        }
+    });
+    document["components"]["schemas"]["ManifestDetail"] = json!({
+        "type": "object",
+        "properties": {
+            "nomor_manifest": { "type": "string" }, "task_id": { "type": "string" },
+            "lokasi_asal": { "type": ["string", "null"] }, "tujuan": { "type": ["string", "null"] },
+            "nomor_smu": { "type": ["string", "null"] }, "angkutan": { "type": ["string", "null"] },
+            "mode": { "type": ["string", "null"] }, "tanggal": { "type": ["string", "null"] },
+            "jumlah_kantung": { "type": "integer", "minimum": 0 }, "total_berat_kg": { "type": "number", "minimum": 0 },
+            "rekap_layanan": { "type": "array", "items": { "type": "object", "properties": {
+                "jenis_layanan": { "type": ["string", "null"] }, "jumlah_kantung": { "type": "integer", "minimum": 0 },
+                "berat_kg": { "type": "number", "minimum": 0 }
+            }}},
+            "source_url": { "type": "string", "format": "uri" }, "fetched_at": { "type": "string", "format": "date-time" },
+            "cache_status": { "type": "string", "enum": ["fetched", "cache_hit", "stale"] },
+            "status_source": { "type": "string", "enum": ["pid", "unavailable"] }
+        }
+    });
     document["components"]["schemas"]["ContactCacheDiagnostics"] =
         contact_cache_diagnostics_schema();
     document["components"]["schemas"]["BagRouteCacheDiagnostics"] =
@@ -1112,5 +1140,26 @@ mod tests {
                 "#/components/responses/ServiceUnavailable"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod metadata_contract_tests {
+    #[test]
+    fn documents_metadata_fields_and_contact_source_provenance() {
+        let document = super::service_openapi_document(18422, false);
+        let schemas = &document["components"]["schemas"];
+        assert!(schemas["BagResponse"]["properties"]["bag_detail"].is_object());
+        assert!(schemas["ManifestResponse"]["properties"]["manifest_detail"].is_object());
+        assert!(schemas["ManifestItem"]["properties"]["lokasi_asal"].is_object());
+        assert!(schemas["ManifestItem"]["properties"]["tujuan"].is_object());
+        assert_eq!(
+            schemas["ContactEnrichmentMetadata"]["properties"]["source"]["enum"],
+            serde_json::json!(["lacak_mitra", "pid_detail", "mixed"])
+        );
+        assert_eq!(
+            schemas["ManifestDetail"]["properties"]["status_source"]["enum"],
+            serde_json::json!(["pid", "unavailable"])
+        );
     }
 }

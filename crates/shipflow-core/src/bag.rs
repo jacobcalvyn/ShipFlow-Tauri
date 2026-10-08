@@ -176,6 +176,7 @@ pub fn parse_bag_html(html: &str, url: &str) -> Result<BagResponse, String> {
     Ok(BagResponse {
         url: url.to_string(),
         nomor_kantung,
+        bag_detail: None,
         items,
     })
 }

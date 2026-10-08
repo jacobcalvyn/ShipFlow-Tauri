@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use shipflow_core::model::ContactEnrichment;
+use shipflow_core::{model::ContactEnrichment, parser::normalize_contact_phone};
 use tokio::sync::{futures::OwnedNotified, Notify};
 
 use crate::persistent_store::default_persistent_lookup_store_path;
@@ -64,6 +64,7 @@ pub struct ContactCacheEntry {
 pub enum ContactCacheEntryStatus {
     #[default]
     Ok,
+    Partial,
     Missing,
     Failed,
 }
@@ -72,6 +73,7 @@ impl ContactCacheEntryStatus {
     fn as_str(self) -> &'static str {
         match self {
             Self::Ok => "ok",
+            Self::Partial => "partial",
             Self::Missing => "missing",
             Self::Failed => "failed",
         }
@@ -80,10 +82,18 @@ impl ContactCacheEntryStatus {
     fn from_str(value: &str) -> Option<Self> {
         match value {
             "ok" => Some(Self::Ok),
+            "partial" => Some(Self::Partial),
             "missing" => Some(Self::Missing),
             "failed" => Some(Self::Failed),
             _ => None,
         }
+    }
+}
+
+impl ContactCacheEntry {
+    pub(crate) fn retry_due(&self) -> bool {
+        self.status != ContactCacheEntryStatus::Ok
+            && unix_ms().saturating_sub(self.fetched_at_unix_ms) >= CONTACT_FAILURE_CACHE_TTL_MS
     }
 }
 
@@ -250,7 +260,7 @@ impl ContactCacheState {
             return None;
         }
 
-        let contact = match serde_json::from_str::<ContactEnrichment>(&stored.0) {
+        let mut contact = match serde_json::from_str::<ContactEnrichment>(&stored.0) {
             Ok(contact) => contact,
             Err(error) => {
                 shipflow_core::shipflow_log!(
@@ -262,6 +272,12 @@ impl ContactCacheState {
                 );
                 return None;
             }
+        };
+        normalize_phones(&mut contact);
+        let status = if status == ContactCacheEntryStatus::Ok {
+            contact_status(&contact)
+        } else {
+            status
         };
         let last_used_at_unix_ms = stored.4.max(0) as u128;
         if now.saturating_sub(last_used_at_unix_ms) >= CONTACT_LAST_USED_WRITE_INTERVAL_MS {
@@ -337,11 +353,7 @@ impl ContactCacheState {
     }
 
     pub fn store(&self, shipment_id: &str, contact: ContactEnrichment) -> ContactCacheEntry {
-        let status = if contact.pengirim.telepon.is_some() || contact.penerima.telepon.is_some() {
-            ContactCacheEntryStatus::Ok
-        } else {
-            ContactCacheEntryStatus::Missing
-        };
+        let status = contact_status(&contact);
         self.store_with_status(shipment_id, contact, status)
     }
 
@@ -366,6 +378,29 @@ impl ContactCacheState {
                     fallback_contact,
                     ContactCacheEntryStatus::Missing,
                 )
+            })
+    }
+
+    pub async fn store_from_source_async(
+        &self,
+        shipment_id: &str,
+        contact: ContactEnrichment,
+        source: &str,
+    ) -> ContactCacheEntry {
+        let state = self.clone();
+        let id = shipment_id.to_string();
+        let source = source.to_string();
+        let fallback = contact.clone();
+        let fallback_id = id.clone();
+        let fallback_source = source.clone();
+        tokio::task::spawn_blocking(move || state.store_with_source(&id, contact, None, &source))
+            .await
+            .unwrap_or_else(|error| {
+                shipflow_core::shipflow_log!("[ShipFlowContactCache] async_source_store_failed id={shipment_id} error={error}");
+                let mut entry =
+                    fallback_entry(fallback_id, fallback.clone(), contact_status(&fallback));
+                entry.source = fallback_source;
+                entry
             })
     }
 
@@ -418,9 +453,69 @@ impl ContactCacheState {
         contact: ContactEnrichment,
         status: ContactCacheEntryStatus,
     ) -> ContactCacheEntry {
-        let entry = fallback_entry(shipment_id.to_string(), contact, status);
+        self.store_with_source(shipment_id, contact, Some(status), "lacak_mitra")
+    }
+
+    fn store_with_source(
+        &self,
+        shipment_id: &str,
+        mut contact: ContactEnrichment,
+        requested_status: Option<ContactCacheEntryStatus>,
+        source: &str,
+    ) -> ContactCacheEntry {
+        normalize_phones(&mut contact);
+        let connection = self
+            .connection
+            .lock()
+            .expect("contact cache connection lock poisoned");
+        let previous = connection
+            .query_row(
+                "SELECT contact_json, source FROM contact_cache WHERE shipment_id = ?1 AND fetched_at_unix_ms > ?2",
+                params![shipment_id, to_sql_millis(unix_ms().saturating_sub(CONTACT_CACHE_TTL_MS))],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .unwrap_or_else(|error| {
+                shipflow_core::shipflow_log!("[ShipFlowContactCache] merge_read_failed id={shipment_id} error={error}");
+                None
+            });
+        let mut actual_source = source.to_owned();
+        if let Some((json, previous_source)) = previous {
+            if let Ok(mut previous) = serde_json::from_str::<ContactEnrichment>(&json) {
+                normalize_phones(&mut previous);
+                let has_fresh =
+                    contact.pengirim.telepon.is_some() || contact.penerima.telepon.is_some();
+                let retained = (contact.pengirim.telepon.is_none()
+                    && previous.pengirim.telepon.is_some())
+                    || (contact.penerima.telepon.is_none() && previous.penerima.telepon.is_some());
+                if contact.pengirim.telepon.is_none() {
+                    contact.pengirim.telepon = previous.pengirim.telepon;
+                }
+                if contact.penerima.telepon.is_none() {
+                    contact.penerima.telepon = previous.penerima.telepon;
+                }
+                if retained {
+                    actual_source = if has_fresh && previous_source != source {
+                        "mixed".into()
+                    } else {
+                        previous_source
+                    };
+                }
+            }
+        }
+        let status = if requested_status == Some(ContactCacheEntryStatus::Failed) {
+            if contact.pengirim.telepon.is_some() || contact.penerima.telepon.is_some() {
+                ContactCacheEntryStatus::Partial
+            } else {
+                ContactCacheEntryStatus::Failed
+            }
+        } else {
+            contact_status(&contact)
+        };
+        let mut entry = fallback_entry(shipment_id.to_string(), contact, status);
+        entry.source = actual_source;
         let contact_json = match serde_json::to_string(&entry.contact) {
-            Ok(contact_json) => contact_json,
+            Ok(json) => json,
             Err(error) => {
                 shipflow_core::shipflow_log!(
                     "[ShipFlowContactCache] encode_error id={shipment_id} error={error}"
@@ -428,10 +523,6 @@ impl ContactCacheState {
                 return entry;
             }
         };
-        let connection = self
-            .connection
-            .lock()
-            .expect("contact cache connection lock poisoned");
         if let Err(error) = connection.execute(
             "INSERT INTO contact_cache (
                  shipment_id,
@@ -466,7 +557,7 @@ impl ContactCacheState {
     }
 
     #[cfg(test)]
-    fn set_fetched_at_for_test(&self, shipment_id: &str, fetched_at_unix_ms: u128) {
+    pub(crate) fn set_fetched_at_for_test(&self, shipment_id: &str, fetched_at_unix_ms: u128) {
         self.connection
             .lock()
             .expect("contact cache connection lock poisoned")
@@ -563,8 +654,8 @@ fn prune_connection(connection: &Connection, now_unix_ms: u128) {
     let failure_cutoff = now_unix_ms.saturating_sub(CONTACT_FAILURE_CACHE_TTL_MS);
     if let Err(error) = connection.execute(
         "DELETE FROM contact_cache
-         WHERE (status = 'failed' AND fetched_at_unix_ms <= ?1)
-            OR (status != 'failed' AND fetched_at_unix_ms <= ?2)",
+         WHERE (status IN ('failed', 'missing') AND fetched_at_unix_ms <= ?1)
+            OR (status NOT IN ('failed', 'missing') AND fetched_at_unix_ms <= ?2)",
         params![to_sql_millis(failure_cutoff), to_sql_millis(normal_cutoff)],
     ) {
         shipflow_core::shipflow_log!("[ShipFlowContactCache] prune_expired_failed error={error}");
@@ -591,6 +682,23 @@ fn prune_connection(connection: &Connection, now_unix_ms: u128) {
         params![remove_count as i64],
     ) {
         shipflow_core::shipflow_log!("[ShipFlowContactCache] prune_capacity_failed error={error}");
+    }
+}
+
+fn normalize_phones(contact: &mut ContactEnrichment) {
+    for value in [&mut contact.pengirim.telepon, &mut contact.penerima.telepon] {
+        *value = value.as_deref().and_then(normalize_contact_phone);
+    }
+}
+
+fn contact_status(contact: &ContactEnrichment) -> ContactCacheEntryStatus {
+    match (
+        contact.pengirim.telepon.is_some(),
+        contact.penerima.telepon.is_some(),
+    ) {
+        (true, true) => ContactCacheEntryStatus::Ok,
+        (false, false) => ContactCacheEntryStatus::Missing,
+        _ => ContactCacheEntryStatus::Partial,
     }
 }
 
@@ -626,7 +734,10 @@ fn is_expired(
     fetched_at_unix_ms: u128,
     now_unix_ms: u128,
 ) -> bool {
-    let ttl = if status == ContactCacheEntryStatus::Failed {
+    let ttl = if matches!(
+        status,
+        ContactCacheEntryStatus::Failed | ContactCacheEntryStatus::Missing
+    ) {
         CONTACT_FAILURE_CACHE_TTL_MS
     } else {
         CONTACT_CACHE_TTL_MS
@@ -667,7 +778,7 @@ mod tests {
             "P2606020189412",
             ContactEnrichment {
                 penerima: ContactDetail {
-                    telepon: Some("628123".into()),
+                    telepon: Some("6281234567".into()),
                     ..ContactDetail::default()
                 },
                 ..ContactEnrichment::default()
@@ -678,7 +789,7 @@ mod tests {
             cache
                 .get("P2606020189412")
                 .and_then(|entry| entry.contact.penerima.telepon),
-            Some("628123".into())
+            Some("6281234567".into())
         );
         drop(cache);
         cleanup_sqlite(path);
@@ -693,7 +804,7 @@ mod tests {
             "P2606020189412.30",
             ContactEnrichment {
                 pengirim: ContactDetail {
-                    telepon: Some("628123".into()),
+                    telepon: Some("6281234567".into()),
                     ..ContactDetail::default()
                 },
                 penerima: ContactDetail::default(),
@@ -703,8 +814,11 @@ mod tests {
         let entry = cache
             .get("P2606020189412.30")
             .expect("contact should be cached");
-        assert_eq!(entry.status, ContactCacheEntryStatus::Ok);
-        assert_eq!(entry.contact.pengirim.telepon.as_deref(), Some("628123"));
+        assert_eq!(entry.status, ContactCacheEntryStatus::Partial);
+        assert_eq!(
+            entry.contact.pengirim.telepon.as_deref(),
+            Some("6281234567")
+        );
         assert!(cache.get("P260602018941230").is_none());
 
         cleanup_sqlite(path);
@@ -753,7 +867,7 @@ mod tests {
             "P2606020189412",
             ContactEnrichment {
                 penerima: ContactDetail {
-                    telepon: Some("628123".into()),
+                    telepon: Some("6281234567".into()),
                     ..ContactDetail::default()
                 },
                 ..ContactEnrichment::default()
@@ -765,6 +879,60 @@ mod tests {
         );
 
         assert!(cache.get("P2606020189412").is_none());
+        drop(cache);
+        cleanup_sqlite(path);
+    }
+
+    #[test]
+    fn partial_contacts_remain_known_but_become_retryable() {
+        let path = test_path("partial-retry");
+        let cache = ContactCacheState::open(path.clone());
+        cache.store(
+            "P2606020189412",
+            ContactEnrichment {
+                pengirim: ContactDetail {
+                    telepon: Some("081234567890".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        cache.set_fetched_at_for_test(
+            "P2606020189412",
+            super::unix_ms() - super::CONTACT_FAILURE_CACHE_TTL_MS - 1,
+        );
+        let entry = cache
+            .get("P2606020189412")
+            .expect("known phone must remain available");
+        assert_ne!(
+            entry.status,
+            ContactCacheEntryStatus::Ok,
+            "a single phone is not a complete contact result"
+        );
+        drop(cache);
+        cleanup_sqlite(path);
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_preserves_known_contact_values() {
+        let path = test_path("preserve-on-failure");
+        let cache = ContactCacheState::open(path.clone());
+        cache.store(
+            "P2606020189412",
+            ContactEnrichment {
+                pengirim: ContactDetail {
+                    telepon: Some("081234567890".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        cache.store_failure_async("P2606020189412").await;
+        let entry = cache.get("P2606020189412").unwrap();
+        assert_eq!(
+            entry.contact.pengirim.telepon.as_deref(),
+            Some("081234567890")
+        );
         drop(cache);
         cleanup_sqlite(path);
     }
