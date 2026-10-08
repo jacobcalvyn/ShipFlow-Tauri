@@ -71,7 +71,7 @@ pub fn parse_tracking_html(request_url: &str, html: &str) -> Result<TrackRespons
     for tr in document.select(&tr_selector) {
         let cells: Vec<String> = tr
             .select(&cell_selector)
-            .map(|cell| normalize_text(&cell.text().collect::<String>()))
+            .map(|cell| normalize_text(&cell.text().collect::<Vec<_>>().join(" ")))
             .filter(|text| !text.is_empty())
             .collect();
 
@@ -933,6 +933,10 @@ fn parse_penerima(raw: &str) -> ContactDetail {
 }
 
 fn parse_contact(raw: &str) -> ContactDetail {
+    if let Some(contact) = parse_labeled_contact(raw) {
+        return contact;
+    }
+
     let parts = split_semicolon_segments(raw);
     if parts.len() < 2 {
         return ContactDetail::default();
@@ -964,6 +968,75 @@ fn parse_contact(raw: &str) -> ContactDetail {
         alamat,
         kode_pos,
     }
+}
+
+fn parse_labeled_contact(raw: &str) -> Option<ContactDetail> {
+    // LNINCOMING uses labeled fields instead of the domestic semicolon layout.
+    // ASCII folding preserves byte offsets into names and addresses with Unicode.
+    let lower = raw.to_ascii_lowercase();
+    let mut fields = Vec::new();
+    for label in [
+        "alamat",
+        "tlp pengirim",
+        "tlp penerima",
+        "status pdri",
+        "status adminpos",
+        "nominal pdri",
+        "nominal admin pos",
+        "total",
+        "umur pdri",
+        "tgl bayar pdri",
+        "status kiriman",
+    ] {
+        for (start, _) in lower.match_indices(label) {
+            let boundary = start == 0
+                || lower[..start]
+                    .ends_with(|ch: char| ch.is_whitespace() || ch == ',' || ch == ';');
+            let after_label = &lower[start + label.len()..];
+            let after_space = after_label.trim_start();
+            if boundary && after_space.starts_with(':') {
+                let value_start = start + label.len() + after_label.len() - after_space.len() + 1;
+                fields.push((start, value_start, label));
+                break;
+            }
+        }
+    }
+    fields.sort_by_key(|field| field.0);
+    let &(address_start, _, first_label) = fields.first()?;
+    if first_label != "alamat"
+        || raw[..address_start].contains(';')
+        || !raw[..address_start].trim_end().ends_with(',')
+    {
+        return None;
+    }
+
+    let nonempty = |value: &str| {
+        let value = value.trim().trim_matches(',').trim();
+        (!value.is_empty() && value != "-").then(|| value.to_string())
+    };
+    let mut contact = ContactDetail {
+        nama: nonempty(&raw[..address_start]),
+        ..ContactDetail::default()
+    };
+    for (index, &(_, value_start, label)) in fields.iter().enumerate() {
+        let value_end = fields.get(index + 1).map_or(raw.len(), |field| field.0);
+        let value = nonempty(&raw[value_start..value_end]);
+        match label {
+            "alamat" => contact.alamat = value,
+            "tlp pengirim" | "tlp penerima" => {
+                contact.telepon = value.filter(|phone| {
+                    phone.chars().all(|ch| {
+                        ch.is_ascii_digit()
+                            || ch.is_whitespace()
+                            || matches!(ch, '+' | '-' | '(' | ')')
+                    }) && phone.chars().filter(char::is_ascii_digit).count() >= 6
+                        && phone.chars().any(|ch| matches!(ch, '1'..='9'))
+                });
+            }
+            _ => {}
+        }
+    }
+    Some(contact)
 }
 
 fn parse_kantor_header_value(raw: &str) -> (Option<String>, Option<String>) {
@@ -1121,11 +1194,6 @@ fn parse_status_akhir(raw: &str) -> StatusAkhirParts {
             datetime = Some(format!("{parsed_date} {parsed_time}"));
             date = Some(parsed_date);
             time = Some(parsed_time);
-        } else {
-            let dt = after_colon[..end_idx].trim();
-            if !dt.is_empty() {
-                datetime = Some(dt.to_string());
-            }
         }
     }
     if datetime.is_none() {

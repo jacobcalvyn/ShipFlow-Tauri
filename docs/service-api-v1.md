@@ -312,6 +312,22 @@ The `data` object is the same normalized response shape returned through Desktop
 
 For the internal POS scraper, `detail_lacak_banyak.php` remains the primary tracking source for shipment status, SLA, history, POD, bagging, manifest, delivery, names, and addresses. ShipFlow Service may call `https://lacak-mitra.posindonesia.co.id/lacak_barcode.php?id=<shipment_id>` only as a best-effort contact enrichment source for missing sender/recipient phone numbers. `lacak-mitra` data must not overwrite primary tracking fields.
 
+For international `LNINCOMING` shipments, the scraper reads names, addresses,
+and phone numbers from the labeled `Alamat`, `Tlp Pengirim`, and `Tlp Penerima`
+fields. PDRI, Adminpos, and customs-status text is excluded from contact fields.
+An embedded postal code stays in the source address; `kode_pos` remains `null`
+when the page does not provide a separate postal-code field. A phone placeholder
+such as `0` is treated as missing and remains eligible for contact enrichment.
+Domestic semicolon-separated contacts remain supported.
+
+An `X13` suffix identifies a separate notification letter. The requested ID,
+primary lookup, cache key, history, and POD remain specific to that full ID;
+the scraper does not remove the suffix or substitute the original shipment.
+If the final-status timestamp is missing, `datetime`, `date`, and `time` remain
+`null`, even when the source says `DELIVERED` or contains `diterima oleh` after
+the date label. A receiving event is not used to invent a delivery time. Empty
+POD image placeholders likewise remain `null`.
+
 Bagging history may also receive best-effort route enrichment from the POS Mile bag label. The first successful lookup for a normalized bag ID is stored persistently in `bag-route-store.sqlite3`; later shipments referencing the same bag use the cached route without calling the label endpoint again. A label lookup failure never fails the primary tracking response, and failed lookups are retried only after a short negative-cache window.
 
 ```json

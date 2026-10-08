@@ -215,11 +215,16 @@ impl UpstreamBackpressure {
     }
 
     fn decrement_waiter(&self) {
-        self.waiters
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current.checked_sub(1)
-            })
-            .ok();
+        let mut current = self.waiters.load(Ordering::Acquire);
+        while let Some(next) = current.checked_sub(1) {
+            match self
+                .waiters
+                .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return,
+                Err(observed) => current = observed,
+            }
+        }
     }
 }
 
