@@ -1090,12 +1090,13 @@ impl LookupCacheMetricBucket {
 }
 
 fn build_cache_key(kind: LookupKind, source_fingerprint: &str, normalized_id: &str) -> String {
-    format!(
-        "{}:{}:{}",
-        lookup_kind_label(kind),
-        source_fingerprint,
-        normalized_id
-    )
+    // Skip payloads assembled before the courier and Print-source fixes.
+    let namespace = match kind {
+        LookupKind::Track => "track:v2",
+        LookupKind::Manifest => "manifest:v2",
+        LookupKind::Bag => "bag",
+    };
+    format!("{}:{}:{}", namespace, source_fingerprint, normalized_id)
 }
 
 fn lookup_kind_label(kind: LookupKind) -> &'static str {
@@ -1595,48 +1596,30 @@ fn merge_manifest_sources(
     print: Result<ManifestResponse, TrackingError>,
 ) -> Result<ManifestResponse, TrackingError> {
     match (operational, print) {
-        (Ok(mut operational), Ok(print)) => {
-            let routes: HashMap<_, _> = print
+        (Ok(operational), Ok(mut print)) => {
+            let statuses: HashMap<_, _> = operational
                 .items
                 .iter()
                 .filter_map(|item| {
                     Some((item.nomor_kantung.as_deref()?.to_ascii_uppercase(), item))
                 })
                 .collect();
-            for item in &mut operational.items {
-                if let Some(route) = item
+            // Print owns membership, ordering, products, weights, and routes.
+            // PID supplies current status only for matching Print bag IDs.
+            for item in &mut print.items {
+                if let Some(status) = item
                     .nomor_kantung
                     .as_deref()
-                    .and_then(|id| routes.get(&id.to_ascii_uppercase()))
+                    .and_then(|id| statuses.get(&id.to_ascii_uppercase()))
                 {
-                    item.lokasi_asal = route.lokasi_asal.clone();
-                    item.tujuan = route.tujuan.clone();
+                    item.nomor_kantung_url = status.nomor_kantung_url.clone();
+                    item.status = status.status.clone();
+                    item.lokasi_akhir = status.lokasi_akhir.clone();
+                    item.tanggal = status.tanggal.clone();
                 }
             }
-            // Keep PID status rows; include Print bags that PID has not indexed yet.
-            let known: std::collections::HashSet<_> = operational
-                .items
-                .iter()
-                .filter_map(|item| item.nomor_kantung.as_deref().map(str::to_ascii_uppercase))
-                .collect();
-            operational
-                .items
-                .extend(print.items.into_iter().filter(|item| {
-                    item.nomor_kantung
-                        .as_deref()
-                        .is_some_and(|id| !known.contains(&id.to_ascii_uppercase()))
-                }));
-            if operational.items.len() > 10_000 {
-                return Err(TrackingError::Upstream(
-                    "Combined manifest response exceeds the 10000-item limit.".into(),
-                ));
-            }
-            operational.manifest_detail = print.manifest_detail;
-            operational.manifest_detail.as_mut().unwrap().status_source = "pid".into();
-            if operational.total_berat.is_none() {
-                operational.total_berat = print.total_berat;
-            }
-            Ok(operational)
+            print.manifest_detail.as_mut().unwrap().status_source = "pid".into();
+            Ok(print)
         }
         (Ok(operational), Err(_)) => Ok(operational),
         (Err(error), Ok(print)) => {
@@ -1727,6 +1710,41 @@ mod tests {
         });
 
         assert_ne!(internal, external);
+    }
+
+    #[tokio::test]
+    async fn changed_parsers_bypass_legacy_cached_payloads() {
+        for (kind, label) in [
+            (LookupKind::Track, "track"),
+            (LookupKind::Manifest, "manifest"),
+            (LookupKind::Bag, "bag"),
+        ] {
+            let cache = LookupCacheState::with_policy(create_test_policy());
+            cache.inner.lock().unwrap().entries.insert(
+                format!("{label}:fixture:ID1"),
+                LookupCacheSlot::Ready(CachedLookupEntry {
+                    expires_at: Instant::now() + Duration::from_secs(60),
+                    last_accessed_at: Instant::now(),
+                    value: CachedLookupValue::Success(r#"{"version":"legacy"}"#.into()),
+                }),
+            );
+            let response = cache
+                .resolve_cached_lookup(
+                    kind,
+                    "ID1".into(),
+                    "fixture".into(),
+                    LookupRequestOptions::default(),
+                    || async { Ok(serde_json::json!({"version":"current"})) },
+                )
+                .await
+                .unwrap();
+            let expected = if kind == LookupKind::Bag {
+                "legacy"
+            } else {
+                "current"
+            };
+            assert_eq!(response["version"], expected);
+        }
     }
 
     #[test]
@@ -2910,5 +2928,105 @@ mod enrichment_regression_tests {
             print_only.manifest_detail.unwrap().status_source,
             "unavailable"
         );
+    }
+
+    #[test]
+    fn manifest_print_owns_weights_and_bag_membership() {
+        let print = shipflow_core::manifest_print::parse_manifest_print_html(
+            include_str!(
+                "../../shipflow-core/tests/fixtures/mile_manifest_print_weight_conflict.html"
+            ),
+            "https://posindo.mile.app/manifestR7/print?taskId=9675eb69d6c541a3fee4",
+            "P20261008205336248",
+            20,
+        )
+        .unwrap();
+        let mut pid = shipflow_core::manifest::parse_manifest_html(
+            include_str!("../../shipflow-core/tests/fixtures/pid_manifest_weight_conflict.html"),
+            "https://pid.posindonesia.co.id/lacak/admin/GetManifestR7_detil.php?id=UDIwMjYxMDA4MjA1MzM2MjQ4",
+        )
+        .unwrap();
+        assert_eq!(pid.total_berat.as_deref(), Some("45 Kg"));
+        let pid_sum: f64 = pid
+            .items
+            .iter()
+            .map(|item| item.berat.as_ref().unwrap().parse::<f64>().unwrap())
+            .sum();
+        assert_eq!(pid_sum, 45.0);
+        let original_pid = pid.clone();
+        // PID order, numbering, and membership must not override validated Print data.
+        pid.items.reverse();
+        pid.items[0].no = Some("999".into());
+        pid.items[0].nomor_kantung = Some("pid108781435".into());
+        pid.items[0].nomor_kantung_url = Some("/bag/PID108781435".into());
+        pid.items[0].jenis_layanan = Some("LEGACY".into());
+        pid.items.remove(1);
+        pid.items.push(shipflow_core::model::ManifestItem {
+            nomor_kantung: Some("PID999999999".into()),
+            berat: Some("100".into()),
+            ..Default::default()
+        });
+        let response = merge_manifest_sources(Ok(pid), Ok(print.clone())).unwrap();
+        assert_eq!(response.url, print.url);
+        assert_eq!(response.total_berat.as_deref(), Some("30.73 Kg"));
+        assert_eq!(response.items.len(), 20);
+        let detail = response.manifest_detail.as_ref().unwrap();
+        assert_eq!(detail.jumlah_kantung, response.items.len());
+        assert_eq!(detail.total_berat_kg, 30.73);
+        assert_eq!(detail.status_source, "pid");
+        let sum: f64 = response
+            .items
+            .iter()
+            .map(|item| item.berat.as_ref().unwrap().parse::<f64>().unwrap())
+            .sum();
+        assert!((sum - detail.total_berat_kg).abs() < 0.000001);
+        for (actual, expected) in response.items.iter().zip(&print.items) {
+            assert_eq!(actual.no, expected.no);
+            assert_eq!(actual.nomor_kantung, expected.nomor_kantung);
+            assert_eq!(actual.jenis_layanan, expected.jenis_layanan);
+            assert_eq!(actual.berat, expected.berat);
+            assert_eq!(actual.lokasi_asal, expected.lokasi_asal);
+            assert_eq!(actual.tujuan, expected.tujuan);
+            if actual.nomor_kantung.as_deref() == Some("PID108921900") {
+                assert!(actual.status.is_none());
+                assert!(actual.lokasi_akhir.is_none());
+                assert!(actual.tanggal.is_none());
+            } else {
+                let operational = original_pid
+                    .items
+                    .iter()
+                    .find(|item| item.nomor_kantung == actual.nomor_kantung)
+                    .unwrap();
+                assert_eq!(actual.status, operational.status);
+                assert_eq!(actual.lokasi_akhir, operational.lokasi_akhir);
+                assert_eq!(actual.tanggal, operational.tanggal);
+            }
+        }
+        assert_eq!(
+            response.items[19].nomor_kantung_url.as_deref(),
+            Some("/bag/PID108781435")
+        );
+    }
+
+    #[test]
+    fn manifest_pid_fallback_is_explicit_when_print_is_unavailable() {
+        let pid = ManifestResponse {
+            url: "https://pid.example/manifest".into(),
+            total_berat: Some("45 Kg".into()),
+            ..Default::default()
+        };
+        let response = merge_manifest_sources(
+            Ok(pid.clone()),
+            Err(TrackingError::Upstream("Print unavailable".into())),
+        )
+        .unwrap();
+        assert_eq!(response.url, pid.url);
+        assert_eq!(response.total_berat, pid.total_berat);
+        assert!(response.manifest_detail.is_none());
+        assert!(merge_manifest_sources(
+            Err(TrackingError::Upstream("PID unavailable".into())),
+            Err(TrackingError::Upstream("Print unavailable".into()))
+        )
+        .is_err());
     }
 }

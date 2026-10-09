@@ -1764,14 +1764,15 @@ fn extract_diterima_oleh(raw: &str) -> Option<String> {
     let (_, name_start) = find_diterima_oleh(&lower)?;
     let after = &text[name_start..];
 
-    let mut end = after.len();
-    if let Some(idx_coord) = find_bare_coordinate_offset(after) {
-        end = idx_coord;
-    } else if let Some(idx_bracket) = after.find('[') {
-        end = idx_bracket;
-    }
-
-    let value = after[..end].trim();
+    let end = after
+        .find('[')
+        .into_iter()
+        .chain(find_bare_coordinate_offset(after))
+        .min()
+        .unwrap_or(after.len());
+    let value = after[..end]
+        .trim_end_matches(|ch: char| ch.is_whitespace() || ch == ',')
+        .trim_start();
     if value.is_empty() {
         None
     } else {
@@ -2201,6 +2202,57 @@ mod tests {
         include_str!("../tests/fixtures/pos_tracking_runsheet_failedtoddelivered.html");
     const DELIVERY_STATUS_CATALOG_HTML: &str =
         include_str!("../tests/fixtures/pos_tracking_delivery_status_catalog.html");
+
+    #[test]
+    fn runsheet_courier_label_excludes_coordinate_annotation() {
+        for (shipment, courier, coordinate, location, officer) in [
+            (
+                "BAC28092647D9E05FDAD",
+                "Gabriel Erick Taurui (560000529)",
+                "-2.5426129,140.7070076",
+                "DC JAYAPURA 9910A",
+                "Akbar",
+            ),
+            (
+                "P2609110091249",
+                "Renis Lintamon (560034454)",
+                "-4.0948727,138.9486865",
+                "KCP WAMENA 99500",
+                "Itago W",
+            ),
+            ("P1", "Émile İ (123)", "-2.5,140.7", "Zürich", "İ"),
+        ] {
+            let history = format!(
+                "Barang {shipment} anda telah melewati proses DeliveryRunsheet oleh {officer} di {location} dan diterima oleh {courier}, [coordinate : {coordinate} ]"
+            );
+            let html = format!(
+                r#"<table><tr><td>Nomor Kiriman</td><td>{shipment}</td></tr></table>
+                <table><tr><td>TANGGAL UPDATE</td><td>DETAIL HISTORY</td></tr>
+                <tr><td>2026-10-03 11:07:59</td><td>{history}</td></tr></table>"#
+            );
+            let response = parse_tracking_html("https://example.test", &html).unwrap();
+            let runsheet = &response.history_summary.delivery_runsheet[0];
+            assert_eq!(runsheet.petugas_kurir.as_deref(), Some(courier));
+            assert_eq!(runsheet.petugas_mandor.as_deref(), Some(officer));
+            assert_eq!(runsheet.lokasi.as_deref(), Some(location));
+            assert_eq!(runsheet.koordinat.as_deref(), Some(coordinate));
+            assert_eq!(response.history[0].detail_history, history);
+        }
+    }
+
+    #[test]
+    fn runsheet_courier_label_preserves_name_and_id_with_bare_coordinates() {
+        for suffix in [" -2.5,140.7", ", -2.5,140.7", ", [note] -2.5,140.7"] {
+            assert_eq!(
+                super::extract_diterima_oleh(&format!("diterima oleh Émile İ (123){suffix}")),
+                Some("Émile İ (123)".into())
+            );
+        }
+        assert_eq!(
+            super::extract_diterima_oleh("diterima oleh Taurui, Gabriel (123)"),
+            Some("Taurui, Gabriel (123)".into())
+        );
+    }
 
     #[test]
     fn unicode_history_offsets_preserve_original_fields() {

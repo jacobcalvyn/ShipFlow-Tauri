@@ -383,7 +383,7 @@ The Service resolves an exact R7 number through anonymous `POST https://posindo.
 
 Validated snapshots and their bag indexes share `bag-route-store.sqlite3`. Snapshot replacement and index replacement occur in one transaction, so an incomplete or failed refresh retains the previous snapshot. Snapshots refresh after 24 hours, expire after 90 days, and are bounded to 1,000 records / 64 MiB of serialized payloads, with an 8 MiB per-snapshot limit. These snapshots do not change the short TTL of operational PID status data.
 
-`manifest_detail.source_url` identifies Print; `fetched_at` records its acquisition time. `cache_status` is `fetched`, `cache_hit`, or `stale` if a refresh failed or the snapshot is older than 24 hours. PID status and final-location fields remain intact when sources are combined. Print bags missing from PID are included with null status fields. If PID is unavailable, a valid Print snapshot can supply the manifest response with `status_source: "unavailable"`; otherwise `status_source` is `"pid"`. Clients must not interpret Print metadata as proof of a bag's current status.
+Print is the primary manifest source. When available, both `url` and `manifest_detail.source_url` identify its page; `fetched_at` records its acquisition time. `cache_status` is `fetched`, `cache_hit`, or `stale` if a refresh failed or the snapshot is older than 24 hours. PID contributes only bag links, status, final location, and update date for matching bag IDs. Print bags missing from PID have null operational fields; PID-only bags are excluded. If PID is unavailable, a valid Print snapshot supplies the manifest response with `status_source: "unavailable"`; otherwise `status_source` is `"pid"`. If Print is unavailable and no usable snapshot exists, the response falls back to PID with `manifest_detail: null`. Clients must not interpret Print metadata as proof of a bag's current status.
 
 `manifest_detail` fields have these source meanings:
 
@@ -396,15 +396,22 @@ Validated snapshots and their bag indexes share `bag-route-store.sqlite3`. Snaps
 | `cache_status` | Print acquisition/reuse state: `fetched`, `cache_hit`, or `stale` |
 | `status_source` | `pid` when PID operational data is available, otherwise `unavailable` |
 
-Print row routes become `items[].lokasi_asal` and `items[].tujuan`. They do not
-replace `items[].lokasi_akhir`, which remains an operational field. Metadata
-counts describe Print; merged `items` can also contain PID-only bags. Existing
-`total_berat` retains PID's value when present.
+Print supplies item order, bag IDs, products, weights, origin offices, and
+destination offices. `items[].lokasi_akhir` remains a PID operational field.
+`total_berat`, the sum of `items[].berat`, and
+`manifest_detail.total_berat_kg` describe the same validated Print snapshot;
+`items` contains exactly `manifest_detail.jumlah_kantung` bags. Existing keys
+keep their shape. For R7 `P20261008205336248`, all three weight totals are
+`30.73 kg`, despite PID reporting `45 Kg`.
 
 The outer lookup cache can return a previously assembled response, including
 its previous `cache_status`. Treat that field as Print acquisition provenance;
 use `fetched_at` to assess age. The complete metadata example is in
 [Manifest acquisition and validation](./data-integration.md#manifest-acquisition-and-validation).
+
+Tracking and manifest lookup cache namespaces include a parser revision, so
+responses assembled before these parser/source corrections are not reused.
+Validated Print snapshots, bag routes, and contact records remain reusable.
 
 ### Contact enrichment metadata
 

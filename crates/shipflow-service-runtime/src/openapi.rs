@@ -560,7 +560,7 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                     "required": ["petugas_mandor", "petugas_kurir", "lokasi", "tanggal", "waktu", "koordinat", "updates"],
                     "properties": {
                         "petugas_mandor": { "type": ["string", "null"] },
-                        "petugas_kurir": { "type": ["string", "null"] },
+                        "petugas_kurir": { "type": ["string", "null"], "description": "Courier name and optional ID, excluding trailing coordinate annotations. Original history text is preserved." },
                         "lokasi": { "type": ["string", "null"] },
                         "tanggal": { "type": ["string", "null"] },
                         "waktu": { "type": ["string", "null"] },
@@ -697,13 +697,15 @@ pub fn service_openapi_document(port: u16, lan_enabled: bool) -> Value {
                 },
                 "ManifestResponse": {
                     "type": "object",
+                    "description": "Validated Mile Print manifest with PID operational status matched by bag ID. Falls back to PID when no usable Print snapshot exists.",
                     "required": ["url", "total_berat", "items"],
                     "properties": {
-                        "url": { "type": "string" },
-                        "total_berat": { "type": ["string", "null"] },
+                        "url": { "type": "string", "description": "Primary manifest source URL: Mile Print when available, otherwise PID." },
+                        "total_berat": { "type": ["string", "null"], "description": "Print total weight when manifest_detail is present; consistent with its total_berat_kg and item weights. PID total in fallback responses." },
                         "manifest_detail": { "anyOf": [{ "$ref": "#/components/schemas/ManifestDetail" }, { "type": "null" }] },
                         "items": {
                             "type": "array",
+                            "description": "Print bag membership and order when manifest_detail is present. PID-only bags are excluded; unmatched Print bags retain null operational fields.",
                             "items": { "$ref": "#/components/schemas/ManifestItem" }
                         }
                     }

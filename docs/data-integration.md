@@ -180,26 +180,35 @@ in UTC RFC 3339. Reusing a snapshot does not replace its acquisition timestamp.
 `cache_status` describes Print acquisition or reuse, not every hit of the outer
 lookup cache. An outer cached response can retain its earlier `fetched` value.
 
-### Combine metadata with operational status
+### Use Print as the manifest source
 
 | Available sources | Response behavior |
 | --- | --- |
-| PID and Print | Keep PID status, final location, date, and item fields; add Print routes and metadata. Include Print bags missing from PID with null operational fields. |
+| PID and Print | Use Print URL, bag membership, order, products, weights, routes, totals, and metadata. Match PID bag IDs to add only bag links, status, final location, and update date. |
 | PID only | Return PID data; Print metadata can be null. |
 | Print only | Return Print bags and metadata with `status_source: "unavailable"`; do not infer current bag status. |
 | Neither source | Return the PID lookup error. |
 | Print refresh fails, retained snapshot exists | Reuse the snapshot with `cache_status: "stale"` and its original `fetched_at`. |
 
-`manifest_detail.jumlah_kantung`, `total_berat_kg`, and `rekap_layanan` describe
-the validated Print snapshot. Merged `items` also preserve PID-only bags, so
-their count can differ. Existing `total_berat` retains PID's value when present.
-Do not treat Print totals or its manifest date as current tracking status.
+When Print is available, `url` and `manifest_detail.source_url` identify the
+Print page. `total_berat`, `items[].berat`, `manifest_detail.total_berat_kg`,
+`jumlah_kantung`, and `rekap_layanan` all describe the same validated Print
+snapshot. PID-only bags are excluded; Print bags missing from PID retain null
+operational fields. Do not treat Print totals or its manifest date as current
+tracking status. If no usable Print snapshot exists, PID remains a fallback
+with `manifest_detail: null`; its URL identifies that source.
+
+For example, R7 `P20261008205336248` has 20 Print bags totaling `30.73 kg`,
+while PID reports `45 Kg` for the same bag IDs. The combined response uses
+`30.73 Kg` and the Print row weights, including `1.45` for `PID108972674`,
+instead of PID's `4`. This source selection does not infer why the upstream
+weights differ. See the [Print snapshot](https://posindo.mile.app/manifestR7/print?taskId=9675eb69d6c541a3fee4).
 
 ## Cache and storage
 
 | Data | Key | Retention and refresh | Store |
 | --- | --- | --- | --- |
-| Operational tracking / bag / manifest payload | Lookup kind + normalized ID + source fingerprint | Default TTL: 30 / 60 / 90 seconds | Lookup memory cache and persistent lookup store |
+| Operational tracking / bag / manifest payload | Lookup kind + parser revision for tracking/manifest + normalized ID + source fingerprint | Default TTL: 30 / 60 / 90 seconds | Lookup memory cache and persistent lookup store |
 | Complete contacts | Exact shipment ID | 90 days | `contact-store.sqlite3` |
 | Partial contacts | Exact shipment ID | Retain known values for 90 days; retry acquisition after five minutes | `contact-store.sqlite3` |
 | Missing or failed contacts without known phones | Exact shipment ID | Five minutes | `contact-store.sqlite3` |
@@ -285,6 +294,14 @@ Rust formatting, Clippy, and the security baseline. One frontend test was
 skipped. These checks preceded this documentation update. This verification
 does not establish installed Desktop or Docker deployment acceptance, or
 guarantee that every upstream identifier or tenant uses the same contract.
+
+The source-precedence and courier-parser correction was verified on
+2026-10-09 through a local native Service with isolated temporary stores:
+
+- R7 `P20261008205336248` used Print task `9675eb69d6c541a3fee4`, with 20 bags, complete row routes, and matching total, item-sum, and summary weights of `30.73 kg`.
+- All 20 bags retained matched PID operational status. Restarting the Service reused the persisted Print snapshot and its original acquisition timestamp.
+- Shipments `BAC28092647D9E05FDAD` and `P2609110091249` returned courier labels containing only names and IDs; coordinates and original history annotations remained present.
+- The relevant 196 Rust tests, Clippy checks, and Service build passed. Regression tests reproduced the incorrect courier labels and source precedence before the correction.
 
 Logs and diagnostics must report phone presence flags rather than raw phone
 numbers or credentials.
